@@ -30,6 +30,8 @@ services:
       BTC_MIN_CONNECTIONS: ${BTC_MIN_CONNECTIONS:?BTC_MIN_CONNECTIONS is required}
       BTC_READY_EXPECTED_CHAIN: main
       BTC_RESOURCE_PROFILE: ${BTC_RESOURCE_PROFILE:-balanced-32g}
+      BTC_MEMORY_LIMIT: ${BTC_MEMORY_LIMIT:-5g}
+      BTC_MEMORY_SWAP_LIMIT: ${BTC_MEMORY_SWAP_LIMIT:-${BTC_MEMORY_LIMIT:-5g}}
       BTC_DBCACHE_MB: ${BTC_DBCACHE_MB:-3072}
       BTC_DISABLE_WALLET: ${BTC_DISABLE_WALLET:-1}
       BTC_EXTRA_ARGS: ${BTC_EXTRA_ARGS:-}
@@ -39,6 +41,10 @@ services:
     ports:
       - "${BTC_P2P_BIND_ADDRESS:-127.0.0.1}:${BTC_P2P_BIND_PORT:-8333}:8333/tcp"
     mem_limit: ${BTC_MEMORY_LIMIT:-5g}
+    # Docker defines memswap_limit as the combined memory plus swap ceiling.
+    # Falling back to memory keeps old configs stoppable without granting swap;
+    # validated current configs always provide the explicit profile value.
+    memswap_limit: ${BTC_MEMORY_SWAP_LIMIT:-${BTC_MEMORY_LIMIT:-5g}}
     stop_grace_period: ${BTC_STOP_GRACE_PERIOD:-10m}
     healthcheck:
       test: ["CMD", "python3", "/opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py"]

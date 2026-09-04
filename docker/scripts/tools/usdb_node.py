@@ -89,7 +89,11 @@ MAX_UP_TRANSITIONS = 4
 DEFAULT_PROGRESS_REFRESH_SECS = 5.0
 AUTO_BITCOIN_RESOURCE_PROFILE = "auto"
 PERFORMANCE_BITCOIN_RESOURCE_PROFILE = "performance-64g"
-PERFORMANCE_PROFILE_MIN_HOST_MEMORY_BYTES = 56 * 1024**3
+IBD_BITCOIN_RESOURCE_PROFILE = "ibd-64g"
+HIGH_MEMORY_BITCOIN_RESOURCE_PROFILES = frozenset(
+    {PERFORMANCE_BITCOIN_RESOURCE_PROFILE, IBD_BITCOIN_RESOURCE_PROFILE}
+)
+HIGH_MEMORY_PROFILE_MIN_HOST_MEMORY_BYTES = 56 * 1024**3
 ALT_SCREEN_ENTER = "\x1b[?1049h"
 ALT_SCREEN_EXIT = "\x1b[?1049l"
 CURSOR_HIDE = "\x1b[?25l"
@@ -704,20 +708,21 @@ def resolve_bitcoin_resource_profile(
     if profile == AUTO_BITCOIN_RESOURCE_PROFILE:
         selected = (
             PERFORMANCE_BITCOIN_RESOURCE_PROFILE
-            if memory_bytes >= PERFORMANCE_PROFILE_MIN_HOST_MEMORY_BYTES
+            if memory_bytes >= HIGH_MEMORY_PROFILE_MIN_HOST_MEMORY_BYTES
             else DEFAULT_BITCOIN_RESOURCE_PROFILE
         )
     resources = BITCOIN_RESOURCE_PROFILES.get(selected)
     if resources is None:
         raise ValueError(
-            "Bitcoin resource profile must be auto, balanced-32g, or performance-64g"
+            "Bitcoin resource profile must be auto or one of: "
+            + ", ".join(BITCOIN_RESOURCE_PROFILES)
         )
     if (
-        selected == PERFORMANCE_BITCOIN_RESOURCE_PROFILE
-        and memory_bytes < PERFORMANCE_PROFILE_MIN_HOST_MEMORY_BYTES
+        selected in HIGH_MEMORY_BITCOIN_RESOURCE_PROFILES
+        and memory_bytes < HIGH_MEMORY_PROFILE_MIN_HOST_MEMORY_BYTES
     ):
         raise ValueError(
-            "performance-64g requires at least 56 GiB of physical host memory"
+            f"{selected} requires at least 56 GiB of physical host memory"
         )
     return selected, resources
 
@@ -895,6 +900,7 @@ def configure_node(
             "BTC_CONTAINER_GID": str(os.getgid()),
             "BTC_RESOURCE_PROFILE": bitcoin_profile,
             "BTC_MEMORY_LIMIT": bitcoin_resources["memory_limit"],
+            "BTC_MEMORY_SWAP_LIMIT": bitcoin_resources["memory_swap_limit"],
             "BTC_DBCACHE_MB": bitcoin_resources["dbcache_mb"],
             "BH_SNAPSHOT_HOST_DIR": str(snapshot_dir),
             "USDB_NODE_ROLE": role,
@@ -1054,7 +1060,17 @@ def setup_node(
     print(f"  Selected: {bitcoin_profile}", file=output)
     print(f"  Host memory: {_human_bytes(host_memory_bytes)}", file=output)
     print(f"  Container limit: {bitcoin_resources['memory_limit']}", file=output)
+    print(
+        "  Memory + swap limit: "
+        f"{bitcoin_resources['memory_swap_limit']}",
+        file=output,
+    )
     print(f"  Bitcoin dbcache: {bitcoin_resources['dbcache_mb']} MiB", file=output)
+    if bitcoin_profile == IBD_BITCOIN_RESOURCE_PROFILE:
+        print(
+            "  Temporary profile: switch to performance-64g after IBD and txindex complete.",
+            file=output,
+        )
     role = _prompt_choice(
         "Node role",
         ("full", "bootnode", "miner"),
@@ -1225,6 +1241,7 @@ def set_bitcoin_resource_profile(layout: ReleaseLayout, profile: str) -> dict[st
         {
             "BTC_RESOURCE_PROFILE": selected,
             "BTC_MEMORY_LIMIT": resources["memory_limit"],
+            "BTC_MEMORY_SWAP_LIMIT": resources["memory_swap_limit"],
             "BTC_DBCACHE_MB": resources["dbcache_mb"],
         },
     )
@@ -3658,7 +3675,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--bitcoin-profile",
         choices=(AUTO_BITCOIN_RESOURCE_PROFILE, *BITCOIN_RESOURCE_PROFILES),
         default=AUTO_BITCOIN_RESOURCE_PROFILE,
-        help="select Bitcoin memory tuning; auto uses host physical memory",
+        help=(
+            "select Bitcoin memory tuning; auto uses a steady-state profile from "
+            "host memory and never selects the temporary ibd-64g profile"
+        ),
     )
 
     configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
@@ -3704,7 +3724,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     bitcoin_profile = subparsers.add_parser(
         "set-bitcoin-profile",
-        help="Update Bitcoin memory tuning after stopping all node services",
+        help=(
+            "Update Bitcoin memory tuning after stopping all node services; "
+            "ibd-64g is temporary and explicit-only"
+        ),
     )
     bitcoin_profile.add_argument(
         "--profile",
@@ -3971,8 +3994,14 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         resources = set_bitcoin_resource_profile(layout, args.profile)
         print(
             f"Updated Bitcoin resource profile to {args.profile}: "
-            f"memory={resources['memory_limit']}, dbcache={resources['dbcache_mb']} MiB."
+            f"memory={resources['memory_limit']}, "
+            f"memory+swap={resources['memory_swap_limit']}, "
+            f"dbcache={resources['dbcache_mb']} MiB."
         )
+        if args.profile == IBD_BITCOIN_RESOURCE_PROFILE:
+            print(
+                "ibd-64g is temporary; switch to performance-64g after IBD and txindex complete."
+            )
         print("Run usdb-node up to start the node and resume the existing Bitcoin data directory.")
     elif args.command == "activate-release":
         activate_release(layout)

@@ -250,8 +250,9 @@ usdb-node status
 还是 managed，均可省略单独的 `doctor`，因为 controller 会重新执行对应模式的 preflight；同一 bundle 的
 release 升级路径是 `install new release -> activate-release -> controller install -> doctor -> up -> status`。
 `setup --bitcoin-profile auto` 会根据主机可见物理内存在 `balanced-32g` 与 `performance-64g` 之间选择；
-自动化 `configure` 应显式指定 profile。运行中调整先执行 `down` 停止 controller 和所有容器，然后使用
-`set-bitcoin-profile`，最后重新执行 `up`；数据目录不会
+自动化 `configure` 应显式指定 profile。`ibd-64g` 是 64 GiB 主机首次 Bitcoin IBD/txindex 的临时档，
+不会被 `auto` 选择，完成后必须切回 `performance-64g`。每个 profile 同时冻结 memory、memory+swap 和
+`dbcache`。运行中调整先执行 `down` 停止 controller 和所有容器，然后使用 `set-bitcoin-profile`，最后重新执行 `up`；数据目录不会
 因此重建，profile 修改也会拒绝仍有运行中容器的状态。
 
 默认的 `up` 不把数天的初始化生命周期绑定到当前终端。它向 bundle-scoped systemd unit 提交任务，

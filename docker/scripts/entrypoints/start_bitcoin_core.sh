@@ -22,7 +22,7 @@ fi
 
 install -d -m 0700 "${data_dir}"
 
-echo "Starting Bitcoin Core: resource_profile=${BTC_RESOURCE_PROFILE:-balanced-32g}, dbcache_mib=${BTC_DBCACHE_MB:-4096}, txindex=1"
+echo "Starting Bitcoin Core: resource_profile=${BTC_RESOURCE_PROFILE:-balanced-32g}, memory_limit=${BTC_MEMORY_LIMIT:-5g}, memory_swap_limit=${BTC_MEMORY_SWAP_LIMIT:-6g}, dbcache_mib=${BTC_DBCACHE_MB:-3072}, txindex=1"
 
 args=(
   "-chain=main"

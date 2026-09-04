@@ -126,6 +126,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
         self.assertEqual(env["BTC_RESOURCE_PROFILE"], "balanced-32g")
         self.assertEqual(env["BTC_MEMORY_LIMIT"], "5g")
+        self.assertEqual(env["BTC_MEMORY_SWAP_LIMIT"], "6g")
         self.assertEqual(env["BTC_DBCACHE_MB"], "3072")
         self.assertEqual(env["USDB_FIREWALL_MODE"], "external")
         self.assertEqual(env["USDB_OPERATOR_SSH_PORT"], "22")
@@ -206,7 +207,8 @@ class UsdbNodeTests(unittest.TestCase):
             host_memory_bytes=64 * 1024**3,
         )
         self.assertEqual(selected, "performance-64g")
-        self.assertEqual(resources["memory_limit"], "16g")
+        self.assertEqual(resources["memory_limit"], "24g")
+        self.assertEqual(resources["memory_swap_limit"], "26g")
         self.assertEqual(resources["dbcache_mb"], "12288")
 
         selected, resources = NODE.resolve_bitcoin_resource_profile(
@@ -215,10 +217,26 @@ class UsdbNodeTests(unittest.TestCase):
         )
         self.assertEqual(selected, "balanced-32g")
         self.assertEqual(resources["memory_limit"], "5g")
+        self.assertEqual(resources["memory_swap_limit"], "6g")
 
         with self.assertRaisesRegex(ValueError, "at least 56 GiB"):
             NODE.resolve_bitcoin_resource_profile(
                 "performance-64g",
+                host_memory_bytes=48 * 1024**3,
+            )
+
+        selected, resources = NODE.resolve_bitcoin_resource_profile(
+            "ibd-64g",
+            host_memory_bytes=64 * 1024**3,
+        )
+        self.assertEqual(selected, "ibd-64g")
+        self.assertEqual(resources["memory_limit"], "32g")
+        self.assertEqual(resources["memory_swap_limit"], "34g")
+        self.assertEqual(resources["dbcache_mb"], "20480")
+
+        with self.assertRaisesRegex(ValueError, "ibd-64g requires at least 56 GiB"):
+            NODE.resolve_bitcoin_resource_profile(
+                "ibd-64g",
                 host_memory_bytes=48 * 1024**3,
             )
 
@@ -240,7 +258,8 @@ class UsdbNodeTests(unittest.TestCase):
             )
         env = NODE.read_env(layout.node_env)
         self.assertEqual(env["BTC_RESOURCE_PROFILE"], "performance-64g")
-        self.assertEqual(env["BTC_MEMORY_LIMIT"], "16g")
+        self.assertEqual(env["BTC_MEMORY_LIMIT"], "24g")
+        self.assertEqual(env["BTC_MEMORY_SWAP_LIMIT"], "26g")
         self.assertEqual(env["BTC_DBCACHE_MB"], "12288")
 
         with mock.patch.object(NODE, "_collect_compose_services", return_value={}):
@@ -249,6 +268,7 @@ class UsdbNodeTests(unittest.TestCase):
         env = NODE.read_env(layout.node_env)
         self.assertEqual(env["BTC_RESOURCE_PROFILE"], "balanced-32g")
         self.assertEqual(env["BTC_MEMORY_LIMIT"], "5g")
+        self.assertEqual(env["BTC_MEMORY_SWAP_LIMIT"], "6g")
         self.assertEqual(env["BTC_DBCACHE_MB"], "3072")
 
         before = layout.node_env.read_text(encoding="utf-8")
@@ -1029,6 +1049,10 @@ class UsdbNodeTests(unittest.TestCase):
             ["set-bitcoin-profile", "--profile", "performance-64g"]
         )
         self.assertEqual(profile.profile, "performance-64g")
+        ibd_profile = NODE.build_parser().parse_args(
+            ["set-bitcoin-profile", "--profile", "ibd-64g"]
+        )
+        self.assertEqual(ibd_profile.profile, "ibd-64g")
 
     def test_status_reports_unconfigured_without_runtime_queries(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

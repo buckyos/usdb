@@ -44,11 +44,18 @@ DEFAULT_BITCOIN_RESOURCE_PROFILE = "balanced-32g"
 BITCOIN_RESOURCE_PROFILES = {
     "balanced-32g": {
         "memory_limit": "5g",
+        "memory_swap_limit": "6g",
         "dbcache_mb": "3072",
     },
     "performance-64g": {
-        "memory_limit": "16g",
+        "memory_limit": "24g",
+        "memory_swap_limit": "26g",
         "dbcache_mb": "12288",
+    },
+    "ibd-64g": {
+        "memory_limit": "32g",
+        "memory_swap_limit": "34g",
+        "dbcache_mb": "20480",
     },
 }
 KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS = frozenset(
@@ -760,12 +767,18 @@ def validate_node_env(
     )
     require(
         bitcoin_profile in BITCOIN_RESOURCE_PROFILES,
-        "BTC_RESOURCE_PROFILE must be balanced-32g or performance-64g",
+        "BTC_RESOURCE_PROFILE must be one of: "
+        + ", ".join(BITCOIN_RESOURCE_PROFILES),
     )
     expected_bitcoin_resources = BITCOIN_RESOURCE_PROFILES[bitcoin_profile]
     require(
         env.get("BTC_MEMORY_LIMIT") == expected_bitcoin_resources["memory_limit"],
         "BTC_MEMORY_LIMIT does not match BTC_RESOURCE_PROFILE",
+    )
+    require(
+        env.get("BTC_MEMORY_SWAP_LIMIT")
+        == expected_bitcoin_resources["memory_swap_limit"],
+        "BTC_MEMORY_SWAP_LIMIT does not match BTC_RESOURCE_PROFILE",
     )
     require(
         env.get("BTC_DBCACHE_MB") == expected_bitcoin_resources["dbcache_mb"],

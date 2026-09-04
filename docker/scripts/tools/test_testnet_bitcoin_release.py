@@ -35,6 +35,10 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         self.assertIn("${BTC_NODE_DATA_HOST_DIR:?BTC_NODE_DATA_HOST_DIR is required}:/data/bitcoin", content)
         self.assertIn("${BTC_P2P_BIND_ADDRESS:-127.0.0.1}:${BTC_P2P_BIND_PORT:-8333}:8333/tcp", content)
         self.assertNotIn(":8332:8332", content)
+        self.assertIn(
+            "memswap_limit: ${BTC_MEMORY_SWAP_LIMIT:-${BTC_MEMORY_LIMIT:-5g}}",
+            content,
+        )
         self.assertIn("external: true", content)
 
     def test_testnet_node_contract_uses_private_rpc_and_co_located_memory_profile(self) -> None:
@@ -78,6 +82,7 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         self.assertEqual(env["BTC_P2P_BIND_PORT"], "8333")
         self.assertEqual(env["BTC_RESOURCE_PROFILE"], "balanced-32g")
         self.assertEqual(env["BTC_MEMORY_LIMIT"], "5g")
+        self.assertEqual(env["BTC_MEMORY_SWAP_LIMIT"], "6g")
         self.assertEqual(env["BTC_DBCACHE_MB"], "3072")
         self.assertEqual(env["SNAPSHOT_MODE"], "none")
         self.assertEqual(env["BH_SNAPSHOT_FILE"], "")

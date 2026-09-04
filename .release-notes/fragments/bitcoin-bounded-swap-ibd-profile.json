@@ -1,0 +1,27 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "bitcoin-bounded-swap-ibd-profile",
+  "type": "fixed",
+  "scopes": [
+    "bitcoin",
+    "deployment",
+    "node-runtime"
+  ],
+  "summary": "Bound Bitcoin container swap and add an explicit 64 GiB initial-sync profile",
+  "details": [
+    "Each Bitcoin resource profile now freezes memory, combined memory-plus-swap, and dbcache as one validated tuple instead of allowing Docker's implicit memory-sized swap allocation.",
+    "The 64 GiB steady-state profile uses 24 GiB memory with a 26 GiB combined ceiling, while the explicit-only ibd-64g profile uses 32 GiB memory, a 34 GiB combined ceiling, and 20 GiB dbcache for controlled initial-sync acceleration.",
+    "Automatic profile selection never chooses ibd-64g; operators must return to performance-64g after IBD and txindex complete."
+  ],
+  "operator_actions": [
+    "When upgrading an existing node, install the new node kit, run usdb-node down, reapply balanced-32g or performance-64g with usdb-node set-bitcoin-profile, activate the release, run doctor, and then restart with usdb-node up.",
+    "Use ibd-64g only on a host with at least 56 GiB visible memory during controlled Bitcoin initial sync, then stop the node and switch back to performance-64g before normal steady-state operation."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": []
+}
