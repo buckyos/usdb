@@ -20,6 +20,8 @@ usdb_indexer_rpc_url="${USDB_INDEXER_RPC_URL:-http://usdb-indexer:28120}"
 world_sim_work_dir="${WORLD_SIM_WORK_DIR:-/data/world-sim}"
 world_simulator="${WORLD_SIMULATOR:-/opt/usdb/world-sim/regtest_world_simulator.py}"
 world_sim_bip39_wordlist="${WORLD_SIM_BIP39_WORDLIST:-/opt/usdb/world-sim/bip39-english.txt}"
+btc_activation_registry="${BTC_ACTIVATION_REGISTRY:-/opt/usdb/world-sim/btc-regtest-activation-registry.json}"
+btc_stable_lag_blocks="${BTC_STABLE_LAG_BLOCKS:-}"
 cookie_file="${BTC_COOKIE_FILE:-${btc_data_dir}/regtest/.cookie}"
 sync_timeout_sec="${SYNC_TIMEOUT_SEC:-300}"
 world_sim_mode="${WORLD_SIM_MODE:-all}"
@@ -111,6 +113,32 @@ elif isinstance(value, bool):
 else:
     print(str(value))
 PY
+}
+
+resolve_btc_stable_lag_blocks() {
+  local embedded_stable_lag
+
+  require_file "${btc_activation_registry}" "BTC activation registry"
+  embedded_stable_lag="$(python3 - "${btc_activation_registry}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    registry = json.load(source)
+network_type = registry["scope"]["network_type"]
+if network_type != "regtest":
+    raise SystemExit(f"expected regtest activation registry, got: {network_type!r}")
+stable_lag = registry["scope"]["stable_lag_blocks"]
+if not isinstance(stable_lag, int) or isinstance(stable_lag, bool) or stable_lag < 0:
+    raise SystemExit(f"invalid stable_lag_blocks: {stable_lag!r}")
+print(stable_lag)
+PY
+)"
+  if [[ -n "${btc_stable_lag_blocks}" && "${btc_stable_lag_blocks}" != "${embedded_stable_lag}" ]]; then
+    echo "BTC_STABLE_LAG_BLOCKS must match the embedded regtest registry: configured=${btc_stable_lag_blocks}, embedded=${embedded_stable_lag}" >&2
+    exit 1
+  fi
+  btc_stable_lag_blocks="${embedded_stable_lag}"
 }
 
 rpc_consensus_ready() {
@@ -561,6 +589,7 @@ bootstrap_marker_matches() {
     "${premine_blocks}" \
     "${fund_agent_amount_btc}" \
     "${fund_confirm_blocks}" \
+    "${btc_stable_lag_blocks}" \
     "${world_sim_state_mode}" \
     "${world_sim_identity_seed}" <<'PY'
 import json
@@ -574,6 +603,7 @@ import sys
     premine_blocks,
     fund_agent_amount_btc,
     fund_confirm_blocks,
+    btc_stable_lag_blocks,
     world_sim_state_mode,
     world_sim_identity_seed,
 ) = sys.argv[1:]
@@ -581,12 +611,14 @@ with open(marker_path, "r", encoding="utf-8") as fp:
     data = json.load(fp)
 
 expected = {
+    "version": 2,
     "miner_wallet_name": miner_wallet_name,
     "wallet_prefix": wallet_prefix,
     "agent_count": int(agent_count),
     "premine_blocks": int(premine_blocks),
     "fund_agent_amount_btc": str(fund_agent_amount_btc),
     "fund_confirm_blocks": int(fund_confirm_blocks),
+    "btc_stable_lag_blocks": int(btc_stable_lag_blocks),
     "state_mode": world_sim_state_mode,
     "identity_seed": world_sim_identity_seed,
     "identity_scheme": "ord-mnemonic-v1" if world_sim_identity_seed else "legacy-random-v1",
@@ -676,6 +708,7 @@ write_bootstrap_marker() {
     "${premine_blocks}" \
     "${fund_agent_amount_btc}" \
     "${fund_confirm_blocks}" \
+    "${btc_stable_lag_blocks}" \
     "${world_sim_state_mode}" \
     "${world_sim_identity_seed}" \
     "${identity_scheme}" \
@@ -699,6 +732,7 @@ import time
     premine_blocks,
     fund_agent_amount_btc,
     fund_confirm_blocks,
+    btc_stable_lag_blocks,
     world_sim_state_mode,
     world_sim_identity_seed,
     identity_scheme,
@@ -711,7 +745,7 @@ import time
 ) = sys.argv[1:]
 
 payload = {
-    "version": 1,
+    "version": 2,
     "created_at": int(time.time()),
     "mining_address": mining_address,
     "miner_wallet_name": miner_wallet_name,
@@ -720,6 +754,7 @@ payload = {
     "premine_blocks": int(premine_blocks),
     "fund_agent_amount_btc": str(fund_agent_amount_btc),
     "fund_confirm_blocks": int(fund_confirm_blocks),
+    "btc_stable_lag_blocks": int(btc_stable_lag_blocks),
     "state_mode": world_sim_state_mode,
     "identity_seed": world_sim_identity_seed,
     "identity_scheme": identity_scheme,
@@ -796,7 +831,11 @@ resolve_usdb_protocol_alignment() {
 }
 
 wait_until_ord_runtime_stable() {
-  local current_height="${1:?current height is required}"
+  local current_tip_height="${1:?current height is required}"
+  local current_stable_height
+
+  current_stable_height="$(( current_tip_height > btc_stable_lag_blocks ? current_tip_height - btc_stable_lag_blocks : 0 ))"
+  log "Waiting for stable frontier: btc_tip=${current_tip_height}, stable_height=${current_stable_height}, stable_lag=${btc_stable_lag_blocks}"
 
   ensure_wallet_loaded "${miner_wallet_name}"
 
@@ -807,8 +846,8 @@ wait_until_ord_runtime_stable() {
   done
 
   wait_until_ord_server_synced_to_bitcoind
-  wait_until_balance_history_synced "${current_height}"
-  wait_until_usdb_synced "${current_height}"
+  wait_until_balance_history_synced "${current_stable_height}"
+  wait_until_usdb_synced "${current_stable_height}"
 
   for wallet_name in "${stable_wallets[@]}"; do
     [[ -n "${wallet_name}" ]] || continue
@@ -984,6 +1023,10 @@ bootstrap_world_sim() {
 
   log "Confirming agent funding with ${fund_confirm_blocks} blocks"
   btc_cli -rpcwallet="${miner_wallet_name}" generatetoaddress "${fund_confirm_blocks}" "${mining_address}" >/dev/null
+  if ((btc_stable_lag_blocks > 0)); then
+    log "Mining ${btc_stable_lag_blocks} trailing blocks so funded state reaches the stable frontier"
+    btc_cli -rpcwallet="${miner_wallet_name}" generatetoaddress "${btc_stable_lag_blocks}" "${mining_address}" >/dev/null
+  fi
 
   current_height="$(btc_cli getblockcount)"
 
@@ -1053,7 +1096,7 @@ run_simulator_batch() {
     btc_auth_args+=(--btc-rpc-password "${btc_rpc_password}")
   fi
 
-  log "Launching world simulator: blocks=${batch_blocks}, seed=${batch_seed}, agents=${agent_count}"
+  log "Launching world simulator: blocks=${batch_blocks}, seed=${batch_seed}, agents=${agent_count}, stable_lag=${btc_stable_lag_blocks}"
 
   python3 "${world_simulator}" \
     --btc-cli "${bitcoin_cli}" \
@@ -1074,6 +1117,7 @@ run_simulator_batch() {
     --balance-history-rpc-url "${balance_history_rpc_url}" \
     --usdb-indexer-rpc-url "${usdb_indexer_rpc_url}" \
     --sync-timeout-sec "${sync_timeout_sec}" \
+    --stable-lag-blocks "${btc_stable_lag_blocks}" \
     --blocks "${batch_blocks}" \
     --seed "${batch_seed}" \
     --fee-rate "${SIM_FEE_RATE:-1}" \
@@ -1138,6 +1182,7 @@ run_loop_mode() {
 }
 
 prepare_runtime_environment
+resolve_btc_stable_lag_blocks
 wait_core_services
 
 case "${world_sim_mode}" in

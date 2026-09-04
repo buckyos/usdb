@@ -50,6 +50,7 @@ COPY docker/scripts/helpers/wait_for_tcp.sh /opt/usdb/docker/scripts/helpers/wai
 COPY docker/.build-world-sim/bitcoin/bin/bitcoin-cli /opt/bitcoin/bin/bitcoin-cli
 COPY --from=ord-builder /opt/ord/bin/ord /opt/ord/bin/ord
 COPY src/btc/usdb-indexer/scripts/regtest_world_simulator.py /opt/usdb/world-sim/regtest_world_simulator.py
+COPY src/btc/usdb-util/activation-registry/btc-regtest.json /opt/usdb/world-sim/btc-regtest-activation-registry.json
 COPY docker/world-sim/bip39-english.txt /opt/usdb/world-sim/bip39-english.txt
 
 RUN chmod +x /opt/usdb/docker/scripts/entrypoints/start_ord_server.sh \

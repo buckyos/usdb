@@ -26,6 +26,7 @@ PREMINE_BLOCKS="${PREMINE_BLOCKS:-140}"
 FUND_AGENT_AMOUNT_BTC="${FUND_AGENT_AMOUNT_BTC:-4.0}"
 FUND_CONFIRM_BLOCKS="${FUND_CONFIRM_BLOCKS:-2}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-300}"
+BTC_STABLE_LAG_BLOCKS="${BTC_STABLE_LAG_BLOCKS:-}"
 
 SIM_BLOCKS="${SIM_BLOCKS:-300}"
 SIM_SEED="${SIM_SEED:-42}"
@@ -150,6 +151,36 @@ require_cmd() {
     echo "Please install it or add it to PATH." >&2
     exit 1
   fi
+}
+
+resolve_btc_stable_lag_blocks() {
+  local registry="${REPO_ROOT}/src/btc/usdb-util/activation-registry/btc-regtest.json"
+  local embedded_stable_lag
+
+  if [[ ! -f "$registry" ]]; then
+    log "Missing embedded BTC activation registry: ${registry}"
+    exit 1
+  fi
+  embedded_stable_lag="$(python3 - "$registry" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    registry = json.load(source)
+network_type = registry["scope"]["network_type"]
+if network_type != "regtest":
+    raise SystemExit(f"expected regtest activation registry, got: {network_type!r}")
+stable_lag = registry["scope"]["stable_lag_blocks"]
+if not isinstance(stable_lag, int) or isinstance(stable_lag, bool) or stable_lag < 0:
+    raise SystemExit(f"invalid stable_lag_blocks: {stable_lag!r}")
+print(stable_lag)
+PY
+)"
+  if [[ -n "$BTC_STABLE_LAG_BLOCKS" && "$BTC_STABLE_LAG_BLOCKS" != "$embedded_stable_lag" ]]; then
+    log "BTC_STABLE_LAG_BLOCKS must match the embedded regtest registry: configured=${BTC_STABLE_LAG_BLOCKS}, embedded=${embedded_stable_lag}"
+    exit 1
+  fi
+  BTC_STABLE_LAG_BLOCKS="$embedded_stable_lag"
 }
 
 resolve_bitcoin_binaries() {
@@ -639,6 +670,7 @@ main() {
   require_cmd cargo
   require_cmd curl
   require_cmd python3
+  resolve_btc_stable_lag_blocks
   assert_ord_server_port_available
 
   if [[ ! -f "$WORLD_SIMULATOR" ]]; then
@@ -747,6 +779,11 @@ PY
     log "Funding agent wallets confirmed by ${FUND_CONFIRM_BLOCKS} blocks"
     "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
       generatetoaddress "$FUND_CONFIRM_BLOCKS" "$mining_address" >/dev/null
+    if ((BTC_STABLE_LAG_BLOCKS > 0)); then
+      log "Mining ${BTC_STABLE_LAG_BLOCKS} trailing blocks so funded state reaches the stable frontier"
+      "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+        generatetoaddress "$BTC_STABLE_LAG_BLOCKS" "$mining_address" >/dev/null
+    fi
     wait_until_ord_server_synced_to_bitcoind
   fi
 
@@ -771,17 +808,19 @@ PY
   USDB_INDEXER_PID=$!
   wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" "get_network_type" "[]"
 
-  local current_height
-  current_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  wait_until_balance_history_synced "$current_height"
-  wait_until_usdb_synced "$current_height"
+  local current_tip_height current_stable_height
+  current_tip_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  current_stable_height=$((current_tip_height > BTC_STABLE_LAG_BLOCKS ? current_tip_height - BTC_STABLE_LAG_BLOCKS : 0))
+  log "Initial sync frontier: btc_tip=${current_tip_height}, stable_height=${current_stable_height}, stable_lag=${BTC_STABLE_LAG_BLOCKS}"
+  wait_until_balance_history_synced "$current_stable_height"
+  wait_until_usdb_synced "$current_stable_height"
 
   local agent_wallets_csv
   local agent_addresses_csv
   agent_wallets_csv="$(join_by_comma "${AGENT_WALLETS[@]}")"
   agent_addresses_csv="$(join_by_comma "${AGENT_ADDRESSES[@]}")"
 
-  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, max_actions_per_block=${SIM_MAX_ACTIONS_PER_BLOCK}, standard_mint_probability=${SIM_STANDARD_MINT_PROBABILITY}, fixed_collab_mint_probability=${SIM_FIXED_COLLAB_MINT_PROBABILITY}, address_collab_mint_probability=${SIM_ADDRESS_COLLAB_MINT_PROBABILITY}, invalid_mint_probability=${SIM_INVALID_MINT_PROBABILITY}, transfer_probability=${SIM_TRANSFER_PROBABILITY}, remint_probability=${SIM_REMINT_PROBABILITY}, send_probability=${SIM_SEND_PROBABILITY}, spend_probability=${SIM_SPEND_PROBABILITY}, fail_fast=${SIM_FAIL_FAST}, initial_active_agents=${SIM_INITIAL_ACTIVE_AGENTS}, agent_growth_interval_blocks=${SIM_AGENT_GROWTH_INTERVAL_BLOCKS}, agent_growth_step=${SIM_AGENT_GROWTH_STEP}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}, global_cross_check_enabled=${SIM_GLOBAL_CROSS_CHECK_ENABLED}, global_cross_check_interval_blocks=${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS}, global_cross_check_leaderboard_top_n=${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N}, global_cross_check_owner_sample_size=${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE}, economic_page_limit=${SIM_ECONOMIC_PAGE_LIMIT}, economic_bootstrap_enabled=${SIM_ECONOMIC_BOOTSTRAP_ENABLED}, validator_sample_enabled=${SIM_VALIDATOR_SAMPLE_ENABLED}, validator_sample_mode=${SIM_VALIDATOR_SAMPLE_MODE}, validator_sample_tamper_enabled=${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED}, validator_sample_interval_blocks=${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS}, validator_sample_size=${SIM_VALIDATOR_SAMPLE_SIZE}, validator_sample_min_head_advance=${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE}, reorg_interval_blocks=${SIM_REORG_INTERVAL_BLOCKS}, reorg_depth=${SIM_REORG_DEPTH}, reorg_max_events=${SIM_REORG_MAX_EVENTS}, recovery_enabled=${SIM_RECOVERY_ENABLED}"
+  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, stable_lag=${BTC_STABLE_LAG_BLOCKS}, max_actions_per_block=${SIM_MAX_ACTIONS_PER_BLOCK}, standard_mint_probability=${SIM_STANDARD_MINT_PROBABILITY}, fixed_collab_mint_probability=${SIM_FIXED_COLLAB_MINT_PROBABILITY}, address_collab_mint_probability=${SIM_ADDRESS_COLLAB_MINT_PROBABILITY}, invalid_mint_probability=${SIM_INVALID_MINT_PROBABILITY}, transfer_probability=${SIM_TRANSFER_PROBABILITY}, remint_probability=${SIM_REMINT_PROBABILITY}, send_probability=${SIM_SEND_PROBABILITY}, spend_probability=${SIM_SPEND_PROBABILITY}, fail_fast=${SIM_FAIL_FAST}, initial_active_agents=${SIM_INITIAL_ACTIVE_AGENTS}, agent_growth_interval_blocks=${SIM_AGENT_GROWTH_INTERVAL_BLOCKS}, agent_growth_step=${SIM_AGENT_GROWTH_STEP}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}, global_cross_check_enabled=${SIM_GLOBAL_CROSS_CHECK_ENABLED}, global_cross_check_interval_blocks=${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS}, global_cross_check_leaderboard_top_n=${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N}, global_cross_check_owner_sample_size=${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE}, economic_page_limit=${SIM_ECONOMIC_PAGE_LIMIT}, economic_bootstrap_enabled=${SIM_ECONOMIC_BOOTSTRAP_ENABLED}, validator_sample_enabled=${SIM_VALIDATOR_SAMPLE_ENABLED}, validator_sample_mode=${SIM_VALIDATOR_SAMPLE_MODE}, validator_sample_tamper_enabled=${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED}, validator_sample_interval_blocks=${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS}, validator_sample_size=${SIM_VALIDATOR_SAMPLE_SIZE}, validator_sample_min_head_advance=${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE}, reorg_interval_blocks=${SIM_REORG_INTERVAL_BLOCKS}, reorg_depth=${SIM_REORG_DEPTH}, reorg_max_events=${SIM_REORG_MAX_EVENTS}, recovery_enabled=${SIM_RECOVERY_ENABLED}"
   local fail_fast_arg=()
   if [[ "$SIM_FAIL_FAST" == "1" ]]; then
     fail_fast_arg+=(--fail-fast)
@@ -845,6 +884,7 @@ PY
     --balance-history-rpc-url "http://127.0.0.1:${BH_RPC_PORT}" \
     --usdb-indexer-rpc-url "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
     --sync-timeout-sec "$SYNC_TIMEOUT_SEC" \
+    --stable-lag-blocks "$BTC_STABLE_LAG_BLOCKS" \
     --blocks "$SIM_BLOCKS" \
     --seed "$SIM_SEED" \
     --fee-rate "$SIM_FEE_RATE" \

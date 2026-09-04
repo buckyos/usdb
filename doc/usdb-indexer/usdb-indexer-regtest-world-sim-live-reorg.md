@@ -130,6 +130,26 @@ World simulation finished successfully.
 
 如果这些指标长期保持为零，再继续提高 agent 数、block 数和 reorg 频率，才有意义。
 
+## Stable Frontier 语义
+
+world-sim 的一个 tick 表示一个进入 BTC stable frontier 的 action block，而不是原始
+Bitcoin tip 的单块推进。驱动程序从内置 regtest activation registry 读取
+`stable_lag_blocks`，每个 action block 后继续挖出对应数量的 confirmation blocks，随后才
+等待 balance-history/usdb-indexer 并执行断言。显式传入的 lag 与 registry 不一致时直接
+失败，避免测试在不同共识视图上运行。
+
+reorg 的 `depth` 同样以 stable block 计数。脚本会从 stable frontier 回滚指定深度，并
+额外重建 `stable_lag_blocks` 个尾随块，使替换链的目标高度重新进入稳定视图。因此实际挖
+出的 BTC block 数约为 `tick * (1 + stable_lag_blocks)`，长跑耗时与旧的 raw-tip 模式不
+可直接比较。
+
+Recovery schema v4 会记录 `stable_lag_blocks`；lag 不一致的旧状态不会继续重放，避免将
+旧 raw-tip 高度解释为新的 stable height。
+
+Weekly CI 将 seeds `41 / 42 / 43` 分配到三个独立 runner job，每个 seed 仍执行完整
+2500 tick。这样既保留覆盖强度，也避免三次长跑串行占用同一个六小时 job；各 seed 的日志
+和报告使用独立 artifact 名称。
+
 ## 2026-07-27 三 Seed 结果
 
 本轮运行 seeds `41 / 73 / 109`，每个 seed 2500 tick、24 agents、4 次
@@ -157,3 +177,4 @@ Bitcoin Core wallet rescan 窗口和 restart 后 transfer tracker 未恢复问�
 
 当前结果证明 clean 长跑和恢复后继续 reorg/replay 均可收敛。发布门禁仍应在合并后的
 干净提交上重跑完整三 seed 矩阵；qualification run 不能替代该 clean release evidence。
+该历史结果产生于 stable-lag 强制执行前，仅用于功能回归参考，不作为新模式的耗时基线。

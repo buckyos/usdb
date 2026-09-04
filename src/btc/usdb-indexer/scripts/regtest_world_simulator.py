@@ -169,6 +169,7 @@ class Args:
     balance_history_rpc_url: str
     usdb_indexer_rpc_url: str
     sync_timeout_sec: int
+    stable_lag_blocks: int
     blocks: int
     seed: int
     fee_rate: int
@@ -219,7 +220,7 @@ class Args:
 class RegtestWorldSimulator:
     INSCRIPTION_ID_PATTERN = re.compile(r"([0-9a-f]{64}i\d+)")
     TXID_PATTERN = re.compile(r"\b([0-9a-f]{64})\b")
-    RECOVERY_STATE_VERSION = 3
+    RECOVERY_STATE_VERSION = 4
     ENERGY_MAX = 2**128 - 1
     UNIT_SATS = 100_000
     ENERGY_PER_UNIT_BLOCK = 1
@@ -450,6 +451,7 @@ class RegtestWorldSimulator:
                 "action_seed": self.action_seed,
                 "diagnostic_seed": self.diagnostic_seed,
                 "blocks": self.args.blocks,
+                "stable_lag_blocks": self.args.stable_lag_blocks,
                 "fee_rate": self.args.fee_rate,
                 "max_actions_per_block": self.args.max_actions_per_block,
                 "standard_mint_probability": self.args.standard_mint_probability,
@@ -790,6 +792,7 @@ class RegtestWorldSimulator:
             "seed": self.action_seed,
             "batch_seed": batch_seed,
             "batch_blocks": self.args.blocks,
+            "stable_lag_blocks": self.args.stable_lag_blocks,
             "tick": tick,
             "next_slot_index": next_slot_index,
             "action_slots": action_slots,
@@ -840,11 +843,12 @@ class RegtestWorldSimulator:
         self, *, batch_seed: int, next_tick: int, current_height: int
     ) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": self.RECOVERY_STATE_VERSION,
             "status": "between_ticks",
             "seed": self.action_seed,
             "batch_seed": batch_seed,
             "batch_blocks": self.args.blocks,
+            "stable_lag_blocks": self.args.stable_lag_blocks,
             "next_tick": next_tick,
             "current_height": current_height,
             "active_agent_count": self.active_agent_count,
@@ -1229,6 +1233,13 @@ class RegtestWorldSimulator:
             self.log(
                 "Ignoring recovery state with mismatched batch block count: "
                 f"expected={self.args.blocks}, got={payload.get('batch_blocks')}"
+            )
+            return None
+        if int(payload.get("stable_lag_blocks", -1)) != self.args.stable_lag_blocks:
+            self.log(
+                "Ignoring recovery state with mismatched stable lag: "
+                f"expected={self.args.stable_lag_blocks}, "
+                f"got={payload.get('stable_lag_blocks')}"
             )
             return None
         return payload
@@ -1767,6 +1778,15 @@ class RegtestWorldSimulator:
 
     def get_bitcoin_block_height(self) -> int:
         return int(self.run_btc_cli(None, ["getblockcount"]).strip())
+
+    @staticmethod
+    def stable_height_for_tip(tip_height: int, stable_lag_blocks: int) -> int:
+        return max(0, tip_height - stable_lag_blocks)
+
+    def get_stable_block_height(self) -> int:
+        return self.stable_height_for_tip(
+            self.get_bitcoin_block_height(), self.args.stable_lag_blocks
+        )
 
     def get_ord_server_block_height(self) -> int:
         with request.urlopen(  # noqa: S310
@@ -4673,6 +4693,14 @@ class RegtestWorldSimulator:
         )
         return int(self.run_btc_cli(None, ["getblockcount"]))
 
+    def mine_confirmation_blocks(self, count: int) -> None:
+        if count <= 0:
+            return
+        self.run_btc_cli(
+            None,
+            ["generatetoaddress", str(count), self.args.mining_address],
+        )
+
     def get_mempool_txids(self) -> list[str]:
         payload = json.loads(self.run_btc_cli(None, ["getrawmempool"]))
         if not isinstance(payload, list) or not all(
@@ -4694,7 +4722,8 @@ class RegtestWorldSimulator:
 
     def mine_replacement_blocks(self, depth: int) -> dict[str, int]:
         disconnected_txids = self.get_mempool_txids()
-        for replacement_index in range(depth):
+        total_blocks = depth + self.args.stable_lag_blocks
+        for replacement_index in range(total_blocks):
             if replacement_index == 0 and disconnected_txids:
                 # Re-include disconnected transactions before rebuilding the
                 # simulator view. Otherwise they leak into the next normal
@@ -4712,6 +4741,8 @@ class RegtestWorldSimulator:
                 f"remaining_txids={remaining_txids[:5]}"
             )
         return {
+            "replacement_block_count": depth,
+            "replacement_confirmation_block_count": self.args.stable_lag_blocks,
             "replacement_replayed_tx_count": len(disconnected_txids),
             "replacement_remaining_mempool_tx_count": 0,
         }
@@ -4747,7 +4778,11 @@ class RegtestWorldSimulator:
         # Waiting for both services to hit the rollback target can hang here even
         # though final replacement-tip reconciliation works. For world-sim we only
         # need the upstream rollback to be visible before mining the replacement chain.
-        self.wait_balance_history_height_exact(rollback_target_height)
+        rollback_tip_height = self.get_bitcoin_block_height()
+        upstream_rollback_stable_height = self.stable_height_for_tip(
+            rollback_tip_height, self.args.stable_lag_blocks
+        )
+        self.wait_balance_history_height_exact(upstream_rollback_stable_height)
 
         replacement_mempool_info = self.mine_replacement_blocks(depth)
 
@@ -4793,6 +4828,7 @@ class RegtestWorldSimulator:
             "depth": depth,
             "rollback_start_height": rollback_start_height,
             "rollback_target_height": rollback_target_height,
+            "upstream_rollback_stable_height": upstream_rollback_stable_height,
             "tip_height": block_height,
             "original_tip_hash": original_tip_hash,
             "replacement_tip_hash": replacement_tip_hash,
@@ -5040,7 +5076,15 @@ class RegtestWorldSimulator:
             self.args.miner_wallet,
             ["generatetoaddress", "1", self.args.mining_address],
         )
-        return int(self.run_btc_cli(None, ["getblockcount"]))
+        block_height = self.get_bitcoin_block_height()
+        remaining_txids = self.get_mempool_txids()
+        if remaining_txids:
+            raise WorldSimError(
+                "action block left transactions in mempool before stable-lag confirmations: "
+                f"block_height={block_height}, remaining_txids={remaining_txids[:5]}"
+            )
+        self.mine_confirmation_blocks(self.args.stable_lag_blocks)
+        return block_height
 
     def collect_summary(self, block_height: int) -> dict[str, Any]:
         sync_status = self.rpc_usdb("get_sync_status", [])
@@ -5109,7 +5153,7 @@ class RegtestWorldSimulator:
         preferred_prev_inscription_id: str | None = None,
     ) -> tuple[str, int, dict[str, Any]]:
         actor = self.agents[actor_id]
-        pre_height = int(self.run_btc_cli(None, ["getblockcount"]))
+        pre_height = self.get_stable_block_height()
         action_id = f"economic-bootstrap-{step:02d}-{action}-agent-{actor_id}"
         detail, expectation, _ = self.op_mint(
             actor=actor,
@@ -5429,7 +5473,7 @@ class RegtestWorldSimulator:
             else:
                 tick += 1
                 self.maybe_grow_agents(tick)
-                pre_height = int(self.run_btc_cli(None, ["getblockcount"]))
+                pre_height = self.get_stable_block_height()
 
                 active_agent_ids = self.get_active_agent_ids()
                 available_ids = set(active_agent_ids)
@@ -6112,6 +6156,12 @@ def parse_args() -> Args:
     parser.add_argument("--balance-history-rpc-url", required=True)
     parser.add_argument("--usdb-indexer-rpc-url", required=True)
     parser.add_argument("--sync-timeout-sec", type=int, default=300)
+    parser.add_argument(
+        "--stable-lag-blocks",
+        type=int,
+        required=True,
+        help="Trailing BTC blocks required before a mined action block enters the stable view",
+    )
     parser.add_argument("--blocks", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--fee-rate", type=int, default=1)
@@ -6247,6 +6297,9 @@ def parse_args() -> Args:
     )
     parsed = parser.parse_args()
 
+    if parsed.stable_lag_blocks < 0:
+        parser.error("--stable-lag-blocks must be non-negative")
+
     agent_wallets = [v for v in parsed.agent_wallets.split(",") if v]
     agent_addresses = [v for v in parsed.agent_addresses.split(",") if v]
     scripted_cycle = [v.strip() for v in parsed.scripted_cycle.split(",") if v.strip()]
@@ -6273,6 +6326,7 @@ def parse_args() -> Args:
         balance_history_rpc_url=parsed.balance_history_rpc_url,
         usdb_indexer_rpc_url=parsed.usdb_indexer_rpc_url,
         sync_timeout_sec=parsed.sync_timeout_sec,
+        stable_lag_blocks=parsed.stable_lag_blocks,
         blocks=parsed.blocks,
         seed=parsed.seed,
         fee_rate=parsed.fee_rate,

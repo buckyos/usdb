@@ -17,6 +17,8 @@ from regtest_world_simulator import (
     WorldSimError,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
 
 class RegtestWorldSimulatorFormulaTests(unittest.TestCase):
     def test_collab_contribution_matches_floor_formula_at_boundaries(self) -> None:
@@ -362,6 +364,7 @@ class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
     def test_replacement_blocks_replay_disconnected_mempool_before_empty_blocks(
         self,
     ) -> None:
+        self.simulator.args = SimpleNamespace(stable_lag_blocks=2)
         mempool_results = iter([["tx-a", "tx-b"], []])
         mined: list[str] = []
         self.simulator.get_mempool_txids = lambda: next(mempool_results)
@@ -370,11 +373,14 @@ class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
 
         result = self.simulator.mine_replacement_blocks(3)
 
-        self.assertEqual(mined, ["mempool", "empty", "empty"])
+        self.assertEqual(mined, ["mempool", "empty", "empty", "empty", "empty"])
+        self.assertEqual(result["replacement_block_count"], 3)
+        self.assertEqual(result["replacement_confirmation_block_count"], 2)
         self.assertEqual(result["replacement_replayed_tx_count"], 2)
         self.assertEqual(result["replacement_remaining_mempool_tx_count"], 0)
 
     def test_replacement_blocks_reject_remaining_mempool(self) -> None:
+        self.simulator.args = SimpleNamespace(stable_lag_blocks=1)
         mempool_results = iter([["tx-a"], ["tx-a"]])
         self.simulator.get_mempool_txids = lambda: next(mempool_results)
         self.simulator.mine_one_mempool_block = lambda: 1
@@ -384,6 +390,104 @@ class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
             WorldSimError, "left disconnected transactions in mempool"
         ):
             self.simulator.mine_replacement_blocks(2)
+
+    def test_stable_height_saturates_and_subtracts_configured_lag(self) -> None:
+        stable_height = RegtestWorldSimulator.stable_height_for_tip
+        self.assertEqual(stable_height(142, 10), 132)
+        self.assertEqual(stable_height(9, 10), 0)
+
+    def test_mine_one_block_advances_action_to_stable_frontier(self) -> None:
+        self.simulator.args = SimpleNamespace(
+            miner_wallet="miner-wallet",
+            mining_address="miner-address",
+            stable_lag_blocks=10,
+        )
+        calls: list[tuple[str | None, list[str]]] = []
+
+        def run_btc_cli(wallet: str | None, args: list[str]) -> str:
+            calls.append((wallet, args))
+            if args == ["getblockcount"]:
+                return "153"
+            return "[]"
+
+        self.simulator.run_btc_cli = run_btc_cli
+        self.simulator.get_mempool_txids = lambda: []
+
+        self.assertEqual(self.simulator.mine_one_block(), 153)
+        self.assertEqual(
+            calls,
+            [
+                ("miner-wallet", ["generatetoaddress", "1", "miner-address"]),
+                (None, ["getblockcount"]),
+                (None, ["generatetoaddress", "10", "miner-address"]),
+            ],
+        )
+
+    def test_between_tick_recovery_records_stable_lag_and_current_schema(self) -> None:
+        self.simulator.args = SimpleNamespace(blocks=2500, stable_lag_blocks=10)
+        self.simulator.action_seed = 41
+        self.simulator.active_agent_count = 0
+        self.simulator.metrics = {}
+        self.simulator.reorg_events_applied = 0
+        self.simulator.pass_owner_by_id = {}
+        self.simulator.pass_identity_by_id = {}
+        self.simulator.agents = []
+        self.simulator.validator_samples = []
+
+        snapshot = self.simulator.build_between_ticks_snapshot(
+            batch_seed=41, next_tick=501, current_height=5642
+        )
+
+        self.assertEqual(snapshot["version"], RegtestWorldSimulator.RECOVERY_STATE_VERSION)
+        self.assertEqual(snapshot["stable_lag_blocks"], 10)
+
+    def test_recovery_ignores_a_different_stable_lag(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recovery_path = Path(temp_dir) / "recovery.json"
+            recovery_path.write_text(
+                json.dumps(
+                    {
+                        "version": RegtestWorldSimulator.RECOVERY_STATE_VERSION,
+                        "seed": 41,
+                        "batch_blocks": 2500,
+                        "stable_lag_blocks": 5,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.simulator.recovery_state_path = recovery_path
+            self.simulator.action_seed = 41
+            self.simulator.args = SimpleNamespace(blocks=2500, stable_lag_blocks=10)
+            messages: list[str] = []
+            self.simulator.log = messages.append
+
+            self.assertIsNone(self.simulator.load_recovery_state())
+            self.assertIn("mismatched stable lag", messages[0])
+
+    def test_runtime_drivers_supply_the_embedded_stable_lag(self) -> None:
+        local_driver = (
+            REPO_ROOT
+            / "src/btc/usdb-indexer/scripts/regtest_world_sim.sh"
+        ).read_text(encoding="utf-8")
+        docker_driver = (
+            REPO_ROOT / "docker/scripts/entrypoints/start_world_sim.sh"
+        ).read_text(encoding="utf-8")
+        dockerfile = (REPO_ROOT / "docker/Dockerfile.world-sim-tools").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("resolve_btc_stable_lag_blocks", local_driver)
+        self.assertIn(
+            '--stable-lag-blocks "$BTC_STABLE_LAG_BLOCKS"', local_driver
+        )
+        self.assertIn("resolve_btc_stable_lag_blocks", docker_driver)
+        self.assertIn(
+            '--stable-lag-blocks "${btc_stable_lag_blocks}"', docker_driver
+        )
+        self.assertIn(
+            "btc-regtest.json /opt/usdb/world-sim/btc-regtest-activation-registry.json",
+            dockerfile,
+        )
 
     def test_recovery_json_write_is_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
