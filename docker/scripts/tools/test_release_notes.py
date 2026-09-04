@@ -142,8 +142,26 @@ class ReleaseNotesTests(unittest.TestCase):
             path, previous = self.init_repository(key)
             if key == "usdb":
                 fragment_path = self.write_fragment(path, self.fragment())
-                self.git(path, "add", str(fragment_path.relative_to(path)))
-                self.git(path, "commit", "-q", "-m", "Add release notes model", "-m", "Release-Note: release-notes-v1")
+                second_fragment_path = self.write_fragment(
+                    path, self.fragment("release-notes-multi-trailer")
+                )
+                self.git(
+                    path,
+                    "add",
+                    str(fragment_path.relative_to(path)),
+                    str(second_fragment_path.relative_to(path)),
+                )
+                self.git(
+                    path,
+                    "commit",
+                    "-q",
+                    "-m",
+                    "Add release notes model",
+                    "-m",
+                    "Release-Note: release-notes-v1",
+                    "-m",
+                    "Release-Note: release-notes-multi-trailer",
+                )
             elif key == "go_ethereum":
                 (path / "change.txt").write_text("changed\n", encoding="utf-8")
                 self.git(path, "add", "change.txt")
@@ -193,17 +211,90 @@ class ReleaseNotesTests(unittest.TestCase):
             previous_manifest_path=previous_manifest,
             repositories=specs,
         )
-        self.assertEqual(["release-notes-v1"], [item["change_id"] for item in result["changes"]])
+        self.assertEqual("usdb-release-changes:v2", result["schema_version"])
+        self.assertEqual(
+            ["release-notes-multi-trailer", "release-notes-v1"],
+            [item["change_id"] for item in result["changes"]],
+        )
         self.assertEqual("restart_required", result["compatibility"]["classification"])
         self.assertEqual(1, result["repositories"]["usdb"]["coverage"]["classified"])
+        self.assertEqual(
+            ["release-notes-v1", "release-notes-multi-trailer"],
+            result["repositories"]["usdb"]["commits"][0]["release_notes"],
+        )
         self.assertEqual(1, result["repositories"]["go_ethereum"]["coverage"]["unclassified"])
         markdown = RELEASE_NOTES.render_markdown(result)
         self.assertIn("## Changes Since usdb-testnet-v0-r11", markdown)
         self.assertIn("Upgrade classification: `restart_required`", markdown)
         self.assertIn("Change chain implementation", markdown)
+        self.assertIn("`Release-Note: release-notes-v1`", markdown)
+        self.assertIn("`Release-Note: release-notes-multi-trailer`", markdown)
         output = self.root / "release-changes.json"
         output.write_bytes(RELEASE_NOTES.canonical_json(result))
         RELEASE_NOTES.validate_release_changes(RELEASE_NOTES.load_json(output), current_manifest, "usdb-testnet-v0-r12")
+
+    def test_commit_records_reject_duplicate_release_note_trailers(self) -> None:
+        repository, previous = self.init_repository("duplicate-trailer")
+        self.git(
+            repository,
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "Duplicate trailer",
+            "-m",
+            "Release-Note: repeated-change",
+            "-m",
+            "Release-Note: repeated-change",
+        )
+        current = self.git(repository, "rev-parse", "HEAD").strip()
+        spec = RELEASE_NOTES.RepositorySpec(
+            "usdb", "buckyos/usdb", repository, previous, current
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate Release-Note trailers"):
+            RELEASE_NOTES._commit_records(spec, {"repeated-change"})
+
+    def test_commit_records_reject_none_mixed_with_change_id(self) -> None:
+        repository, previous = self.init_repository("mixed-none-trailer")
+        self.git(
+            repository,
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "Mixed trailers",
+            "-m",
+            "Release-Note: none",
+            "-m",
+            "Release-Note: real-change",
+        )
+        current = self.git(repository, "rev-parse", "HEAD").strip()
+        spec = RELEASE_NOTES.RepositorySpec(
+            "usdb", "buckyos/usdb", repository, previous, current
+        )
+        with self.assertRaisesRegex(ValueError, "mixes Release-Note: none"):
+            RELEASE_NOTES._commit_records(spec, {"real-change"})
+
+    def test_multiple_release_notes_require_every_fragment(self) -> None:
+        repository, previous = self.init_repository("unknown-multi-trailer")
+        self.git(
+            repository,
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "Partially classified trailers",
+            "-m",
+            "Release-Note: known-change",
+            "-m",
+            "Release-Note: unknown-change",
+        )
+        current = self.git(repository, "rev-parse", "HEAD").strip()
+        spec = RELEASE_NOTES.RepositorySpec(
+            "usdb", "buckyos/usdb", repository, previous, current
+        )
+        records = RELEASE_NOTES._commit_records(spec, {"known-change"})
+        self.assertEqual("unclassified", records[0]["classification"])
 
     def test_manifest_identity_change_requires_network_reset(self) -> None:
         specs, previous_manifest, current_manifest = self.repository_fixture()
@@ -241,6 +332,22 @@ class ReleaseNotesTests(unittest.TestCase):
         )
         result["repositories"]["usdb"]["coverage"]["classified"] = 0
         with self.assertRaisesRegex(ValueError, "coverage mismatch"):
+            RELEASE_NOTES.validate_release_changes(
+                result, current_manifest, "usdb-testnet-v0-r12"
+            )
+
+    def test_release_validation_rejects_trailer_classification_tamper(self) -> None:
+        specs, previous_manifest, current_manifest = self.repository_fixture()
+        result = RELEASE_NOTES.build_release_changes(
+            release_id="usdb-testnet-v0-r12",
+            manifest_path=current_manifest,
+            previous_manifest_path=previous_manifest,
+            repositories=specs,
+        )
+        result["repositories"]["usdb"]["commits"][0]["release_notes"][1] = (
+            "unknown-change"
+        )
+        with self.assertRaisesRegex(ValueError, "classification does not match"):
             RELEASE_NOTES.validate_release_changes(
                 result, current_manifest, "usdb-testnet-v0-r12"
             )

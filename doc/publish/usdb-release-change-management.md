@@ -30,17 +30,22 @@ schema、允许的 type/scope 和示例见仓库根目录
 - compatibility 四个布尔字段必须保守填写；
 - 已经进入发布版本的 fragment 只读，后续 release 不得编辑或删除。
 
-提交可以用 trailer 建立 commit 与 fragment 的对应关系：
+提交可以用一个或多个 trailer 建立 commit 与 fragment 的对应关系；当同一个 commit 确实包含多个可独立
+review 的发布影响时，每个 fragment 各写一行：
 
 ```text
 Release-Note: <change_id>
+Release-Note: <another_change_id>
 ```
 
-纯维护提交使用：
+同一个 `change_id` 在一个 commit 中不得重复。只有全部 ID 都指向当前 release range 中存在的 fragment，
+该 commit 才归类为 `classified`。纯维护提交单独使用：
 
 ```text
 Release-Note: none
 ```
+
+`Release-Note: none` 不得与真实 change ID 混用。
 
 首版的 commit coverage 是 report-only。缺少 trailer 不会让 Candidate 失败，但会在 Candidate summary、
 `release-changes.json` 和 Release 正文中列为 `unclassified`，发布 review 必须逐项确认。等三仓开发流程
@@ -133,5 +138,5 @@ PYTHONDONTWRITEBYTECODE=1 \
 2. 三仓都稳定执行后，把 `coverage_enforced` 升级到新 schema，并让任何 unclassified commit 阻断
    Candidate。
 
-不能在不升级 schema 和文档的情况下直接改变 v1 的 report-only 语义，否则同一 tag 重跑可能产生不同
+不能在不升级 schema 和文档的情况下直接改变现有 schema 的 report-only 语义，否则同一 tag 重跑可能产生不同
 门禁结果。

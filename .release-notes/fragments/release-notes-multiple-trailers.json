@@ -1,0 +1,23 @@
+{
+  "change_id": "release-notes-multiple-trailers",
+  "compatibility": {
+    "config_change": false,
+    "data_rebuild": false,
+    "network_reset": false,
+    "restart_required": false
+  },
+  "details": [
+    "Allow one commit to reference multiple distinct release fragments without losing commit-level coverage accounting.",
+    "Reject duplicate change IDs and mixing Release-Note: none with real change IDs, and classify the commit only when every referenced fragment exists."
+  ],
+  "operator_actions": [],
+  "references": [],
+  "schema_version": "usdb-change-fragment:v1",
+  "scopes": [
+    "documentation",
+    "release",
+    "testing"
+  ],
+  "summary": "Support multiple release-note trailers per commit",
+  "type": "internal"
+}

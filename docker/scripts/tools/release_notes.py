@@ -14,7 +14,7 @@ from typing import Any
 
 
 FRAGMENT_SCHEMA_VERSION = "usdb-change-fragment:v1"
-RELEASE_CHANGES_SCHEMA_VERSION = "usdb-release-changes:v1"
+RELEASE_CHANGES_SCHEMA_VERSION = "usdb-release-changes:v2"
 RELEASE_ID_RE = re.compile(
     r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$"
 )
@@ -357,24 +357,39 @@ def _commit_records(spec: RepositorySpec, known_change_ids: set[str]) -> list[di
         fields = raw_record.split("\x1f", 2)
         require(len(fields) == 3, f"could not parse commit metadata for {spec.key}")
         revision, subject, body = fields
-        trailers = trailer_re.findall(body)
-        require(len(trailers) <= 1, f"commit {revision} has multiple Release-Note trailers")
-        release_note = trailers[0] if trailers else None
-        if release_note == "none":
-            classification = "exempt"
-        elif release_note in known_change_ids:
-            classification = "classified"
-        else:
-            classification = "unclassified"
+        release_notes = trailer_re.findall(body)
+        classification = _classify_release_notes(
+            release_notes,
+            known_change_ids,
+            f"commit {revision}",
+        )
         records.append(
             {
                 "revision": revision,
                 "subject": subject,
-                "release_note": release_note,
+                "release_notes": release_notes,
                 "classification": classification,
             }
         )
     return records
+
+
+def _classify_release_notes(
+    release_notes: list[str], known_change_ids: set[str], context: str
+) -> str:
+    require(
+        len(release_notes) == len(set(release_notes)),
+        f"{context} has duplicate Release-Note trailers",
+    )
+    require(
+        "none" not in release_notes or release_notes == ["none"],
+        f"{context} mixes Release-Note: none with change IDs",
+    )
+    if release_notes == ["none"]:
+        return "exempt"
+    if release_notes and all(note in known_change_ids for note in release_notes):
+        return "classified"
+    return "unclassified"
 
 
 def _nested(value: dict[str, Any], path: str) -> Any:
@@ -643,7 +658,7 @@ def render_markdown(release_changes: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "> Commit coverage is report-only in schema v1. Review every unclassified commit; a later schema may enforce complete classification.",
+            "> Commit coverage is report-only in schema v2. Review every unclassified commit; a later schema may enforce complete classification.",
             "",
             "<details>",
             "<summary>Commit inventory</summary>",
@@ -655,10 +670,15 @@ def render_markdown(release_changes: dict[str, Any]) -> str:
         lines.append("")
         if repository["commits"]:
             for commit in repository["commits"]:
-                note = commit["release_note"] or "missing"
+                notes = commit["release_notes"]
+                trailers = (
+                    ", ".join(f"`Release-Note: {note}`" for note in notes)
+                    if notes
+                    else "`Release-Note: missing`"
+                )
                 lines.append(
                     f"- `{commit['revision'][:12]}` {commit['subject']} "
-                    f"(`[Release-Note: {note}]`, {commit['classification']})"
+                    f"({trailers}; {commit['classification']})"
                 )
         else:
             lines.append("- No commits in range.")
@@ -687,7 +707,7 @@ def validate_release_changes(
     require(release_changes["schema_version"] == RELEASE_CHANGES_SCHEMA_VERSION, "unsupported release changes schema")
     require(release_changes["release_id"] == expected_release_id, "release changes ID mismatch")
     require(RELEASE_ID_RE.fullmatch(expected_release_id) is not None, "invalid expected release ID")
-    require(release_changes["coverage_enforced"] is False, "schema v1 coverage must remain report-only")
+    require(release_changes["coverage_enforced"] is False, "coverage must remain report-only")
     require(release_changes["manifest_sha256"] == sha256_file(manifest_path), "release changes manifest checksum mismatch")
     manifest = load_json(manifest_path)
     require(manifest.get("release_id") == expected_release_id, "manifest release ID mismatch")
@@ -762,17 +782,21 @@ def validate_release_changes(
         for index, commit in enumerate(commits):
             context = f"release changes repository {key} commits[{index}]"
             require(isinstance(commit, dict), f"{context} must be an object")
-            require_exact_keys(commit, {"classification", "release_note", "revision", "subject"}, context)
+            require_exact_keys(commit, {"classification", "release_notes", "revision", "subject"}, context)
             require(
                 isinstance(commit["revision"], str)
                 and REVISION_RE.fullmatch(commit["revision"]) is not None,
                 f"{context}.revision is invalid",
             )
             _require_text(commit["subject"], f"{context}.subject", max_length=1000)
-            require(
-                commit["release_note"] is None or isinstance(commit["release_note"], str),
-                f"{context}.release_note must be null or a string",
-            )
+            release_notes = commit["release_notes"]
+            require(isinstance(release_notes, list), f"{context}.release_notes must be an array")
+            for note_index, note in enumerate(release_notes):
+                require(
+                    isinstance(note, str) and re.fullmatch(r"[^\s]+", note) is not None,
+                    f"{context}.release_notes[{note_index}] is invalid",
+                )
+            _classify_release_notes(release_notes, set(), context)
             require(commit["classification"] in actual_coverage, f"{context}.classification is invalid")
             actual_coverage[commit["classification"]] += 1
         coverage = repository["coverage"]
@@ -811,6 +835,14 @@ def validate_release_changes(
         require(Path(source_path).stem == validated["change_id"], f"change source path mismatch at index {index}")
         require(validated["change_id"] not in seen, "duplicate change_id in release changes")
         seen.add(validated["change_id"])
+    for key, repository in repositories.items():
+        for index, commit in enumerate(repository["commits"]):
+            context = f"release changes repository {key} commits[{index}]"
+            expected = _classify_release_notes(commit["release_notes"], seen, context)
+            require(
+                commit["classification"] == expected,
+                f"{context}.classification does not match Release-Note trailers",
+            )
     compatibility = release_changes["compatibility"]
     require(isinstance(compatibility, dict), "release changes compatibility must be an object")
     require_exact_keys(compatibility, {"classification", "flags", "manifest_changes", "operator_actions"}, "release changes compatibility")

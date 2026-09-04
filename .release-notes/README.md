@@ -56,16 +56,22 @@ Fragments are append-only after publication. Never edit or delete a fragment
 already included in a GitHub Release. The generator rejects such mutations
 between release revisions.
 
-Commit bodies may include one trailer:
+Commit bodies may include one or more trailers when one commit has multiple
+independently reviewable release effects:
 
 ```text
 Release-Note: example-change
+Release-Note: another-change
 ```
 
-Use `Release-Note: none` for maintenance commits that intentionally have no
-release-note entry. Schema v1 reports missing or unknown trailers in
-`release-changes.json` but does not block Candidate generation. Reviewers must
-inspect the unclassified list; a later schema may make full coverage mandatory.
+Each change ID may appear only once in a commit. Do not combine
+`Release-Note: none` with a change ID. Use `Release-Note: none` by itself for
+maintenance commits that intentionally have no release-note entry. Schema v2
+stores the complete ordered trailer list and reports a commit as classified
+only when every referenced fragment exists in the release range. Missing or
+unknown trailers remain `unclassified` in `release-changes.json` but do not
+block Candidate generation. Reviewers must inspect the unclassified list; a
+later schema may make full coverage mandatory.
 
 Validate current fragments locally with:
 
