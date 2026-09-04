@@ -298,7 +298,9 @@ usdb-node status --progress-json
 面板状态为 `WAITING/STARTING/SYNCING/INSTALLING/VERIFYING/IMPORTING/READY/SKIPPED/BLOCKED/FAILED`。
 `--progress-json` 输出 `usdb-node-progress:v3`，固定包含 `controller_state` 和五个 component；Snapshot 在导入期间额外包含
 `stage/stage_index/stage_count/stage_current/stage_total/updated_at_unix`。这是观测接口，不可代替下述
-`usdb-node-status:v2` 生命周期判断。
+`usdb-node-status:v2` 生命周期判断。balance-history 或 usdb-indexer 尚未启动时，其 component 只返回
+`WAITING` 和上游门禁说明，`current/total/progress_percent` 保持 `null`；只有服务启动并返回自身 readiness
+后才显示该服务的同步进度，避免把 Bitcoin 或 balance-history 的上游高度误标成下游服务进度。
 
 `snapshot-loader` 将导入观测值以原子替换方式写入
 `<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.progress.json`，写入失败只记录 warning，不影响 installer

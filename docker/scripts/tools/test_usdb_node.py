@@ -969,7 +969,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIn("height is unavailable", bitcoin["detail"])
         self.assertIn("RPC responds", bitcoin["detail"])
 
-    def test_progress_view_exposes_staged_data_start_gates(self) -> None:
+    def test_progress_view_does_not_borrow_upstream_progress_before_service_start(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         self.configure_full_node(layout, "progress-view-staged-gates")
         running = {"state": "running", "health": "unhealthy", "exit_code": None}
@@ -1000,7 +1000,9 @@ class UsdbNodeTests(unittest.TestCase):
             if component["id"] == "balance_history"
         )
         self.assertEqual(balance["state"], "WAITING")
-        self.assertEqual((balance["current"], balance["total"]), (700_000, 963_810))
+        self.assertIsNone(balance["current"])
+        self.assertIsNone(balance["total"])
+        self.assertIsNone(balance["progress_percent"])
         self.assertIn("Bitcoin tip 963810", balance["detail"])
         self.assertIn("stable anchor 963800 uses lag 10", balance["detail"])
 
@@ -1028,13 +1030,23 @@ class UsdbNodeTests(unittest.TestCase):
         ):
             report = NODE.collect_node_progress(layout)
 
+        balance = next(
+            component
+            for component in report["components"]
+            if component["id"] == "balance_history"
+        )
+        self.assertEqual(balance["state"], "SYNCING")
+        self.assertEqual((balance["current"], balance["total"]), (900_000, 963_800))
+
         indexer = next(
             component
             for component in report["components"]
             if component["id"] == "usdb_indexer"
         )
         self.assertEqual(indexer["state"], "WAITING")
-        self.assertEqual((indexer["current"], indexer["total"]), (900_000, 963_800))
+        self.assertIsNone(indexer["current"])
+        self.assertIsNone(indexer["total"])
+        self.assertIsNone(indexer["progress_percent"])
         self.assertIn("origin height 963800", indexer["detail"])
 
     def test_status_parser_exposes_watch_and_progress_json(self) -> None:

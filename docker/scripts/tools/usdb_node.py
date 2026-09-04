@@ -2790,7 +2790,6 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         )
     try:
         data_start = _bitcoin_data_start_anchor(layout, env)
-        data_start_height = data_start.minimum_tip_height
         data_start_detail = (
             f"waiting for Bitcoin tip {data_start.minimum_tip_height}; stable anchor "
             f"{data_start.stable_height} uses lag {data_start.stable_lag_blocks}"
@@ -2798,30 +2797,14 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         if data_start.block_hash is not None:
             data_start_detail += " with the signed snapshot block-hash match"
     except ValueError as error:
-        data_start_height = None
         data_start_detail = f"Bitcoin data-start gate is invalid: {error}"
-    bitcoin_status = bitcoin.get("status") if isinstance(bitcoin, dict) else None
-    if (
-        balance_service is None
-        and isinstance(data_start_height, int)
-        and isinstance(bitcoin_status, dict)
-        and isinstance(bitcoin_status.get("blocks"), int)
-    ):
-        balance_component = _component_progress(
-            "balance_history",
-            "WAITING",
-            data_start_detail,
-            current=min(bitcoin_status["blocks"], data_start_height),
-            total=data_start_height,
-        )
-    else:
-        balance_component = _indexed_service_component(
-            "balance_history",
-            balance_service,
-            balance_readiness,
-            balance_error,
-            data_start_detail,
-        )
+    balance_component = _indexed_service_component(
+        "balance_history",
+        balance_service,
+        balance_readiness,
+        balance_error,
+        data_start_detail,
+    )
 
     indexer_service = services.get("usdb-indexer")
     indexer_readiness: dict[str, Any] | None = None
@@ -2838,31 +2821,13 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         "waiting for query-ready balance-history state at USDB origin height "
         f"{origin_height if isinstance(origin_height, int) else 'unknown'}"
     )
-    balance_stable_height = (
-        balance_readiness.get("stable_height")
-        if isinstance(balance_readiness, dict)
-        else None
+    indexer_component = _indexed_service_component(
+        "usdb_indexer",
+        indexer_service,
+        indexer_readiness,
+        indexer_error,
+        indexer_wait_detail,
     )
-    if (
-        indexer_service is None
-        and isinstance(origin_height, int)
-        and isinstance(balance_stable_height, int)
-    ):
-        indexer_component = _component_progress(
-            "usdb_indexer",
-            "WAITING",
-            indexer_wait_detail,
-            current=min(balance_stable_height, origin_height),
-            total=origin_height,
-        )
-    else:
-        indexer_component = _indexed_service_component(
-            "usdb_indexer",
-            indexer_service,
-            indexer_readiness,
-            indexer_error,
-            indexer_wait_detail,
-        )
     chain_component = _chain_component(layout, env, services.get("usdb-chain"))
     components = [
         snapshot_component,
