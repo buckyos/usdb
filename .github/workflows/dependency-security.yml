@@ -1,0 +1,159 @@
+name: Dependency Security (Report Only)
+
+on:
+  pull_request:
+    paths:
+      - .github/dependabot.yml
+      - .github/workflows/dependency-security.yml
+      - src/btc/**/Cargo.lock
+      - src/btc/**/Cargo.toml
+      - web/**/package-lock.json
+      - web/**/package.json
+  push:
+    branches:
+      - master
+    paths:
+      - .github/dependabot.yml
+      - .github/workflows/dependency-security.yml
+      - src/btc/**/Cargo.lock
+      - src/btc/**/Cargo.toml
+      - web/**/package-lock.json
+      - web/**/package.json
+  schedule:
+    - cron: "27 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust_audit:
+    name: Rust vulnerability baseline (report-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out usdb
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pinned Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.91.0 --profile minimal
+          rustup default 1.91.0
+
+      - name: Install pinned cargo-audit
+        shell: bash
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Generate report-only baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="${RUNNER_TEMP}/dependency-security-rust"
+          mkdir -p "$report_dir"
+          report_path="${report_dir}/src_btc_Cargo.json"
+          stderr_path="${report_dir}/src_btc_Cargo.stderr.log"
+          set +e
+          cargo audit --file src/btc/Cargo.lock --json \
+            >"$report_path" 2>"$stderr_path"
+          audit_status=$?
+          set -e
+          if ! jq -e '.vulnerabilities' "$report_path" >/dev/null; then
+            cat "$stderr_path" >&2
+            echo "cargo-audit did not produce a valid workspace report" >&2
+            exit 1
+          fi
+          count="$(jq -r '.vulnerabilities.count // 0' "$report_path")"
+          {
+            echo "## Rust dependency security"
+            echo
+            echo "- \`src/btc/Cargo.lock\`: vulnerabilities=$count, scanner_exit=$audit_status"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Rust dependency security reports
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: dependency-security-rust-${{ github.sha }}
+          path: ${{ runner.temp }}/dependency-security-rust
+          if-no-files-found: error
+          retention-days: 30
+
+  npm_audit:
+    name: npm vulnerability baseline (${{ matrix.name }}, report-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: balance-history-browser
+            directory: web/balance-history-browser
+          - name: usdb-console-app
+            directory: web/usdb-console-app
+          - name: usdb-indexer-browser
+            directory: web/usdb-indexer-browser
+    steps:
+      - name: Check out usdb
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pinned Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.12.0
+          check-latest: false
+          cache: npm
+          cache-dependency-path: ${{ matrix.directory }}/package-lock.json
+
+      - name: Set up pinned npm
+        run: npm install --global npm@11.6.2
+
+      - name: Generate report-only baselines
+        working-directory: ${{ matrix.directory }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="${RUNNER_TEMP}/dependency-security-npm-${{ matrix.name }}"
+          mkdir -p "$report_dir"
+          run_audit() {
+            local scope="$1"
+            shift
+            local report_path="${report_dir}/${scope}.json"
+            set +e
+            npm audit --package-lock-only --json "$@" >"$report_path"
+            local audit_status=$?
+            set -e
+            if ! jq -e '.metadata.vulnerabilities' "$report_path" >/dev/null; then
+              cat "$report_path" >&2
+              echo "npm audit did not produce a valid $scope report" >&2
+              exit 1
+            fi
+            local total critical high moderate low
+            total="$(jq -r '.metadata.vulnerabilities.total // 0' "$report_path")"
+            critical="$(jq -r '.metadata.vulnerabilities.critical // 0' "$report_path")"
+            high="$(jq -r '.metadata.vulnerabilities.high // 0' "$report_path")"
+            moderate="$(jq -r '.metadata.vulnerabilities.moderate // 0' "$report_path")"
+            low="$(jq -r '.metadata.vulnerabilities.low // 0' "$report_path")"
+            echo "- **$scope**: total=$total, critical=$critical, high=$high, moderate=$moderate, low=$low, scanner_exit=$audit_status" \
+              >>"$GITHUB_STEP_SUMMARY"
+          }
+          {
+            echo "## npm dependency security: ${{ matrix.name }}"
+            echo
+          } >>"$GITHUB_STEP_SUMMARY"
+          run_audit full
+          run_audit runtime --omit=dev
+
+      - name: Upload npm dependency security reports
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: dependency-security-npm-${{ matrix.name }}-${{ github.sha }}
+          path: ${{ runner.temp }}/dependency-security-npm-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 30

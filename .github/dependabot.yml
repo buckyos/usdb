@@ -1,0 +1,62 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /src/btc
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:30"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    commit-message:
+      prefix: Update
+
+  - package-ecosystem: npm
+    directory: /web/balance-history-browser
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:40"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    rebase-strategy: auto
+    commit-message:
+      prefix: Update
+
+  - package-ecosystem: npm
+    directory: /web/usdb-console-app
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:50"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    rebase-strategy: auto
+    commit-message:
+      prefix: Update
+
+  - package-ecosystem: npm
+    directory: /web/usdb-indexer-browser
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    rebase-strategy: auto
+    commit-message:
+      prefix: Update
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:10"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    rebase-strategy: auto
+    commit-message:
+      prefix: Update
