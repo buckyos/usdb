@@ -257,6 +257,9 @@ release 升级路径是 `install new release -> activate-release -> controller i
 `dbcache`。运行中调整先执行 `down` 停止 controller 和所有容器，然后使用 `set-bitcoin-profile`，最后重新执行 `up`；数据目录不会
 因此重建，profile 修改也会拒绝仍有运行中容器的状态。
 
+`set-bitcoin-profile --profile auto` 可在停机状态下重新按当前主机物理内存选择稳态 profile，并将解析后的
+具体 profile 写入 `node.env`。命令仍要求显式提供 `--profile`，避免运维人员误把省略参数理解为“不做修改”。
+
 默认的 `up` 不把数天的初始化生命周期绑定到当前终端。它向 bundle-scoped systemd unit 提交任务，
 然后在交互式终端附加只读进度面板；Ctrl+C、SSH 断开或本地界面退出只会脱离观察，不会停止 controller。
 systemd unit 内部顺序固定为：

@@ -1236,7 +1236,10 @@ def set_firewall_mode(layout: ReleaseLayout, mode: str) -> None:
         raise
 
 
-def set_bitcoin_resource_profile(layout: ReleaseLayout, profile: str) -> dict[str, str]:
+def set_bitcoin_resource_profile(
+    layout: ReleaseLayout,
+    profile: str,
+) -> tuple[str, dict[str, str]]:
     """Atomically update operator-owned Bitcoin memory settings for the next reconcile."""
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run configure first")
@@ -1273,7 +1276,7 @@ def set_bitcoin_resource_profile(layout: ReleaseLayout, profile: str) -> dict[st
     except BaseException:
         _atomic_write_private(layout.node_env, original)
         raise
-    return resources
+    return selected, resources
 
 
 def _validate_node_release_images(layout: ReleaseLayout) -> None:
@@ -3711,11 +3714,34 @@ def build_parser() -> argparse.ArgumentParser:
             "Update Bitcoin memory tuning after stopping all node services; "
             "ibd-64g is temporary and explicit-only"
         ),
+        description=(
+            "Select the Bitcoin Core container memory and dbcache profile. "
+            "All node containers must be stopped first; changing profiles preserves "
+            "the existing Bitcoin data directory."
+        ),
+        epilog="""profiles:
+  auto             Select a host-appropriate steady-state profile: performance-64g
+                   with at least 56 GiB physical memory, otherwise balanced-32g.
+                   Never selects the temporary ibd-64g profile.
+  balanced-32g     Co-located baseline: 5 GiB memory, 6 GiB memory+swap,
+                   3072 MiB dbcache.
+  performance-64g  Steady-state 64 GiB host profile: 24 GiB memory,
+                   26 GiB memory+swap, 12288 MiB dbcache. Requires 56 GiB.
+  ibd-64g          Temporary initial Bitcoin IBD/txindex profile: 32 GiB memory,
+                   34 GiB memory+swap, 20480 MiB dbcache. Requires 56 GiB;
+                   switch to performance-64g after initial sync.
+
+workflow:
+  usdb-node down
+  usdb-node set-bitcoin-profile --profile auto
+  usdb-node up""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     bitcoin_profile.add_argument(
         "--profile",
-        choices=tuple(BITCOIN_RESOURCE_PROFILES),
+        choices=(AUTO_BITCOIN_RESOURCE_PROFILE, *BITCOIN_RESOURCE_PROFILES),
         required=True,
+        help="profile to persist; use auto to restore host-appropriate steady-state tuning",
     )
 
     subparsers.add_parser(
@@ -3974,14 +4000,17 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         else:
             print("Host firewall mode is external; usdb-node will not inspect or modify UFW.")
     elif args.command == "set-bitcoin-profile":
-        resources = set_bitcoin_resource_profile(layout, args.profile)
+        selected_profile, resources = set_bitcoin_resource_profile(
+            layout,
+            args.profile,
+        )
         print(
-            f"Updated Bitcoin resource profile to {args.profile}: "
+            f"Updated Bitcoin resource profile to {selected_profile}: "
             f"memory={resources['memory_limit']}, "
             f"memory+swap={resources['memory_swap_limit']}, "
             f"dbcache={resources['dbcache_mb']} MiB."
         )
-        if args.profile == IBD_BITCOIN_RESOURCE_PROFILE:
+        if selected_profile == IBD_BITCOIN_RESOURCE_PROFILE:
             print(
                 "ibd-64g is temporary; switch to performance-64g after IBD and txindex complete."
             )

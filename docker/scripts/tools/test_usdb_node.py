@@ -11,6 +11,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -263,7 +264,11 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(env["BTC_DBCACHE_MB"], "12288")
 
         with mock.patch.object(NODE, "_collect_compose_services", return_value={}):
-            resources = NODE.set_bitcoin_resource_profile(layout, "balanced-32g")
+            selected, resources = NODE.set_bitcoin_resource_profile(
+                layout,
+                "balanced-32g",
+            )
+        self.assertEqual(selected, "balanced-32g")
         self.assertEqual(resources["memory_limit"], "5g")
         env = NODE.read_env(layout.node_env)
         self.assertEqual(env["BTC_RESOURCE_PROFILE"], "balanced-32g")
@@ -1061,10 +1066,53 @@ class UsdbNodeTests(unittest.TestCase):
             ["set-bitcoin-profile", "--profile", "performance-64g"]
         )
         self.assertEqual(profile.profile, "performance-64g")
+        automatic_profile = NODE.build_parser().parse_args(
+            ["set-bitcoin-profile", "--profile", "auto"]
+        )
+        self.assertEqual(automatic_profile.profile, "auto")
         ibd_profile = NODE.build_parser().parse_args(
             ["set-bitcoin-profile", "--profile", "ibd-64g"]
         )
         self.assertEqual(ibd_profile.profile, "ibd-64g")
+
+    def test_set_bitcoin_profile_help_describes_each_profile(self) -> None:
+        output = io.StringIO()
+        with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
+            NODE.build_parser().parse_args(["set-bitcoin-profile", "--help"])
+
+        self.assertEqual(raised.exception.code, 0)
+        content = output.getvalue()
+        self.assertIn("auto             Select a host-appropriate", content)
+        self.assertIn("balanced-32g     Co-located baseline", content)
+        self.assertIn("performance-64g  Steady-state 64 GiB", content)
+        self.assertIn("ibd-64g          Temporary initial Bitcoin IBD/txindex", content)
+        self.assertIn("usdb-node set-bitcoin-profile --profile auto", content)
+
+    def test_set_bitcoin_profile_auto_persists_resolved_steady_state(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "automatic-profile-node-data"
+        NODE.configure_node(
+            layout,
+            data_root=data_root,
+            role="full",
+            miner_address="",
+            miner_threads=1,
+            bootnodes="",
+            nat="",
+            bitcoin_rpc_user="node-auto",
+            bitcoin_p2p="private",
+        )
+        with (
+            mock.patch.object(NODE, "_collect_compose_services", return_value={}),
+            mock.patch.object(NODE, "_host_memory_bytes", return_value=64 * 1024**3),
+        ):
+            selected, resources = NODE.set_bitcoin_resource_profile(layout, "auto")
+
+        self.assertEqual(selected, "performance-64g")
+        self.assertEqual(resources["memory_limit"], "24g")
+        env = NODE.read_env(layout.node_env)
+        self.assertEqual(env["BTC_RESOURCE_PROFILE"], "performance-64g")
+        self.assertEqual(env["BTC_MEMORY_LIMIT"], "24g")
 
     def test_status_reports_unconfigured_without_runtime_queries(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

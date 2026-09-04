@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "bitcoin-profile-auto-reset",
+  "type": "changed",
+  "scopes": [
+    "bitcoin",
+    "deployment",
+    "node-runtime"
+  ],
+  "summary": "Allow existing nodes to restore host-appropriate steady-state Bitcoin tuning",
+  "details": [
+    "set-bitcoin-profile now accepts auto and persists the concrete balanced-32g or performance-64g profile selected from physical host memory.",
+    "Command help describes every profile's memory, memory-plus-swap, dbcache, host requirement, and intended lifecycle; automatic selection never enables the temporary ibd-64g profile.",
+    "The profile argument remains mandatory so omitting it cannot silently mutate an existing node configuration."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

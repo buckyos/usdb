@@ -179,6 +179,16 @@ usdb-node set-bitcoin-profile --profile performance-64g
 usdb-node up
 ```
 
+需要恢复当前主机适用的稳态配置时，可在停机后使用：
+
+```bash
+usdb-node set-bitcoin-profile --profile auto
+```
+
+`auto` 在至少 56 GiB 物理内存的主机上解析为 `performance-64g`，否则解析为
+`balanced-32g`；不会选择临时的 `ibd-64g`。成功输出和 `node.env` 都记录解析后的
+具体 profile。
+
 64 GiB 专用首次同步节点可以做一次有界的 IBD 加速试验：
 
 ```bash
