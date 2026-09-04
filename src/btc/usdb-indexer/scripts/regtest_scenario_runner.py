@@ -28,6 +28,7 @@ class RunnerArgs:
     balance_history_rpc_url: str
     usdb_indexer_rpc_url: str
     target_height: int
+    btc_stable_lag_blocks: int
     sync_timeout_sec: int
     send_amount_btc: str
     min_spendable_block_height: int
@@ -197,6 +198,18 @@ class RegtestScenarioRunner:
             "get_synced_block_height",
         )
         return 0 if result is None else int(result)
+
+    def get_btc_tip_height(self) -> int:
+        return int(self.run_btc_cli(["getblockcount"]))
+
+    def stabilize_latest_btc_events(self, mining_address: str) -> int:
+        lag = self.args.btc_stable_lag_blocks
+        if lag > 0:
+            self.log(
+                f"Mining {lag} stability block(s): mining_address={mining_address}"
+            )
+            self.run_btc_cli(["generatetoaddress", str(lag), mining_address])
+        return self.get_btc_tip_height() - lag
 
     @staticmethod
     def btc_amount_to_sat(amount_btc: str) -> int:
@@ -467,7 +480,13 @@ class RegtestScenarioRunner:
             f"Mining {mine_blocks} block(s) for confirmation: mining_address={mining_address}"
         )
         self.run_btc_cli(["generatetoaddress", str(mine_blocks), mining_address])
-        expected_height = before_height + mine_blocks
+        expected_height = self.stabilize_latest_btc_events(mining_address)
+        minimum_expected_height = before_height + mine_blocks
+        if expected_height < minimum_expected_height:
+            raise ScenarioError(
+                "Stable BTC height did not advance through confirmation blocks: "
+                f"before={before_height}, confirmations={mine_blocks}, stable={expected_height}"
+            )
         self.wait_balance_history_synced(expected_height)
         self.wait_usdb_synced(expected_height)
 
@@ -1299,7 +1318,7 @@ class RegtestScenarioRunner:
         self.log(f"Mining 1 block to confirm transfer: mining_address={mining_address}")
         self.run_btc_cli(["generatetoaddress", "1", mining_address])
 
-        expected_height = effective_target_height + 1
+        expected_height = self.stabilize_latest_btc_events(mining_address)
         self.wait_balance_history_synced(expected_height)
         self.wait_usdb_synced(expected_height)
 
@@ -1347,6 +1366,7 @@ def parse_args() -> RunnerArgs:
     parser.add_argument("--balance-history-rpc-url", required=True)
     parser.add_argument("--usdb-indexer-rpc-url", required=True)
     parser.add_argument("--target-height", required=True, type=int)
+    parser.add_argument("--btc-stable-lag-blocks", default=10, type=int)
     parser.add_argument("--sync-timeout-sec", default=300, type=int)
     parser.add_argument("--send-amount-btc", default="1.0")
     parser.add_argument("--min-spendable-block-height", default=101, type=int)
@@ -1357,6 +1377,8 @@ def parse_args() -> RunnerArgs:
     parser.add_argument("--scenario-file")
     parser.add_argument("--skip-initial-usdb-state-assert", action="store_true")
     parsed = parser.parse_args()
+    if parsed.btc_stable_lag_blocks < 0:
+        parser.error("--btc-stable-lag-blocks must be non-negative")
 
     return RunnerArgs(
         btc_cli=parsed.btc_cli,
@@ -1366,6 +1388,7 @@ def parse_args() -> RunnerArgs:
         balance_history_rpc_url=parsed.balance_history_rpc_url,
         usdb_indexer_rpc_url=parsed.usdb_indexer_rpc_url,
         target_height=parsed.target_height,
+        btc_stable_lag_blocks=parsed.btc_stable_lag_blocks,
         sync_timeout_sec=parsed.sync_timeout_sec,
         send_amount_btc=parsed.send_amount_btc,
         min_spendable_block_height=parsed.min_spendable_block_height,

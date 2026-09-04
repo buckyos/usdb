@@ -21,6 +21,7 @@ ORD_WALLET_NAME_B="${ORD_WALLET_NAME_B:-ord-validator-body-b}"
 PREMINE_BLOCKS="${PREMINE_BLOCKS:-130}"
 FUND_CONFIRM_BLOCKS="${FUND_CONFIRM_BLOCKS:-2}"
 INSCRIBE_CONFIRM_BLOCKS="${INSCRIBE_CONFIRM_BLOCKS:-2}"
+BTC_STABLE_LAG_BLOCKS="${BTC_STABLE_LAG_BLOCKS:-10}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-300}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 USDB_INDEXER_LOG_FILE="${USDB_INDEXER_LOG_FILE:-$WORK_DIR/usdb-indexer.log}"
@@ -41,13 +42,17 @@ main() {
   regtest_require_cmd curl
   regtest_require_cmd python3
   regtest_assert_ord_server_port_available
+  if [[ ! "$BTC_STABLE_LAG_BLOCKS" =~ ^[0-9]+$ ]]; then
+    echo "BTC_STABLE_LAG_BLOCKS must be a non-negative integer" >&2
+    exit 1
+  fi
 
   regtest_ensure_workspace_dirs
   regtest_start_bitcoind
   regtest_ensure_wallet
 
   local miner_address ord_receive_address mint_content_file pass_id
-  local continue_address current_tip_height historical_height
+  local continue_address current_tip_height current_context_height historical_height
   local profile_resp payload_file
 
   miner_address="$(regtest_get_new_address)"
@@ -70,18 +75,23 @@ EOF
 
   pass_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$mint_content_file")"
   regtest_mine_blocks "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
+  if (( BTC_STABLE_LAG_BLOCKS > 0 )); then
+    regtest_log "Mining ${BTC_STABLE_LAG_BLOCKS} blocks so the mint reaches the stable frontier"
+    regtest_mine_blocks "$BTC_STABLE_LAG_BLOCKS" "$miner_address"
+  fi
   regtest_wait_until_ord_server_synced_to_bitcoind
   current_tip_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  historical_height="$((current_tip_height - 1))"
+  current_context_height="$((current_tip_height - BTC_STABLE_LAG_BLOCKS))"
+  historical_height="$((current_context_height - 1))"
 
   regtest_create_balance_history_config
   regtest_create_usdb_indexer_config
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
-  regtest_wait_until_balance_history_synced_eq "$current_tip_height"
+  regtest_wait_until_balance_history_synced_eq "$current_context_height"
   regtest_start_usdb_indexer
   regtest_wait_usdb_rpc_ready
-  regtest_wait_until_usdb_synced_eq "$current_tip_height"
+  regtest_wait_until_usdb_synced_eq "$current_context_height"
   regtest_wait_balance_history_consensus_ready
   regtest_wait_usdb_consensus_ready
   regtest_wait_usdb_state_ref_available "$historical_height"
@@ -98,8 +108,8 @@ EOF
 
   continue_address="$(regtest_get_new_address)"
   regtest_mine_empty_block "$continue_address"
-  regtest_wait_until_balance_history_synced_eq "$((historical_height + 1))"
-  regtest_wait_until_usdb_synced_eq "$((historical_height + 1))"
+  regtest_wait_until_balance_history_synced_eq "$((current_context_height + 1))"
+  regtest_wait_until_usdb_synced_eq "$((current_context_height + 1))"
   regtest_wait_balance_history_consensus_ready
   regtest_wait_usdb_consensus_ready
 

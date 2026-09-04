@@ -30,6 +30,7 @@ FUND_CONFIRM_BLOCKS="${FUND_CONFIRM_BLOCKS:-2}"
 INSCRIBE_CONFIRM_BLOCKS="${INSCRIBE_CONFIRM_BLOCKS:-2}"
 TRANSFER_CONFIRM_BLOCKS="${TRANSFER_CONFIRM_BLOCKS:-1}"
 REMINT_CONFIRM_BLOCKS="${REMINT_CONFIRM_BLOCKS:-2}"
+BTC_STABLE_LAG_BLOCKS="${BTC_STABLE_LAG_BLOCKS:-10}"
 PENALTY_FUND_AMOUNT_BTC="${PENALTY_FUND_AMOUNT_BTC:-0.50000000}"
 PENALTY_SPEND_AMOUNT_BTC="${PENALTY_SPEND_AMOUNT_BTC:-0.49950000}"
 PENALTY_FUND_CONFIRM_BLOCKS="${PENALTY_FUND_CONFIRM_BLOCKS:-1}"
@@ -522,6 +523,7 @@ payload = {
         "btc_height": state_ref["block_height"],
         "snapshot_id": state_ref["snapshot_info"]["snapshot_id"],
         "stable_block_hash": state_ref["snapshot_info"]["stable_block_hash"],
+        "stable_lag": state_ref["snapshot_info"]["consensus_identity"]["stable_lag"],
         "balance_history_api_version": state_ref["snapshot_info"]["consensus_identity"]["balance_history_api_version"],
         "balance_history_semantics_version": state_ref["snapshot_info"]["consensus_identity"]["balance_history_semantics_version"],
         "local_state_commit": state_ref["local_state_commit_info"]["local_state_commit"],
@@ -634,6 +636,7 @@ payload = {
         "btc_height": state_ref["block_height"],
         "snapshot_id": state_ref["snapshot_info"]["snapshot_id"],
         "stable_block_hash": state_ref["snapshot_info"]["stable_block_hash"],
+        "stable_lag": state_ref["snapshot_info"]["consensus_identity"]["stable_lag"],
         "balance_history_api_version": state_ref["snapshot_info"]["consensus_identity"]["balance_history_api_version"],
         "balance_history_semantics_version": state_ref["snapshot_info"]["consensus_identity"]["balance_history_semantics_version"],
         "local_state_commit": state_ref["local_state_commit_info"]["local_state_commit"],
@@ -1089,7 +1092,11 @@ for name, actual in (
     ("breakdown", breakdown.get("external_state")),
 ):
     if actual != external_state:
-        raise SystemExit(f"{name} external_state does not match validator payload")
+        raise SystemExit(
+            f"{name} external_state does not match validator payload: "
+            f"expected={json.dumps(external_state, sort_keys=True)}, "
+            f"actual={json.dumps(actual, sort_keys=True)}"
+        )
 
 expected = payload["miner_selection"]
 pass_profile = profile["pass"]
@@ -1541,6 +1548,7 @@ regtest_wait_until_rpc_expr_eq() {
 regtest_wait_until_balance_history_synced_ge() {
   local target_height="$1"
   local start_ts now resp synced
+  regtest_ensure_stable_height_reachable "$target_height"
   regtest_log "Waiting until balance-history synced height >= ${target_height}"
   start_ts="$(date +%s)"
   while true; do
@@ -1562,6 +1570,7 @@ regtest_wait_until_balance_history_synced_ge() {
 
 regtest_wait_until_balance_history_synced_eq() {
   local target_height="$1"
+  regtest_ensure_stable_height_reachable "$target_height"
   regtest_wait_until_rpc_expr_eq \
     "balance-history synced height" \
     regtest_rpc_call_balance_history \
@@ -1607,6 +1616,41 @@ regtest_wait_until_usdb_synced_eq() {
 regtest_get_bitcoin_block_hash() {
   local block_height="$1"
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockhash "$block_height"
+}
+
+regtest_get_bitcoin_tip_height() {
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount
+}
+
+# Older scenarios record an event at the current BTC tip and then wait for that
+# height to be indexed. Keep those event heights stable-lag aware in one place.
+regtest_ensure_stable_height_reachable() {
+  local target_height="$1"
+  local tip_height stable_height required_tip_height block_count mining_address
+
+  if [[ ! "$BTC_STABLE_LAG_BLOCKS" =~ ^[0-9]+$ ]]; then
+    regtest_log "BTC_STABLE_LAG_BLOCKS must be a non-negative integer"
+    exit 1
+  fi
+  if [[ ! "$target_height" =~ ^[0-9]+$ ]]; then
+    regtest_log "Stable target height must be a non-negative integer: ${target_height}"
+    exit 1
+  fi
+
+  tip_height="$(regtest_get_bitcoin_tip_height)"
+  stable_height=$((tip_height > BTC_STABLE_LAG_BLOCKS ? tip_height - BTC_STABLE_LAG_BLOCKS : 0))
+  if (( stable_height >= target_height )); then
+    return 0
+  fi
+
+  required_tip_height=$((target_height + BTC_STABLE_LAG_BLOCKS))
+  block_count=$((required_tip_height - tip_height))
+  mining_address="$(regtest_get_new_address)"
+  regtest_log "Mining ${block_count} stabilization block(s) so target height ${target_height} reaches the stable frontier"
+  regtest_mine_blocks "$block_count" "$mining_address"
+  if [[ -n "$ORD_SERVER_PID" ]] && kill -0 "$ORD_SERVER_PID" 2>/dev/null; then
+    regtest_wait_until_ord_server_synced_to_bitcoind
+  fi
 }
 
 regtest_mine_blocks() {

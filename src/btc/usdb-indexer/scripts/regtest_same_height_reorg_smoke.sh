@@ -16,6 +16,7 @@ USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-29420}"
 ORD_RPC_PORT="${ORD_RPC_PORT:-29430}"
 WALLET_NAME="${WALLET_NAME:-usdbsameheight}"
 TARGET_HEIGHT="${TARGET_HEIGHT:-40}"
+BTC_STABLE_LAG_BLOCKS="${BTC_STABLE_LAG_BLOCKS:-10}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-180}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 USDB_INDEXER_LOG_FILE="${USDB_INDEXER_LOG_FILE:-$WORK_DIR/usdb-indexer.log}"
@@ -42,13 +43,20 @@ main() {
   regtest_ensure_wallet
 
   local mining_address original_hash replacement_hash replacement_address continue_address
+  local target_tip_height
   local old_bh_commit_resp old_bh_commit new_bh_commit_resp new_bh_commit
   local old_snapshot_resp old_snapshot_id old_snapshot_commit old_pass_commit_resp old_pass_anchor
   local new_snapshot_resp new_snapshot_id new_snapshot_commit new_pass_commit_resp new_pass_anchor
 
+  if [[ ! "$BTC_STABLE_LAG_BLOCKS" =~ ^[0-9]+$ ]]; then
+    regtest_log "BTC_STABLE_LAG_BLOCKS must be a non-negative integer"
+    exit 1
+  fi
+  target_tip_height=$((TARGET_HEIGHT + BTC_STABLE_LAG_BLOCKS))
+
   mining_address="$(regtest_get_new_address)"
-  regtest_log "Mining ${TARGET_HEIGHT} blocks to address=${mining_address}"
-  regtest_mine_blocks "$TARGET_HEIGHT" "$mining_address"
+  regtest_log "Mining tip=${target_tip_height} so stable height=${TARGET_HEIGHT} with lag=${BTC_STABLE_LAG_BLOCKS}"
+  regtest_mine_blocks "$target_tip_height" "$mining_address"
 
   regtest_create_balance_history_config
   regtest_create_usdb_indexer_config
@@ -82,10 +90,10 @@ main() {
 
   assert_empty_surface_state "$TARGET_HEIGHT"
 
-  regtest_log "Triggering same-height reorg by invalidating tip and immediately mining a replacement block"
+  regtest_log "Triggering same-height reorg at stable height=${TARGET_HEIGHT} and rebuilding the lag window"
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" invalidateblock "$original_hash"
   replacement_address="$(regtest_get_new_address)"
-  regtest_mine_empty_block "$replacement_address"
+  regtest_mine_blocks "$((BTC_STABLE_LAG_BLOCKS + 1))" "$replacement_address"
   replacement_hash="$(regtest_get_bitcoin_block_hash "$TARGET_HEIGHT")"
   if [[ "$replacement_hash" == "$original_hash" ]]; then
     regtest_log "Replacement hash unexpectedly matches original tip hash"

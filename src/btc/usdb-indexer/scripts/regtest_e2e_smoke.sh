@@ -17,6 +17,7 @@ USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-28120}"
 
 WALLET_NAME="${WALLET_NAME:-usdbitest}"
 TARGET_HEIGHT="${TARGET_HEIGHT:-120}"
+BTC_STABLE_LAG_BLOCKS="${BTC_STABLE_LAG_BLOCKS:-10}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-300}"
 ENABLE_TRANSFER_CHECK="${ENABLE_TRANSFER_CHECK:-1}"
 SEND_AMOUNT_BTC="${SEND_AMOUNT_BTC:-1.0}"
@@ -355,12 +356,18 @@ main() {
   mkdir -p "$WORK_DIR" "$BITCOIN_DIR" "$BALANCE_HISTORY_ROOT" "$USDB_INDEXER_ROOT"
   log "Workspace directory: $WORK_DIR"
 
-  local effective_target_height
+  local effective_target_height target_tip_height
   effective_target_height="$TARGET_HEIGHT"
   if [[ ( "$ENABLE_TRANSFER_CHECK" == "1" || -n "$SCENARIO_FILE" ) && TARGET_HEIGHT -lt MIN_SPENDABLE_BLOCK_HEIGHT ]]; then
     effective_target_height="$MIN_SPENDABLE_BLOCK_HEIGHT"
     log "TARGET_HEIGHT=${TARGET_HEIGHT} is lower than spendable requirement ${MIN_SPENDABLE_BLOCK_HEIGHT}; using effective target ${effective_target_height} for transfer check."
   fi
+
+  if [[ ! "$BTC_STABLE_LAG_BLOCKS" =~ ^[0-9]+$ ]]; then
+    log "BTC_STABLE_LAG_BLOCKS must be a non-negative integer"
+    exit 1
+  fi
+  target_tip_height=$((effective_target_height + BTC_STABLE_LAG_BLOCKS))
 
   log "Starting bitcoind regtest on rpcport=${BTC_RPC_PORT}, bin=${BITCOIND_BIN}"
   "$BITCOIND_BIN" \
@@ -394,9 +401,9 @@ main() {
 
   local mining_address
   mining_address="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" getnewaddress)"
-  log "Mining ${effective_target_height} blocks to address=${mining_address}"
+  log "Mining tip=${target_tip_height} so stable height=${effective_target_height} with lag=${BTC_STABLE_LAG_BLOCKS}"
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
-    generatetoaddress "$effective_target_height" "$mining_address" >/dev/null
+    generatetoaddress "$target_tip_height" "$mining_address" >/dev/null
 
   create_balance_history_config
   create_usdb_indexer_config
@@ -469,6 +476,7 @@ main() {
     --balance-history-rpc-url "http://127.0.0.1:${BH_RPC_PORT}" \
     --usdb-indexer-rpc-url "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
     --target-height "$TARGET_HEIGHT" \
+    --btc-stable-lag-blocks "$BTC_STABLE_LAG_BLOCKS" \
     --sync-timeout-sec "$SYNC_TIMEOUT_SEC" \
     --send-amount-btc "$SEND_AMOUNT_BTC" \
     --min-spendable-block-height "$MIN_SPENDABLE_BLOCK_HEIGHT" \
