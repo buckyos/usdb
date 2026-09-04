@@ -231,6 +231,8 @@ release-owned image digest。如果 contract 或 network bundle 变化，则使�
 校验失败时恢复原配置。`controller install` 是幂等的，会刷新 unit 但不会启动服务；首次安装后已经执行过时，
 同一 operator 和参数的普通 release 升级可以省略。激活后运行 `doctor`，再执行 `up` 让 controller 拉取并
 协调新 image。若跳过激活，`doctor` 和 controller 都会因 image digest 与当前 release 不一致而失败关闭。
+如果 `up` 或 bootstrap controller 仍持有 bundle operation lock，`activate-release` 会拒绝并提示先执行
+`usdb-node down`。必须等待停机完成后再激活，不能删除 lock 文件或在服务运行中替换 release image digest。
 
 ## 4. 启动和续跑
 

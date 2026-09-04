@@ -1,0 +1,22 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "canonical-release-title-order",
+  "type": "changed",
+  "scopes": [
+    "documentation",
+    "release"
+  ],
+  "summary": "Standardize GitHub Release titles as qualification followed by network and release sequence",
+  "details": [
+    "New GitHub Releases use titles such as [FAST] testnet-v0-r12 while immutable tags and release IDs retain the full usdb-testnet-v0-r12 form.",
+    "The publish verifier derives and enforces the same canonical title from the release manifest qualification."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

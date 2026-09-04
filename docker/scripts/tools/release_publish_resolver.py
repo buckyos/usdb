@@ -57,8 +57,8 @@ def canonical_release_title(release_id: str, qualification_level: str) -> str:
     if qualification_level not in QUALIFICATION_LEVELS:
         raise ValueError("qualification level must be fast, nightly, or weekly")
     return (
-        f"r{match.group('sequence')} [{qualification_level.upper()}] "
-        f"{match.group('network')}-v{match.group('generation')}"
+        f"[{qualification_level.upper()}] {match.group('network')}-"
+        f"v{match.group('generation')}-r{match.group('sequence')}"
     )
 
 
