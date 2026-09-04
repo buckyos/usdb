@@ -446,6 +446,7 @@ class UsdbNodeTests(unittest.TestCase):
 
     def test_startup_order_is_internal_and_resumable(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "startup-order-data")
         calls: list[tuple[str, tuple[str, ...]]] = []
 
         def record(_layout: object, helper: str, arguments: list[str], **_kwargs: object) -> object:
@@ -464,23 +465,95 @@ class UsdbNodeTests(unittest.TestCase):
             [
                 ("run_testnet_bitcoin.sh", ("pull",)),
                 ("run_testnet_runtime.sh", ("pull",)),
-                ("run_testnet_bitcoin.sh", ("up",)),
-                ("run_testnet_runtime.sh", ("up-data",)),
+                ("run_testnet_bitcoin.sh", ("start",)),
+                ("run_testnet_runtime.sh", ("up-data", "963810")),
+                (
+                    "run_testnet_runtime.sh",
+                    ("wait-data-origin", "963800", "123"),
+                ),
+                ("run_testnet_runtime.sh", ("up-indexer", "963800")),
+                ("run_testnet_bitcoin.sh", ("wait",)),
                 ("run_testnet_runtime.sh", ("wait-data", "123")),
-                ("run_testnet_runtime.sh", ("up",)),
+                ("run_testnet_runtime.sh", ("wait-indexer", "123")),
+                ("run_testnet_runtime.sh", ("up-chain",)),
             ],
         )
         rendered = output.getvalue()
         for phase in (
             "preflight",
             "images",
-            "bitcoin",
+            "bitcoin-start",
             "balance-history",
-            "balance-history-readiness",
-            "indexer-and-chain",
+            "balance-history-origin",
+            "indexer",
+            "final-readiness",
+            "chain",
             "ready",
         ):
             self.assertIn(f"phase={phase}:", rendered)
+
+    def test_bitcoin_data_start_anchor_uses_origin_without_snapshot(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.assertEqual(
+            NODE._bitcoin_data_start_anchor(layout, {"SNAPSHOT_MODE": "none"}),
+            NODE.BitcoinDataStartAnchor(
+                stable_height=963_800,
+                minimum_tip_height=963_810,
+                stable_lag_blocks=10,
+                block_hash=None,
+            ),
+        )
+
+    def test_bitcoin_data_start_anchor_uses_signed_snapshot_record(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        record = json.loads(
+            (self.bundle / "snapshots/balance-history-snapshot-release-record.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            NODE._bitcoin_data_start_anchor(
+                layout, {"SNAPSHOT_MODE": "balance-history"}
+            ),
+            NODE.BitcoinDataStartAnchor(
+                stable_height=record["height"],
+                minimum_tip_height=record["height"] + 10,
+                stable_lag_blocks=10,
+                block_hash=record["btc_block_hash"],
+            ),
+        )
+
+    def test_startup_passes_snapshot_stable_anchor_separately_from_tip_gate(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "startup-snapshot-anchor-data")
+        record = NODE.select_snapshot_release(layout)
+        calls: list[tuple[str, tuple[str, ...]]] = []
+
+        def record_call(
+            _layout: object, helper: str, arguments: list[str], **_kwargs: object
+        ) -> object:
+            calls.append((helper, tuple(arguments)))
+            return mock.Mock(returncode=0)
+
+        with (
+            mock.patch.object(NODE, "doctor"),
+            mock.patch.object(NODE, "run_helper", side_effect=record_call),
+            mock.patch("sys.stdout", new=io.StringIO()),
+        ):
+            NODE.start_node(layout, sync_timeout_secs=123, pull=False)
+
+        self.assertIn(
+            (
+                "run_testnet_runtime.sh",
+                (
+                    "up-data",
+                    str(record["height"] + 10),
+                    str(record["height"]),
+                    record["btc_block_hash"],
+                ),
+            ),
+            calls,
+        )
 
     def test_dashboard_suppresses_only_duplicate_helper_heartbeats(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -610,7 +683,7 @@ class UsdbNodeTests(unittest.TestCase):
 
         self.assertEqual(component["state"], "WAITING")
         self.assertEqual(component["progress_percent"], 100.0)
-        self.assertIn("after the Bitcoin readiness gate", component["detail"])
+        self.assertIn("signed data-start anchor", component["detail"])
 
     def test_snapshot_import_reports_stage_and_aggregate_progress(self) -> None:
         data_root = Path(self.temporary.name) / "snapshot-import-running"
@@ -875,6 +948,74 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIsNone(bitcoin["current"])
         self.assertIn("height is unavailable", bitcoin["detail"])
         self.assertIn("RPC responds", bitcoin["detail"])
+
+    def test_progress_view_exposes_staged_data_start_gates(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "progress-view-staged-gates")
+        running = {"state": "running", "health": "unhealthy", "exit_code": None}
+        bitcoin = {
+            "schema_version": "usdb-bitcoin-readiness:v1",
+            "ready": False,
+            "status": {
+                "blocks": 700_000,
+                "headers": 965_000,
+                "verification_progress": 0.7,
+                "txindex_synced": False,
+                "txindex_height": 699_900,
+                "connections": 8,
+            },
+            "blockers": ["initialblockdownload=true"],
+        }
+        with (
+            mock.patch.object(
+                NODE, "_collect_compose_services", return_value={"btc-node": running}
+            ),
+            mock.patch.object(NODE, "_bitcoin_startup_progress", return_value=bitcoin),
+        ):
+            report = NODE.collect_node_progress(layout)
+
+        balance = next(
+            component
+            for component in report["components"]
+            if component["id"] == "balance_history"
+        )
+        self.assertEqual(balance["state"], "WAITING")
+        self.assertEqual((balance["current"], balance["total"]), (700_000, 963_810))
+        self.assertIn("Bitcoin tip 963810", balance["detail"])
+        self.assertIn("stable anchor 963800 uses lag 10", balance["detail"])
+
+        balance_readiness = {
+            "service": "balance-history",
+            "query_ready": True,
+            "consensus_ready": False,
+            "current": 900_000,
+            "total": 963_800,
+            "stable_height": 900_000,
+            "blockers": ["CatchingUp"],
+        }
+        services = {
+            "btc-node": running,
+            "balance-history": {"state": "running", "health": "healthy", "exit_code": None},
+        }
+        with (
+            mock.patch.object(NODE, "_collect_compose_services", return_value=services),
+            mock.patch.object(NODE, "_bitcoin_startup_progress", return_value=bitcoin),
+            mock.patch.object(
+                NODE,
+                "_read_service_readiness",
+                return_value=(balance_readiness, None),
+            ),
+        ):
+            report = NODE.collect_node_progress(layout)
+
+        indexer = next(
+            component
+            for component in report["components"]
+            if component["id"] == "usdb_indexer"
+        )
+        self.assertEqual(indexer["state"], "WAITING")
+        self.assertEqual((indexer["current"], indexer["total"]), (900_000, 963_800))
+        self.assertIn("origin height 963800", indexer["detail"])
 
     def test_status_parser_exposes_watch_and_progress_json(self) -> None:
         watch = NODE.build_parser().parse_args(["status", "--watch", "--refresh-secs", "2"])

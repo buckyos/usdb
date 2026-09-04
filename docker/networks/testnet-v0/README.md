@@ -61,8 +61,10 @@ usdb-node up
 
 `usdb-node setup` 从 release manifest 写入三张 image digest，在本机生成 Bitcoin RPC secret，选择
 external firewall 或 managed UFW profile；选择 snapshot 时只冻结批准记录，不在 setup 前台下载或生成 live
-RocksDB，并默认安装、enable bundle-scoped systemd unit。`up` 提交该 controller，依次等待
-Bitcoin、balance-history 和 indexer readiness，最后启动 USDB chain。
+RocksDB，并默认安装、enable bundle-scoped systemd unit。`up` 提交该 controller：Bitcoin tip 达到
+snapshot/origin stable anchor 加 registry 冻结的 `stable_lag_blocks=10` 后启动 balance-history，使用 snapshot
+时另在 anchor 高度校验 active-chain block hash；balance-history 提交 origin 后启动 usdb-indexer；
+三者继续流水线追块，全部最终 readiness 通过后才启动 USDB chain。
 交互式启动会附加 snapshot、Bitcoin、balance-history、usdb-indexer 和 USDB chain 的固定进度面板；
 Snapshot 行会显示 artifact 等待、SQLite 导入阶段和最终 live DB marker；`usdb-node status --watch` 可在
 独立终端持续观察。Ctrl+C 或 SSH 断开只退出面板，systemd controller 继续推进；阶段 heartbeat 写入

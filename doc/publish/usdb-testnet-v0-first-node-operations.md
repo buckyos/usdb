@@ -248,7 +248,7 @@ balance-history、usdb-indexer、USDB chain 五行进度；Ctrl+C 只脱离面�
 终端可随时运行 `usdb-node status --watch` 获得同一只读面板。自动采集使用
 `usdb-node status --progress-json`，schema 为 `usdb-node-progress:v3`，并显式报告 systemd controller state。
 Snapshot 行把本地 artifact 下载/校验
-与 SQLite 到 live RocksDB 的导入明确分开：artifact 完成但 Bitcoin gate 尚未通过时是 `WAITING`，loader
+与 SQLite 到 live RocksDB 的导入明确分开：artifact 完成但 Bitcoin data-start gate 尚未通过时是 `WAITING`，loader
 运行时是带八阶段和 entry 计数的 `IMPORTING`，匹配 marker 与非空 live DB 同时存在后才是 `READY`。
 面板不会改变上述顺序或门禁；USDB chain 一行还会只读核对 release manifest 冻结的 chain ID 与 genesis hash。
 
@@ -346,25 +346,38 @@ docker/scripts/tools/run_testnet_bitcoin.sh wait
 `progress` 是单次只读查询，输出 `usdb-bitcoin-readiness:v1` JSON；`ready=false` 代表仍在正常门禁内，
 并不等同于进程故障。
 
-只有 readiness 同时确认 `chain=main`、`pruned=false`、`initialblockdownload=false`、
-`blocks=headers`、txindex 同高度、tip 新鲜且存在 peer，才进入下一阶段。
+只有最终 readiness 同时确认 `chain=main`、`pruned=false`、`initialblockdownload=false`、
+`blocks=headers`、txindex 同高度、tip 新鲜且存在 peer，才允许启动 USDB chain；balance-history 可在 BTC
+tip 达到 stable anchor `963800` 加 registry lag `10`，即 `963810` 后提前开始。snapshot 模式还会在
+`963800` 校验签名 record 中的 block hash。
 
 ## 8. Balance-History 从零同步
 
 启动数据层，不启动 USDB chain：
 
 ```bash
-docker/scripts/tools/run_testnet_runtime.sh up-data
+docker/scripts/tools/run_testnet_bitcoin.sh start
+docker/scripts/tools/run_testnet_runtime.sh up-data 963810
 docker/scripts/tools/run_testnet_runtime.sh data-status
 ```
 
 runtime 会把 Bitcoin 数据目录只读挂载为 `/data/bitcoin`，落后超过 500 块时使用 LocalLoader。
 同步数据保存在 `BH_DATA_HOST_DIR` 指向的 bind mount 中，重启或 `down` 不会删除。
 
-等待完整共识状态：
+balance-history 提交 origin 后即可启动 usdb-indexer，让两个索引器流水线追块：
 
 ```bash
+docker/scripts/tools/run_testnet_runtime.sh wait-data-origin 963800 604800
+docker/scripts/tools/run_testnet_runtime.sh up-indexer 963800
+```
+
+等待三个上游的完整共识状态并启动 chain：
+
+```bash
+docker/scripts/tools/run_testnet_bitcoin.sh wait
 docker/scripts/tools/run_testnet_runtime.sh wait-data 604800
+docker/scripts/tools/run_testnet_runtime.sh wait-indexer 604800
+docker/scripts/tools/run_testnet_runtime.sh up-chain
 ```
 
 最终必须满足：
@@ -386,8 +399,9 @@ docker/scripts/tools/run_testnet_runtime.sh indexer-status
 docker/scripts/tools/run_testnet_runtime.sh ps
 ```
 
-`up` 会拒绝未 ready 的 balance-history，启动 usdb-indexer 后等待其
-`consensus_ready=true`，最后才启动 genesis init、USDB chain 和 control-plane。
+兼容入口 `run_testnet_runtime.sh up` 会完成最终 gate；日常 `usdb-node up` 则自动执行上述流水线。无论使用
+哪个入口，只有 Bitcoin full-ready、balance-history 与 usdb-indexer 均为 `consensus_ready=true` 后，才启动
+genesis init、USDB chain 和 control-plane。
 
 检查 chain identity：
 

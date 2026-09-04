@@ -131,6 +131,120 @@ class BitcoinReadinessTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "between 0 and 1"):
             self.evaluate()
 
+    def test_data_start_accepts_ibd_without_txindex_after_anchor(self) -> None:
+        self.blockchain["initialblockdownload"] = True
+        self.blockchain["headers"] = 965_000
+        status, blockers = READINESS.assess_data_start_readiness(
+            self.blockchain,
+            self.network,
+            "main",
+            963_810,
+            963_800,
+            "11" * 32,
+            "11" * 32,
+        )
+
+        self.assertEqual(blockers, [])
+        self.assertEqual(status.minimum_height, 963_810)
+        self.assertEqual(status.anchor_height, 963_800)
+        self.assertTrue(status.initial_block_download)
+
+    def test_data_start_waits_for_height_and_rejects_anchor_mismatch(self) -> None:
+        self.blockchain["blocks"] = 963_799
+        _, blockers = READINESS.assess_data_start_readiness(
+            self.blockchain,
+            self.network,
+            "main",
+            963_810,
+            963_800,
+            None,
+            "11" * 32,
+        )
+        self.assertIn("minimum data-start height 963810", blockers[0])
+
+        self.blockchain["blocks"] = 963_810
+        _, blockers = READINESS.assess_data_start_readiness(
+            self.blockchain,
+            self.network,
+            "main",
+            963_810,
+            963_800,
+            "22" * 32,
+            "11" * 32,
+        )
+        self.assertIn("expected", blockers[0])
+
+    def test_data_start_main_does_not_query_txindex(self) -> None:
+        calls: list[str] = []
+
+        class FakeRpc:
+            def call(inner_self, method: str):
+                calls.append(method)
+                if method == "getblockchaininfo":
+                    value = dict(self.blockchain)
+                    value["initialblockdownload"] = True
+                    return value
+                if method == "getnetworkinfo":
+                    return self.network
+                raise AssertionError(f"unexpected RPC method {method}")
+
+            def get_block_hash(inner_self, height: int) -> str:
+                self.assertEqual(height, 963_800)
+                return "11" * 32
+
+        arguments = SimpleNamespace(
+            user="node",
+            minimum_height=963_810,
+            maximum_tip_age_secs=7_200,
+            minimum_connections=1,
+            rpc_timeout_secs=5.0,
+            poll_interval_secs=1.0,
+            progress_interval_secs=60.0,
+            password_file="",
+            url="http://127.0.0.1:8332",
+            expected_chain="main",
+            wait_timeout_secs=120.0,
+            status_json=False,
+            data_start=True,
+            anchor_height=963_800,
+            expected_block_hash="11" * 32,
+        )
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(READINESS, "parse_args", return_value=arguments),
+            mock.patch.object(READINESS, "read_password", return_value="secret"),
+            mock.patch.object(READINESS, "BitcoinRpc", return_value=FakeRpc()),
+            mock.patch("sys.stdout", new=stdout),
+        ):
+            result = READINESS.main()
+
+        self.assertEqual(result, 0)
+        self.assertNotIn("getindexinfo", calls)
+        self.assertEqual(json.loads(stdout.getvalue())["minimum_height"], 963_810)
+        self.assertEqual(json.loads(stdout.getvalue())["anchor_height"], 963_800)
+
+    def test_data_start_requires_anchor_height_and_hash_as_a_pair(self) -> None:
+        arguments = SimpleNamespace(
+            user="node",
+            minimum_height=963_810,
+            maximum_tip_age_secs=7_200,
+            minimum_connections=1,
+            rpc_timeout_secs=5.0,
+            poll_interval_secs=1.0,
+            progress_interval_secs=60.0,
+            password_file="",
+            url="http://127.0.0.1:8332",
+            expected_chain="main",
+            wait_timeout_secs=120.0,
+            status_json=False,
+            data_start=True,
+            anchor_height=963_800,
+            expected_block_hash="",
+        )
+        with mock.patch.object(READINESS, "parse_args", return_value=arguments):
+            with self.assertRaisesRegex(ValueError, "must be supplied together"):
+                READINESS.main()
+
     def test_wait_main_keeps_heartbeat_off_json_stdout(self) -> None:
         blockchain_calls = 0
 

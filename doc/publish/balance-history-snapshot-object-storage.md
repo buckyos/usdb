@@ -246,10 +246,16 @@ Range worker 只同时保留每个 worker 的一个临时 chunk，不额外保�
 
 这里的 controller snapshot 阶段或手工 `snapshot install` 只把 signed SQLite artifact 下载到本地 immutable
 artifact 目录，完成 release identity 校验并写入 `node.env` 选择；它不会创建 live balance-history RocksDB。
-controller 等 Bitcoin readiness 通过后，才启动一次性 `snapshot-loader`：再次执行 balance-history
+controller 等 Bitcoin tip 达到签名 record 冻结的 snapshot 高度加 registry 的 `stable_lag_blocks`，并在
+snapshot 高度确认 active-chain block hash 一致后，才启动
+一次性 `snapshot-loader`：再次执行 balance-history
 原生 Ed25519/manifest/hash 校验，把 SQLite 分阶段导入 staging RocksDB，原子切换为 live `db/`，最后写入
 `<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.done.json`。两层校验不能互相替代，只有 marker 与当前选择匹配
 且 live DB 非空时，节点进度中的 Snapshot 才是 `READY`。
+
+snapshot data-start gate 不要求 Bitcoin 完成 IBD 或 txindex；额外的 stable lag 保证 snapshot 高度已进入
+balance-history 可消费的 stable frontier，导入和后续索引可与 Bitcoin 追 tip 并行。
+USDB chain 的最终启动仍重新要求完整 Bitcoin readiness 和两个索引服务的 consensus readiness。
 
 ## 7. Paired Checkpoint 与后续工作
 

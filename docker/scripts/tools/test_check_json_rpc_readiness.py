@@ -48,6 +48,57 @@ class JsonRpcReadinessTests(unittest.TestCase):
                 "balance-history",
             )
 
+    def test_balance_history_origin_accepts_query_ready_catching_up_state(self) -> None:
+        self.assertTrue(
+            READINESS.validate_balance_history_origin(
+                {
+                    "service": "balance-history",
+                    "query_ready": True,
+                    "consensus_ready": False,
+                    "stable_height": 963_800,
+                    "stable_block_hash": "11" * 32,
+                    "latest_block_commit": "22" * 32,
+                    "blockers": ["CatchingUp"],
+                },
+                "balance-history",
+                963_800,
+            )
+        )
+
+    def test_balance_history_origin_rejects_incomplete_or_low_state(self) -> None:
+        base = {
+            "service": "balance-history",
+            "query_ready": True,
+            "consensus_ready": False,
+            "stable_height": 963_799,
+            "stable_block_hash": "11" * 32,
+            "latest_block_commit": "22" * 32,
+            "blockers": ["CatchingUp"],
+        }
+        self.assertFalse(
+            READINESS.validate_balance_history_origin(
+                base, "balance-history", 963_800
+            )
+        )
+        self.assertFalse(
+            READINESS.validate_balance_history_origin(
+                {**base, "stable_height": 963_800, "latest_block_commit": None},
+                "balance-history",
+                963_800,
+            )
+        )
+        self.assertFalse(
+            READINESS.validate_balance_history_origin(
+                {
+                    **base,
+                    "stable_height": 963_800,
+                    "blockers": ["CatchingUp", "SnapshotInstallUnverified"],
+                },
+                "balance-history",
+                963_800,
+            )
+        )
+
     def test_formats_balance_history_wait_progress(self) -> None:
         progress = READINESS.format_wait_progress(
             "balance-history",

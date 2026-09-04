@@ -121,7 +121,25 @@ readiness 必须同时满足：
 7. tip 时间不早于当前时间 `7200` 秒、`networkactive == true`，且至少有一个 peer。
 
 TCP 可连、只达到 snapshot 高度、Bitcoin block 已追平但 txindex 未追平，都不是 ready。USDB runtime
-启动命令会再次执行同一检查，失败时不启动 balance-history/indexer/chain。
+最终 chain 启动命令会再次执行同一检查，失败时不启动 chain。历史索引器使用更窄的 data-start gate：
+Bitcoin 网络正确、非裁剪，tip 达到目标 stable 高度加 registry 冻结的 `stable_lag_blocks`；使用 snapshot
+时还必须让 snapshot 高度的 active-chain block hash 与签名 release record 一致。当前 testnet-v0 的目标
+stable 高度是 `963800`、lag 是 `10`，所以最低 tip 是 `963810`。该 gate 不要求 IBD 或 txindex 完成，只允许启动 balance-history/usdb-indexer 追块，不能
+视为共识就绪。
+
+`stable_lag_blocks` 不是节点可调参数。release node kit 按 manifest 中的 BTC activation registry ID 查找
+冻结值；未知 registry ID 直接拒绝启动。仓库测试会把该映射与 canonical BTC registry artifact 交叉校验，
+registry revision 更新时必须同步更新 release 工具。
+
+底层分阶段命令为：
+
+```bash
+docker/scripts/tools/run_testnet_bitcoin.sh start
+docker/scripts/tools/run_testnet_bitcoin.sh wait-data 963810 [963800 expected-block-hash]
+docker/scripts/tools/run_testnet_bitcoin.sh wait
+```
+
+日常部署由 `usdb-node up` 自动解析 snapshot/origin 锚点，不需要手工填写。
 
 ## 6. 资源基线
 

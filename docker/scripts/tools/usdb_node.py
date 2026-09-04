@@ -57,6 +57,7 @@ from snapshot_distribution import (  # noqa: E402
 from validate_network_bundle import (  # noqa: E402
     BITCOIN_RESOURCE_PROFILES,
     DEFAULT_BITCOIN_RESOURCE_PROFILE,
+    btc_registry_stable_lag_blocks,
     read_env,
     validate_network_bundle,
     validate_node_env,
@@ -66,6 +67,7 @@ from validate_network_bundle import (  # noqa: E402
 RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
 IMAGE_RE = re.compile(r"^ghcr\.io/buckyos/[a-z0-9-]+@sha256:[0-9a-f]{64}$")
 ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ENV_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 # A fresh node temporarily retains source data, signed snapshot artifacts, and
 # installed databases together, so setup needs substantial free headroom.
@@ -107,6 +109,14 @@ CORE_RUNTIME_SERVICES = (
     "usdb-chain",
     "usdb-control-plane",
 )
+
+
+@dataclass(frozen=True)
+class BitcoinDataStartAnchor:
+    stable_height: int
+    minimum_tip_height: int
+    stable_lag_blocks: int
+    block_hash: str | None
 
 
 @dataclass(frozen=True)
@@ -1287,6 +1297,41 @@ def _approved_snapshot_record(layout: ReleaseLayout) -> dict[str, Any]:
     return _load_json(record_path)
 
 
+def _bitcoin_data_start_anchor(
+    layout: ReleaseLayout,
+    env: dict[str, str],
+) -> BitcoinDataStartAnchor:
+    """Resolve the BTC boundary after which balance-history may safely start."""
+    origin_height = layout.network_identity.get("btc_index_origin_height")
+    if not isinstance(origin_height, int) or isinstance(origin_height, bool):
+        raise ValueError("release manifest has no valid BTC index origin height")
+    registry_id = layout.network_identity.get("btc_activation_registry_id")
+    stable_lag = btc_registry_stable_lag_blocks(registry_id)
+    snapshot_mode = env.get("SNAPSHOT_MODE", "none")
+    if snapshot_mode == "none":
+        stable_height = origin_height
+        block_hash = None
+    else:
+        if snapshot_mode not in {"balance-history", "paired-checkpoint"}:
+            raise ValueError(f"unsupported SNAPSHOT_MODE={snapshot_mode}")
+        record = _approved_snapshot_record(layout)
+        stable_height = record.get("height")
+        block_hash = record.get("btc_block_hash")
+        if not isinstance(stable_height, int) or isinstance(stable_height, bool):
+            raise ValueError("release-approved snapshot has no valid BTC height")
+        if not isinstance(block_hash, str) or SHA256_RE.fullmatch(block_hash) is None:
+            raise ValueError("release-approved snapshot has no valid BTC block hash")
+    minimum_tip_height = stable_height + stable_lag
+    if minimum_tip_height > 0xFFFFFFFF:
+        raise ValueError("BTC data-start height exceeds u32")
+    return BitcoinDataStartAnchor(
+        stable_height=stable_height,
+        minimum_tip_height=minimum_tip_height,
+        stable_lag_blocks=stable_lag,
+        block_hash=block_hash,
+    )
+
+
 def _snapshot_env_updates(record: dict[str, Any]) -> dict[str, str]:
     by_role = {item["role"]: item for item in record["files"]}
     release_root = f"/snapshots/{record['snapshot_release_id']}"
@@ -1617,38 +1662,83 @@ def _start_node(
             output_to_stderr=output_to_stderr,
             quiet_progress=progress_monitor.enabled,
         )
-    progress_monitor.set_phase("bitcoin")
+    progress_monitor.set_phase("bitcoin-start")
     _print_startup_phase(
-        "bitcoin",
-        "starting Bitcoin Core and waiting for mainnet IBD, tip and txindex readiness",
+        "bitcoin-start",
+        "starting Bitcoin Core without serializing downstream historical indexing behind full IBD",
         output_to_stderr=output_to_stderr,
     )
     run_helper(
         layout,
         "run_testnet_bitcoin.sh",
-        ["up"],
+        ["start"],
         sync_timeout_secs=sync_timeout_secs,
         output_to_stderr=output_to_stderr,
         quiet_progress=progress_monitor.enabled,
     )
+    env = read_env(layout.node_env)
+    data_start = _bitcoin_data_start_anchor(layout, env)
     progress_monitor.set_phase("balance-history")
     _print_startup_phase(
         "balance-history",
-        "starting snapshot loader and balance-history",
+        (
+            "waiting for the Bitcoin data-start anchor, then starting snapshot loader "
+            f"and balance-history at stable height {data_start.stable_height} "
+            f"after Bitcoin tip reaches {data_start.minimum_tip_height}"
+        ),
+        output_to_stderr=output_to_stderr,
+    )
+    up_data_args = ["up-data", str(data_start.minimum_tip_height)]
+    if data_start.block_hash is not None:
+        up_data_args.extend([str(data_start.stable_height), data_start.block_hash])
+    run_helper(
+        layout,
+        "run_testnet_runtime.sh",
+        up_data_args,
+        sync_timeout_secs=sync_timeout_secs,
+        output_to_stderr=output_to_stderr,
+        quiet_progress=progress_monitor.enabled,
+    )
+    origin_height = layout.network_identity["btc_index_origin_height"]
+    progress_monitor.set_phase("balance-history-origin")
+    _print_startup_phase(
+        "balance-history-origin",
+        f"waiting for query-ready balance-history state at USDB origin height {origin_height}",
         output_to_stderr=output_to_stderr,
     )
     run_helper(
         layout,
         "run_testnet_runtime.sh",
-        ["up-data"],
+        ["wait-data-origin", str(origin_height), str(sync_timeout_secs)],
         output_to_stderr=output_to_stderr,
         quiet_progress=progress_monitor.enabled,
     )
-    progress_monitor.set_phase("balance-history-readiness")
+    progress_monitor.set_phase("indexer")
     _print_startup_phase(
-        "balance-history-readiness",
-        "waiting for balance-history consensus readiness",
+        "indexer",
+        "starting usdb-indexer while balance-history continues catching up",
         output_to_stderr=output_to_stderr,
+    )
+    run_helper(
+        layout,
+        "run_testnet_runtime.sh",
+        ["up-indexer", str(origin_height)],
+        output_to_stderr=output_to_stderr,
+        quiet_progress=progress_monitor.enabled,
+    )
+    progress_monitor.set_phase("final-readiness")
+    _print_startup_phase(
+        "final-readiness",
+        "waiting for Bitcoin, balance-history and usdb-indexer consensus readiness",
+        output_to_stderr=output_to_stderr,
+    )
+    run_helper(
+        layout,
+        "run_testnet_bitcoin.sh",
+        ["wait"],
+        sync_timeout_secs=sync_timeout_secs,
+        output_to_stderr=output_to_stderr,
+        quiet_progress=progress_monitor.enabled,
     )
     run_helper(
         layout,
@@ -1657,16 +1747,24 @@ def _start_node(
         output_to_stderr=output_to_stderr,
         quiet_progress=progress_monitor.enabled,
     )
-    progress_monitor.set_phase("indexer-and-chain")
+    run_helper(
+        layout,
+        "run_testnet_runtime.sh",
+        ["wait-indexer", str(sync_timeout_secs)],
+        output_to_stderr=output_to_stderr,
+        quiet_progress=progress_monitor.enabled,
+    )
+    progress_monitor.set_phase("chain")
     _print_startup_phase(
-        "indexer-and-chain",
-        "starting usdb-indexer, waiting for consensus readiness, then starting the USDB chain",
+        "chain",
+        "rechecking final readiness gates and starting the USDB chain",
         output_to_stderr=output_to_stderr,
     )
     run_helper(
         layout,
         "run_testnet_runtime.sh",
-        ["up"],
+        ["up-chain"],
+        sync_timeout_secs=sync_timeout_secs,
         output_to_stderr=output_to_stderr,
         quiet_progress=progress_monitor.enabled,
     )
@@ -2312,7 +2410,7 @@ def _snapshot_component(
     return _component_progress(
         "snapshot",
         "WAITING",
-        "artifact verified; RocksDB import runs after the Bitcoin readiness gate",
+        "artifact verified; RocksDB import runs after Bitcoin reaches the signed data-start anchor",
         current=snapshot.get("completed_bytes"),
         total=snapshot.get("expected_bytes"),
         unit="bytes",
@@ -2598,6 +2696,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
     )
 
     bitcoin_service = services.get("btc-node")
+    bitcoin: dict[str, Any] | None = None
     bitcoin_component = _failed_container_component(
         "bitcoin",
         bitcoin_service,
@@ -2654,13 +2753,40 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             ["data-status"],
             "balance-history",
         )
-    balance_component = _indexed_service_component(
-        "balance_history",
-        balance_service,
-        balance_readiness,
-        balance_error,
-        "waiting for the Bitcoin readiness gate",
-    )
+    try:
+        data_start = _bitcoin_data_start_anchor(layout, env)
+        data_start_height = data_start.minimum_tip_height
+        data_start_detail = (
+            f"waiting for Bitcoin tip {data_start.minimum_tip_height}; stable anchor "
+            f"{data_start.stable_height} uses lag {data_start.stable_lag_blocks}"
+        )
+        if data_start.block_hash is not None:
+            data_start_detail += " with the signed snapshot block-hash match"
+    except ValueError as error:
+        data_start_height = None
+        data_start_detail = f"Bitcoin data-start gate is invalid: {error}"
+    bitcoin_status = bitcoin.get("status") if isinstance(bitcoin, dict) else None
+    if (
+        balance_service is None
+        and isinstance(data_start_height, int)
+        and isinstance(bitcoin_status, dict)
+        and isinstance(bitcoin_status.get("blocks"), int)
+    ):
+        balance_component = _component_progress(
+            "balance_history",
+            "WAITING",
+            data_start_detail,
+            current=min(bitcoin_status["blocks"], data_start_height),
+            total=data_start_height,
+        )
+    else:
+        balance_component = _indexed_service_component(
+            "balance_history",
+            balance_service,
+            balance_readiness,
+            balance_error,
+            data_start_detail,
+        )
 
     indexer_service = services.get("usdb-indexer")
     indexer_readiness: dict[str, Any] | None = None
@@ -2672,13 +2798,36 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             ["indexer-status"],
             "usdb-indexer",
         )
-    indexer_component = _indexed_service_component(
-        "usdb_indexer",
-        indexer_service,
-        indexer_readiness,
-        indexer_error,
-        "waiting for the balance-history readiness gate",
+    origin_height = layout.network_identity.get("btc_index_origin_height")
+    indexer_wait_detail = (
+        "waiting for query-ready balance-history state at USDB origin height "
+        f"{origin_height if isinstance(origin_height, int) else 'unknown'}"
     )
+    balance_stable_height = (
+        balance_readiness.get("stable_height")
+        if isinstance(balance_readiness, dict)
+        else None
+    )
+    if (
+        indexer_service is None
+        and isinstance(origin_height, int)
+        and isinstance(balance_stable_height, int)
+    ):
+        indexer_component = _component_progress(
+            "usdb_indexer",
+            "WAITING",
+            indexer_wait_detail,
+            current=min(balance_stable_height, origin_height),
+            total=origin_height,
+        )
+    else:
+        indexer_component = _indexed_service_component(
+            "usdb_indexer",
+            indexer_service,
+            indexer_readiness,
+            indexer_error,
+            indexer_wait_detail,
+        )
     chain_component = _chain_component(layout, env, services.get("usdb-chain"))
     components = [
         snapshot_component,

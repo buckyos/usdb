@@ -271,6 +271,20 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             123456,
         )
 
+    def test_registry_stable_lag_is_release_frozen(self) -> None:
+        registry = json.loads(
+            (
+                MODULE_PATH.parents[2]
+                / "../src/btc/usdb-util/activation-registry/btc-mainnet.json"
+            ).resolve().read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            VALIDATOR.btc_registry_stable_lag_blocks(VALIDATOR.EXPECTED_BTC_REGISTRY),
+            registry["scope"]["stable_lag_blocks"],
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported BTC activation registry ID"):
+            VALIDATOR.btc_registry_stable_lag_blocks("00" * 32)
+
     def test_testnet_rejects_known_development_bootstrap_admin(self) -> None:
         path = self.bundle / "artifacts/usdb-chain-bootstrap-config.json"
         value = json.loads(path.read_text(encoding="utf-8"))

@@ -29,6 +29,9 @@ from runtime_compatibility import (  # noqa: E402
 EXPECTED_BUNDLE_ID = "usdb-testnet-v0"
 EXPECTED_CHAIN_ID = 202608250
 EXPECTED_BTC_REGISTRY = "a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224"
+BTC_REGISTRY_STABLE_LAG_BLOCKS = {
+    EXPECTED_BTC_REGISTRY: 10,
+}
 EXPECTED_BOOTSTRAP_ADMIN = "0x0b5223FD31cDc1536f31b3627e6D7025b52310c9"
 EXPECTED_SNAPSHOT_MANIFEST_VERSION = "balance-history-snapshot-manifest:v3"
 EXPECTED_SNAPSHOT_SIGNATURE_SCHEME = "ed25519"
@@ -126,6 +129,14 @@ def network_index_origin_height(network: dict[str, Any]) -> int:
         btc_source.get("index_origin_height"),
         "BTC index origin must be a u32",
     )
+
+
+def btc_registry_stable_lag_blocks(registry_id: Any) -> int:
+    """Return the release-frozen stable lag for a supported BTC registry."""
+    require(isinstance(registry_id, str), "BTC activation registry ID must be a string")
+    lag = BTC_REGISTRY_STABLE_LAG_BLOCKS.get(registry_id)
+    require(lag is not None, f"unsupported BTC activation registry ID: {registry_id}")
+    return lag
 
 
 def snapshot_container_path(

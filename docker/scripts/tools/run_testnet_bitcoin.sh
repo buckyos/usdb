@@ -17,7 +17,11 @@ Actions:
   init-rpc-auth [username]
             Create the private rpcauth file and print the generated client secret once.
   validate  Validate the bundle and Bitcoin node configuration.
-  up        Create the shared network, start Bitcoin Core, then wait for readiness.
+  start     Create the shared network and start Bitcoin Core without waiting for full sync.
+  up        Start Bitcoin Core, then wait for full consensus-source readiness.
+  wait-data <minimum-tip-height> [anchor-height block-hash]
+            Wait only for the historical data-start boundary. The optional
+            block-hash must match Bitcoin's active chain at anchor-height.
   wait      Wait for mainnet, full sync and txindex readiness.
   progress  Print one machine-readable Bitcoin sync/readiness observation.
   status    Show service state and perform a single readiness check.
@@ -115,6 +119,46 @@ wait_ready() {
       --progress-interval-secs "${BTC_READY_PROGRESS_INTERVAL_SECS:-60}"
 }
 
+start_bitcoin() {
+  command -v docker >/dev/null 2>&1 || {
+    echo "docker is required" >&2
+    exit 1
+  }
+  prepare_data_dir
+  validate_bitcoin_runtime
+  ensure_network
+  compose config --quiet
+  compose up -d "$@" btc-node
+}
+
+wait_data_start() {
+  local minimum_tip_height="${1:-}"
+  local anchor_height="${2:-}"
+  local expected_hash="${3:-}"
+  if [[ ! "${minimum_tip_height}" =~ ^[0-9]+$ ]]; then
+    echo "wait-data requires a non-negative minimum BTC tip height" >&2
+    exit 2
+  fi
+  if [[ -n "${anchor_height}" || -n "${expected_hash}" ]]; then
+    if [[ ! "${anchor_height}" =~ ^[0-9]+$ || -z "${expected_hash}" ]]; then
+      echo "wait-data requires anchor-height and block-hash together" >&2
+      exit 2
+    fi
+  fi
+  local args=(
+    --data-start
+    --minimum-height "${minimum_tip_height}"
+    --wait-timeout-secs "${BTC_READY_WAIT_TIMEOUT_SECS:-86400}"
+    --poll-interval-secs "${BTC_READY_POLL_INTERVAL_SECS:-15}"
+    --progress-interval-secs "${BTC_READY_PROGRESS_INTERVAL_SECS:-60}"
+  )
+  if [[ -n "${expected_hash}" ]]; then
+    args+=(--anchor-height "${anchor_height}" --expected-block-hash "${expected_hash}")
+  fi
+  compose exec -T btc-node \
+    python3 /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py "${args[@]}"
+}
+
 case "${action}" in
   init-rpc-auth)
     require_node_env
@@ -132,18 +176,19 @@ case "${action}" in
     require_node_env
     validate_node
     ;;
+  start)
+    require_node_env
+    start_bitcoin "$@"
+    ;;
   up)
     require_node_env
-    command -v docker >/dev/null 2>&1 || {
-      echo "docker is required" >&2
-      exit 1
-    }
-    prepare_data_dir
-    validate_bitcoin_runtime
-    ensure_network
-    compose config --quiet
-    compose up -d "$@" btc-node
+    start_bitcoin "$@"
     wait_ready
+    ;;
+  wait-data)
+    require_node_env
+    validate_bitcoin_runtime
+    wait_data_start "${1:-}" "${2:-}" "${3:-}"
     ;;
   wait)
     require_node_env

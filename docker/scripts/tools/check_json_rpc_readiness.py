@@ -46,6 +46,45 @@ def validate_readiness(result: dict[str, Any], expected_service: str) -> bool:
     return ready
 
 
+def validate_balance_history_origin(
+    result: dict[str, Any],
+    expected_service: str,
+    minimum_stable_height: int,
+) -> bool:
+    """Accept query-complete balance-history state without requiring tip catch-up."""
+    if expected_service != "balance-history":
+        raise ValueError("minimum stable height is only valid for balance-history")
+    validate_readiness(result, expected_service)
+    query_ready = result.get("query_ready")
+    if not isinstance(query_ready, bool):
+        raise ValueError("readiness query_ready must be a boolean")
+    stable_height = result.get("stable_height")
+    if not isinstance(stable_height, int) or isinstance(stable_height, bool):
+        raise ValueError("readiness stable_height must be an integer")
+    stable_block_hash = result.get("stable_block_hash")
+    latest_block_commit = result.get("latest_block_commit")
+    blockers = result.get("blockers")
+    if not isinstance(blockers, list):
+        raise ValueError("readiness blockers must be an array")
+
+    def is_sha256(value: Any) -> bool:
+        if not isinstance(value, str) or len(value) != 64 or value != value.lower():
+            return False
+        try:
+            int(value, 16)
+        except ValueError:
+            return False
+        return True
+
+    return (
+        query_ready
+        and stable_height >= minimum_stable_height
+        and is_sha256(stable_block_hash)
+        and is_sha256(latest_block_commit)
+        and "SnapshotInstallUnverified" not in blockers
+    )
+
+
 def _duration_text(seconds: float) -> str:
     elapsed = max(0, int(seconds))
     hours, remainder = divmod(elapsed, 3600)
@@ -98,6 +137,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--url", required=True)
     parser.add_argument("--expected-service", required=True)
     parser.add_argument("--require-consensus-ready", action="store_true")
+    parser.add_argument(
+        "--minimum-stable-height",
+        type=int,
+        help=(
+            "accept query-ready balance-history after it has committed this height; "
+            "does not require consensus-ready tip catch-up"
+        ),
+    )
     parser.add_argument("--wait-timeout-secs", type=int, default=0)
     parser.add_argument("--poll-interval-secs", type=float, default=10.0)
     parser.add_argument("--request-timeout-secs", type=float, default=5.0)
@@ -113,6 +160,13 @@ def main() -> int:
     args = parse_args()
     if args.wait_timeout_secs < 0:
         raise ValueError("wait timeout must not be negative")
+    minimum_stable_height = getattr(args, "minimum_stable_height", None)
+    if minimum_stable_height is not None and minimum_stable_height < 0:
+        raise ValueError("minimum stable height must not be negative")
+    if minimum_stable_height is not None and args.require_consensus_ready:
+        raise ValueError(
+            "minimum stable height and require-consensus-ready are separate gates"
+        )
     if (
         args.poll_interval_secs <= 0
         or args.request_timeout_secs <= 0
@@ -130,12 +184,24 @@ def main() -> int:
     while True:
         try:
             result = fetch_readiness(args.url, args.request_timeout_secs)
-            ready = validate_readiness(result, args.expected_service)
-            if not args.require_consensus_ready or ready:
+            consensus_ready = validate_readiness(result, args.expected_service)
+            if minimum_stable_height is not None:
+                ready = validate_balance_history_origin(
+                    result,
+                    args.expected_service,
+                    minimum_stable_height,
+                )
+            else:
+                ready = not args.require_consensus_ready or consensus_ready
+            if ready:
                 print(json.dumps(result, indent=2, sort_keys=True))
                 return 0
             last_result = result
-            last_error = ValueError("consensus_ready is false")
+            last_error = ValueError(
+                f"balance-history has not committed origin height {minimum_stable_height}"
+                if minimum_stable_height is not None
+                else "consensus_ready is false"
+            )
         except (OSError, ValueError, urllib.error.URLError, json.JSONDecodeError) as exc:
             last_result = None
             last_error = exc

@@ -123,8 +123,18 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
 
     def test_runtime_runner_exposes_phased_data_start(self) -> None:
         content = (ROOT / "docker/scripts/tools/run_testnet_runtime.sh").read_text(encoding="utf-8")
-        for action in ("up-data", "data-status", "wait-data", "indexer-status"):
+        for action in (
+            "up-data",
+            "data-status",
+            "wait-data-origin",
+            "wait-data",
+            "up-indexer",
+            "wait-indexer",
+            "up-chain",
+            "indexer-status",
+        ):
             self.assertIn(action, content)
+        self.assertIn("--minimum-stable-height", content)
 
     def test_bitcoin_runner_exposes_machine_readable_sync_progress(self) -> None:
         content = (ROOT / "docker/scripts/tools/run_testnet_bitcoin.sh").read_text(
@@ -132,6 +142,8 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         )
         self.assertIn("progress  Print one machine-readable", content)
         self.assertIn("--status-json", content)
+        self.assertIn("wait-data", content)
+        self.assertIn("--data-start", content)
         self.assertIn("BTC_READY_PROGRESS_INTERVAL_SECS", content)
 
     def test_runtime_runner_can_suppress_readiness_heartbeat_for_dashboard(self) -> None:

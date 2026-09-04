@@ -1,0 +1,23 @@
+{
+  "change_id": "pipeline-historical-indexer-bootstrap",
+  "compatibility": {
+    "config_change": false,
+    "data_rebuild": false,
+    "network_reset": false,
+    "restart_required": true
+  },
+  "details": [
+    "Node bootstrap now starts balance-history after Bitcoin reaches the signed snapshot or network origin stable height plus the release-frozen BTC stable lag, without waiting for IBD and txindex completion.",
+    "The controller starts usdb-indexer once balance-history is query-ready with a committed USDB origin, allowing both historical indexers to catch up while Bitcoin completes synchronization.",
+    "Snapshot block hash is checked at the stable anchor height, independently from the higher minimum Bitcoin tip gate; mismatches and unverified snapshot state fail closed, while USDB chain startup still rechecks full consensus readiness."
+  ],
+  "operator_actions": [],
+  "references": [],
+  "schema_version": "usdb-change-fragment:v1",
+  "scopes": [
+    "deployment",
+    "node-runtime"
+  ],
+  "summary": "Pipeline Bitcoin and historical indexer bootstrap without relaxing chain readiness",
+  "type": "changed"
+}

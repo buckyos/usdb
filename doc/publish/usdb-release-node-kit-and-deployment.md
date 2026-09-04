@@ -260,10 +260,12 @@ systemd unit 内部顺序固定为：
 
 1. 运行 release、network、node 和 Docker preflight；
 2. 拉取三张 digest-pinned image；
-3. 启动 Bitcoin Core，并等待 mainnet IBD、txindex、peer 和 tip readiness；
-4. 启动 balance-history 并等待 consensus readiness；
-5. 启动 usdb-indexer 并等待 consensus readiness；
-6. 初始化并启动 USDB chain 与 control-plane。
+3. 启动 Bitcoin Core；达到 snapshot 高度（无 snapshot 时为 BTC index origin）并通过可选 block-hash
+   锚点校验后，启动 snapshot-loader 和 balance-history；
+4. balance-history 达到 USDB origin、进入 query-ready 且存在 block hash/commit 后启动 usdb-indexer；
+5. Bitcoin Core、balance-history 和 usdb-indexer 继续流水线追块；
+6. 重新要求 Bitcoin mainnet IBD、txindex、peer、tip readiness，以及两个索引服务的 consensus
+   readiness，全部通过后才初始化并启动 USDB chain 与 control-plane。
 
 controller 默认单次同步等待上限是 7 天；超时或其他临时失败后由 systemd 以 30 秒退避重启，并从现有容器和
 数据状态继续。systemd 在 30 分钟窗口内最多允许 20 次启动，持续故障会停止而不是无限刷日志；Docker daemon
@@ -276,7 +278,7 @@ journal。
 交互式 TTY 中，`up` 提交 controller 后会自动显示固定五行的只读进度面板：可选 snapshot、Bitcoin、
 balance-history、usdb-indexer 和 USDB chain。snapshot 未选择时显示 `SKIPPED`；并行 range 下载按已完成
 chunk 的实际字节计数，不把预分配文件误算为完成。artifact 下载并校验完成后显示 `WAITING`，明确等待
-Bitcoin readiness；`snapshot-loader` 开始把 SQLite 导入 live RocksDB 后显示 `IMPORTING`，并区分 source
+Bitcoin tip 达到 stable anchor 加 registry lag 的 data-start gate；`snapshot-loader` 开始把 SQLite 导入 live RocksDB 后显示 `IMPORTING`，并区分 source
 verify、staging DB、balance history、UTXO、block commit、script registry、finalize 和 atomic swap 八个阶段。
 只有匹配的 `snapshot-loader.done.json` 与非空 live DB 同时存在才显示 `READY`。USDB chain 使用标准
 `eth_syncing`、`eth_blockNumber` 和 `net_peerCount`，同时只读核对 `eth_chainId` 与 genesis hash。面板只观察
@@ -302,8 +304,9 @@ usdb-node status --progress-json
 
 `usdb-node status` 查询的是完整节点生命周期，而不只是已启动服务的 readiness。它先检查 release kit、私有
 配置、release activation、数据契约和 snapshot 安装状态。Bitcoin 容器已经 running、但仍处于 IBD/txindex
-同步且后续服务尚未启动时，状态是 `STARTING`，并附带 Bitcoin block/header、verification、txindex 和 peer
-进度；不会把正常初始同步误报为 `DEGRADED`。所有核心容器 running 后，再逐项执行完整服务 readiness。
+同步时，状态是 `STARTING`，并附带 Bitcoin block/header、verification、txindex 和 peer 进度；达到分层
+data-start/origin gate 后，balance-history 和 usdb-indexer 可先后进入 `SYNCING`，不会把正常流水线追块误报为
+`DEGRADED`。USDB chain 仍只在所有最终 readiness 通过后启动。
 
 生命周期状态及主要处置如下：
 

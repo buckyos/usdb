@@ -18,7 +18,8 @@ bundle 固定网络共同身份，`node.env` 只保存每台机器的镜像、BT
 
 1. 为三个工程构建并记录不可变 revision，以及 services/chain/Bitcoin Core 三个 image digest。
 2. 在三台机器分别运行 bundle validator 和 Compose render check。
-3. 每台机器先完成 Bitcoin full sync/txindex readiness；没有 snapshot 时，balance-history 从创世全量同步。
+3. 每台机器让 Bitcoin tip 达到冻结 origin 加 registry `stable_lag_blocks` 后启动 balance-history；没有 snapshot 时从创世全量同步，并与
+   Bitcoin 的剩余 IBD/txindex 以及后续 usdb-indexer 追块形成流水线。chain 启动前仍要求完整 readiness。
 4. 启动 bootnode，固定 enode 后启动两个 joiner。
 5. 完成 SourceDAO full bootstrap 与只读复检，再越过 fee gate。
 6. 记录 genesis SHA-256、chain ID、network ID、BTC registry ID、数据层 state-ref 和首个共同 checkpoint。

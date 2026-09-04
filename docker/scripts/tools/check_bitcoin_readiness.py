@@ -33,6 +33,20 @@ class BitcoinReadiness:
     verification_progress: float
 
 
+@dataclass(frozen=True)
+class BitcoinDataStartReadiness:
+    chain: str
+    blocks: int
+    headers: int
+    initial_block_download: bool
+    pruned: bool
+    network_active: bool
+    minimum_height: int
+    anchor_height: int | None
+    anchor_block_hash: str | None
+    verification_progress: float
+
+
 def require_type(value: Any, expected: type, path: str) -> Any:
     if type(value) is not expected:
         raise ValueError(f"{path} must be {expected.__name__}")
@@ -148,12 +162,75 @@ def evaluate_readiness(
     return status
 
 
+def assess_data_start_readiness(
+    blockchain_info: dict[str, Any],
+    network_info: dict[str, Any],
+    expected_chain: str,
+    minimum_height: int,
+    anchor_height: int | None,
+    anchor_block_hash: str | None,
+    expected_anchor_block_hash: str | None,
+) -> tuple[BitcoinDataStartReadiness, list[str]]:
+    """Check the immutable BTC data boundary needed to start historical indexers."""
+    chain = require_type(blockchain_info.get("chain"), str, "getblockchaininfo.chain")
+    blocks = require_type(blockchain_info.get("blocks"), int, "getblockchaininfo.blocks")
+    headers = require_type(blockchain_info.get("headers"), int, "getblockchaininfo.headers")
+    initial_block_download = require_type(
+        blockchain_info.get("initialblockdownload"),
+        bool,
+        "getblockchaininfo.initialblockdownload",
+    )
+    pruned = require_type(blockchain_info.get("pruned"), bool, "getblockchaininfo.pruned")
+    verification_progress = require_number(
+        blockchain_info.get("verificationprogress"),
+        "getblockchaininfo.verificationprogress",
+    )
+    if not 0.0 <= verification_progress <= 1.0:
+        raise ValueError("getblockchaininfo.verificationprogress must be between 0 and 1")
+    network_active = require_type(
+        network_info.get("networkactive"), bool, "getnetworkinfo.networkactive"
+    )
+
+    failures: list[str] = []
+    if chain != expected_chain:
+        failures.append(f"chain={chain}, expected {expected_chain}")
+    if pruned:
+        failures.append("pruned=true, a full non-pruned node is required")
+    if blocks < minimum_height:
+        failures.append(f"blocks={blocks}, minimum data-start height {minimum_height}")
+    if not network_active:
+        failures.append("networkactive=false")
+    if blocks >= minimum_height and expected_anchor_block_hash is not None:
+        if anchor_block_hash is None:
+            failures.append(f"BTC block hash at height {anchor_height} is unavailable")
+        elif anchor_block_hash != expected_anchor_block_hash:
+            failures.append(
+                f"BTC block hash at height {anchor_height} is {anchor_block_hash}, "
+                f"expected {expected_anchor_block_hash}"
+            )
+
+    return BitcoinDataStartReadiness(
+        chain=chain,
+        blocks=blocks,
+        headers=headers,
+        initial_block_download=initial_block_download,
+        pruned=pruned,
+        network_active=network_active,
+        minimum_height=minimum_height,
+        anchor_height=anchor_height,
+        anchor_block_hash=anchor_block_hash,
+        verification_progress=verification_progress,
+    ), failures
+
+
 def readiness_report(
-    status: BitcoinReadiness | None,
+    status: BitcoinReadiness | BitcoinDataStartReadiness | None,
     blockers: list[str],
+    *,
+    schema_version: str = "usdb-bitcoin-readiness:v1",
 ) -> dict[str, Any]:
     return {
-        "schema_version": "usdb-bitcoin-readiness:v1",
+        "schema_version": schema_version,
         "ready": status is not None and not blockers,
         "status": asdict(status) if status is not None else None,
         "blockers": blockers,
@@ -193,8 +270,15 @@ class BitcoinRpc:
         token = base64.b64encode(f"{user}:{password}".encode()).decode()
         self.authorization = f"Basic {token}"
 
-    def call(self, method: str) -> dict[str, Any]:
-        body = json.dumps({"jsonrpc": "2.0", "id": "usdb-readiness", "method": method, "params": []}).encode()
+    def call_result(self, method: str, params: list[Any] | None = None) -> Any:
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "usdb-readiness",
+                "method": method,
+                "params": [] if params is None else params,
+            }
+        ).encode()
         request = urllib.request.Request(
             self.url,
             data=body,
@@ -210,9 +294,24 @@ class BitcoinRpc:
             raise ValueError(f"Bitcoin RPC {method} returned a non-object response")
         if value.get("error") is not None:
             raise ValueError(f"Bitcoin RPC {method} returned error: {value['error']}")
-        result = value.get("result")
+        return value.get("result")
+
+    def call(self, method: str) -> dict[str, Any]:
+        result = self.call_result(method)
         if not isinstance(result, dict):
             raise ValueError(f"Bitcoin RPC {method} result must be an object")
+        return result
+
+    def get_block_hash(self, height: int) -> str:
+        result = self.call_result("getblockhash", [height])
+        if not isinstance(result, str) or len(result) != 64:
+            raise ValueError("Bitcoin RPC getblockhash result must be a 64-character string")
+        try:
+            int(result, 16)
+        except ValueError as exc:
+            raise ValueError("Bitcoin RPC getblockhash result must be lowercase hex") from exc
+        if result != result.lower():
+            raise ValueError("Bitcoin RPC getblockhash result must be lowercase hex")
         return result
 
 
@@ -263,6 +362,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="emit one structured ready/not-ready report without failing for sync lag",
     )
+    parser.add_argument(
+        "--data-start",
+        action="store_true",
+        help="require only the immutable BTC height/hash boundary needed by historical indexers",
+    )
+    parser.add_argument(
+        "--anchor-height",
+        type=int,
+        default=None,
+        help="optional BTC height whose active-chain hash must match --expected-block-hash",
+    )
+    parser.add_argument(
+        "--expected-block-hash",
+        default="",
+        help="optional lowercase BTC block hash required at --anchor-height in data-start mode",
+    )
     return parser.parse_args()
 
 
@@ -280,25 +395,63 @@ def main() -> int:
         raise ValueError("RPC timeout and poll interval must be positive")
     if args.progress_interval_secs < 0:
         raise ValueError("progress interval must be non-negative")
+    data_start = getattr(args, "data_start", False)
+    anchor_height = getattr(args, "anchor_height", None)
+    expected_block_hash = getattr(args, "expected_block_hash", "")
+    if anchor_height is not None and anchor_height < 0:
+        raise ValueError("anchor height must be non-negative")
+    if expected_block_hash:
+        if len(expected_block_hash) != 64 or expected_block_hash != expected_block_hash.lower():
+            raise ValueError("expected block hash must be 64 lowercase hex characters")
+        try:
+            int(expected_block_hash, 16)
+        except ValueError as exc:
+            raise ValueError("expected block hash must be 64 lowercase hex characters") from exc
+    if (expected_block_hash or anchor_height is not None) and not data_start:
+        raise ValueError("anchor height and expected block hash are only valid with --data-start")
+    if bool(expected_block_hash) != (anchor_height is not None):
+        raise ValueError("anchor height and expected block hash must be supplied together")
+    if anchor_height is not None and anchor_height > args.minimum_height:
+        raise ValueError("anchor height cannot exceed the minimum data-start height")
     password = read_password(args)
     rpc = BitcoinRpc(args.url, args.user, password, args.rpc_timeout_secs)
     started_at = time.monotonic()
     deadline = time.monotonic() + args.wait_timeout_secs
     next_progress_at = started_at
-    last_status: BitcoinReadiness | None = None
+    last_status: BitcoinReadiness | BitcoinDataStartReadiness | None = None
     last_blockers = ["readiness check did not run"]
 
     while True:
         try:
-            status, blockers = assess_readiness(
-                rpc.call("getblockchaininfo"),
-                rpc.call("getindexinfo"),
-                rpc.call("getnetworkinfo"),
-                args.expected_chain,
-                args.minimum_height,
-                args.maximum_tip_age_secs,
-                args.minimum_connections,
-            )
+            if data_start:
+                blockchain_info = rpc.call("getblockchaininfo")
+                blocks = require_type(
+                    blockchain_info.get("blocks"), int, "getblockchaininfo.blocks"
+                )
+                anchor_hash = (
+                    rpc.get_block_hash(anchor_height)
+                    if blocks >= args.minimum_height and anchor_height is not None
+                    else None
+                )
+                status, blockers = assess_data_start_readiness(
+                    blockchain_info,
+                    rpc.call("getnetworkinfo"),
+                    args.expected_chain,
+                    args.minimum_height,
+                    anchor_height,
+                    anchor_hash,
+                    expected_block_hash or None,
+                )
+            else:
+                status, blockers = assess_readiness(
+                    rpc.call("getblockchaininfo"),
+                    rpc.call("getindexinfo"),
+                    rpc.call("getnetworkinfo"),
+                    args.expected_chain,
+                    args.minimum_height,
+                    args.maximum_tip_age_secs,
+                    args.minimum_connections,
+                )
             last_status = status
             last_blockers = blockers
         except ValueError as exc:
@@ -306,7 +459,17 @@ def main() -> int:
             last_blockers = [str(exc)]
 
         if args.status_json:
-            print(json.dumps(readiness_report(last_status, last_blockers), sort_keys=True))
+            schema = (
+                "usdb-bitcoin-data-start-readiness:v1"
+                if data_start
+                else "usdb-bitcoin-readiness:v1"
+            )
+            print(
+                json.dumps(
+                    readiness_report(last_status, last_blockers, schema_version=schema),
+                    sort_keys=True,
+                )
+            )
             return 0
         if last_status is not None and not last_blockers:
             print(json.dumps(asdict(last_status), sort_keys=True))
@@ -318,11 +481,23 @@ def main() -> int:
             and args.progress_interval_secs > 0
             and now >= next_progress_at
         ):
-            print(
-                format_wait_progress(last_status, last_blockers, now - started_at),
-                file=sys.stderr,
-                flush=True,
-            )
+            if isinstance(last_status, BitcoinDataStartReadiness):
+                detail = "; ".join(last_blockers)
+                print(
+                    f"[{datetime.now(timezone.utc).isoformat(timespec='seconds')}] "
+                    f"[usdb-node] Bitcoin data-start waiting: elapsed={_duration_text(now - started_at)}, "
+                    f"blocks={last_status.blocks}/{last_status.headers}, "
+                    f"minimum_height={last_status.minimum_height}, "
+                    f"anchor_height={last_status.anchor_height}, blockers={detail}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                print(
+                    format_wait_progress(last_status, last_blockers, now - started_at),
+                    file=sys.stderr,
+                    flush=True,
+                )
             next_progress_at = now + args.progress_interval_secs
         if now >= deadline:
             raise ValueError("; ".join(last_blockers))
