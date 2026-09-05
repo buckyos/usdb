@@ -720,9 +720,9 @@ class UsdbNodeTests(unittest.TestCase):
                 {
                     "schema_version": NODE.SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION,
                     "state": "running",
-                    "stage": "script_registry",
-                    "stage_index": 6,
-                    "stage_count": 8,
+                    "stage": "block_commit",
+                    "stage_index": 5,
+                    "stage_count": 7,
                     "current": 75,
                     "total": 100,
                     "unit": "entries",
@@ -730,7 +730,7 @@ class UsdbNodeTests(unittest.TestCase):
                     "stage_total": 50,
                     "block_height": 963800,
                     "snapshot_file": selected_file,
-                    "message": "importing script registry entries",
+                    "message": "importing block commit entries",
                     "attempt_started_at_unix": 1_788_000_000,
                     "stage_started_at_unix": 1_788_000_010,
                     "updated_at_unix": 1_788_000_020,
@@ -751,10 +751,10 @@ class UsdbNodeTests(unittest.TestCase):
             component = NODE._snapshot_component(artifact, env, loader)
 
         self.assertEqual(component["state"], "IMPORTING")
-        self.assertEqual(component["label"], "Snapshot import")
+        self.assertEqual(component["label"], "Core snapshot import")
         self.assertEqual(component["progress_scope"], "stage")
         self.assertEqual(component["progress_percent"], 50.0)
-        self.assertEqual(component["stage"], "script_registry")
+        self.assertEqual(component["stage"], "block_commit")
         self.assertEqual(component["stage_current"], 25)
         self.assertEqual(component["current"], 25)
         self.assertEqual(component["total"], 50)
@@ -766,10 +766,61 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(component["stage_rate_per_sec"], 2.5)
         self.assertEqual(component["stage_eta_secs"], 10)
         self.assertFalse(component["progress_stale"])
-        self.assertIn("stage=script registry (6/8)", component["detail"])
+        self.assertIn("stage=block commit (5/7)", component["detail"])
         self.assertIn("elapsed=00:00:25", component["detail"])
         self.assertIn("rate=2.5 entries/s", component["detail"])
         self.assertIn("stage_eta=00:00:10", component["detail"])
+        self.assertIn("updated=00:00:05 ago", component["detail"])
+
+    def test_snapshot_verification_heartbeat_does_not_claim_unknown_progress(self) -> None:
+        data_root = Path(self.temporary.name) / "snapshot-verification-heartbeat"
+        progress_path = data_root / "bootstrap/snapshot-loader.progress.json"
+        progress_path.parent.mkdir(parents=True)
+        selected_file = "/snapshots/release/balance_history_core_963800.db"
+        progress_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": NODE.SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION,
+                    "state": "running",
+                    "stage": "verify_source",
+                    "stage_index": 1,
+                    "stage_count": 7,
+                    "current": 100,
+                    "total": 100,
+                    "unit": "bytes",
+                    "stage_current": 0,
+                    "stage_total": 0,
+                    "block_height": None,
+                    "snapshot_file": selected_file,
+                    "message": "checking core snapshot SQLite integrity",
+                    "attempt_started_at_unix": 1_788_000_000,
+                    "stage_started_at_unix": 1_788_000_000,
+                    "updated_at_unix": 1_788_000_020,
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = {
+            "SNAPSHOT_MODE": "balance-history",
+            "BH_DATA_HOST_DIR": str(data_root),
+            "BH_SNAPSHOT_FILE": selected_file,
+            "BH_SNAPSHOT_MANIFEST": "/snapshots/release/balance_history_core_963800.manifest.json",
+        }
+
+        with mock.patch.object(NODE.time, "time", return_value=1_788_000_025):
+            component = NODE._snapshot_component(
+                {"state": "installed", "summary": "artifact verified"},
+                env,
+                {"state": "running", "health": "", "exit_code": None},
+            )
+
+        self.assertEqual(component["state"], "IMPORTING")
+        self.assertIsNone(component["progress_percent"])
+        self.assertEqual(component["aggregate_current"], 100)
+        self.assertEqual(component["aggregate_total"], 100)
+        self.assertIsNone(component["stage_rate_per_sec"])
+        self.assertIsNone(component["stage_eta_secs"])
+        self.assertIn("checking core snapshot SQLite integrity", component["detail"])
         self.assertIn("updated=00:00:05 ago", component["detail"])
 
     def test_snapshot_import_marks_stale_progress_without_changing_state(self) -> None:
@@ -791,7 +842,7 @@ class UsdbNodeTests(unittest.TestCase):
             "state": "IMPORTING",
             "stage": "verify_source",
             "stage_index": 1,
-            "stage_count": 8,
+            "stage_count": 7,
         }
 
         component = NODE._balance_history_component(
@@ -804,8 +855,8 @@ class UsdbNodeTests(unittest.TestCase):
 
         self.assertEqual(component["state"], "WAITING")
         self.assertIsNone(component["progress_percent"])
-        self.assertIn("independent Snapshot import", component["detail"])
-        self.assertIn("verify source (1/8)", component["detail"])
+        self.assertIn("independent Core snapshot import", component["detail"])
+        self.assertIn("verify source (1/7)", component["detail"])
 
     def test_snapshot_failure_reports_log_and_blocks_balance_history(self) -> None:
         data_root = Path(self.temporary.name) / "snapshot-import-failed"
@@ -833,7 +884,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIn(str(expected_log), snapshot["detail"])
         self.assertEqual(balance_history["state"], "BLOCKED")
         self.assertIsNone(balance_history["progress_percent"])
-        self.assertIn("Snapshot import did not complete", balance_history["detail"])
+        self.assertIn("Core snapshot import did not complete", balance_history["detail"])
 
     def test_snapshot_import_ignores_stale_progress_for_selected_artifact(self) -> None:
         data_root = Path(self.temporary.name) / "snapshot-import-stale-progress"
@@ -845,8 +896,8 @@ class UsdbNodeTests(unittest.TestCase):
                     "schema_version": NODE.SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION,
                     "state": "complete",
                     "stage": "complete",
-                    "stage_index": 8,
-                    "stage_count": 8,
+                    "stage_index": 7,
+                    "stage_count": 7,
                     "current": 100,
                     "total": 100,
                     "unit": "entries",
@@ -891,9 +942,11 @@ class UsdbNodeTests(unittest.TestCase):
         marker.write_text(
             json.dumps(
                 {
+                    "schema_version": NODE.SNAPSHOT_IMPORT_MARKER_SCHEMA_VERSION,
                     "snapshot_mode": "balance-history",
                     "snapshot_file": selected_file,
                     "snapshot_manifest": selected_manifest,
+                    "snapshot_manifest_sha256": "11" * 32,
                     "installed_at": "2026-09-02T00:00:00Z",
                 }
             ),

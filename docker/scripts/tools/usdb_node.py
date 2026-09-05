@@ -77,7 +77,8 @@ FIREWALL_MODES = ("external", "managed")
 NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v2"
 NODE_UP_SCHEMA_VERSION = "usdb-node-up:v1"
 NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v4"
-SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION = "balance-history-snapshot-install-progress:v2"
+SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION = "balance-history-core-snapshot-install-progress:v1"
+SNAPSHOT_IMPORT_MARKER_SCHEMA_VERSION = "balance-history-core-install-marker:v1"
 CONTROLLER_MANUAL_EXIT_CODE = 2
 CONTROLLER_UNIT_PREFIX = "usdb-node-bootstrap"
 CONTROLLER_RESTART_SECS = 30
@@ -104,7 +105,7 @@ CURSOR_HIDE = "\x1b[?25l"
 CURSOR_SHOW = "\x1b[?25h"
 SCREEN_CLEAR = "\x1b[H\x1b[2J"
 PROGRESS_COMPONENTS = (
-    ("snapshot", "Snapshot"),
+    ("snapshot", "Core snapshot"),
     ("bitcoin", "Bitcoin"),
     ("balance_history", "Balance history"),
     ("usdb_indexer", "USDB indexer"),
@@ -2425,6 +2426,7 @@ def _snapshot_import_state(env: dict[str, str]) -> dict[str, Any]:
             "db_has_entries": db_has_entries,
         }
     expected = {
+        "schema_version": SNAPSHOT_IMPORT_MARKER_SCHEMA_VERSION,
         "snapshot_mode": env.get("SNAPSHOT_MODE", "none"),
         "snapshot_file": env.get("BH_SNAPSHOT_FILE", ""),
         "snapshot_manifest": env.get("BH_SNAPSHOT_MANIFEST", ""),
@@ -2436,6 +2438,14 @@ def _snapshot_import_state(env: dict[str, str]) -> dict[str, Any]:
                 "summary": f"snapshot import marker {key} does not match node configuration",
                 "db_has_entries": db_has_entries,
             }
+    if not isinstance(marker.get("snapshot_manifest_sha256"), str) or not SHA256_RE.fullmatch(
+        marker["snapshot_manifest_sha256"]
+    ):
+        return {
+            "state": "invalid",
+            "summary": "snapshot import marker has no valid core manifest digest",
+            "db_has_entries": db_has_entries,
+        }
     if not db_has_entries:
         return {
             "state": "invalid",
@@ -2444,7 +2454,7 @@ def _snapshot_import_state(env: dict[str, str]) -> dict[str, Any]:
         }
     return {
         "state": "installed",
-        "summary": "snapshot is imported into live balance-history RocksDB",
+        "summary": "core snapshot is imported into live balance-history RocksDB",
         "db_has_entries": True,
         "installed_at": marker.get("installed_at"),
     }
@@ -2634,7 +2644,7 @@ def _snapshot_component(
             total=progress["stage_total"],
             unit=progress["unit"],
         )
-        component["label"] = "Snapshot import"
+        component["label"] = "Core snapshot import"
         component["progress_scope"] = "stage"
         component["stage"] = progress["stage"]
         component["stage_index"] = progress["stage_index"]
@@ -2800,11 +2810,11 @@ def _balance_history_component(
         stage_count = snapshot_component.get("stage_count")
         if isinstance(stage, str) and isinstance(stage_index, int) and isinstance(stage_count, int):
             snapshot_detail = (
-                f"waiting for independent Snapshot import stage "
+                f"waiting for independent Core snapshot import stage "
                 f"{stage.replace('_', ' ')} ({stage_index}/{stage_count})"
             )
         else:
-            snapshot_detail = "waiting for independent Snapshot import to complete"
+            snapshot_detail = "waiting for independent Core snapshot import to complete"
         return _component_progress("balance_history", "WAITING", snapshot_detail)
     if snapshot_component["state"] in {"BLOCKED", "FAILED"} and service_state in {
         None,
@@ -2813,7 +2823,7 @@ def _balance_history_component(
         return _component_progress(
             "balance_history",
             "BLOCKED",
-            "not started because Snapshot import did not complete; "
+            "not started because Core snapshot import did not complete; "
             + snapshot_component["detail"],
         )
     return _indexed_service_component(

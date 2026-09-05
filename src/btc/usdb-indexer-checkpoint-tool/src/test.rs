@@ -7,8 +7,8 @@ use crate::install::{InstallPairOptions, install_pair_for_test, publish_indexer_
 use crate::*;
 use balance_history::{
     BalanceHistoryConfig, BalanceHistoryDB, BalanceHistoryDBIdentity, BlockCommitEntry,
-    HistoricalSnapshotStateRef, SnapshotConfig, SnapshotDB, SnapshotHash, SnapshotManifest,
-    SnapshotMeta, SnapshotSigningKeyFile, SnapshotTrustMode, SnapshotTrustedKeySet,
+    CoreSnapshotDb, CoreSnapshotManifest, CoreSnapshotMeta, HistoricalSnapshotStateRef,
+    SnapshotConfig, SnapshotHash, SnapshotSigningKeyFile, SnapshotTrustMode, SnapshotTrustedKeySet,
     SnapshotTrustedPublicKey, build_consensus_snapshot_identity,
 };
 use base64::Engine as _;
@@ -251,38 +251,45 @@ fn build_fixture(tag: &str) -> Fixture {
 
     let balance_history_artifact = root.join("balance-history-artifact");
     std::fs::create_dir_all(&balance_history_artifact).unwrap();
-    let snapshot_path = balance_history_artifact.join("snapshot.db");
-    let snapshot_manifest_path = balance_history_artifact.join("snapshot.manifest.json");
-    let snapshot_signature_path = balance_history_artifact.join("snapshot.manifest.sig");
+    let snapshot_path = balance_history_artifact.join("balance_history_core_1.db");
+    let snapshot_manifest_path =
+        balance_history_artifact.join("balance_history_core_1.manifest.json");
+    let snapshot_signature_path =
+        balance_history_artifact.join("balance_history_core_1.manifest.sig");
     let commit = BlockCommitEntry {
         block_height: height,
         btc_block_hash: BlockHash::from_slice(&[0x11; 32]).unwrap(),
         balance_delta_root: [0x21; 32],
         block_commit: [0x22; 32],
     };
-    {
-        let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
-        snapshot_db
-            .put_block_commit_entries(std::slice::from_ref(&commit))
-            .unwrap();
-        let mut meta = SnapshotMeta::new(
-            height,
-            BalanceHistoryDBIdentity::for_network(Network::Regtest),
-        );
-        meta.block_commit_count = 1;
-        snapshot_db.update_meta(&meta).unwrap();
-    }
-    let mut snapshot_manifest = SnapshotManifest::build(
-        "snapshot.db".to_string(),
+    let generated_at = 1;
+    let mut snapshot_db = CoreSnapshotDb::create(&snapshot_path).unwrap();
+    snapshot_db
+        .put_block_commit_entries(std::slice::from_ref(&commit))
+        .unwrap();
+    snapshot_db
+        .write_meta(&CoreSnapshotMeta {
+            block_height: height,
+            balance_history_count: 0,
+            utxo_count: 0,
+            block_commit_count: 1,
+            generated_at,
+            db_identity: BalanceHistoryDBIdentity::for_network(Network::Regtest),
+            core_snapshot_id: upstream.snapshot_id.clone(),
+        })
+        .unwrap();
+    snapshot_db.finalize_for_distribution().unwrap();
+    let snapshot_manifest = CoreSnapshotManifest::build(
+        "balance_history_core_1.db".to_string(),
         SnapshotHash::calc_hash(&snapshot_path).unwrap(),
         upstream.clone(),
         BalanceHistoryDBIdentity::for_network(Network::Regtest),
-        None,
-    );
-    snapshot_manifest.signature_scheme = Some(CHECKPOINT_SIGNATURE_SCHEME.to_string());
-    snapshot_manifest.signing_key_id = Some(signing_key_file.key_id.clone());
+        Some(signing_key_file.key_id.clone()),
+        generated_at,
+    )
+    .unwrap();
     snapshot_manifest.save(&snapshot_manifest_path).unwrap();
-    let snapshot_signature = signing_key.sign(&snapshot_manifest.canonical_bytes().unwrap());
+    let snapshot_signature = signing_key.sign(&snapshot_manifest.signature_payload().unwrap());
     std::fs::write(
         &snapshot_signature_path,
         base64::engine::general_purpose::STANDARD.encode(snapshot_signature.to_bytes()),
@@ -290,9 +297,9 @@ fn build_fixture(tag: &str) -> Fixture {
     .unwrap();
 
     let binding = BalanceHistorySnapshotBinding {
-        manifest_file_name: "snapshot.manifest.json".to_string(),
+        manifest_file_name: "balance_history_core_1.manifest.json".to_string(),
         manifest_sha256: crate::artifact::sha256_file(&snapshot_manifest_path).unwrap(),
-        snapshot_file_name: "snapshot.db".to_string(),
+        snapshot_file_name: "balance_history_core_1.db".to_string(),
         snapshot_file_sha256: snapshot_manifest.file_sha256.clone(),
         state_ref: upstream,
         balance_query_floor: height,
@@ -451,6 +458,29 @@ fn pair_verification_requires_exact_upstream_manifest_binding() {
     )
     .unwrap_err();
     assert!(error.contains("does not match signed checkpoint binding"));
+}
+
+#[test]
+fn pair_verification_rejects_legacy_balance_history_manifest() {
+    let fixture = build_fixture("legacy_balance_history_manifest");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&fixture.balance_history_manifest_path).unwrap())
+            .unwrap();
+    manifest["manifest_version"] =
+        serde_json::Value::String("balance-history-snapshot-manifest:v3".to_string());
+    std::fs::write(
+        &fixture.balance_history_manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error = crate::artifact::load_and_verify_balance_history_manifest(
+        &fixture.balance_history_manifest_path,
+        &fixture.trusted_keys_path,
+        false,
+    )
+    .unwrap_err();
+    assert!(error.contains("Unsupported core manifest version"));
 }
 
 #[test]

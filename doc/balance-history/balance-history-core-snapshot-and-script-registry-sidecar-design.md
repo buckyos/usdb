@@ -2,14 +2,17 @@
 
 ## 1. 文档状态
 
-- 状态：Draft；批次 1 已提交，批次 2 已实现并等待评审。
+- 状态：Draft；批次 1、2 已提交，批次 3 已实现并等待评审。
 - 适用阶段：USDB 开发期，不保留旧 snapshot schema 或安装流程的兼容双栈。
 - 已确认方向：将 `script_registry` 从 core snapshot 剥离为独立、只读的 SQLite
   sidecar；snapshot 安装节点不再把历史 registry 导入 RocksDB。
 - 批次 1：core/registry v1 schema、manifest、artifact ID、签名域以及 registry
   readiness/resolution 类型已提交。
-- 批次 2：生成器和 `balance-history-snapshot-tool` 已切换为独立 core/registry artifact；
-  core installer、运行时 resolver、Docker 和远端对象存储发布仍属于后续批次。
+- 批次 2（`5577526`）：生成器和 `balance-history-snapshot-tool` 已切换为独立
+  core/registry artifact。
+- 批次 3：core installer 只接受 split v1 core manifest，只导入 balance、live UTXO 和
+  block commit；结构化 provenance、完成 marker 和七阶段进度已同步切换。运行时 resolver、
+  network bundle 与远端对象存储发布仍属于后续批次。
 - 本文冻结目标语义、存储边界和实施顺序；每个批次通过评审后再提交。
 
 相关文档：
@@ -466,7 +469,7 @@ USDB chain         SYNCING / READY
 
 - `SnapshotDB` 拆分 core schema 与 registry sidecar schema。
 - snapshot generator 分别输出 core 和 registry artifact。
-- core installer 删除 registry import 阶段，八阶段进度调整为 core-only 阶段。
+- core installer 删除 registry import 阶段，进度调整为七个 core-only 阶段。
 - 增加 immutable registry sidecar reader 和 resolver。
 - full replay 模式保留当前 RocksDB registry 写入。
 - 增加 registry provenance、active pointer 和冲突检测。
@@ -632,9 +635,18 @@ registry 保持 append-like：
 
 ### 批次 3：Core-only 安装
 
-- 删除 core installer 的 registry import。
-- 调整 manifest validation、provenance、marker 和原子 swap。
-- 保证 core 安装后立即启动 balance-history。
+- 已实现，等待评审。
+- core installer 强制加载 split v1 core manifest，校验 artifact hash、SQLite integrity/schema、
+  精确表计数、DB/consensus identity、最新 block commit 和 staged state-ref。
+- 只向 staging RocksDB 导入 balance、live UTXO 和 block commit；新 RocksDB 的 registry
+  overlay 为空，不再读取或导入旧单文件 snapshot 的 registry 表。
+- provenance 直接使用 core manifest/schema/artifact ID，旧布尔 meta 不再读取；完成 marker
+  使用版本化 schema 并绑定 manifest SHA-256，旧 marker 不再被接受。
+- `paired-checkpoint` 工具同步要求 split v1 core manifest，并使用 core 的 domain-separated
+  Ed25519 payload 校验签名，不能再通过该入口安装旧单文件 snapshot。
+- 导入失败自动清理 staging root，live DB 仅在完整校验与 flush 后切换；七阶段进度覆盖 source
+  verification、staging open、三类核心数据导入、finalize 和 swap。
+- core marker 完成后即可启动 balance-history，不等待 registry sidecar。
 
 ### 批次 4：分层 Registry Resolver
 

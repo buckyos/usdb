@@ -43,11 +43,12 @@ pub const META_KEY_ROLLBACK_TARGET_HEIGHT: &str = "rollback_target_height";
 pub const META_KEY_ROLLBACK_NEXT_HEIGHT: &str = "rollback_next_height";
 pub const META_KEY_ROLLBACK_SUPPORTED_FROM_HEIGHT: &str = "rollback_supported_from_height";
 pub const META_KEY_UNDO_RETAINED_FROM_HEIGHT: &str = "undo_retained_from_height";
-pub const META_KEY_SNAPSHOT_INSTALL_USED: &str = "snapshot_install_used";
-pub const META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED: &str = "snapshot_install_manifest_verified";
 pub const META_KEY_SNAPSHOT_INSTALL_PROVENANCE: &str = "snapshot_install_provenance";
 pub const META_KEY_BALANCE_QUERY_FLOOR: &str = "balance_query_floor";
 pub const META_KEY_HISTORY_QUERY_FLOOR: &str = "history_query_floor";
+const UNSUPPORTED_LEGACY_META_KEY_SNAPSHOT_INSTALL_USED: &str = "snapshot_install_used";
+const UNSUPPORTED_LEGACY_META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED: &str =
+    "snapshot_install_manifest_verified";
 /// Meta key containing the immutable identity of one balance-history RocksDB.
 pub const META_KEY_DB_IDENTITY: &str = "db_identity";
 
@@ -1997,75 +1998,36 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
-    /// Records snapshot-install provenance in both structured and legacy meta keys.
+    /// Records the verified core artifact that populated this database.
     pub fn put_snapshot_install_provenance(
         &self,
         provenance: &SnapshotInstallProvenance,
     ) -> Result<(), String> {
-        self.put_json_meta(META_KEY_SNAPSHOT_INSTALL_PROVENANCE, provenance)?;
-        self.put_u32_meta(META_KEY_SNAPSHOT_INSTALL_USED, 1)?;
-        self.put_u32_meta(
-            META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED,
-            if provenance.legacy_manifest_verified() {
-                1
-            } else {
-                0
-            },
-        )
-    }
-
-    /// Records that the current durable DB was populated via snapshot install.
-    ///
-    /// `manifest_verified=true` means the installer validated the staged
-    /// historical state ref against a trusted sidecar manifest before swap.
-    /// `manifest_verified=false` means the DB came from snapshot install but
-    /// no manifest-backed provenance check was performed.
-    pub fn put_snapshot_install_state(&self, manifest_verified: bool) -> Result<(), String> {
-        self.put_u32_meta(META_KEY_SNAPSHOT_INSTALL_USED, 1)?;
-        self.put_u32_meta(
-            META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED,
-            if manifest_verified { 1 } else { 0 },
-        )
-    }
-
-    /// Returns true when this DB was populated through snapshot install.
-    pub fn get_snapshot_install_used(&self) -> Result<bool, String> {
-        if self.get_snapshot_install_provenance()?.is_some() {
-            return Ok(true);
-        }
-        Ok(self.get_u32_meta(META_KEY_SNAPSHOT_INSTALL_USED)? == Some(1))
-    }
-
-    /// Returns manifest verification status for snapshot-installed DBs.
-    ///
-    /// `None` means no snapshot-install provenance is recorded, which covers
-    /// legacy DBs and nodes that synchronized from zero without snapshot install.
-    pub fn get_snapshot_install_manifest_verified(&self) -> Result<Option<bool>, String> {
-        if let Some(provenance) = self.get_snapshot_install_provenance()? {
-            return Ok(Some(provenance.legacy_manifest_verified()));
-        }
-        Ok(
-            match self.get_u32_meta(META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED)? {
-                Some(0) => Some(false),
-                Some(1) => Some(true),
-                Some(value) => {
-                    let msg = format!(
-                        "Invalid snapshot install manifest verification meta value: {}",
-                        value
-                    );
-                    error!("{}", msg);
-                    return Err(msg);
-                }
-                None => None,
-            },
-        )
+        provenance.validate()?;
+        self.put_json_meta(META_KEY_SNAPSHOT_INSTALL_PROVENANCE, provenance)
     }
 
     /// Returns structured snapshot-install provenance when the DB came from snapshot install.
     pub fn get_snapshot_install_provenance(
         &self,
     ) -> Result<Option<SnapshotInstallProvenance>, String> {
-        self.get_json_meta(META_KEY_SNAPSHOT_INSTALL_PROVENANCE)
+        let provenance =
+            self.get_json_meta::<SnapshotInstallProvenance>(META_KEY_SNAPSHOT_INSTALL_PROVENANCE)?;
+        if let Some(provenance) = provenance.as_ref() {
+            provenance.validate()?;
+        } else if self
+            .get_u32_meta(UNSUPPORTED_LEGACY_META_KEY_SNAPSHOT_INSTALL_USED)?
+            .is_some()
+            || self
+                .get_u32_meta(UNSUPPORTED_LEGACY_META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED)?
+                .is_some()
+        {
+            return Err(
+                "Legacy snapshot install provenance is unsupported; rebuild or reinstall the database from a split v1 core snapshot"
+                    .to_string(),
+            );
+        }
+        Ok(provenance)
     }
 
     /// Persists the query-retention contract of this local database atomically.
@@ -2132,7 +2094,7 @@ impl BalanceHistoryDB {
                 }
                 Ok((balance_floor, history_floor))
             }
-            (None, None) if !self.get_snapshot_install_used()? => Ok((0, 0)),
+            (None, None) if self.get_snapshot_install_provenance()?.is_none() => Ok((0, 0)),
             (balance_floor, history_floor) => {
                 let msg = format!(
                     "Incomplete or invalid query retention metadata: balance_query_floor={:?}, history_query_floor={:?}",
@@ -4711,7 +4673,30 @@ mod tests {
 
         assert_eq!(db.get_query_retention_floors().unwrap(), (0, 0));
 
-        db.put_snapshot_install_state(false).unwrap();
+        db.put_u32_meta(UNSUPPORTED_LEGACY_META_KEY_SNAPSHOT_INSTALL_USED, 1)
+            .unwrap();
+        let error = db.get_query_retention_floors().unwrap_err();
+        assert!(error.contains("Legacy snapshot install provenance is unsupported"));
+
+        db.put_snapshot_install_provenance(&SnapshotInstallProvenance {
+            origin: crate::snapshot_provenance::SnapshotInstallOrigin::SnapshotInstall,
+            trust_mode: crate::config::SnapshotTrustMode::Dev,
+            verification_state:
+                crate::snapshot_provenance::SnapshotVerificationState::ManifestVerified,
+            signature_verified: false,
+            artifact_type: crate::snapshot_contract::SnapshotArtifactType::BalanceHistoryCore,
+            manifest_version: "balance-history-core-snapshot-manifest:v1".to_string(),
+            snapshot_schema_version: "balance-history-core-snapshot:v1".to_string(),
+            signature_scheme: None,
+            signing_key_id: None,
+            snapshot_file_sha256: "11".repeat(32),
+            core_snapshot_id: "22".repeat(32),
+            core_artifact_id: "33".repeat(32),
+            installed_block_height: 10,
+            balance_query_floor: 10,
+            history_query_floor: 11,
+        })
+        .unwrap();
         let error = db.get_query_retention_floors().unwrap_err();
         assert!(error.contains("Incomplete or invalid query retention metadata"));
 

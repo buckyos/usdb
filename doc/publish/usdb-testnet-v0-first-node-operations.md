@@ -249,12 +249,13 @@ running、后续服务尚未启动且 Bitcoin 报告 IBD/txindex 正在推进，
 balance-history、usdb-indexer、USDB chain 五行进度；Ctrl+C 只脱离面板，controller 继续运行。另一个 SSH
 终端可随时运行 `usdb-node status --watch` 获得同一只读面板。自动采集使用
 `usdb-node status --progress-json`，schema 为 `usdb-node-progress:v4`，并显式报告 systemd controller state。
-独立的 Snapshot import 行把本地 artifact 下载/校验
+独立的 Core snapshot import 行把本地 artifact 下载/校验
 与 SQLite 到 live RocksDB 的导入明确分开：artifact 完成但 Bitcoin data-start gate 尚未通过时是 `WAITING`，loader
-运行时是带八阶段、阶段进度、elapsed、rate、阶段 ETA 和最近更新时间的 `IMPORTING`，匹配 marker 与非空 live DB
+运行时是带七阶段、阶段进度、elapsed、rate、阶段 ETA 和最近更新时间的 `IMPORTING`，匹配 core marker 与非空 live DB
 同时存在后才是 `READY`。阶段百分比只描述当前阶段，不是全流程百分比；导入期间 balance-history 服务保持
-`WAITING`，直到 loader 成功完成原子切换后才启动。
-如果 loader 失败，Snapshot import 行会保留最后阶段并显示
+`WAITING`，直到 loader 成功完成原子切换后才启动。source hash 后的 SQLite integrity 和精确 count
+会持续更新时间及阶段说明，但由于没有可靠总工作量，不显示伪造的百分比或 ETA。
+如果 loader 失败，Core snapshot import 行会保留最后阶段并显示
 `BH_DATA_HOST_DIR/logs/balance-history_install_snapshot_rCURRENT.log` 的实际路径，尚未启动的 balance-history 行转为
 `BLOCKED`；controller 的 fail-closed 重试不会删除这份最后进度。不要在确认该日志和 live DB 内容前清理数据目录。
 面板不会改变上述顺序或门禁；USDB chain 一行还会只读核对 release manifest 冻结的 chain ID 与 genesis hash。

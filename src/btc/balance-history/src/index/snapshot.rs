@@ -1,9 +1,8 @@
 use crate::config::{BalanceHistoryConfigRef, SnapshotTrustMode};
 use crate::db::{
-    BALANCE_HISTORY_DATA_MODEL_VERSION, BalanceHistoryDB, BalanceHistoryDBIdentity,
-    BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry,
-    CoreSnapshotDb, CoreSnapshotMeta, ScriptRegistryEntry, ScriptRegistrySnapshotDb,
-    ScriptRegistrySnapshotMeta, SnapshotCallback, SnapshotDB, SnapshotHash, SnapshotMeta,
+    BalanceHistoryDB, BalanceHistoryDBIdentity, BalanceHistoryDBMode, BalanceHistoryDBRef,
+    BalanceHistoryEntry, BlockCommitEntry, CoreSnapshotDb, CoreSnapshotMeta, ScriptRegistryEntry,
+    ScriptRegistrySnapshotDb, ScriptRegistrySnapshotMeta, SnapshotCallback, SnapshotHash,
 };
 use crate::output::IndexOutputRef;
 use crate::service::{HistoricalSnapshotStateRef, build_historical_state_ref_at_height};
@@ -16,40 +15,27 @@ use crate::snapshot_provenance::{
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use usdb_util::{BtcScriptHash, UTXOEntry, parse_json_strict};
 
-/// Current external snapshot manifest sidecar schema version.
-pub const SNAPSHOT_MANIFEST_VERSION: &str = "balance-history-snapshot-manifest:v3";
 /// Detached signature scheme name used by signed snapshot manifests.
 pub const SNAPSHOT_SIGNATURE_SCHEME_ED25519: &str = "ed25519";
 const SNAPSHOT_INSTALL_PROGRESS_SCHEMA_VERSION: &str =
-    "balance-history-snapshot-install-progress:v2";
-const SNAPSHOT_INSTALL_STAGE_COUNT: u8 = 8;
+    "balance-history-core-snapshot-install-progress:v1";
+const SNAPSHOT_INSTALL_STAGE_COUNT: u8 = 7;
 const SNAPSHOT_INSTALL_PROGRESS_WRITE_INTERVAL: Duration = Duration::from_secs(1);
+const SNAPSHOT_INSTALL_VERIFICATION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+const SNAPSHOT_INSTALL_VERIFICATION_CACHE_SIZE_KIB: u32 = 512 * 1024;
 
 pub struct SnapshotIndexer {
     config: BalanceHistoryConfigRef,
     db: BalanceHistoryDBRef,
     output: IndexOutputRef,
-}
-
-/// Transitional full-snapshot result retained only until the core-only installer lands.
-#[derive(Clone, Debug)]
-struct SnapshotCreationResult {
-    /// Finalized SQLite snapshot file.
-    pub db_path: PathBuf,
-    /// Canonical manifest sidecar for `db_path`.
-    pub manifest_path: PathBuf,
-    /// Optional detached manifest signature sidecar.
-    pub signature_path: Option<PathBuf>,
-    /// Counts and source height persisted in the snapshot DB.
-    pub meta: SnapshotMeta,
-    /// Manifest data written beside the snapshot DB.
-    pub manifest: SnapshotManifest,
 }
 
 /// Files and verified metadata produced for one registry-free core artifact.
@@ -401,365 +387,6 @@ impl SnapshotIndexer {
             .map(|path| SnapshotSigningKeyFile::load(&path))
             .transpose()
     }
-
-    /// Creates one snapshot at an explicit output path and returns its distributable artifacts.
-    ///
-    /// Callers must use a new path. This lets an orchestrator build inside a temporary directory,
-    /// verify the complete artifact set, and atomically publish that directory afterwards.
-    #[allow(dead_code)]
-    fn run_legacy_to_path(
-        &self,
-        target_block_height: u32,
-        with_utxo: bool,
-        db_path: &Path,
-    ) -> Result<SnapshotCreationResult, String> {
-        let snapshot_begin = Instant::now();
-        info!(
-            "Starting snapshot generation up to block height {}, with_utxo={}",
-            target_block_height, with_utxo
-        );
-
-        // Check that target block height is not greater than last synced BTC block height
-        let last_synced_height = self.db.get_btc_block_height()?;
-        if target_block_height > last_synced_height {
-            let msg = format!(
-                "Target block height {} is greater than last synced BTC block height {}",
-                target_block_height, last_synced_height
-            );
-            self.output.eprintln(&msg);
-            return Err(msg);
-        }
-
-        // Historical balance snapshots are supported because the DB stores point-in-time
-        // balance rows by height. UTXO snapshots are different: the current UTXO CF only
-        // contains live tip state, so exporting UTXOs for an older height would silently
-        // mix a historical block commit/state_ref with a tip UTXO view.
-        if with_utxo && target_block_height != last_synced_height {
-            let msg = format!(
-                "Historical UTXO snapshots are not supported: target block height {} must match last synced BTC block height {} when with_utxo=true",
-                target_block_height, last_synced_height
-            );
-            self.output.eprintln(&msg);
-            return Err(msg);
-        }
-
-        self.output.println(&format!(
-            "Creating snapshot database at {} for height {}, with_utxo={}",
-            db_path.display(),
-            target_block_height,
-            with_utxo
-        ));
-        if db_path.exists() {
-            return Err(format!(
-                "Snapshot output path {} already exists",
-                db_path.display()
-            ));
-        }
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!(
-                    "Failed to create snapshot output directory {}: {}",
-                    parent.display(),
-                    e
-                )
-            })?;
-        }
-        let snapshot_db = SnapshotDB::open(db_path).map_err(|e| {
-            let msg = format!("Failed to create snapshot database: {}", e);
-            self.output.eprintln(&msg);
-            msg
-        })?;
-
-        let db_identity = self.db.get_db_identity()?.ok_or_else(|| {
-            let msg = "Source balance-history DB has no identity".to_string();
-            self.output.eprintln(&msg);
-            msg
-        })?;
-        let snapshot_db = Arc::new(Mutex::new(snapshot_db));
-        let mut snapshot_meta = SnapshotMeta::new(target_block_height, db_identity);
-
-        // First generate balance history snapshot
-        {
-            let stage_begin = Instant::now();
-            let total = self.db.get_history_balance_count()?;
-            self.output.println(&format!(
-                "Will generate balance history snapshot with approximately {} source entries at block height {}",
-                total, target_block_height
-            ));
-            self.output
-                .start_estimated_load_stage("Snapshot balance history", total);
-
-            let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
-
-            let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
-            self.db
-                .generate_balance_history_snapshot_parallel(target_block_height, cb)?;
-
-            let total_count = generator.balance_history_count.load(Ordering::SeqCst);
-            snapshot_meta.balance_history_count = total_count;
-
-            let msg = format!(
-                "Completed balance history snapshot generation up to block height {}, total entries: {}",
-                target_block_height, total_count
-            );
-            self.output.println(&msg);
-            self.output.finish_load_stage(&format!(
-                "Balance history snapshot complete: {} rows written",
-                total_count
-            ));
-            info!(
-                "Snapshot creation stage completed: stage=balance_history, block_height={}, row_count={}, elapsed_ms={}",
-                target_block_height,
-                total_count,
-                stage_begin.elapsed().as_millis()
-            );
-        }
-
-        // Then generate UTXO snapshot if needed
-        if with_utxo {
-            let stage_begin = Instant::now();
-            let total = self.db.get_utxo_count()?;
-            self.output.println(&format!(
-                "Will generate UTXO snapshot with approximately {} entries at block height {}",
-                total, target_block_height
-            ));
-            self.output
-                .start_estimated_load_stage("Snapshot UTXOs", total);
-
-            let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
-            let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
-            self.db.generate_utxo_snapshot_parallel(cb)?;
-
-            let total_count = generator.utxo_count.load(Ordering::SeqCst);
-            snapshot_meta.utxo_count = total_count;
-
-            let msg = format!(
-                "Completed UTXO snapshot generation up to block height {}, total UTXOs: {}",
-                target_block_height, total_count
-            );
-
-            self.output.println(&msg);
-            self.output.finish_load_stage(&format!(
-                "UTXO snapshot complete: {} rows written",
-                total_count
-            ));
-            info!(
-                "Snapshot creation stage completed: stage=utxo, block_height={}, row_count={}, elapsed_ms={}",
-                target_block_height,
-                total_count,
-                stage_begin.elapsed().as_millis()
-            );
-        }
-
-        {
-            let stage_begin = Instant::now();
-            let estimated_total = self
-                .db
-                .get_block_commit_count()?
-                .min(u64::from(target_block_height) + 1);
-            self.output.println(&format!(
-                "Will generate block commit snapshot up to block height {} with approximately {} entries",
-                target_block_height, estimated_total
-            ));
-            self.output
-                .start_estimated_load_stage("Snapshot block commits", estimated_total);
-
-            let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
-            let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
-            self.db
-                .generate_block_commit_snapshot(target_block_height, cb)?;
-
-            let total_count = generator.block_commit_count.load(Ordering::SeqCst);
-            snapshot_meta.block_commit_count = total_count;
-
-            let msg = format!(
-                "Completed block commit snapshot generation up to block height {}, total commits: {}",
-                target_block_height, total_count
-            );
-            self.output.println(&msg);
-            self.output.finish_load_stage(&format!(
-                "Block commit snapshot complete: {} rows written",
-                total_count
-            ));
-            info!(
-                "Snapshot creation stage completed: stage=block_commit, block_height={}, row_count={}, elapsed_ms={}",
-                target_block_height,
-                total_count,
-                stage_begin.elapsed().as_millis()
-            );
-        }
-
-        // Script registry is an auxiliary seen-script cache without per-height state. It is
-        // exported in full so snapshot-installed nodes can resolve script_hash values to the
-        // original scriptPubKey for address display, without changing consensus state_ref.
-        {
-            let stage_begin = Instant::now();
-            let total = self.db.get_estimated_script_registry_count()?;
-            self.output.println(&format!(
-                "Will generate script registry snapshot with approximately {} entries",
-                total
-            ));
-            self.output
-                .start_estimated_load_stage("Snapshot script registry", total);
-
-            let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
-            let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
-            self.db.generate_script_registry_snapshot_parallel(cb)?;
-
-            let total_count = generator.script_registry_count.load(Ordering::SeqCst);
-            snapshot_meta.script_registry_count = total_count;
-
-            let msg = format!(
-                "Completed script registry snapshot generation, total entries: {}",
-                total_count
-            );
-            self.output.println(&msg);
-            self.output.finish_load_stage(&format!(
-                "Script registry snapshot complete: {} rows written",
-                total_count
-            ));
-            info!(
-                "Snapshot creation stage completed: stage=script_registry, block_height={}, row_count={}, elapsed_ms={}",
-                target_block_height,
-                total_count,
-                stage_begin.elapsed().as_millis()
-            );
-        }
-
-        // Finally, update snapshot meta with counts
-        let finalize_begin = Instant::now();
-        snapshot_db.lock().unwrap().update_meta(&snapshot_meta)?;
-        let snapshot_db = Arc::try_unwrap(snapshot_db).map_err(|_| {
-            let msg =
-                "Failed to acquire exclusive ownership of generated snapshot DB before finalization"
-                    .to_string();
-            self.output.eprintln(&msg);
-            msg
-        })?;
-        let snapshot_db = snapshot_db.into_inner().map_err(|_| {
-            let msg = "Generated snapshot DB mutex was poisoned before finalization".to_string();
-            self.output.eprintln(&msg);
-            msg
-        })?;
-        let db_path = snapshot_db.finalize_for_distribution().map_err(|e| {
-            let msg = format!(
-                "Failed to finalize snapshot database for distribution: {}",
-                e
-            );
-            self.output.eprintln(&msg);
-            msg
-        })?;
-        self.output.println(&format!(
-            "Snapshot database created at {}",
-            db_path.display()
-        ));
-        info!(
-            "Snapshot creation stage completed: stage=finalize_database, block_height={}, elapsed_ms={}",
-            target_block_height,
-            finalize_begin.elapsed().as_millis()
-        );
-
-        let artifact_begin = Instant::now();
-        let hash_begin = Instant::now();
-        let file_hash = SnapshotHash::calc_hash(&db_path).map_err(|e| {
-            let msg = format!(
-                "Failed to calculate snapshot hash for {}: {}",
-                db_path.display(),
-                e
-            );
-            self.output.eprintln(&msg);
-            msg
-        })?;
-        info!(
-            "Snapshot creation stage completed: stage=file_hash, block_height={}, path={}, elapsed_ms={}",
-            target_block_height,
-            db_path.display(),
-            hash_begin.elapsed().as_millis()
-        );
-        let state_ref = build_historical_state_ref_at_height(
-            &self.config,
-            self.db.as_ref(),
-            target_block_height,
-        )?
-        .ok_or_else(|| {
-            let msg = format!(
-                "Failed to build historical state ref for snapshot height {}",
-                target_block_height
-            );
-            self.output.eprintln(&msg);
-            msg
-        })?;
-        let signing_key = self
-            .config
-            .snapshot_signing_key_path()
-            .map(|path| SnapshotSigningKeyFile::load(&path))
-            .transpose()?;
-        let manifest = SnapshotManifest::build(
-            db_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| {
-                    let msg = format!(
-                        "Failed to derive snapshot file name from path {}",
-                        db_path.display()
-                    );
-                    self.output.eprintln(&msg);
-                    msg
-                })?
-                .to_string(),
-            file_hash,
-            state_ref,
-            snapshot_meta.db_identity.clone(),
-            signing_key.as_ref().map(|key| key.key_id.clone()),
-        );
-        let manifest_path = manifest_path_for_snapshot_file(&db_path);
-        manifest.save(&manifest_path).map_err(|e| {
-            let msg = format!(
-                "Failed to write snapshot manifest {}: {}",
-                manifest_path.display(),
-                e
-            );
-            self.output.eprintln(&msg);
-            msg
-        })?;
-        self.output.println(&format!(
-            "Snapshot manifest written to {}",
-            manifest_path.display()
-        ));
-        let signature_path = if let Some(signing_key) = signing_key {
-            let signature_path = signature_path_for_manifest_file(&manifest_path);
-            let signature = signing_key
-                .to_signing_key()?
-                .sign(&manifest.canonical_bytes()?);
-            save_signature_file(&signature_path, &signature)?;
-            self.output.println(&format!(
-                "Snapshot manifest signature written to {}",
-                signature_path.display()
-            ));
-            Some(signature_path)
-        } else {
-            None
-        };
-        info!(
-            "Snapshot creation completed: block_height={}, with_utxo={}, artifact_elapsed_ms={}, total_elapsed_ms={}, balance_history_count={}, utxo_count={}, block_commit_count={}, script_registry_count={}",
-            target_block_height,
-            with_utxo,
-            artifact_begin.elapsed().as_millis(),
-            snapshot_begin.elapsed().as_millis(),
-            snapshot_meta.balance_history_count,
-            snapshot_meta.utxo_count,
-            snapshot_meta.block_commit_count,
-            snapshot_meta.script_registry_count
-        );
-
-        Ok(SnapshotCreationResult {
-            db_path,
-            manifest_path,
-            signature_path,
-            meta: snapshot_meta,
-            manifest,
-        })
-    }
 }
 
 #[derive(Clone)]
@@ -936,136 +563,13 @@ fn file_basename(path: &Path) -> Result<String, String> {
         })
 }
 
-#[derive(Clone)]
-struct SnapshotGenerator {
-    db: Arc<Mutex<SnapshotDB>>,
-    count: Arc<AtomicU64>,
-    balance_history_count: Arc<AtomicU64>,
-    utxo_count: Arc<AtomicU64>,
-    block_commit_count: Arc<AtomicU64>,
-    script_registry_count: Arc<AtomicU64>,
-    output: IndexOutputRef,
-}
-
-impl SnapshotGenerator {
-    pub fn new(db: Arc<Mutex<SnapshotDB>>, output: IndexOutputRef) -> Self {
-        Self {
-            db,
-            count: Arc::new(AtomicU64::new(0)),
-            balance_history_count: Arc::new(AtomicU64::new(0)),
-            utxo_count: Arc::new(AtomicU64::new(0)),
-            block_commit_count: Arc::new(AtomicU64::new(0)),
-            script_registry_count: Arc::new(AtomicU64::new(0)),
-            output,
-        }
-    }
-}
-
-impl SnapshotCallback for SnapshotGenerator {
-    fn on_balance_history_entries(
-        &self,
-        entries: &[BalanceHistoryEntry],
-        entries_processed: u64,
-    ) -> Result<(), String> {
-        self.db
-            .lock()
-            .unwrap()
-            .put_balance_history_entries(entries)?;
-
-        // Update the counts
-        self.balance_history_count
-            .fetch_add(entries.len() as u64, Ordering::SeqCst);
-
-        // Use entries_processed to update count
-        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
-        self.output.update_load_current_count(count);
-
-        // Display last entry info
-        if let Some(last_entry) = entries.last() {
-            self.output.set_load_message(&format!(
-                "{}: {} sat @ {}",
-                last_entry.script_hash, last_entry.balance, last_entry.block_height,
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn on_utxo_entries(&self, entries: &[UTXOEntry], entries_processed: u64) -> Result<(), String> {
-        self.db.lock().unwrap().put_utxo_entries(entries)?;
-
-        // Use entries_processed to update count
-        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
-        self.output.update_load_current_count(count);
-
-        // Update the counts
-        self.utxo_count
-            .fetch_add(entries.len() as u64, Ordering::SeqCst);
-
-        // Display last entry info
-        if let Some(last_entry) = entries.last() {
-            self.output
-                .set_load_message(&format!("{}", last_entry.outpoint,));
-        }
-
-        Ok(())
-    }
-
-    fn on_block_commit_entries(
-        &self,
-        entries: &[BlockCommitEntry],
-        entries_processed: u64,
-    ) -> Result<(), String> {
-        self.db.lock().unwrap().put_block_commit_entries(entries)?;
-
-        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
-        self.output.update_load_current_count(count);
-
-        self.block_commit_count
-            .fetch_add(entries.len() as u64, Ordering::SeqCst);
-
-        if let Some(last_entry) = entries.last() {
-            self.output.set_load_message(&format!(
-                "block_commit@{} {:x}",
-                last_entry.block_height, last_entry.btc_block_hash
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn on_script_registry_entries(
-        &self,
-        entries: &[ScriptRegistryEntry],
-        entries_processed: u64,
-    ) -> Result<(), String> {
-        self.db
-            .lock()
-            .unwrap()
-            .put_script_registry_entries(entries)?;
-
-        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
-        self.output.update_load_current_count(count);
-
-        self.script_registry_count
-            .fetch_add(entries.len() as u64, Ordering::SeqCst);
-
-        if let Some(last_entry) = entries.last() {
-            self.output
-                .set_load_message(&format!("script_registry: {}", last_entry.script_hash));
-        }
-
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug)]
-pub struct SnapshotData {
-    /// Path to the snapshot DB file to be installed.
+pub struct CoreSnapshotData {
+    /// Path to the registry-free core SQLite file to install.
     pub file: PathBuf,
 
-    /// Optional sidecar manifest file describing the expected installed state.
-    pub manifest_file: Option<PathBuf>,
+    /// Required strict v1 core manifest describing the artifact and restored state.
+    pub manifest_file: PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1230,31 +734,83 @@ impl SnapshotInstallProgressReporter {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SnapshotManifest {
-    /// Version tag of the external sidecar manifest schema.
-    pub manifest_version: String,
-    /// Snapshot DB file basename expected by this manifest.
-    pub file_name: String,
-    /// Canonical SHA256 of the snapshot DB file.
-    pub file_sha256: String,
-    /// Exact historical consensus state expected after installation.
-    pub state_ref: HistoricalSnapshotStateRef,
-    /// RocksDB schema, data model, and Bitcoin network identity of the exported state.
-    pub db_identity: BalanceHistoryDBIdentity,
-    /// Earliest complete at-or-before point balance query height after install.
-    pub balance_query_floor: u32,
-    /// Earliest complete exact-delta/history query height after install.
-    pub history_query_floor: u32,
-    /// Detached signature scheme used for the optional sidecar signature file.
-    #[serde(default)]
-    pub signature_scheme: Option<String>,
-    /// Logical signer identifier that must match a trusted install key.
-    #[serde(default)]
-    pub signing_key_id: Option<String>,
-    /// Unix timestamp when this manifest was generated.
-    #[serde(default)]
-    pub generated_at: Option<u64>,
+struct SnapshotInstallProgressHeartbeat {
+    stop: mpsc::Sender<()>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl SnapshotInstallProgressHeartbeat {
+    fn start(
+        progress: Option<&SnapshotInstallProgressReporter>,
+        source_size: u64,
+        message: &str,
+    ) -> Option<Self> {
+        let progress = progress?.clone();
+        let message = message.to_string();
+        let (stop, receiver) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("core-snapshot-install-heartbeat".to_string())
+            .spawn(move || {
+                while receiver
+                    .recv_timeout(SNAPSHOT_INSTALL_VERIFICATION_HEARTBEAT_INTERVAL)
+                    .is_err_and(|error| error == mpsc::RecvTimeoutError::Timeout)
+                {
+                    SnapshotInstaller::report_verification_progress(
+                        Some(&progress),
+                        source_size,
+                        &message,
+                    );
+                }
+            });
+        match worker {
+            Ok(worker) => Some(Self {
+                stop,
+                worker: Some(worker),
+            }),
+            Err(error) => {
+                warn!(
+                    "Failed to start core snapshot verification heartbeat: {}",
+                    error
+                );
+                None
+            }
+        }
+    }
+}
+
+impl Drop for SnapshotInstallProgressHeartbeat {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
+            warn!("Core snapshot verification heartbeat thread panicked");
+        }
+    }
+}
+
+struct SnapshotInstallStagingGuard {
+    root: PathBuf,
+}
+
+impl SnapshotInstallStagingGuard {
+    fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+impl Drop for SnapshotInstallStagingGuard {
+    fn drop(&mut self) {
+        if self.root.exists()
+            && let Err(error) = std::fs::remove_dir_all(&self.root)
+        {
+            warn!(
+                "Failed to remove snapshot install staging root {}: {}",
+                self.root.display(),
+                error
+            );
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1277,111 +833,6 @@ pub struct SnapshotTrustedPublicKey {
     pub key_id: String,
     /// Ed25519 public key encoded as base64(raw 32-byte bytes).
     pub public_key_base64: String,
-}
-
-impl SnapshotManifest {
-    pub fn build(
-        file_name: String,
-        file_sha256: String,
-        state_ref: HistoricalSnapshotStateRef,
-        db_identity: BalanceHistoryDBIdentity,
-        signing_key_id: Option<String>,
-    ) -> Self {
-        Self {
-            manifest_version: SNAPSHOT_MANIFEST_VERSION.to_string(),
-            file_name,
-            file_sha256,
-            db_identity,
-            balance_query_floor: state_ref.block_height,
-            history_query_floor: state_ref.block_height.saturating_add(1),
-            state_ref,
-            signature_scheme: signing_key_id
-                .as_ref()
-                .map(|_| SNAPSHOT_SIGNATURE_SCHEME_ED25519.to_string()),
-            signing_key_id,
-            generated_at: Some(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            ),
-        }
-    }
-
-    /// Returns the canonical JSON bytes covered by the detached signature.
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(self).map_err(|e| {
-            let msg = format!(
-                "Failed to serialize canonical snapshot manifest {} for signing: {}",
-                self.file_name, e
-            );
-            error!("{}", msg);
-            msg
-        })
-    }
-
-    pub fn load(path: &Path) -> Result<Self, String> {
-        let data = std::fs::read_to_string(path).map_err(|e| {
-            let msg = format!("Failed to read snapshot manifest {}: {}", path.display(), e);
-            error!("{}", msg);
-            msg
-        })?;
-        let manifest: SnapshotManifest = parse_json_strict(&data).map_err(|e| {
-            let msg = format!(
-                "Failed to parse snapshot manifest {} as JSON: {}",
-                path.display(),
-                e
-            );
-            error!("{}", msg);
-            msg
-        })?;
-        if manifest.manifest_version != SNAPSHOT_MANIFEST_VERSION {
-            let msg = format!(
-                "Unsupported snapshot manifest version {} in {} (expected {})",
-                manifest.manifest_version,
-                path.display(),
-                SNAPSHOT_MANIFEST_VERSION
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
-        let mut file_name_components = Path::new(&manifest.file_name).components();
-        if !matches!(file_name_components.next(), Some(Component::Normal(_)))
-            || file_name_components.next().is_some()
-            || manifest.file_name.contains('/')
-            || manifest.file_name.contains('\\')
-        {
-            let msg = format!(
-                "Snapshot manifest file_name must be a safe basename in {}: {}",
-                path.display(),
-                manifest.file_name
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
-        Ok(manifest)
-    }
-
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(self).map_err(|e| {
-            let msg = format!(
-                "Failed to serialize snapshot manifest {}: {}",
-                path.display(),
-                e
-            );
-            error!("{}", msg);
-            msg
-        })?;
-        std::fs::write(path, data).map_err(|e| {
-            let msg = format!(
-                "Failed to write snapshot manifest {}: {}",
-                path.display(),
-                e
-            );
-            error!("{}", msg);
-            msg
-        })
-    }
 }
 
 impl SnapshotSigningKeyFile {
@@ -1620,78 +1071,6 @@ pub fn verify_snapshot_artifact_manifest_signature(
     Ok(signing_key_id.to_string())
 }
 
-/// Verifies a manifest's detached Ed25519 signature against one trusted-key catalog.
-///
-/// This intentionally verifies only the signed manifest identity. Callers that publish or install
-/// an artifact must separately verify the snapshot DB hash recorded by the manifest.
-pub fn verify_snapshot_manifest_signature(
-    manifest: &SnapshotManifest,
-    manifest_path: &Path,
-    trusted_keys_path: &Path,
-) -> Result<String, String> {
-    let signature_scheme = manifest.signature_scheme.as_deref().ok_or_else(|| {
-        let msg = format!(
-            "Signed snapshot manifest {} is missing signature_scheme",
-            manifest_path.display()
-        );
-        error!("{}", msg);
-        msg
-    })?;
-    if signature_scheme != SNAPSHOT_SIGNATURE_SCHEME_ED25519 {
-        let msg = format!(
-            "Unsupported snapshot signature scheme {} for {} (expected {})",
-            signature_scheme,
-            manifest_path.display(),
-            SNAPSHOT_SIGNATURE_SCHEME_ED25519
-        );
-        error!("{}", msg);
-        return Err(msg);
-    }
-    let signing_key_id = manifest.signing_key_id.as_deref().ok_or_else(|| {
-        let msg = format!(
-            "Signed snapshot manifest {} is missing signing_key_id",
-            manifest_path.display()
-        );
-        error!("{}", msg);
-        msg
-    })?;
-    let signature_path = signature_path_for_manifest_file(manifest_path);
-    if !signature_path.is_file() {
-        let msg = format!(
-            "Signed snapshot manifest requires signature sidecar {}, but it does not exist",
-            signature_path.display()
-        );
-        error!("{}", msg);
-        return Err(msg);
-    }
-    let trusted_keys = SnapshotTrustedKeySet::load(trusted_keys_path)?;
-    let verifying_key = trusted_keys
-        .find_verifying_key(signing_key_id)?
-        .ok_or_else(|| {
-            let msg = format!(
-                "Snapshot signer {} is not trusted by {}",
-                signing_key_id,
-                trusted_keys_path.display()
-            );
-            error!("{}", msg);
-            msg
-        })?;
-    let signature = load_signature_file(&signature_path)?;
-    verifying_key
-        .verify(&manifest.canonical_bytes()?, &signature)
-        .map_err(|e| {
-            let msg = format!(
-                "Snapshot signature verification failed for manifest {} signed by {}: {}",
-                manifest_path.display(),
-                signing_key_id,
-                e
-            );
-            error!("{}", msg);
-            msg
-        })?;
-    Ok(signing_key_id.to_string())
-}
-
 pub struct SnapshotInstaller {
     config: BalanceHistoryConfigRef,
     db: BalanceHistoryDBRef,
@@ -1723,9 +1102,9 @@ impl SnapshotInstaller {
         self
     }
 
-    pub fn install(self, data: SnapshotData) -> Result<(), String> {
+    pub fn install(self, data: CoreSnapshotData) -> Result<(), String> {
         let install_begin = Instant::now();
-        info!("Starting snapshot installation from {:?}", data,);
+        info!("Starting core snapshot installation from {:?}", data);
         let progress = self
             .progress_file
             .as_ref()
@@ -1746,7 +1125,7 @@ impl SnapshotInstaller {
                 0,
                 source_size,
                 None,
-                "verifying snapshot source",
+                "verifying core snapshot source",
                 true,
             );
         }
@@ -1754,152 +1133,126 @@ impl SnapshotInstaller {
         self.output.start_load(0);
         let trust_mode = self.config.snapshot.trust_mode.clone();
         let verification_begin = Instant::now();
-
-        let manifest = if let Some(manifest_file) = data.manifest_file.as_ref() {
-            self.output.println(&format!(
-                "Loading snapshot manifest from {}",
-                manifest_file.display()
-            ));
-            Some(SnapshotManifest::load(manifest_file)?)
-        } else {
-            None
-        };
-
-        if manifest.is_none()
-            && matches!(
-                trust_mode,
-                SnapshotTrustMode::Manifest | SnapshotTrustMode::Signed
-            )
-        {
-            let msg = format!(
-                "Snapshot install requires a manifest in {:?} trust mode, but none was provided for {}",
-                trust_mode,
-                data.file.display()
+        let manifest = CoreSnapshotManifest::load(&data.manifest_file).map_err(|error| {
+            let message = format!(
+                "Failed to load required core snapshot manifest {}: {error}",
+                data.manifest_file.display()
             );
-            error!("{}", msg);
-            return Err(msg);
-        }
-
-        let signature_path = data
-            .manifest_file
-            .as_ref()
-            .map(|manifest_file| signature_path_for_manifest_file(manifest_file));
-        let signature_present = signature_path
-            .as_ref()
-            .map(|path| path.exists())
-            .unwrap_or(false);
+            error!("{}", message);
+            message
+        })?;
         let signature_verified = if matches!(trust_mode, SnapshotTrustMode::Signed) {
-            let manifest = manifest.as_ref().ok_or_else(|| {
-                let msg = format!(
-                    "Signed snapshot install requires a manifest for {}",
-                    data.file.display()
-                );
-                error!("{}", msg);
-                msg
-            })?;
-            let manifest_file = data.manifest_file.as_ref().ok_or_else(|| {
-                let msg = format!(
-                    "Signed snapshot install requires a manifest path for {}",
-                    data.file.display()
-                );
-                error!("{}", msg);
-                msg
-            })?;
             let trusted_keys_path = self.config.snapshot_trusted_keys_path().ok_or_else(|| {
                 let msg = format!(
-                    "Signed snapshot install requires snapshot.trusted_keys_file in config for {}",
+                    "Signed core snapshot install requires snapshot.trusted_keys_file in config for {}",
                     data.file.display()
                 );
                 error!("{}", msg);
                 msg
             })?;
-            verify_snapshot_manifest_signature(manifest, manifest_file, &trusted_keys_path)?;
+            verify_snapshot_artifact_manifest_signature(
+                manifest.signature_scheme.as_deref(),
+                manifest.signing_key_id.as_deref(),
+                &data.manifest_file,
+                &manifest.signature_payload()?,
+                &trusted_keys_path,
+            )?;
             true
         } else {
             false
         };
 
-        // First check hash is correct
-        if !data.file.exists() {
-            let msg = format!("Snapshot file {:?} does not exist", data.file);
+        if !data.file.is_file() {
+            let msg = format!("Core snapshot file {:?} does not exist", data.file);
             error!("{}", msg);
             return Err(msg);
         }
 
-        if let Some(manifest) = manifest.as_ref() {
-            let file_name = data
-                .file
-                .file_name()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| {
-                    let msg = format!(
-                        "Failed to resolve snapshot file name from path {}",
-                        data.file.display()
-                    );
-                    error!("{}", msg);
-                    msg
-                })?;
-            if manifest.file_name != file_name {
-                let msg = format!(
-                    "Snapshot manifest file_name mismatch: manifest expects {}, actual file is {}",
-                    manifest.file_name, file_name
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
-        }
-
-        let expected_hash = manifest
-            .as_ref()
-            .map(|manifest| manifest.file_sha256.clone());
-
-        if let Some(hash) = expected_hash {
-            self.output.println("Verifying snapshot file hash...");
-            let hash_begin = Instant::now();
-            let file_hash =
-                SnapshotHash::calc_hash_with_progress(&data.file, |processed, total| {
-                    if let Some(progress) = progress.as_ref() {
-                        progress.report(
-                            "running",
-                            "verify_source",
-                            1,
-                            processed,
-                            total,
-                            "bytes",
-                            processed,
-                            total,
-                            None,
-                            "verifying snapshot file hash",
-                            processed >= total,
-                        );
-                    }
-                })?;
-            if !file_hash.eq_ignore_ascii_case(&hash) {
-                let msg = format!(
-                    "Snapshot file hash mismatch: expected {}, got {}",
-                    hash, file_hash
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
-            info!(
-                "Snapshot installation stage completed: stage=file_hash, path={}, elapsed_ms={}",
-                data.file.display(),
-                hash_begin.elapsed().as_millis()
+        let file_name = file_basename(&data.file)?;
+        if manifest.file_name != file_name {
+            let msg = format!(
+                "Core snapshot manifest file_name mismatch: manifest expects {}, actual file is {}",
+                manifest.file_name, file_name
             );
-        } else {
-            self.output
-                .println("No snapshot file hash provided, skipping verification");
+            error!("{}", msg);
+            return Err(msg);
         }
 
-        let snapshot_db = SnapshotDB::open_read_only(&data.file).map_err(|e| {
-            let msg = format!("Failed to open snapshot database: {}", e);
+        self.output.println("Verifying core snapshot file hash...");
+        let hash_begin = Instant::now();
+        let file_hash = SnapshotHash::calc_hash_with_progress(&data.file, |processed, total| {
+            if let Some(progress) = progress.as_ref() {
+                progress.report(
+                    "running",
+                    "verify_source",
+                    1,
+                    processed,
+                    total,
+                    "bytes",
+                    processed,
+                    total,
+                    None,
+                    "verifying core snapshot file hash",
+                    processed >= total,
+                );
+            }
+        })?;
+        if file_hash != manifest.file_sha256 {
+            let msg = format!(
+                "Core snapshot file hash mismatch: expected {}, got {}",
+                manifest.file_sha256, file_hash
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        info!(
+            "Core snapshot installation stage completed: stage=file_hash, path={}, elapsed_ms={}",
+            data.file.display(),
+            hash_begin.elapsed().as_millis()
+        );
+
+        let snapshot_db = CoreSnapshotDb::open_for_verification(
+            &data.file,
+            SNAPSHOT_INSTALL_VERIFICATION_CACHE_SIZE_KIB,
+        )
+        .map_err(|e| {
+            let msg = format!("Failed to open core snapshot database: {}", e);
             error!("{}", msg);
             msg
         })?;
-
-        let meta = snapshot_db.get_meta().map_err(|e| {
-            let msg = format!("Failed to read snapshot metadata: {}", e);
+        Self::report_verification_progress(
+            progress.as_ref(),
+            source_size,
+            "checking core snapshot SQLite integrity",
+        );
+        let integrity_heartbeat = SnapshotInstallProgressHeartbeat::start(
+            progress.as_ref(),
+            source_size,
+            "checking core snapshot SQLite integrity",
+        );
+        let integrity_begin = Instant::now();
+        snapshot_db.verify_integrity().map_err(|error| {
+            let msg = format!("Core snapshot SQLite integrity check failed: {error}");
+            error!("{}", msg);
+            msg
+        })?;
+        drop(integrity_heartbeat);
+        info!(
+            "Core snapshot installation verification completed: check=sqlite_integrity, elapsed_ms={}",
+            integrity_begin.elapsed().as_millis()
+        );
+        Self::report_verification_progress(
+            progress.as_ref(),
+            source_size,
+            "checking core snapshot schema and metadata",
+        );
+        snapshot_db.verify_schema().map_err(|error| {
+            let msg = format!("Core snapshot schema verification failed: {error}");
+            error!("{}", msg);
+            msg
+        })?;
+        let meta = snapshot_db.read_meta().map_err(|e| {
+            let msg = format!("Failed to read core snapshot metadata: {}", e);
             error!("{}", msg);
             msg
         })?;
@@ -1907,57 +1260,140 @@ impl SnapshotInstaller {
         let expected_identity = BalanceHistoryDBIdentity::for_network(self.config.btc.network());
         if meta.db_identity != expected_identity {
             let msg = format!(
-                "Snapshot DB identity mismatch: expected {:?}, found {:?}",
+                "Core snapshot DB identity mismatch: expected {:?}, found {:?}",
                 expected_identity, meta.db_identity
             );
             error!("{}", msg);
             return Err(msg);
         }
-        if let Some(manifest) = manifest.as_ref()
-            && manifest.db_identity != meta.db_identity
-        {
+        if manifest.db_identity != meta.db_identity {
             let msg = format!(
-                "Snapshot manifest DB identity mismatch: manifest {:?}, snapshot {:?}",
+                "Core snapshot manifest DB identity mismatch: manifest {:?}, snapshot {:?}",
                 manifest.db_identity, meta.db_identity
             );
             error!("{}", msg);
             return Err(msg);
         }
-
-        if let Some(manifest) = manifest.as_ref()
-            && manifest.state_ref.block_height != meta.block_height
+        if manifest.state_ref.block_height != meta.block_height
+            || manifest.core_snapshot_id != meta.core_snapshot_id
+            || manifest.generated_at != meta.generated_at
         {
             let msg = format!(
-                "Snapshot manifest block height mismatch: manifest expects {}, snapshot meta reports {}",
-                manifest.state_ref.block_height, meta.block_height
+                "Core snapshot metadata identity mismatch: manifest height={} core_snapshot_id={} generated_at={}, snapshot height={} core_snapshot_id={} generated_at={}",
+                manifest.state_ref.block_height,
+                manifest.core_snapshot_id,
+                manifest.generated_at,
+                meta.block_height,
+                meta.core_snapshot_id,
+                meta.generated_at
             );
             error!("{}", msg);
             return Err(msg);
         }
-        if let Some(manifest) = manifest.as_ref()
-            && (manifest.balance_query_floor != meta.block_height
-                || manifest.history_query_floor != meta.block_height.saturating_add(1))
-        {
-            let msg = format!(
-                "Snapshot manifest retention floor mismatch at height {}: balance_query_floor={}, history_query_floor={}",
-                meta.block_height, manifest.balance_query_floor, manifest.history_query_floor
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
-
-        info!("Snapshot metadata: {:?}", meta);
-        self.output.println(&format!(
-            "Snapshot generated at block height {}, balance history entries: {}, UTXO entries: {}, block commits: {}, script registry entries: {}",
+        let expected_consensus_identity = crate::service::build_consensus_snapshot_identity(
+            &self.config,
             meta.block_height,
+            &manifest.state_ref.stable_block_hash,
+        )?;
+        if manifest.state_ref.consensus_identity != expected_consensus_identity {
+            let msg = format!(
+                "Core snapshot consensus identity does not match local configuration: manifest {:?}, expected {:?}",
+                manifest.state_ref.consensus_identity, expected_consensus_identity
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Self::report_verification_progress(
+            progress.as_ref(),
+            source_size,
+            "counting core snapshot balance rows",
+        );
+        let count_begin = Instant::now();
+        let balance_count_heartbeat = SnapshotInstallProgressHeartbeat::start(
+            progress.as_ref(),
+            source_size,
+            "counting core snapshot balance rows",
+        );
+        let balance_history_count = snapshot_db.balance_history_count()?;
+        drop(balance_count_heartbeat);
+        Self::report_verification_progress(
+            progress.as_ref(),
+            source_size,
+            "counting core snapshot UTXO rows",
+        );
+        let utxo_count_heartbeat = SnapshotInstallProgressHeartbeat::start(
+            progress.as_ref(),
+            source_size,
+            "counting core snapshot UTXO rows",
+        );
+        let utxo_count = snapshot_db.utxo_count()?;
+        drop(utxo_count_heartbeat);
+        Self::report_verification_progress(
+            progress.as_ref(),
+            source_size,
+            "counting core snapshot block commitments",
+        );
+        let block_commit_count_heartbeat = SnapshotInstallProgressHeartbeat::start(
+            progress.as_ref(),
+            source_size,
+            "counting core snapshot block commitments",
+        );
+        let block_commit_count = snapshot_db.block_commit_count()?;
+        drop(block_commit_count_heartbeat);
+        let actual_counts = (balance_history_count, utxo_count, block_commit_count);
+        let metadata_counts = (
             meta.balance_history_count,
             meta.utxo_count,
             meta.block_commit_count,
-            meta.script_registry_count
+        );
+        if actual_counts != metadata_counts {
+            let msg = format!(
+                "Core snapshot metadata count mismatch: metadata={metadata_counts:?}, actual={actual_counts:?}"
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        info!(
+            "Core snapshot installation verification completed: check=table_counts, elapsed_ms={}",
+            count_begin.elapsed().as_millis()
+        );
+        Self::report_verification_progress(
+            progress.as_ref(),
+            source_size,
+            "checking latest core block commitment",
+        );
+        let latest_commit = snapshot_db.latest_block_commit()?.ok_or_else(|| {
+            let msg = format!(
+                "Core snapshot at height {} does not contain a block commit",
+                meta.block_height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        if latest_commit.block_height != meta.block_height
+            || format!("{:x}", latest_commit.btc_block_hash) != manifest.state_ref.stable_block_hash
+            || crate::service::encode_commit_hex(&latest_commit.block_commit)
+                != manifest.state_ref.latest_block_commit
+        {
+            let msg = "Core snapshot latest block commitment does not match manifest".to_string();
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        info!("Core snapshot metadata: {:?}", meta);
+        self.output.println(&format!(
+            "Core snapshot at block height {} contains {} balance rows, {} UTXOs, and {} block commits",
+            meta.block_height,
+            meta.balance_history_count,
+            meta.utxo_count,
+            meta.block_commit_count
         ));
         info!(
-            "Snapshot installation stage completed: stage=verify_source, block_height={}, trust_mode={:?}, signature_verified={}, elapsed_ms={}",
+            "Core snapshot installation stage completed: stage=verify_source, block_height={}, core_snapshot_id={}, core_artifact_id={}, trust_mode={:?}, signature_verified={}, elapsed_ms={}",
             meta.block_height,
+            manifest.core_snapshot_id,
+            manifest.core_artifact_id,
             trust_mode,
             signature_verified,
             verification_begin.elapsed().as_millis()
@@ -1966,8 +1402,7 @@ impl SnapshotInstaller {
         let import_total = meta
             .balance_history_count
             .saturating_add(meta.utxo_count)
-            .saturating_add(meta.block_commit_count)
-            .saturating_add(meta.script_registry_count);
+            .saturating_add(meta.block_commit_count);
         if let Some(progress) = progress.as_ref() {
             progress.report(
                 "running",
@@ -1986,6 +1421,7 @@ impl SnapshotInstaller {
 
         let staging_open_begin = Instant::now();
         let staging_root = self.prepare_staging_root()?;
+        let _staging_guard = SnapshotInstallStagingGuard::new(staging_root.clone());
         let staging_config = self.make_staging_config(staging_root.clone());
         let staging_db = BalanceHistoryDB::open(staging_config, BalanceHistoryDBMode::BestEffort)
             .map_err(|e| {
@@ -1994,7 +1430,7 @@ impl SnapshotInstaller {
             msg
         })?;
         info!(
-            "Snapshot installation stage completed: stage=open_staging_db, block_height={}, elapsed_ms={}",
+            "Core snapshot installation stage completed: stage=open_staging_db, block_height={}, elapsed_ms={}",
             meta.block_height,
             staging_open_begin.elapsed().as_millis()
         );
@@ -2009,7 +1445,7 @@ impl SnapshotInstaller {
             import_total,
         )?;
         info!(
-            "Snapshot installation stage completed: stage=balance_history, block_height={}, row_count={}, elapsed_ms={}",
+            "Core snapshot installation stage completed: stage=balance_history, block_height={}, row_count={}, elapsed_ms={}",
             meta.block_height,
             meta.balance_history_count,
             balance_history_begin.elapsed().as_millis()
@@ -2023,7 +1459,7 @@ impl SnapshotInstaller {
             import_total,
         )?;
         info!(
-            "Snapshot installation stage completed: stage=utxo, block_height={}, row_count={}, elapsed_ms={}",
+            "Core snapshot installation stage completed: stage=utxo, block_height={}, row_count={}, elapsed_ms={}",
             meta.block_height,
             meta.utxo_count,
             utxo_begin.elapsed().as_millis()
@@ -2037,32 +1473,17 @@ impl SnapshotInstaller {
             import_total,
         )?;
         info!(
-            "Snapshot installation stage completed: stage=block_commit, block_height={}, row_count={}, elapsed_ms={}",
+            "Core snapshot installation stage completed: stage=block_commit, block_height={}, row_count={}, elapsed_ms={}",
             meta.block_height,
             meta.block_commit_count,
             block_commit_begin.elapsed().as_millis()
         );
-        let script_registry_begin = Instant::now();
-        self.install_script_registry_snapshot(
-            &staging_db,
-            &snapshot_db,
-            &meta,
-            progress.as_ref(),
-            import_total,
-        )?;
-        info!(
-            "Snapshot installation stage completed: stage=script_registry, block_height={}, row_count={}, elapsed_ms={}",
-            meta.block_height,
-            meta.script_registry_count,
-            script_registry_begin.elapsed().as_millis()
-        );
-
         let finalize_begin = Instant::now();
         if let Some(progress) = progress.as_ref() {
             progress.report(
                 "running",
                 "finalize",
-                7,
+                6,
                 import_total,
                 import_total,
                 "entries",
@@ -2086,11 +1507,9 @@ impl SnapshotInstaller {
             msg
         })?;
 
-        if let Some(manifest) = manifest.as_ref() {
-            self.validate_staged_manifest(&staging_db, &meta, manifest)?;
-        }
-        let balance_query_floor = meta.block_height;
-        let history_query_floor = meta.block_height.saturating_add(1);
+        self.validate_staged_manifest(&staging_db, &meta, &manifest)?;
+        let balance_query_floor = manifest.balance_query_floor;
+        let history_query_floor = manifest.history_query_floor;
         staging_db
             .put_query_retention_floors(balance_query_floor, history_query_floor)
             .map_err(|e| {
@@ -2106,28 +1525,18 @@ impl SnapshotInstaller {
             trust_mode,
             verification_state: if signature_verified {
                 SnapshotVerificationState::SignatureVerified
-            } else if manifest.is_some() {
-                SnapshotVerificationState::ManifestVerified
             } else {
-                SnapshotVerificationState::ManifestMissing
+                SnapshotVerificationState::ManifestVerified
             },
-            manifest_present: manifest.is_some(),
-            manifest_verified: manifest.is_some(),
-            signature_present,
             signature_verified,
-            manifest_version: manifest
-                .as_ref()
-                .map(|value| value.manifest_version.clone()),
-            signature_scheme: manifest
-                .as_ref()
-                .and_then(|value| value.signature_scheme.clone()),
-            signing_key_id: manifest
-                .as_ref()
-                .and_then(|value| value.signing_key_id.clone()),
-            snapshot_file_sha256: manifest.as_ref().map(|value| value.file_sha256.clone()),
-            snapshot_id: manifest
-                .as_ref()
-                .map(|value| value.state_ref.snapshot_id.clone()),
+            artifact_type: manifest.artifact_type,
+            manifest_version: manifest.manifest_version.clone(),
+            snapshot_schema_version: manifest.snapshot_schema_version.clone(),
+            signature_scheme: manifest.signature_scheme.clone(),
+            signing_key_id: manifest.signing_key_id.clone(),
+            snapshot_file_sha256: manifest.file_sha256.clone(),
+            core_snapshot_id: manifest.core_snapshot_id.clone(),
+            core_artifact_id: manifest.core_artifact_id.clone(),
             installed_block_height: meta.block_height,
             balance_query_floor,
             history_query_floor,
@@ -2158,7 +1567,7 @@ impl SnapshotInstaller {
             progress.report(
                 "running",
                 "swap",
-                8,
+                7,
                 import_total,
                 import_total,
                 "entries",
@@ -2183,19 +1592,21 @@ impl SnapshotInstaller {
                 1,
                 1,
                 Some(meta.block_height),
-                "snapshot imported into live RocksDB",
+                "core snapshot imported into live RocksDB",
                 true,
             );
         }
 
         output.println(&format!(
-            "Completed snapshot installation up to block height {}",
+            "Completed core snapshot installation up to block height {}",
             meta.block_height
         ));
         output.finish_load();
         info!(
-            "Snapshot installation completed: block_height={}, finalize_metadata_elapsed_ms={}, swap_elapsed_ms={}, total_elapsed_ms={}",
+            "Core snapshot installation completed: block_height={}, core_snapshot_id={}, core_artifact_id={}, finalize_metadata_elapsed_ms={}, swap_elapsed_ms={}, total_elapsed_ms={}",
             meta.block_height,
+            manifest.core_snapshot_id,
+            manifest.core_artifact_id,
             finalize_elapsed_ms,
             swap_elapsed_ms,
             install_begin.elapsed().as_millis()
@@ -2204,10 +1615,32 @@ impl SnapshotInstaller {
         Ok(())
     }
 
+    fn report_verification_progress(
+        progress: Option<&SnapshotInstallProgressReporter>,
+        source_size: u64,
+        message: &str,
+    ) {
+        if let Some(progress) = progress {
+            progress.report(
+                "running",
+                "verify_source",
+                1,
+                source_size,
+                source_size,
+                "bytes",
+                0,
+                0,
+                None,
+                message,
+                true,
+            );
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn report_import_progress(
         progress: Option<&SnapshotInstallProgressReporter>,
-        meta: &SnapshotMeta,
+        meta: &CoreSnapshotMeta,
         stage: &str,
         stage_index: u8,
         completed_before_stage: u64,
@@ -2237,8 +1670,8 @@ impl SnapshotInstaller {
     fn validate_staged_manifest(
         &self,
         staging_db: &BalanceHistoryDB,
-        meta: &SnapshotMeta,
-        manifest: &SnapshotManifest,
+        meta: &CoreSnapshotMeta,
+        manifest: &CoreSnapshotManifest,
     ) -> Result<(), String> {
         self.output.println(&format!(
             "Validating staged snapshot state against manifest for block height {}",
@@ -2287,8 +1720,8 @@ impl SnapshotInstaller {
     fn install_balance_history_snapshot(
         &self,
         target_db: &BalanceHistoryDB,
-        snapshot_db: &SnapshotDB,
-        meta: &SnapshotMeta,
+        snapshot_db: &CoreSnapshotDb,
+        meta: &CoreSnapshotMeta,
         progress: Option<&SnapshotInstallProgressReporter>,
         import_total: u64,
     ) -> Result<(), String> {
@@ -2360,12 +1793,12 @@ impl SnapshotInstaller {
             }
         }
 
-        assert!(
-            installed_total == total,
-            "Installed total {} does not match expected total {}",
-            installed_total,
-            total
-        );
+        if installed_total != total {
+            return Err(format!(
+                "Installed balance rows {} do not match core metadata count {}",
+                installed_total, total
+            ));
+        }
 
         target_db.flush_all().map_err(|e| {
             let msg = format!("Failed to flush database: {}", e);
@@ -2382,8 +1815,8 @@ impl SnapshotInstaller {
     fn install_utxo_snapshot(
         &self,
         target_db: &BalanceHistoryDB,
-        snapshot_db: &SnapshotDB,
-        meta: &SnapshotMeta,
+        snapshot_db: &CoreSnapshotDb,
+        meta: &CoreSnapshotMeta,
         progress: Option<&SnapshotInstallProgressReporter>,
         import_total: u64,
     ) -> Result<(), String> {
@@ -2456,12 +1889,12 @@ impl SnapshotInstaller {
             }
         }
 
-        assert!(
-            installed_total == total,
-            "Installed UTXOs total {} does not match expected total {}",
-            installed_total,
-            total
-        );
+        if installed_total != total {
+            return Err(format!(
+                "Installed UTXOs {} do not match core metadata count {}",
+                installed_total, total
+            ));
+        }
 
         target_db.flush_all().map_err(|e| {
             let msg = format!("Failed to flush database: {}", e);
@@ -2477,8 +1910,8 @@ impl SnapshotInstaller {
     fn install_block_commit_snapshot(
         &self,
         target_db: &BalanceHistoryDB,
-        snapshot_db: &SnapshotDB,
-        meta: &SnapshotMeta,
+        snapshot_db: &CoreSnapshotDb,
+        meta: &CoreSnapshotMeta,
         progress: Option<&SnapshotInstallProgressReporter>,
         import_total: u64,
     ) -> Result<(), String> {
@@ -2550,12 +1983,12 @@ impl SnapshotInstaller {
             }
         }
 
-        assert!(
-            installed_total == total,
-            "Installed block commits total {} does not match expected total {}",
-            installed_total,
-            total
-        );
+        if installed_total != total {
+            return Err(format!(
+                "Installed block commits {} do not match core metadata count {}",
+                installed_total, total
+            ));
+        }
 
         target_db.flush_all().map_err(|e| {
             let msg = format!("Failed to flush database: {}", e);
@@ -2565,109 +1998,6 @@ impl SnapshotInstaller {
 
         self.output
             .println("Block commit snapshot installation completed");
-
-        Ok(())
-    }
-
-    fn install_script_registry_snapshot(
-        &self,
-        target_db: &BalanceHistoryDB,
-        snapshot_db: &SnapshotDB,
-        meta: &SnapshotMeta,
-        progress: Option<&SnapshotInstallProgressReporter>,
-        import_total: u64,
-    ) -> Result<(), String> {
-        let total = meta.script_registry_count;
-        let completed_before_stage = meta
-            .balance_history_count
-            .saturating_add(meta.utxo_count)
-            .saturating_add(meta.block_commit_count);
-        Self::report_import_progress(
-            progress,
-            meta,
-            "script_registry",
-            6,
-            completed_before_stage,
-            0,
-            total,
-            import_total,
-            "importing script registry entries",
-            true,
-        );
-        if total == 0 {
-            self.output
-                .println("No script registry entries in snapshot, skipping installation");
-            return Ok(());
-        }
-
-        self.output.update_load_total_count(total);
-        self.output.println(&format!(
-            "Installing script registry snapshot with {} entries",
-            total
-        ));
-
-        let page_size = 1024 * 256;
-        let mut last_script_hash = None;
-        let mut installed_total = 0u64;
-        loop {
-            let entries = snapshot_db
-                .get_script_registry_entries(page_size, last_script_hash.as_ref())
-                .map_err(|e| {
-                    let msg = format!("Failed to read snapshot script registry entries: {}", e);
-                    self.output.println(&msg);
-                    msg
-                })?;
-
-            target_db
-                .put_script_registry_entries(&entries)
-                .map_err(|e| {
-                    let msg = format!(
-                        "Failed to write snapshot script registry to database: {}",
-                        e
-                    );
-                    self.output.println(&msg);
-                    msg
-                })?;
-            installed_total += entries.len() as u64;
-
-            if let Some(last_entry) = entries.last() {
-                last_script_hash = Some(last_entry.script_hash);
-            }
-
-            self.output.update_load_current_count(installed_total);
-            Self::report_import_progress(
-                progress,
-                meta,
-                "script_registry",
-                6,
-                completed_before_stage,
-                installed_total,
-                total,
-                import_total,
-                "importing script registry entries",
-                installed_total >= total,
-            );
-
-            if entries.len() < page_size as usize {
-                break;
-            }
-        }
-
-        assert!(
-            installed_total == total,
-            "Installed script registry total {} does not match expected total {}",
-            installed_total,
-            total
-        );
-
-        target_db.flush_all().map_err(|e| {
-            let msg = format!("Failed to flush database: {}", e);
-            self.output.println(&msg);
-            msg
-        })?;
-
-        self.output
-            .println("Script registry snapshot installation completed");
 
         Ok(())
     }
@@ -2724,7 +2054,7 @@ impl SnapshotInstaller {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_secs()
+                .as_nanos()
         ));
 
         if !staged_db_dir.exists() {
@@ -2784,16 +2114,14 @@ impl SnapshotInstaller {
             ));
         }
 
-        if staging_root.exists() {
-            std::fs::remove_dir_all(&staging_root).map_err(|e| {
-                let msg = format!(
-                    "Failed to remove staging root {}: {}",
-                    staging_root.display(),
-                    e
-                );
-                error!("{}", msg);
-                msg
-            })?;
+        if staging_root.exists()
+            && let Err(error) = std::fs::remove_dir_all(&staging_root)
+        {
+            warn!(
+                "Core snapshot is live, but staging root cleanup failed for {}: {}",
+                staging_root.display(),
+                error
+            );
         }
 
         Ok(())
@@ -2838,74 +2166,124 @@ mod tests {
         }
     }
 
-    fn build_manifest_for_snapshot(
+    struct TestCoreArtifact {
+        db_path: PathBuf,
+        manifest_path: PathBuf,
+        manifest: CoreSnapshotManifest,
+        script_hash: BtcScriptHash,
+        outpoint: OutPoint,
+        commit: BlockCommitEntry,
+    }
+
+    fn write_test_core_artifact(
         config: &BalanceHistoryConfig,
-        snapshot_path: &Path,
-        block_height: u32,
-        commit: &BlockCommitEntry,
-    ) -> SnapshotManifest {
+        root_dir: &Path,
+        stable_lag_override: Option<u32>,
+        data_model_override: Option<&str>,
+        signing: Option<(&str, &SigningKey)>,
+    ) -> TestCoreArtifact {
+        let db_path = root_dir.join("balance_history_core_10.db");
+        let script = ScriptBuf::from(vec![9u8; 32]);
+        let script_hash = script.to_btc_script_hash();
+        let outpoint = OutPoint {
+            txid: Txid::from_slice(&[4u8; 32]).unwrap(),
+            vout: 1,
+        };
+        let commit = BlockCommitEntry {
+            block_height: 10,
+            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
+            balance_delta_root: [11u8; 32],
+            block_commit: [12u8; 32],
+        };
         let stable_block_hash = format!("{:x}", commit.btc_block_hash);
-        let consensus_identity =
-            build_consensus_snapshot_identity(config, block_height, &stable_block_hash).unwrap();
+        let mut consensus_identity =
+            build_consensus_snapshot_identity(config, 10, &stable_block_hash).unwrap();
+        if let Some(stable_lag) = stable_lag_override {
+            consensus_identity.stable_lag = stable_lag;
+        }
         let snapshot_id = build_consensus_snapshot_id(&consensus_identity);
         let state_ref = HistoricalSnapshotStateRef {
-            block_height,
+            block_height: 10,
             stable_block_hash,
             latest_block_commit: encode_commit_hex(&commit.block_commit),
             consensus_identity,
-            snapshot_id,
+            snapshot_id: snapshot_id.clone(),
             snapshot_id_hash_algo: CONSENSUS_SNAPSHOT_ID_HASH_ALGO.to_string(),
             snapshot_id_version: CONSENSUS_SNAPSHOT_ID_VERSION.to_string(),
             commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
             commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
         };
+        let mut db_identity = BalanceHistoryDBIdentity::for_network(config.btc.network());
+        if let Some(data_model_version) = data_model_override {
+            db_identity.data_model_version = data_model_version.to_string();
+        }
+        let generated_at = 1_725_000_000;
+        let mut db = CoreSnapshotDb::create(&db_path).unwrap();
+        db.put_balance_history_entries(&[BalanceHistoryEntry {
+            script_hash,
+            block_height: 10,
+            delta: 75,
+            balance: 75,
+        }])
+        .unwrap();
+        db.put_utxo_entries(&[UTXOEntry {
+            outpoint,
+            script_hash,
+            value: 75,
+        }])
+        .unwrap();
+        db.put_block_commit_entries(std::slice::from_ref(&commit))
+            .unwrap();
+        db.write_meta(&CoreSnapshotMeta {
+            block_height: 10,
+            balance_history_count: 1,
+            utxo_count: 1,
+            block_commit_count: 1,
+            generated_at,
+            db_identity: db_identity.clone(),
+            core_snapshot_id: snapshot_id,
+        })
+        .unwrap();
+        db.finalize_for_distribution().unwrap();
 
-        SnapshotManifest::build(
-            snapshot_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap()
-                .to_string(),
-            SnapshotHash::calc_hash(snapshot_path).unwrap(),
+        let signing_key_id = signing.map(|(key_id, _)| key_id.to_string());
+        let manifest = CoreSnapshotManifest::build(
+            file_basename(&db_path).unwrap(),
+            SnapshotHash::calc_hash(&db_path).unwrap(),
             state_ref,
-            BalanceHistoryDBIdentity::for_network(config.btc.network()),
-            None,
+            db_identity,
+            signing_key_id,
+            generated_at,
         )
-    }
-
-    fn write_test_snapshot_manifest(root_dir: &Path) -> (PathBuf, SnapshotManifest) {
-        let snapshot_path = root_dir.join("snapshot.db");
-        std::fs::write(&snapshot_path, b"test snapshot").unwrap();
-        let commit = BlockCommitEntry {
-            block_height: 1,
-            btc_block_hash: BlockHash::from_slice(&[2; 32]).unwrap(),
-            balance_delta_root: [3; 32],
-            block_commit: [4; 32],
-        };
-        let manifest = build_manifest_for_snapshot(
-            &test_config_with_root(root_dir),
-            &snapshot_path,
-            1,
-            &commit,
-        );
-        let manifest_path = root_dir.join("snapshot.manifest.json");
+        .unwrap();
+        let manifest_path = manifest_path_for_snapshot_file(&db_path);
         manifest.save(&manifest_path).unwrap();
-        (manifest_path, manifest)
+        if let Some((_, signing_key)) = signing {
+            let signature = signing_key.sign(&manifest.signature_payload().unwrap());
+            save_signature_file(
+                &signature_path_for_manifest_file(&manifest_path),
+                &signature,
+            )
+            .unwrap();
+        }
+
+        TestCoreArtifact {
+            db_path,
+            manifest_path,
+            manifest,
+            script_hash,
+            outpoint,
+            commit,
+        }
     }
 
     fn write_signing_material(
         root_dir: &Path,
         key_id: &str,
         seed_byte: u8,
-    ) -> (PathBuf, PathBuf, SigningKey) {
+    ) -> (PathBuf, SigningKey) {
         let signing_key = SigningKey::from_bytes(&[seed_byte; 32]);
-        let signing_key_path = root_dir.join("snapshot_signing_key.json");
         let trusted_keys_path = root_dir.join("trusted_snapshot_keys.json");
-        let signing_key_file = SnapshotSigningKeyFile {
-            key_id: key_id.to_string(),
-            secret_key_base64: base64::engine::general_purpose::STANDARD
-                .encode(signing_key.to_bytes()),
-        };
         let trusted_keys_file = SnapshotTrustedKeySet {
             keys: vec![SnapshotTrustedPublicKey {
                 key_id: key_id.to_string(),
@@ -2913,26 +2291,25 @@ mod tests {
                     .encode(signing_key.verifying_key().to_bytes()),
             }],
         };
-
-        std::fs::write(
-            &signing_key_path,
-            serde_json::to_vec_pretty(&signing_key_file).unwrap(),
-        )
-        .unwrap();
         std::fs::write(
             &trusted_keys_path,
             serde_json::to_vec_pretty(&trusted_keys_file).unwrap(),
         )
         .unwrap();
+        (trusted_keys_path, signing_key)
+    }
 
-        (signing_key_path, trusted_keys_path, signing_key)
+    fn open_test_live_db(config: &Arc<BalanceHistoryConfig>, height: u32) -> BalanceHistoryDBRef {
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        db.put_btc_block_height(height).unwrap();
+        Arc::new(db)
     }
 
     #[test]
     fn snapshot_install_progress_tracks_attempt_and_stage_start_times() {
         let root_dir = temp_root("install_progress_timing");
         let progress_path = root_dir.join("snapshot-loader.progress.json");
-        let snapshot_path = root_dir.join("snapshot.db");
+        let snapshot_path = root_dir.join("core.db");
         let reporter = SnapshotInstallProgressReporter::new(progress_path.clone(), &snapshot_path);
 
         reporter.report(
@@ -2945,7 +2322,7 @@ mod tests {
             10,
             100,
             None,
-            "verifying snapshot file hash",
+            "verifying core snapshot file hash",
             true,
         );
         let first: SnapshotInstallProgressRecord =
@@ -2954,31 +2331,8 @@ mod tests {
             first.schema_version,
             SNAPSHOT_INSTALL_PROGRESS_SCHEMA_VERSION
         );
+        assert_eq!(first.stage_count, 7);
         assert!(first.stage_started_at_unix >= first.attempt_started_at_unix);
-
-        reporter.report(
-            "running",
-            "verify_source",
-            1,
-            20,
-            100,
-            "bytes",
-            20,
-            100,
-            None,
-            "verifying snapshot file hash",
-            true,
-        );
-        let same_stage: SnapshotInstallProgressRecord =
-            serde_json::from_slice(&std::fs::read(&progress_path).unwrap()).unwrap();
-        assert_eq!(
-            same_stage.stage_started_at_unix,
-            first.stage_started_at_unix
-        );
-        assert_eq!(
-            same_stage.attempt_started_at_unix,
-            first.attempt_started_at_unix
-        );
 
         *reporter.stage_started_at.lock().unwrap() = ("verify_source".to_string(), 1);
         reporter.report(
@@ -2986,7 +2340,7 @@ mod tests {
             "open_staging_db",
             2,
             0,
-            4,
+            3,
             "entries",
             0,
             1,
@@ -2997,35 +2351,26 @@ mod tests {
         let next_stage: SnapshotInstallProgressRecord =
             serde_json::from_slice(&std::fs::read(&progress_path).unwrap()).unwrap();
         assert_eq!(next_stage.stage, "open_staging_db");
+        assert_eq!(next_stage.stage_count, 7);
         assert!(next_stage.stage_started_at_unix > 1);
         assert_eq!(
             next_stage.attempt_started_at_unix,
             first.attempt_started_at_unix
         );
-        assert!(next_stage.updated_at_unix >= next_stage.stage_started_at_unix);
-
         std::fs::remove_dir_all(root_dir).unwrap();
     }
 
     #[test]
-    fn test_install_replaces_live_db_with_staged_snapshot() {
-        let root_dir = temp_root("install_replace");
+    fn core_install_replaces_live_db_without_importing_registry() {
+        let root_dir = temp_root("core_install_replace");
         let config = Arc::new(test_config_with_root(&root_dir));
-
         let old_script = ScriptBuf::from(vec![1u8; 32]);
         let old_script_hash = old_script.to_btc_script_hash();
         let old_outpoint = OutPoint {
             txid: Txid::from_slice(&[2u8; 32]).unwrap(),
             vout: 0,
         };
-
         let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
-        let old_commit = BlockCommitEntry {
-            block_height: 3,
-            btc_block_hash: BlockHash::from_slice(&[7u8; 32]).unwrap(),
-            balance_delta_root: [8u8; 32],
-            block_commit: [9u8; 32],
-        };
         live_db
             .put_address_history_async(&vec![BalanceHistoryEntry {
                 script_hash: old_script_hash,
@@ -3037,7 +2382,6 @@ mod tests {
         live_db
             .put_utxo(&old_outpoint, &old_script_hash, 50)
             .unwrap();
-        live_db.put_block_commits_async(&[old_commit]).unwrap();
         live_db
             .put_script_registry_entries(&[ScriptRegistryEntry {
                 script_hash: old_script_hash,
@@ -3046,137 +2390,88 @@ mod tests {
             .unwrap();
         live_db.put_btc_block_height(3).unwrap();
         let live_db = Arc::new(live_db);
-
-        let snapshot_path = root_dir.join("install_source_snapshot.db");
-        let new_script = ScriptBuf::from(vec![9u8; 32]);
-        let new_script_hash = new_script.to_btc_script_hash();
-        let new_outpoint = OutPoint {
-            txid: Txid::from_slice(&[4u8; 32]).unwrap(),
-            vout: 1,
-        };
-        let new_commit = BlockCommitEntry {
-            block_height: 10,
-            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
-            balance_delta_root: [11u8; 32],
-            block_commit: [12u8; 32],
-        };
-
-        {
-            let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
-            snapshot_db
-                .put_balance_history_entries(&[BalanceHistoryEntry {
-                    script_hash: new_script_hash,
-                    block_height: 10,
-                    delta: 75,
-                    balance: 75,
-                }])
-                .unwrap();
-            snapshot_db
-                .put_utxo_entries(&[UTXOEntry {
-                    outpoint: new_outpoint,
-                    script_hash: new_script_hash,
-                    value: 75,
-                }])
-                .unwrap();
-            snapshot_db
-                .put_block_commit_entries(std::slice::from_ref(&new_commit))
-                .unwrap();
-            snapshot_db
-                .put_script_registry_entries(&[ScriptRegistryEntry {
-                    script_hash: new_script_hash,
-                    script_pubkey: new_script.clone(),
-                }])
-                .unwrap();
-
-            let mut meta = SnapshotMeta::new(
-                10,
-                BalanceHistoryDBIdentity::for_network(config.btc.network()),
-            );
-            meta.balance_history_count = 1;
-            meta.utxo_count = 1;
-            meta.block_commit_count = 1;
-            meta.script_registry_count = 1;
-            snapshot_db.update_meta(&meta).unwrap();
-        }
-
-        let status = Arc::new(SyncStatusManager::new());
-        let output = Arc::new(IndexOutput::new(status));
-        let progress_path = root_dir.join("bootstrap/snapshot-loader.progress.json");
-        let installer = SnapshotInstaller::new(config.clone(), live_db, output)
-            .with_progress_file(progress_path.clone());
-        installer
-            .install(SnapshotData {
-                file: snapshot_path,
-                manifest_file: None,
+        let artifact = write_test_core_artifact(config.as_ref(), &root_dir, None, None, None);
+        let progress_path = root_dir.join("bootstrap/core-loader.progress.json");
+        let output = Arc::new(IndexOutput::new(Arc::new(SyncStatusManager::new())));
+        SnapshotInstaller::new(config.clone(), live_db, output)
+            .with_progress_file(progress_path.clone())
+            .install(CoreSnapshotData {
+                file: artifact.db_path,
+                manifest_file: artifact.manifest_path,
             })
             .unwrap();
 
         let progress: SnapshotInstallProgressRecord =
             serde_json::from_slice(&std::fs::read(&progress_path).unwrap()).unwrap();
-        assert_eq!(
-            progress.schema_version,
-            SNAPSHOT_INSTALL_PROGRESS_SCHEMA_VERSION
-        );
         assert_eq!(progress.state, "complete");
         assert_eq!(progress.stage, "complete");
-        assert_eq!(progress.current, 4);
-        assert_eq!(progress.total, 4);
-        assert_eq!(progress.block_height, Some(10));
-        assert!(progress.attempt_started_at_unix > 0);
-        assert!(progress.stage_started_at_unix >= progress.attempt_started_at_unix);
-        assert!(progress.updated_at_unix >= progress.stage_started_at_unix);
-        assert!(
-            !progress_path
-                .with_file_name(".snapshot-loader.progress.json.tmp")
-                .exists()
-        );
+        assert_eq!(progress.stage_count, 7);
+        assert_eq!((progress.current, progress.total), (3, 3));
 
         let reopened_db =
             BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         assert_eq!(reopened_db.get_btc_block_height().unwrap(), 10);
-        assert!(reopened_db.get_snapshot_install_used().unwrap());
-        assert_eq!(
-            reopened_db
-                .get_snapshot_install_manifest_verified()
-                .unwrap(),
-            Some(false)
-        );
-
-        let old_balance = reopened_db
-            .get_balance_delta_at_block_height(&old_script_hash, 3)
-            .unwrap();
         assert!(
-            old_balance.is_none(),
-            "old live DB balance entry should be replaced by snapshot"
+            reopened_db
+                .get_balance_delta_at_block_height(&old_script_hash, 3)
+                .unwrap()
+                .is_none()
         );
         assert!(reopened_db.get_utxo(&old_outpoint).unwrap().is_none());
-        assert!(reopened_db.get_block_commit(3).unwrap().is_none());
         assert!(
             reopened_db
                 .get_script_registry_entry(&old_script_hash)
                 .unwrap()
-                .is_none(),
-            "old live DB script registry entry should be replaced by snapshot"
+                .is_none()
         );
-
-        let new_balance = reopened_db
-            .get_balance_delta_at_block_height(&new_script_hash, 10)
-            .unwrap()
-            .unwrap();
-        assert_eq!(new_balance.balance, 75);
-        assert_eq!(new_balance.delta, 75);
-
-        let new_utxo = reopened_db.get_utxo(&new_outpoint).unwrap().unwrap();
-        assert_eq!(new_utxo.script_hash, new_script_hash);
-        assert_eq!(new_utxo.value, 75);
-
-        let installed_commit = reopened_db.get_block_commit(10).unwrap().unwrap();
-        assert_eq!(installed_commit, new_commit);
+        assert!(
+            reopened_db
+                .get_script_registry_entry(&artifact.script_hash)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             reopened_db
-                .get_script_registry_entry(&new_script_hash)
-                .unwrap(),
-            Some(new_script)
+                .get_balance_delta_at_block_height(&artifact.script_hash, 10)
+                .unwrap()
+                .unwrap()
+                .balance,
+            75
+        );
+        assert_eq!(
+            reopened_db
+                .get_utxo(&artifact.outpoint)
+                .unwrap()
+                .unwrap()
+                .value,
+            75
+        );
+        assert_eq!(
+            reopened_db.get_block_commit(10).unwrap(),
+            Some(artifact.commit)
+        );
+        assert_eq!(reopened_db.get_query_retention_floors().unwrap(), (10, 11));
+
+        let provenance = reopened_db
+            .get_snapshot_install_provenance()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            provenance.verification_state,
+            SnapshotVerificationState::ManifestVerified
+        );
+        assert_eq!(provenance.artifact_type, artifact.manifest.artifact_type);
+        assert_eq!(
+            provenance.snapshot_schema_version,
+            artifact.manifest.snapshot_schema_version
+        );
+        assert_eq!(
+            provenance.core_snapshot_id,
+            artifact.manifest.core_snapshot_id
+        );
+        assert_eq!(
+            provenance.core_artifact_id,
+            artifact.manifest.core_artifact_id
         );
 
         let status = Arc::new(SyncStatusManager::new());
@@ -3184,400 +2479,126 @@ mod tests {
         status.update_phase(crate::status::SyncPhase::Indexing, None);
         let (shutdown_tx, _) = watch::channel(());
         let rpc_server = BalanceHistoryRpcServer::new(
-            config.clone(),
+            config,
             "127.0.0.1:0".parse().unwrap(),
             status,
             Arc::new(reopened_db),
             shutdown_tx,
         );
-
         let readiness = rpc_server.get_readiness().unwrap();
         assert!(readiness.query_ready);
-        assert!(!readiness.consensus_ready);
+        assert!(readiness.consensus_ready);
         assert!(
-            readiness
+            !readiness
                 .blockers
                 .contains(&crate::ReadinessBlocker::SnapshotInstallUnverified)
         );
 
-        let snapshot = rpc_server.get_snapshot_info().unwrap();
-        assert_eq!(snapshot.stable_height, 10);
-        assert_eq!(snapshot.balance_query_floor, 10);
-        assert_eq!(snapshot.history_query_floor, 11);
-        assert_eq!(
-            snapshot.stable_block_hash,
-            Some(format!("{:x}", new_commit.btc_block_hash))
-        );
-        assert_eq!(
-            snapshot.latest_block_commit,
-            Some(
-                {
-                    let mut output = String::with_capacity(new_commit.block_commit.len() * 2);
-                    for byte in &new_commit.block_commit {
-                        use std::fmt::Write;
-                        let _ = write!(&mut output, "{:02x}", byte);
-                    }
-                    output
-                }
-                .to_string()
-            )
-        );
-
-        let rpc_commit = rpc_server.get_block_commit(10).unwrap().unwrap();
-        assert_eq!(rpc_commit.block_height, 10);
-        assert_eq!(
-            rpc_commit.btc_block_hash,
-            format!("{:x}", new_commit.btc_block_hash)
-        );
-        assert_eq!(rpc_commit.balance_delta_root, {
-            let mut output = String::with_capacity(new_commit.balance_delta_root.len() * 2);
-            for byte in &new_commit.balance_delta_root {
-                use std::fmt::Write;
-                let _ = write!(&mut output, "{:02x}", byte);
-            }
-            output
-        });
-        assert_eq!(rpc_commit.block_commit, {
-            let mut output = String::with_capacity(new_commit.block_commit.len() * 2);
-            for byte in &new_commit.block_commit {
-                use std::fmt::Write;
-                let _ = write!(&mut output, "{:02x}", byte);
-            }
-            output
-        });
-
-        let staging_dirs: Vec<_> = std::fs::read_dir(&root_dir)
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .filter(|name| name.starts_with("snapshot_install_staging_"))
-            .collect();
         assert!(
-            staging_dirs.is_empty(),
-            "temporary staging directories should be cleaned up"
+            !std::fs::read_dir(&root_dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("snapshot_install_staging_"))
         );
-
-        let backup_dirs: Vec<_> = std::fs::read_dir(&root_dir)
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .filter(|name| name.starts_with("db_backup_snapshot_install_"))
-            .collect();
         assert_eq!(
-            backup_dirs.len(),
-            1,
-            "previous live DB backup should be preserved by default"
+            std::fs::read_dir(&root_dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("db_backup_snapshot_install_"))
+                .count(),
+            1
         );
     }
 
     #[test]
-    fn test_install_validates_matching_manifest_before_swap() {
-        let root_dir = temp_root("install_manifest_ok");
+    fn core_install_rejects_local_consensus_identity_mismatch_before_swap() {
+        let root_dir = temp_root("core_install_bad_stable_lag");
         let config = Arc::new(test_config_with_root(&root_dir));
-
-        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
-        live_db.put_btc_block_height(0).unwrap();
-        let live_db = Arc::new(live_db);
-
-        let snapshot_path = root_dir.join("install_source_snapshot.db");
-        let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
-        let new_script = ScriptBuf::from(vec![9u8; 32]);
-        let new_script_hash = new_script.to_btc_script_hash();
-        let new_outpoint = OutPoint {
-            txid: Txid::from_slice(&[4u8; 32]).unwrap(),
-            vout: 1,
-        };
-        let new_commit = BlockCommitEntry {
-            block_height: 10,
-            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
-            balance_delta_root: [11u8; 32],
-            block_commit: [12u8; 32],
-        };
-
-        {
-            let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
-            snapshot_db
-                .put_balance_history_entries(&[BalanceHistoryEntry {
-                    script_hash: new_script_hash,
-                    block_height: 10,
-                    delta: 75,
-                    balance: 75,
-                }])
-                .unwrap();
-            snapshot_db
-                .put_utxo_entries(&[UTXOEntry {
-                    outpoint: new_outpoint,
-                    script_hash: new_script_hash,
-                    value: 75,
-                }])
-                .unwrap();
-            snapshot_db
-                .put_block_commit_entries(std::slice::from_ref(&new_commit))
-                .unwrap();
-
-            let mut meta = SnapshotMeta::new(
-                10,
-                BalanceHistoryDBIdentity::for_network(config.btc.network()),
-            );
-            meta.balance_history_count = 1;
-            meta.utxo_count = 1;
-            meta.block_commit_count = 1;
-            snapshot_db.update_meta(&meta).unwrap();
-        }
-
-        let manifest =
-            build_manifest_for_snapshot(config.as_ref(), &snapshot_path, 10, &new_commit);
-        manifest.save(&manifest_path).unwrap();
-
-        let status = Arc::new(SyncStatusManager::new());
-        let output = Arc::new(IndexOutput::new(status));
-        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
-        installer
-            .install(SnapshotData {
-                file: snapshot_path,
-                manifest_file: Some(manifest_path),
-            })
-            .unwrap();
-
-        let reopened_db =
-            BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
-        assert_eq!(reopened_db.get_btc_block_height().unwrap(), 10);
-        assert!(reopened_db.get_snapshot_install_used().unwrap());
-        assert_eq!(
-            reopened_db
-                .get_snapshot_install_manifest_verified()
-                .unwrap(),
-            Some(true)
-        );
-        assert!(reopened_db.get_block_commit(10).unwrap().is_some());
-    }
-
-    #[test]
-    fn test_install_rejects_manifest_with_legacy_stable_lag_before_swap() {
-        let root_dir = temp_root("install_manifest_legacy_stable_lag");
-        let config = Arc::new(test_config_with_root(&root_dir));
-
-        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
-        let old_commit = BlockCommitEntry {
-            block_height: 3,
-            btc_block_hash: BlockHash::from_slice(&[7u8; 32]).unwrap(),
-            balance_delta_root: [8u8; 32],
-            block_commit: [9u8; 32],
-        };
-        live_db.put_block_commits_async(&[old_commit]).unwrap();
-        live_db.put_btc_block_height(3).unwrap();
-        let live_db = Arc::new(live_db);
-
-        let snapshot_path = root_dir.join("install_source_snapshot.db");
-        let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
-        let new_commit = BlockCommitEntry {
-            block_height: 10,
-            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
-            balance_delta_root: [11u8; 32],
-            block_commit: [12u8; 32],
-        };
-
-        {
-            let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
-            snapshot_db
-                .put_block_commit_entries(std::slice::from_ref(&new_commit))
-                .unwrap();
-
-            let mut meta = SnapshotMeta::new(
-                10,
-                BalanceHistoryDBIdentity::for_network(config.btc.network()),
-            );
-            meta.block_commit_count = 1;
-            snapshot_db.update_meta(&meta).unwrap();
-        }
-
-        let mut manifest =
-            build_manifest_for_snapshot(config.as_ref(), &snapshot_path, 10, &new_commit);
-        manifest.state_ref.consensus_identity.stable_lag = 5;
-        manifest.state_ref.snapshot_id =
-            build_consensus_snapshot_id(&manifest.state_ref.consensus_identity);
-        manifest.save(&manifest_path).unwrap();
-
-        let status = Arc::new(SyncStatusManager::new());
-        let output = Arc::new(IndexOutput::new(status));
-        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
-        let err = installer
-            .install(SnapshotData {
-                file: snapshot_path,
-                manifest_file: Some(manifest_path),
+        let live_db = open_test_live_db(&config, 3);
+        let artifact = write_test_core_artifact(config.as_ref(), &root_dir, Some(5), None, None);
+        let output = Arc::new(IndexOutput::new(Arc::new(SyncStatusManager::new())));
+        let error = SnapshotInstaller::new(config.clone(), live_db, output)
+            .install(CoreSnapshotData {
+                file: artifact.db_path,
+                manifest_file: artifact.manifest_path,
             })
             .unwrap_err();
-        assert!(err.contains("state ref mismatch"));
-        assert!(err.contains("stable_lag: 5"));
-        assert!(err.contains("stable_lag: 10"));
+        assert!(error.contains("consensus identity does not match local configuration"));
 
-        let reopened_db =
-            BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        let reopened_db = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
         assert_eq!(reopened_db.get_btc_block_height().unwrap(), 3);
-        assert!(!reopened_db.get_snapshot_install_used().unwrap());
-        assert_eq!(
+        assert!(
             reopened_db
-                .get_snapshot_install_manifest_verified()
-                .unwrap(),
-            None
+                .get_snapshot_install_provenance()
+                .unwrap()
+                .is_none()
         );
         assert!(reopened_db.get_block_commit(10).unwrap().is_none());
     }
 
     #[test]
-    fn test_install_rejects_manifest_db_identity_mismatch_before_swap() {
-        let root_dir = temp_root("install_manifest_bad_db_identity");
+    fn core_install_rejects_db_identity_mismatch_before_swap() {
+        let root_dir = temp_root("core_install_bad_db_identity");
         let config = Arc::new(test_config_with_root(&root_dir));
-
-        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
-        live_db.put_btc_block_height(3).unwrap();
-        let live_db = Arc::new(live_db);
-
-        let snapshot_path = root_dir.join("install_source_snapshot.db");
-        let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
-        let new_commit = BlockCommitEntry {
-            block_height: 10,
-            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
-            balance_delta_root: [11u8; 32],
-            block_commit: [12u8; 32],
-        };
-
-        {
-            let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
-            snapshot_db
-                .put_block_commit_entries(std::slice::from_ref(&new_commit))
-                .unwrap();
-            let mut meta = SnapshotMeta::new(
-                10,
-                BalanceHistoryDBIdentity::for_network(config.btc.network()),
-            );
-            meta.block_commit_count = 1;
-            snapshot_db.update_meta(&meta).unwrap();
-        }
-
-        let mut manifest =
-            build_manifest_for_snapshot(config.as_ref(), &snapshot_path, 10, &new_commit);
-        manifest.db_identity.data_model_version =
-            "balance-history-data-model:tampered-v0".to_string();
-        manifest.save(&manifest_path).unwrap();
-
-        let status = Arc::new(SyncStatusManager::new());
-        let output = Arc::new(IndexOutput::new(status));
-        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
-        let error = installer
-            .install(SnapshotData {
-                file: snapshot_path,
-                manifest_file: Some(manifest_path),
+        let live_db = open_test_live_db(&config, 3);
+        let artifact = write_test_core_artifact(
+            config.as_ref(),
+            &root_dir,
+            None,
+            Some("balance-history-data-model:tampered-v0"),
+            None,
+        );
+        let output = Arc::new(IndexOutput::new(Arc::new(SyncStatusManager::new())));
+        let error = SnapshotInstaller::new(config.clone(), live_db, output)
+            .install(CoreSnapshotData {
+                file: artifact.db_path,
+                manifest_file: artifact.manifest_path,
             })
             .unwrap_err();
-        assert!(error.contains("Snapshot manifest DB identity mismatch"));
+        assert!(error.contains("Core snapshot DB identity mismatch"));
 
         let reopened_db = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
         assert_eq!(reopened_db.get_btc_block_height().unwrap(), 3);
-        assert!(!reopened_db.get_snapshot_install_used().unwrap());
-        assert!(reopened_db.get_block_commit(10).unwrap().is_none());
+        assert!(
+            reopened_db
+                .get_snapshot_install_provenance()
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
-    fn test_install_rejects_snapshot_db_identity_mismatch_without_manifest() {
-        let root_dir = temp_root("install_snapshot_bad_db_identity");
-        let config = Arc::new(test_config_with_root(&root_dir));
-
-        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
-        live_db.put_btc_block_height(3).unwrap();
-        let live_db = Arc::new(live_db);
-
-        let snapshot_path = root_dir.join("install_source_snapshot.db");
-        {
-            let snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
-            let mut incompatible = BalanceHistoryDBIdentity::for_network(config.btc.network());
-            incompatible.data_model_version =
-                "balance-history-data-model:incompatible-v0".to_string();
-            snapshot_db
-                .update_meta(&SnapshotMeta::new(10, incompatible))
-                .unwrap();
-        }
-
-        let status = Arc::new(SyncStatusManager::new());
-        let output = Arc::new(IndexOutput::new(status));
-        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
-        let error = installer
-            .install(SnapshotData {
-                file: snapshot_path,
-                manifest_file: None,
-            })
-            .unwrap_err();
-        assert!(error.contains("Snapshot DB identity mismatch"));
-
-        let reopened_db = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
-        assert_eq!(reopened_db.get_btc_block_height().unwrap(), 3);
-        assert!(!reopened_db.get_snapshot_install_used().unwrap());
-    }
-
-    #[test]
-    fn test_install_accepts_signed_manifest_when_trusted() {
-        let root_dir = temp_root("install_manifest_signed_ok");
+    fn core_install_accepts_trusted_signature_and_records_artifact_identity() {
+        let root_dir = temp_root("core_install_signed");
         let mut config = test_config_with_root(&root_dir);
         config.snapshot.trust_mode = SnapshotTrustMode::Signed;
-        let (_, trusted_keys_path, signing_key) =
+        let (trusted_keys_path, signing_key) =
             write_signing_material(&root_dir, "snapshot-signer-1", 42);
         config.snapshot.trusted_keys_file = Some(trusted_keys_path);
         let config = Arc::new(config);
-
-        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
-        live_db.put_btc_block_height(3).unwrap();
-        let live_db = Arc::new(live_db);
-
-        let snapshot_path = root_dir.join("install_source_snapshot_signed.db");
-        let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
-        let signature_path = signature_path_for_manifest_file(&manifest_path);
-        let new_commit = BlockCommitEntry {
-            block_height: 10,
-            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
-            balance_delta_root: [11u8; 32],
-            block_commit: [12u8; 32],
-        };
-
-        {
-            let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
-            snapshot_db
-                .put_block_commit_entries(std::slice::from_ref(&new_commit))
-                .unwrap();
-
-            let mut meta = SnapshotMeta::new(
-                10,
-                BalanceHistoryDBIdentity::for_network(config.btc.network()),
-            );
-            meta.block_commit_count = 1;
-            snapshot_db.update_meta(&meta).unwrap();
-        }
-
-        let mut manifest =
-            build_manifest_for_snapshot(config.as_ref(), &snapshot_path, 10, &new_commit);
-        manifest.signature_scheme = Some(SNAPSHOT_SIGNATURE_SCHEME_ED25519.to_string());
-        manifest.signing_key_id = Some("snapshot-signer-1".to_string());
-        manifest.save(&manifest_path).unwrap();
-        let signature = signing_key.sign(&manifest.canonical_bytes().unwrap());
-        save_signature_file(&signature_path, &signature).unwrap();
-
-        let status = Arc::new(SyncStatusManager::new());
-        let output = Arc::new(IndexOutput::new(status));
-        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
-        installer
-            .install(SnapshotData {
-                file: snapshot_path,
-                manifest_file: Some(manifest_path),
+        let live_db = open_test_live_db(&config, 3);
+        let artifact = write_test_core_artifact(
+            config.as_ref(),
+            &root_dir,
+            None,
+            None,
+            Some(("snapshot-signer-1", &signing_key)),
+        );
+        let output = Arc::new(IndexOutput::new(Arc::new(SyncStatusManager::new())));
+        SnapshotInstaller::new(config.clone(), live_db, output)
+            .install(CoreSnapshotData {
+                file: artifact.db_path,
+                manifest_file: artifact.manifest_path,
             })
             .unwrap();
 
-        let reopened_db =
-            BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
-        let identity = reopened_db.get_db_identity().unwrap().unwrap();
-        assert_eq!(
-            identity.data_model_version,
-            BALANCE_HISTORY_DATA_MODEL_VERSION
-        );
-        assert_eq!(identity.btc_network, config.btc.network().to_string());
+        let reopened_db = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
         let provenance = reopened_db
             .get_snapshot_install_provenance()
             .unwrap()
@@ -3586,79 +2607,88 @@ mod tests {
             provenance.verification_state,
             SnapshotVerificationState::SignatureVerified
         );
-        assert!(provenance.signature_present);
         assert!(provenance.signature_verified);
         assert_eq!(
-            provenance.signing_key_id,
-            Some("snapshot-signer-1".to_string())
+            provenance.signing_key_id.as_deref(),
+            Some("snapshot-signer-1")
         );
-        assert_eq!(provenance.balance_query_floor, 10);
-        assert_eq!(provenance.history_query_floor, 11);
-        assert_eq!(reopened_db.get_query_retention_floors().unwrap(), (10, 11));
         assert_eq!(
-            reopened_db
-                .get_snapshot_install_manifest_verified()
-                .unwrap(),
-            Some(true)
+            provenance.snapshot_file_sha256,
+            artifact.manifest.file_sha256
         );
-
-        reopened_db.put_query_retention_floors(9, 11).unwrap();
-        let error = reopened_db.get_query_retention_floors().unwrap_err();
-        assert!(error.contains("conflicts with install provenance"));
+        assert_eq!(
+            provenance.core_artifact_id,
+            artifact.manifest.core_artifact_id
+        );
     }
 
     #[test]
-    fn test_install_rejects_signed_mode_without_signature_sidecar() {
-        let root_dir = temp_root("install_manifest_signed_missing_sig");
+    fn core_install_rejects_signed_artifact_without_signature_before_swap() {
+        let root_dir = temp_root("core_install_missing_signature");
         let mut config = test_config_with_root(&root_dir);
         config.snapshot.trust_mode = SnapshotTrustMode::Signed;
-        let (_, trusted_keys_path, _) = write_signing_material(&root_dir, "snapshot-signer-1", 7);
+        let (trusted_keys_path, signing_key) =
+            write_signing_material(&root_dir, "snapshot-signer-1", 7);
         config.snapshot.trusted_keys_file = Some(trusted_keys_path);
         let config = Arc::new(config);
-
-        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
-        live_db.put_btc_block_height(3).unwrap();
-        let live_db = Arc::new(live_db);
-
-        let snapshot_path = root_dir.join("install_source_snapshot_signed_missing_sig.db");
-        let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
-        let new_commit = BlockCommitEntry {
-            block_height: 10,
-            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
-            balance_delta_root: [11u8; 32],
-            block_commit: [12u8; 32],
-        };
-
-        {
-            let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
-            snapshot_db
-                .put_block_commit_entries(std::slice::from_ref(&new_commit))
-                .unwrap();
-
-            let mut meta = SnapshotMeta::new(
-                10,
-                BalanceHistoryDBIdentity::for_network(config.btc.network()),
-            );
-            meta.block_commit_count = 1;
-            snapshot_db.update_meta(&meta).unwrap();
-        }
-
-        let mut manifest =
-            build_manifest_for_snapshot(config.as_ref(), &snapshot_path, 10, &new_commit);
-        manifest.signature_scheme = Some(SNAPSHOT_SIGNATURE_SCHEME_ED25519.to_string());
-        manifest.signing_key_id = Some("snapshot-signer-1".to_string());
-        manifest.save(&manifest_path).unwrap();
-
-        let status = Arc::new(SyncStatusManager::new());
-        let output = Arc::new(IndexOutput::new(status));
-        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
-        let err = installer
-            .install(SnapshotData {
-                file: snapshot_path,
-                manifest_file: Some(manifest_path),
+        let live_db = open_test_live_db(&config, 3);
+        let artifact = write_test_core_artifact(
+            config.as_ref(),
+            &root_dir,
+            None,
+            None,
+            Some(("snapshot-signer-1", &signing_key)),
+        );
+        std::fs::remove_file(signature_path_for_manifest_file(&artifact.manifest_path)).unwrap();
+        let output = Arc::new(IndexOutput::new(Arc::new(SyncStatusManager::new())));
+        let error = SnapshotInstaller::new(config.clone(), live_db, output)
+            .install(CoreSnapshotData {
+                file: artifact.db_path,
+                manifest_file: artifact.manifest_path,
             })
             .unwrap_err();
-        assert!(err.contains("requires signature sidecar"));
+        assert!(error.contains("requires signature sidecar"));
+
+        let reopened_db = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
+        assert_eq!(reopened_db.get_btc_block_height().unwrap(), 3);
+        assert!(
+            reopened_db
+                .get_snapshot_install_provenance()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn core_install_rejects_legacy_manifest_without_touching_live_db() {
+        let root_dir = temp_root("core_install_legacy_manifest");
+        let config = Arc::new(test_config_with_root(&root_dir));
+        let live_db = open_test_live_db(&config, 3);
+        let snapshot_path = root_dir.join("legacy.db");
+        let manifest_path = root_dir.join("legacy.manifest.json");
+        std::fs::write(&snapshot_path, b"legacy").unwrap();
+        std::fs::write(
+            &manifest_path,
+            r#"{"manifest_version":"balance-history-snapshot-manifest:v3","file_name":"legacy.db"}"#,
+        )
+        .unwrap();
+        let output = Arc::new(IndexOutput::new(Arc::new(SyncStatusManager::new())));
+        let error = SnapshotInstaller::new(config.clone(), live_db, output)
+            .install(CoreSnapshotData {
+                file: snapshot_path,
+                manifest_file: manifest_path,
+            })
+            .unwrap_err();
+        assert!(error.contains("Failed to load required core snapshot manifest"));
+
+        let reopened_db = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
+        assert_eq!(reopened_db.get_btc_block_height().unwrap(), 3);
+        assert!(
+            reopened_db
+                .get_snapshot_install_provenance()
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -3763,39 +2793,6 @@ mod tests {
             !snapshot_path.with_extension("db-shm").exists(),
             "finalized snapshot should not leave sqlite shm sidecar behind"
         );
-    }
-
-    #[test]
-    fn snapshot_manifest_rejects_non_basename_snapshot_file() {
-        let root_dir = temp_root("manifest_unsafe_file_name");
-        let (manifest_path, mut manifest) = write_test_snapshot_manifest(&root_dir);
-
-        for unsafe_name in ["../snapshot.db", "/tmp/snapshot.db", "nested/snapshot.db"] {
-            manifest.file_name = unsafe_name.to_string();
-            manifest.save(&manifest_path).unwrap();
-            let error = SnapshotManifest::load(&manifest_path).unwrap_err();
-            assert!(error.contains("file_name must be a safe basename"));
-        }
-
-        manifest.file_name = "snapshot.db".to_string();
-        manifest.save(&manifest_path).unwrap();
-        SnapshotManifest::load(&manifest_path).unwrap();
-        std::fs::remove_dir_all(root_dir).unwrap();
-    }
-
-    #[test]
-    fn snapshot_manifest_rejects_duplicate_keys_before_signature_validation() {
-        let root_dir = temp_root("manifest_duplicate_key");
-        let (manifest_path, _manifest) = write_test_snapshot_manifest(&root_dir);
-        let content = std::fs::read_to_string(&manifest_path).unwrap();
-        let file_name = "  \"file_name\": \"snapshot.db\",";
-        let duplicate = content.replacen(file_name, &format!("{file_name}\n{file_name}"), 1);
-        assert_ne!(content, duplicate);
-        std::fs::write(&manifest_path, duplicate).unwrap();
-
-        let error = SnapshotManifest::load(&manifest_path).unwrap_err();
-        assert!(error.contains("duplicate JSON key: file_name"));
-        std::fs::remove_dir_all(root_dir).unwrap();
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::{
     CHECKPOINT_SIGNATURE_SCHEME, CheckpointFileEntry, INDEXER_CHECKPOINT_DATA_SCHEMA_VERSION,
     INDEXER_CHECKPOINT_MANIFEST_VERSION, IndexerCheckpointManifest,
 };
-use balance_history::{SnapshotManifest, SnapshotSigningKeyFile};
+use balance_history::{CoreSnapshotManifest, SnapshotSigningKeyFile};
 use named_lock::{NamedLock, NamedLockGuard};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -329,8 +329,8 @@ pub fn load_and_verify_balance_history_manifest(
     manifest_path: &Path,
     trusted_keys_path: &Path,
     verify_snapshot_file: bool,
-) -> Result<SnapshotManifest, String> {
-    let manifest = SnapshotManifest::load(manifest_path)?;
+) -> Result<CoreSnapshotManifest, String> {
+    let manifest = CoreSnapshotManifest::load(manifest_path)?;
     verify_balance_history_manifest_signature(&manifest, manifest_path, trusted_keys_path)?;
     if verify_snapshot_file {
         let snapshot_path = manifest_path

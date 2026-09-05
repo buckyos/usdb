@@ -86,6 +86,14 @@ if [[ ! -f "${snapshot_file}" ]]; then
 fi
 
 snapshot_manifest="${BH_SNAPSHOT_MANIFEST:-}"
+if [[ -z "${snapshot_manifest}" ]]; then
+  echo "SNAPSHOT_MODE=balance-history requires BH_SNAPSHOT_MANIFEST" >&2
+  exit 1
+fi
+if [[ ! -f "${snapshot_manifest}" ]]; then
+  echo "Core snapshot manifest does not exist: ${snapshot_manifest}" >&2
+  exit 1
+fi
 if [[ -f "${marker_path}" ]]; then
   echo "Removing stale snapshot marker at ${marker_path}" >&2
   rm -f "${marker_path}"
@@ -94,11 +102,9 @@ args=(
   --root-dir "${root_dir}"
   install-snapshot
   --file "${snapshot_file}"
+  --manifest "${snapshot_manifest}"
   --progress-file "${progress_path}"
 )
-if [[ -n "${snapshot_manifest}" ]]; then
-  args+=(--manifest "${snapshot_manifest}")
-fi
 
 balance-history "${args[@]}"
 snapshot_marker_write "${marker_path}" "${snapshot_mode}" "${snapshot_file}" "${snapshot_manifest}"

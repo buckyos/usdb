@@ -7,8 +7,8 @@
 和 block commit 的必选 core checkpoint，以及独立、可选的 script-registry SQLite sidecar。
 registry 不进入 core snapshot ID，也不再作为 core 安装和服务 readiness 的前置条件。
 
-> 当前切换状态：split artifact 的生成、校验和本地 finalize 已在 snapshot tool 中实现；
-> core-only installer、对象存储 record、release bundle 和节点安装流程仍在后续批次切换。在这些
+> 当前切换状态：split artifact 的生成、校验、本地 finalize 和 core-only Rust/Docker installer
+> 已实现；对象存储 record、release bundle 和远端节点安装流程仍在后续批次切换。在这些
 > 批次完成前，不要使用仓库最新源码执行本章的主网 `finalize/publish/validate-install` 生产流程；
 > 脚本会对 `finalize/validate-install/archive/prepare-release/publish` 明确 fail closed。已发布旧
 > release 和其单文件 snapshot 不受影响。
@@ -483,41 +483,41 @@ CURRENT_HASH=$("$BITCOIN_CLI" -datadir="$BITCOIN_DATA_DIR" getblockhash "$H")
 test "$CURRENT_HASH" = "$H_HASH"
 ```
 
-比较 create/verify 的 `file_sha256`、snapshot ID、BTC block hash、UTXO count、balance-history
-count、block-commit count 和 script-registry count。任何字段不一致都不得发布。
+分别比较 create/verify 中 core 与 registry 的 artifact ID、`file_sha256`、core snapshot ID、
+BTC block hash 和各自 count。任何字段不一致都不得发布。
 
-从 create report 解析 artifact 路径：
+artifact 根目录由高度和 canonical BTC hash 唯一确定：
 
 ```bash
-ARTIFACT_DIR=$(python3 - "$CREATE_REPORT" <<'PY'
-import json
-import sys
-print(json.load(open(sys.argv[1], encoding="utf-8"))["artifact_dir"])
-PY
-)
-ARTIFACT_PATH="$BUILDER_ROOT/$ARTIFACT_DIR"
+ARTIFACT_PATH="$BUILDER_ROOT/snapshots/$(printf '%012d' "$H")/$H_HASH"
 
-find "$ARTIFACT_PATH" -maxdepth 1 -type f -printf '%f\n' | sort
-sha256sum "$ARTIFACT_PATH"/*
+find "$ARTIFACT_PATH" -maxdepth 2 -type f -printf '%P\n' | sort
+find "$ARTIFACT_PATH" -maxdepth 2 -type f -print0 | sort -z | xargs -0 sha256sum
 ```
 
-完整 artifact 应包含：
+`--component all` 完整结束后应包含：
 
 ```text
-snapshot_<H>.db
-snapshot_<H>.manifest.json
-snapshot_<H>.manifest.sig
-complete.json
+core/balance_history_core_<H>.db
+core/balance_history_core_<H>.manifest.json
+core/balance_history_core_<H>.manifest.sig
+core/complete.json
+script-registry/script_registry_<H>.db
+script-registry/script_registry_<H>.manifest.json
+script-registry/script_registry_<H>.manifest.sig
+script-registry/complete.json
 ```
 
-当前 SQLite snapshot schema 为 `version=3`，manifest schema 为
-`balance-history-snapshot-manifest:v3`。两者除状态与文件哈希外还显式冻结：
+必选 core SQLite schema 为 `balance-history-core-snapshot:v1`，manifest schema 为
+`balance-history-core-snapshot-manifest:v1`；可选 registry 使用独立的
+`balance-history-script-registry-sqlite:v1` 和 `balance-history-script-registry-manifest:v1`。
+core manifest 除状态与文件哈希外还显式冻结：
 
 - `balance_query_floor = H`：安装后可完整回答的最早 at-or-before 点余额高度；
 - `history_query_floor = H + 1`：安装后可完整回答的最早精确 delta/历史区间高度；
 - `db_identity`：schema/data-model version、service、BTC network 和 genesis hash。
 
-snapshot 内保留的 `H` 之前 block commit 只用于审计，不能作为这些历史余额状态仍可查询的声明。
+core 内保留的 `H` 之前 block commit 只用于审计，不能作为这些历史余额状态仍可查询的声明。
 
 ### 9.1 RocksDB Identity 与重建边界
 
@@ -728,9 +728,11 @@ curl -s -X POST "$RPC_URL" -H 'content-type: application/json' \
 至少确认：
 
 - provenance 的 `verification_state` 是 `signature_verified`；
-- `signature_present` 和 `signature_verified` 都是 `true`；
+- `signature_verified` 是 `true`，`signature_scheme` 是 `ed25519`；
 - `signing_key_id` 与发布记录一致；
-- provenance 的 `installed_block_height`、snapshot ID 和 snapshot file SHA-256 与发布记录一致；
+- `artifact_type` 是 `balance_history_core`，manifest/schema version 是 split v1；
+- provenance 的 `installed_block_height`、`core_snapshot_id`、`core_artifact_id` 和
+  `snapshot_file_sha256` 与发布记录一致；
 - `get_state_ref_at_height(H)` 的 stable block hash 和 snapshot ID 与发布记录一致；
 - 追块完成后 readiness 为 consensus ready；
 - 抽样余额、历史 state-ref 和 live UTXO 查询正常。

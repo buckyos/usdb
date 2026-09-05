@@ -771,17 +771,9 @@ impl BalanceHistoryRpcServer {
         let (balance_query_floor, history_query_floor) = self.db.get_query_retention_floors()?;
         let script_registry = self.script_registry_status();
         let snapshot_provenance = self.db.get_snapshot_install_provenance()?;
-        let snapshot_install_used = if snapshot_provenance.is_some() {
-            true
-        } else {
-            self.db.get_snapshot_install_used()?
-        };
-        let snapshot_install_manifest_verified =
-            if let Some(provenance) = snapshot_provenance.as_ref() {
-                Some(provenance.legacy_manifest_verified())
-            } else {
-                self.db.get_snapshot_install_manifest_verified()?
-            };
+        let snapshot_install_verified = snapshot_provenance
+            .as_ref()
+            .is_none_or(SnapshotInstallProvenance::is_consensus_verified);
         let stable_block_hash = latest_commit
             .as_ref()
             .map(|entry| format!("{:x}", entry.btc_block_hash));
@@ -818,7 +810,7 @@ impl BalanceHistoryRpcServer {
         if latest_block_commit.is_none() {
             blockers.push(ReadinessBlocker::LatestBlockCommitMissing);
         }
-        if snapshot_install_used && snapshot_install_manifest_verified == Some(false) {
+        if !snapshot_install_verified {
             blockers.push(ReadinessBlocker::SnapshotInstallUnverified);
         }
 
@@ -833,7 +825,7 @@ impl BalanceHistoryRpcServer {
             && sync_status.current >= sync_status.total
             && stable_block_hash.is_some()
             && latest_block_commit.is_some()
-            && !(snapshot_install_used && snapshot_install_manifest_verified == Some(false));
+            && snapshot_install_verified;
 
         Ok(ReadinessInfo {
             service: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
@@ -2006,40 +1998,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_readiness_not_consensus_ready_for_unverified_snapshot_install() {
-        let server = make_test_server("readiness_snapshot_install_unverified");
-        server.status.set_rpc_alive(true);
-        server
-            .status
-            .update_phase(crate::status::SyncPhase::Indexing, None);
-        server.status.update_total(12, None);
-        server.status.update_current(12, None);
-
-        let commit = BlockCommitEntry {
-            block_height: 12,
-            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
-            balance_delta_root: [10u8; 32],
-            block_commit: [11u8; 32],
-        };
-        server
-            .db
-            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit])
-            .unwrap();
-        server.db.put_query_retention_floors(12, 13).unwrap();
-        server.db.put_snapshot_install_state(false).unwrap();
-
-        let readiness = server.get_readiness().unwrap();
-        assert!(readiness.rpc_alive);
-        assert!(readiness.query_ready);
-        assert!(!readiness.consensus_ready);
-        assert!(
-            readiness
-                .blockers
-                .contains(&ReadinessBlocker::SnapshotInstallUnverified)
-        );
-    }
-
-    #[test]
     fn test_get_snapshot_provenance_and_readiness_summary() {
         let server = make_test_server("readiness_snapshot_provenance");
         server.status.set_rpc_alive(true);
@@ -2066,15 +2024,15 @@ mod tests {
                 origin: SnapshotInstallOrigin::SnapshotInstall,
                 trust_mode: crate::config::SnapshotTrustMode::Signed,
                 verification_state: SnapshotVerificationState::SignatureVerified,
-                manifest_present: true,
-                manifest_verified: true,
-                signature_present: true,
                 signature_verified: true,
-                manifest_version: Some("balance-history-snapshot-manifest:v3".to_string()),
+                artifact_type: crate::SnapshotArtifactType::BalanceHistoryCore,
+                manifest_version: "balance-history-core-snapshot-manifest:v1".to_string(),
+                snapshot_schema_version: "balance-history-core-snapshot:v1".to_string(),
                 signature_scheme: Some("ed25519".to_string()),
                 signing_key_id: Some("trusted-signer".to_string()),
-                snapshot_file_sha256: Some("aa".repeat(32)),
-                snapshot_id: Some("bb".repeat(32)),
+                snapshot_file_sha256: "aa".repeat(32),
+                core_snapshot_id: "bb".repeat(32),
+                core_artifact_id: "cc".repeat(32),
                 installed_block_height: 12,
                 balance_query_floor: 12,
                 history_query_floor: 13,

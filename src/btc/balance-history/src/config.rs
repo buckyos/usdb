@@ -248,13 +248,13 @@ fn default_rpc_port() -> u16 {
     BALANCE_HISTORY_SERVICE_HTTP_PORT
 }
 
-/// Trust policy applied when installing snapshot sidecars.
+/// Signature trust policy applied after mandatory core-manifest validation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SnapshotTrustMode {
-    /// Allow snapshot installs without manifest or detached signature checks.
+    /// Require the core manifest and all artifact/state checks, but not a detached signature.
     Dev,
-    /// Require a manifest-backed staged state-ref validation, but not a signature.
+    /// Require the same manifest-backed validation as development deployments.
     Manifest,
     /// Require both manifest-backed staged validation and a trusted detached signature.
     Signed,

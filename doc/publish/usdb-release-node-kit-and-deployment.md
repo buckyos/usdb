@@ -300,10 +300,12 @@ usdb-node status --progress-json
 
 面板状态为 `WAITING/STARTING/SYNCING/INSTALLING/VERIFYING/IMPORTING/READY/SKIPPED/BLOCKED/FAILED`。
 `--progress-json` 输出 `usdb-node-progress:v4`，固定包含 `controller_state` 和五个 component；独立的
-`Snapshot import` 行在导入期间使用当前阶段的 `stage_current/stage_total` 绘制进度条，并额外包含
+`Core snapshot import` 行在导入期间使用当前阶段的 `stage_current/stage_total` 绘制进度条，并额外包含
 `stage/stage_index/stage_count`、任务和阶段开始时间、累计和阶段耗时、阶段平均速率、阶段 ETA、最近更新时间及
 `aggregate_current/aggregate_total`。字节 hash 校验和 entry 导入没有可靠的统一工作量，因此面板不构造虚假的
-全流程百分比；每次阶段切换时进度条明确重置为新阶段口径。这是观测接口，不可代替下述
+全流程百分比；七个阶段依次为 source verification、staging DB open、balance、UTXO、block commit、
+finalize 和 atomic swap。source hash 结束后的 SQLite integrity 与精确 count 子阶段保持 heartbeat，
+但不显示无法可靠估算的百分比；每次阶段切换时进度条明确重置为新阶段口径。这是观测接口，不可代替下述
 `usdb-node-status:v2` 生命周期判断。balance-history 或 usdb-indexer 尚未启动时，其 component 只返回
 `WAITING` 和上游门禁说明，`current/total/progress_percent` 保持 `null`；只有服务启动并返回自身 readiness
 后才显示该服务的同步进度，避免把 Bitcoin 或 balance-history 的上游高度误标成下游服务进度。连续运行的
@@ -312,10 +314,12 @@ usdb-node status --progress-json
 
 `snapshot-loader` 将导入观测值以原子替换方式写入
 `<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.progress.json`，schema 为
-`balance-history-snapshot-install-progress:v2`。写入失败只记录 warning，不影响 installer
+`balance-history-core-snapshot-install-progress:v1`。写入失败只记录 warning，不影响 installer
 原有校验与原子切换。每次 loader 启动先清理旧进度；面板还要求进度中的 snapshot file 与当前 `node.env`
 选择一致。超过 60 秒没有更新时只在观测层标记 `STALE`，不擅自终止导入。该文件即使显示 `complete` 也不能
-代替 `snapshot-loader.done.json` 完成 marker。导入期间预创建但未运行的 balance-history 容器显示为
+代替 `snapshot-loader.done.json` 完成 marker。marker schema 为
+`balance-history-core-install-marker:v1`，并绑定当前 core manifest 路径及 SHA-256；旧 marker 会 fail closed。
+导入期间预创建但未运行的 balance-history 容器显示为
 `WAITING`；只有独立 snapshot-loader 成功退出并完成 live RocksDB 原子切换后，balance-history 才开始运行。
 
 `usdb-node status` 查询的是完整节点生命周期，而不只是已启动服务的 readiness。它先检查 release kit、私有

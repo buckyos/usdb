@@ -5,6 +5,10 @@
 本文说明 balance-history snapshot 的签名对象、密钥边界、接收方信任配置、发布包集成和密钥
 轮换原则。它不描述 exact-height builder 的完整运行步骤，也不定义整个 USDB 的发布顺序。
 
+> 当前源码已经切换到 split v1 artifact：必选 core snapshot 与可选 script-registry sidecar
+> 分别拥有 manifest、artifact ID、签名域和 detached signature。本文后续发布命令仍需随批次 5
+> 的 network bundle/对象存储闭环统一更新；旧单文件 manifest 不能输入新的 core installer。
+
 相关文档：
 
 - [Exact-Height Snapshot Tool Design](./balance-history-exact-height-snapshot-tool-design.md)
@@ -13,22 +17,31 @@
 
 ## 2. 签名保护的对象
 
-正式 snapshot artifact 包含：
+正式 split snapshot 由两个可独立完成和发布的 component 组成：
 
 ```text
-snapshot_<height>.db
-snapshot_<height>.manifest.json
-snapshot_<height>.manifest.sig
-complete.json
+balance_history_core_<height>.db
+balance_history_core_<height>.manifest.json
+balance_history_core_<height>.manifest.sig
+core/complete.json
+
+script_registry_<height>.db                 # optional
+script_registry_<height>.manifest.json      # optional
+script_registry_<height>.manifest.sig       # optional
+script-registry/complete.json               # optional
 ```
 
-当前使用 Ed25519 私钥对 canonical manifest bytes 生成 detached signature。签名不直接覆盖 tar
-或 balance-history 二进制，但 manifest 会固定：
+当前使用 Ed25519 私钥分别对 core 和 registry 的 domain-separated canonical manifest bytes
+生成 detached signature。签名不直接覆盖 tar 或 balance-history 二进制。core manifest 固定：
 
-- snapshot DB 文件名和 SHA-256；
+- core DB 文件名、SHA-256、schema 与 `registry_included=false`；
 - exact BTC height、canonical block hash 和 state-ref；
-- snapshot ID、manifest version、signature scheme 和 signer key ID；
+- core snapshot ID、core artifact ID、retention floor、manifest version、signature scheme 和 signer key ID；
 - manifest 生成时间。
+
+registry manifest 独立固定 sidecar 文件、registry artifact ID、entry count，以及与 core snapshot
+配对的 BTC network/genesis、base height/hash 和 core snapshot ID。registry 签名或 sidecar 缺失
+不会改变 core state-ref，也不会阻止 core installer 启动 balance-history。
 
 合法签名能够证明受信发布方认可了该 manifest，而 manifest 再约束 snapshot DB 内容和状态
 身份。它不能替代 BTC canonical hash 检查、snapshot DB 重开校验、state-ref 校验或独立安装

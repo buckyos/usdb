@@ -4,7 +4,9 @@
   "type": "changed",
   "scopes": [
     "balance-history",
-    "deployment"
+    "deployment",
+    "indexer",
+    "node-runtime"
   ],
   "summary": "Split balance-history checkpoints into a required core artifact and an optional script-registry sidecar",
   "details": [
@@ -12,15 +14,20 @@
     "The standalone registry uses a frozen WITHOUT ROWID schema and has independent job, verification, completion, and failure state, so registry failure does not revoke an already completed core artifact.",
     "Core artifacts always contain the complete live UTXO set, and both core and registry export reject a RocksDB workspace whose durable height differs from the sealed target.",
     "Snapshot builder state and artifact manifests use the new split v1 contracts directly; legacy single-file builder jobs and artifacts are not accepted by the new tool.",
+    "The balance-history installer now requires a split v1 core manifest, verifies the artifact hash, SQLite integrity and schema, exact row counts, local consensus identity, latest block commitment, and staged state reference, then imports only balances, live UTXOs, and block commitments through a seven-stage atomic install.",
+    "Snapshot-installed RocksDB records strict core manifest, schema, state, and artifact provenance; the Docker completion marker is versioned and binds the core manifest digest, so legacy provenance and markers fail closed instead of entering a compatibility path.",
+    "Paired USDB indexer checkpoints now bind and verify the same split v1 core manifest and domain-separated Ed25519 signature payload, removing the remaining legacy single-file installation path.",
+    "Core installation no longer reads or imports script-registry rows, allowing balance-history startup as soon as the required core artifact is installed while optional registry-sidecar work proceeds independently.",
     "The mainnet wrapper fails closed for finalization, installation, packaging, and remote publication until the split-artifact deployment pipeline is completed."
   ],
   "operator_actions": [
-    "Use a new snapshot-builder root and regenerate split artifacts before publishing a release that contains this change; do not reuse legacy single-file builder state."
+    "Use a new snapshot-builder root and regenerate split artifacts before publishing a release that contains this change; do not reuse legacy single-file builder state.",
+    "Install the generated core database together with its matching split v1 core manifest; existing single-file snapshot markers or snapshot-installed RocksDB data must be replaced for this development-stage format change."
   ],
   "compatibility": {
     "network_reset": false,
     "data_rebuild": true,
-    "config_change": false,
+    "config_change": true,
     "restart_required": true
   },
   "references": []

@@ -10,9 +10,9 @@ use crate::{
     PairedInstallJournal, PairedInstallStage, RECOVERY_MARKER_VERSION,
 };
 use balance_history::{
-    BalanceHistoryConfig, BalanceHistoryDB, BalanceHistoryDBMode, IndexOutput, SnapshotData,
-    SnapshotInstaller, SnapshotManifest, SnapshotVerificationState, SyncStatusManager,
-    build_historical_state_ref_at_height,
+    BalanceHistoryConfig, BalanceHistoryDB, BalanceHistoryDBMode, CoreSnapshotData,
+    CoreSnapshotManifest, IndexOutput, SnapshotInstaller, SnapshotVerificationState,
+    SyncStatusManager, build_historical_state_ref_at_height,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -267,7 +267,7 @@ fn validate_deployment_binding(
 
 fn validate_upstream_binding(
     checkpoint: &IndexerCheckpointManifest,
-    balance_history: &SnapshotManifest,
+    balance_history: &CoreSnapshotManifest,
     manifest_path: &Path,
 ) -> Result<(), String> {
     let actual_manifest_sha256 = sha256_file(manifest_path)?;
@@ -411,7 +411,10 @@ fn validate_indexer_target(
     })
 }
 
-fn validate_balance_history_target(root: &Path, manifest: &SnapshotManifest) -> Result<(), String> {
+fn validate_balance_history_target(
+    root: &Path,
+    manifest: &CoreSnapshotManifest,
+) -> Result<(), String> {
     let config = Arc::new(BalanceHistoryConfig::load(root)?);
     let live_db = config.db_dir().join("balance_history");
     if !live_db.exists() || !directory_has_entries(&live_db)? {
@@ -430,7 +433,7 @@ fn validate_balance_history_target(root: &Path, manifest: &SnapshotManifest) -> 
 
 fn install_or_recover_balance_history(
     options: &InstallPairOptions,
-    manifest: &SnapshotManifest,
+    manifest: &CoreSnapshotManifest,
 ) -> Result<(), String> {
     let config = Arc::new(BalanceHistoryConfig::load(&options.balance_history_root)?);
     let live_db = config.db_dir().join("balance_history");
@@ -453,9 +456,9 @@ fn install_or_recover_balance_history(
         .parent()
         .ok_or_else(|| "Balance-history manifest has no parent directory".to_string())?
         .join(&manifest.file_name);
-    SnapshotInstaller::new(config.clone(), db, output).install(SnapshotData {
+    SnapshotInstaller::new(config.clone(), db, output).install(CoreSnapshotData {
         file: snapshot_file,
-        manifest_file: Some(options.balance_history_manifest.clone()),
+        manifest_file: options.balance_history_manifest.clone(),
     })?;
     verify_installed_balance_history(&options.balance_history_root, manifest)?;
     cleanup_balance_history_managed_directories(&config, false)
@@ -541,7 +544,7 @@ fn remove_managed_directory(path: &Path, label: &str) -> Result<(), String> {
 
 fn verify_installed_balance_history(
     root: &Path,
-    manifest: &SnapshotManifest,
+    manifest: &CoreSnapshotManifest,
 ) -> Result<(), String> {
     let config = Arc::new(BalanceHistoryConfig::load(root)?);
     let db = BalanceHistoryDB::open_read_only(config.clone())?;
@@ -566,7 +569,9 @@ fn verify_installed_balance_history(
         .ok_or_else(|| "Installed balance-history has no snapshot provenance".to_string())?;
     if provenance.verification_state != SnapshotVerificationState::SignatureVerified
         || !provenance.signature_verified
-        || provenance.snapshot_id.as_deref() != Some(manifest.state_ref.snapshot_id.as_str())
+        || provenance.core_snapshot_id != manifest.core_snapshot_id
+        || provenance.core_artifact_id != manifest.core_artifact_id
+        || provenance.snapshot_file_sha256 != manifest.file_sha256
     {
         return Err(format!(
             "Installed balance-history snapshot provenance is not trusted: {provenance:?}"

@@ -46,11 +46,11 @@ use clap::Args;
 #[derive(Args, Debug, Clone)]
 #[group(required = true, multiple = false)]
 struct InstallSnapshotSource {
-    /// Specify the snapshot file to install, if the file is relative, it is relative to the service directory ${root}/snapshots/
+    /// Core snapshot SQLite file to install. Relative paths use ${root}/snapshots/.
     #[arg(short, long)]
     file: Option<String>,
 
-    /// Specify the expected hash of the snapshot file for verification, which in directory ${root}/snapshots/snapshot_{block_height}.db
+    /// Select ${root}/snapshots/balance_history_core_<height>.db.
     #[arg(short, long)]
     block_height: Option<u32>,
 }
@@ -89,12 +89,12 @@ enum BalanceHistoryCommands {
 
     VerifySnapshot {},
 
+    /// Install one registry-free core snapshot into the live RocksDB.
     InstallSnapshot {
         #[clap(flatten)]
         source: InstallSnapshotSource,
 
-        /// Optional sidecar manifest file describing the expected installed state.
-        /// If omitted, the installer will look for `<snapshot>.manifest.json` next to the snapshot DB.
+        /// Core manifest path. If omitted, `<core-snapshot>.manifest.json` is required next to the DB.
         #[arg(long)]
         manifest: Option<String>,
 
@@ -287,7 +287,7 @@ async fn main() {
             } else if let Some(block_height) = source.block_height {
                 let mut file_path = root_dir.clone();
                 file_path.push("snapshots");
-                file_path.push(format!("snapshot_{}.db", block_height));
+                file_path.push(format!("balance_history_core_{}.db", block_height));
                 eprintln!(
                     "Using snapshot file for block height {}: {:?}",
                     block_height, file_path
@@ -311,23 +311,17 @@ async fn main() {
                     path = root_dir.join("snapshots").join(manifest);
                     eprintln!("Resolved relative snapshot manifest path to: {:?}", path);
                 }
-                Some(path)
+                path
             } else {
                 let auto_manifest = index::manifest_path_for_snapshot_file(&file_path);
-                if auto_manifest.exists() {
-                    eprintln!(
-                        "Using snapshot manifest discovered next to snapshot file: {:?}",
-                        auto_manifest
-                    );
-                    Some(auto_manifest)
-                } else {
-                    None
-                }
+                eprintln!(
+                    "Using required core snapshot manifest next to snapshot file: {:?}",
+                    auto_manifest
+                );
+                auto_manifest
             };
 
-            if let Some(ref manifest_path) = manifest_path
-                && !manifest_path.exists()
-            {
+            if !manifest_path.is_file() {
                 error!("Snapshot manifest does not exist: {:?}", manifest_path);
                 eprintln!("Snapshot manifest does not exist: {:?}", manifest_path);
                 exit_command_failure();
@@ -359,7 +353,7 @@ async fn main() {
             };
             let db = Arc::new(db);
 
-            let data = index::SnapshotData {
+            let data = index::CoreSnapshotData {
                 file: file_path.clone(),
                 manifest_file: manifest_path,
             };

@@ -21,6 +21,8 @@ class SnapshotLoaderTests(unittest.TestCase):
             service_root = root / "balance-history"
             snapshot = root / "snapshot.db"
             snapshot.write_bytes(b"snapshot")
+            manifest = root / "snapshot.manifest.json"
+            manifest.write_text('{"artifact_type":"balance_history_core"}\n', encoding="utf-8")
             bin_dir = root / "bin"
             bin_dir.mkdir()
             invocation = root / "balance-history.args"
@@ -45,7 +47,7 @@ printf 'rocksdb\n' >"${BH_ROOT_DIR}/db/CURRENT"
                 "SNAPSHOT_MODE": "balance-history",
                 "BH_ROOT_DIR": str(service_root),
                 "BH_SNAPSHOT_FILE": str(snapshot),
-                "BH_SNAPSHOT_MANIFEST": "",
+                "BH_SNAPSHOT_MANIFEST": str(manifest),
                 "BTC_AUTH_MODE": "none",
                 "BALANCE_HISTORY_ARGS_FILE": str(invocation),
             }
@@ -67,6 +69,8 @@ printf 'rocksdb\n' >"${BH_ROOT_DIR}/db/CURRENT"
                     "install-snapshot",
                     "--file",
                     str(snapshot),
+                    "--manifest",
+                    str(manifest),
                     "--progress-file",
                     str(stale_progress),
                 ],
@@ -79,6 +83,65 @@ printf 'rocksdb\n' >"${BH_ROOT_DIR}/db/CURRENT"
             )
             self.assertEqual(marker["snapshot_mode"], "balance-history")
             self.assertEqual(marker["snapshot_file"], str(snapshot))
+            self.assertEqual(marker["snapshot_manifest"], str(manifest))
+            self.assertEqual(
+                marker["schema_version"], "balance-history-core-install-marker:v1"
+            )
+            self.assertRegex(marker["snapshot_manifest_sha256"], r"^[0-9a-f]{64}$")
+
+            manifest.write_text(
+                '{"artifact_type":"balance_history_core","changed":true}\n',
+                encoding="utf-8",
+            )
+            changed_manifest = subprocess.run(
+                [str(LOADER)],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(changed_manifest.returncode, 1)
+            self.assertIn("marker is missing or does not match", changed_manifest.stderr)
+
+    def test_balance_history_import_requires_core_manifest_before_invocation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="snapshot-loader-manifest-test-") as temporary:
+            root = Path(temporary)
+            service_root = root / "balance-history"
+            snapshot = root / "snapshot.db"
+            snapshot.write_bytes(b"snapshot")
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            invocation = root / "balance-history.invocations"
+            fake_balance_history = bin_dir / "balance-history"
+            fake_balance_history.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+printf 'called\n' >>"${BALANCE_HISTORY_INVOCATIONS:?}"
+""",
+                encoding="utf-8",
+            )
+            fake_balance_history.chmod(0o755)
+            environment = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "SNAPSHOT_MODE": "balance-history",
+                "BH_ROOT_DIR": str(service_root),
+                "BH_SNAPSHOT_FILE": str(snapshot),
+                "BTC_AUTH_MODE": "none",
+                "BALANCE_HISTORY_INVOCATIONS": str(invocation),
+            }
+
+            result = subprocess.run(
+                [str(LOADER)],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("requires BH_SNAPSHOT_MANIFEST", result.stderr)
+            self.assertFalse(invocation.exists())
 
     def test_failed_import_progress_survives_fail_closed_retry(self) -> None:
         with tempfile.TemporaryDirectory(prefix="snapshot-loader-failure-test-") as temporary:
@@ -86,6 +149,8 @@ printf 'rocksdb\n' >"${BH_ROOT_DIR}/db/CURRENT"
             service_root = root / "balance-history"
             snapshot = root / "snapshot.db"
             snapshot.write_bytes(b"snapshot")
+            manifest = root / "snapshot.manifest.json"
+            manifest.write_text('{"artifact_type":"balance_history_core"}\n', encoding="utf-8")
             bin_dir = root / "bin"
             bin_dir.mkdir()
             invocation = root / "balance-history.invocations"
@@ -110,7 +175,7 @@ exit 1
                 "SNAPSHOT_MODE": "balance-history",
                 "BH_ROOT_DIR": str(service_root),
                 "BH_SNAPSHOT_FILE": str(snapshot),
-                "BH_SNAPSHOT_MANIFEST": "",
+                "BH_SNAPSHOT_MANIFEST": str(manifest),
                 "BTC_AUTH_MODE": "none",
                 "BALANCE_HISTORY_INVOCATIONS": str(invocation),
             }

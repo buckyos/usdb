@@ -46,14 +46,20 @@ snapshot_marker_matches() {
 
   [[ -f "${marker_path}" ]] || return 1
 
-  local actual_mode actual_file actual_manifest
+  [[ -f "${expected_manifest}" ]] || return 1
+
+  local actual_schema actual_mode actual_file actual_manifest actual_manifest_sha256
+  actual_schema="$(snapshot_marker_extract_field "${marker_path}" "schema_version" || true)"
   actual_mode="$(snapshot_marker_extract_field "${marker_path}" "snapshot_mode" || true)"
   actual_file="$(snapshot_marker_extract_field "${marker_path}" "snapshot_file" || true)"
   actual_manifest="$(snapshot_marker_extract_field "${marker_path}" "snapshot_manifest" || true)"
+  actual_manifest_sha256="$(snapshot_marker_extract_field "${marker_path}" "snapshot_manifest_sha256" || true)"
 
+  [[ "${actual_schema}" == "balance-history-core-install-marker:v1" ]] || return 1
   [[ "${actual_mode}" == "${expected_mode}" ]] || return 1
   [[ "${actual_file}" == "${expected_file}" ]] || return 1
   [[ "${actual_manifest}" == "${expected_manifest}" ]] || return 1
+  [[ "${actual_manifest_sha256}" == "$(sha256sum "${expected_manifest}" | awk '{print $1}')" ]] || return 1
 }
 
 snapshot_marker_write() {
@@ -62,14 +68,23 @@ snapshot_marker_write() {
   local snapshot_file="${3:-}"
   local snapshot_manifest="${4:-}"
 
+  if [[ ! -f "${snapshot_manifest}" ]]; then
+    echo "Core snapshot manifest does not exist: ${snapshot_manifest}" >&2
+    return 1
+  fi
+  local snapshot_manifest_sha256
+  snapshot_manifest_sha256="$(sha256sum "${snapshot_manifest}" | awk '{print $1}')"
+
   mkdir -p "$(dirname "${marker_path}")"
 
   local tmp_path="${marker_path}.tmp"
   cat >"${tmp_path}" <<EOF
 {
+  "schema_version": "balance-history-core-install-marker:v1",
   "snapshot_mode": "$(snapshot_marker_escape "${snapshot_mode}")",
   "snapshot_file": "$(snapshot_marker_escape "${snapshot_file}")",
   "snapshot_manifest": "$(snapshot_marker_escape "${snapshot_manifest}")",
+  "snapshot_manifest_sha256": "${snapshot_manifest_sha256}",
   "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

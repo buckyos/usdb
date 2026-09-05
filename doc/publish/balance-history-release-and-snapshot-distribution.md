@@ -9,6 +9,10 @@
 - [Exact-Height Snapshot Tool Design](../balance-history/balance-history-exact-height-snapshot-tool-design.md)
 - [主网 Exact-Height Snapshot 操作指南](../balance-history/balance-history-mainnet-exact-height-snapshot-operations.md)
 
+> 当前切换状态：split v1 artifact 和 core-only installer 已实现，但 snapshot record、network
+> bundle、对象存储 resolver/publisher 仍在后续批次切换。仓库当前主网包装脚本会对这些旧单文件
+> 发布命令 fail closed；本章描述的远端发布流程在该批次完成前不能用于新 split artifact。
+
 ## 2. 发布物边界
 
 Balance-history release bundle 至少包含：
@@ -22,15 +26,23 @@ release-manifest.json
 install.sh
 ```
 
-可选 snapshot 独立分发。节点下载路径发布原始 immutable files，tar 仅保留为离线归档：
+目标发布格式把必选 core 与可选 registry sidecar 独立分发。节点下载路径发布原始 immutable
+files，tar 仅保留为离线归档：
 
 ```text
-snapshot_<H>.db
-snapshot_<H>.manifest.json
-snapshot_<H>.manifest.sig
-complete.json
-snapshot-records/v2/<record-sha256>.json
+core/balance_history_core_<H>.db
+core/balance_history_core_<H>.manifest.json
+core/balance_history_core_<H>.manifest.sig
+core/complete.json
+
+script-registry/script_registry_<H>.db             # optional
+script-registry/script_registry_<H>.manifest.json  # optional
+script-registry/script_registry_<H>.manifest.sig   # optional
+script-registry/complete.json                      # optional
 ```
+
+新的 snapshot record 路径和 schema 将在部署发布闭环批次中冻结；不得复用旧 v2 单文件 record
+表示 split artifact。
 
 发布对象不包含 signing private key、builder workspace、job state、接收方 trusted-key catalog 或
 validation DB。对象存储具体契约和命令见

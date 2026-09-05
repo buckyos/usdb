@@ -6,9 +6,11 @@
 usdb-indexer 本地状态之间的启动兼容关系。Snapshot 是可替换的部署 artifact，不进入 chain ID、genesis
 或 network generation 身份。
 
-`paired-checkpoint` 是一组不可拆分使用的部署 artifact：已签名的 balance-history snapshot 与绑定它的
+`paired-checkpoint` 是一组不可拆分使用的部署 artifact：已签名的 split v1 balance-history core
+snapshot 与绑定它的
 已签名 usdb-indexer checkpoint。恢复流程会先离线校验并安装两侧数据，再在服务启动后按历史高度重算
-完整 state-ref；任一步不一致都会阻止 USDB chain 启动。
+完整 state-ref；任一步不一致都会阻止 USDB chain 启动。可选 script-registry sidecar 不属于该原子
+配对，也不进入 state-ref。
 
 ## 2. 当前支持矩阵
 

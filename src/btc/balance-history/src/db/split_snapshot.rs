@@ -252,6 +252,144 @@ impl CoreSnapshotDb {
         count_rows(&self.conn, "block_commits")
     }
 
+    /// Reads one key-ordered page of current balance rows for core installation.
+    pub fn get_balance_history_entries(
+        &self,
+        page_size: u32,
+        last_script_hash: Option<&BtcScriptHash>,
+    ) -> Result<Vec<BalanceHistoryEntry>, String> {
+        require_positive_page_size(page_size, "core balance")?;
+        let (sql, parameters) = match last_script_hash {
+            Some(script_hash) => (
+                "SELECT script_hash, height, balance, delta FROM balance_history WHERE script_hash > ?1 ORDER BY script_hash ASC LIMIT ?2",
+                rusqlite::params![script_hash.as_ref() as &[u8], i64::from(page_size)],
+            ),
+            None => (
+                "SELECT script_hash, height, balance, delta FROM balance_history ORDER BY script_hash ASC LIMIT ?1",
+                rusqlite::params![i64::from(page_size)],
+            ),
+        };
+        let mut statement = self
+            .conn
+            .prepare(sql)
+            .map_err(|error| format!("Failed to prepare core balance page query: {error}"))?;
+        let mut rows = statement
+            .query(parameters)
+            .map_err(|error| format!("Failed to query core balance page: {error}"))?;
+        let mut entries = Vec::with_capacity(page_size as usize);
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| format!("Failed to read core balance row: {error}"))?
+        {
+            let script_hash_bytes: Vec<u8> = row
+                .get(0)
+                .map_err(|error| format!("Failed to decode core balance script hash: {error}"))?;
+            entries.push(BalanceHistoryEntry {
+                script_hash: BtcScriptHash::from_slice(&script_hash_bytes)
+                    .map_err(|error| format!("Invalid core balance script hash: {error}"))?,
+                block_height: checked_u32(
+                    "core balance height",
+                    row.get(1).map_err(|error| {
+                        format!("Failed to decode core balance height: {error}")
+                    })?,
+                )?,
+                balance: checked_u64(
+                    "core balance",
+                    row.get(2)
+                        .map_err(|error| format!("Failed to decode core balance: {error}"))?,
+                )?,
+                delta: row
+                    .get(3)
+                    .map_err(|error| format!("Failed to decode core balance delta: {error}"))?,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Reads one key-ordered page of live UTXOs for core installation.
+    pub fn get_utxo_entries(
+        &self,
+        page_size: u32,
+        last_outpoint: Option<&OutPoint>,
+    ) -> Result<Vec<UTXOEntry>, String> {
+        require_positive_page_size(page_size, "core UTXO")?;
+        let (sql, parameters) = match last_outpoint {
+            Some(outpoint) => (
+                "SELECT outpoint, script_hash, value FROM utxos WHERE outpoint > ?1 ORDER BY outpoint ASC LIMIT ?2",
+                rusqlite::params![OutPointCodec::encode(outpoint), i64::from(page_size)],
+            ),
+            None => (
+                "SELECT outpoint, script_hash, value FROM utxos ORDER BY outpoint ASC LIMIT ?1",
+                rusqlite::params![i64::from(page_size)],
+            ),
+        };
+        let mut statement = self
+            .conn
+            .prepare(sql)
+            .map_err(|error| format!("Failed to prepare core UTXO page query: {error}"))?;
+        let mut rows = statement
+            .query(parameters)
+            .map_err(|error| format!("Failed to query core UTXO page: {error}"))?;
+        let mut entries = Vec::with_capacity(page_size as usize);
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| format!("Failed to read core UTXO row: {error}"))?
+        {
+            let outpoint_bytes: Vec<u8> = row
+                .get(0)
+                .map_err(|error| format!("Failed to decode core UTXO outpoint: {error}"))?;
+            let script_hash_bytes: Vec<u8> = row
+                .get(1)
+                .map_err(|error| format!("Failed to decode core UTXO script hash: {error}"))?;
+            entries.push(UTXOEntry {
+                outpoint: OutPointCodec::decode(&outpoint_bytes)
+                    .map_err(|error| format!("Invalid core UTXO outpoint: {error}"))?,
+                script_hash: BtcScriptHash::from_slice(&script_hash_bytes)
+                    .map_err(|error| format!("Invalid core UTXO script hash: {error}"))?,
+                value: checked_u64(
+                    "core UTXO value",
+                    row.get(2)
+                        .map_err(|error| format!("Failed to decode core UTXO value: {error}"))?,
+                )?,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Reads one height-ordered page of block commitments for core installation.
+    pub fn get_block_commit_entries(
+        &self,
+        page_size: u32,
+        last_block_height: Option<u32>,
+    ) -> Result<Vec<BlockCommitEntry>, String> {
+        require_positive_page_size(page_size, "core block-commit")?;
+        let (sql, parameters) = match last_block_height {
+            Some(height) => (
+                "SELECT block_height, btc_block_hash, balance_delta_root, block_commit FROM block_commits WHERE block_height > ?1 ORDER BY block_height ASC LIMIT ?2",
+                rusqlite::params![i64::from(height), i64::from(page_size)],
+            ),
+            None => (
+                "SELECT block_height, btc_block_hash, balance_delta_root, block_commit FROM block_commits ORDER BY block_height ASC LIMIT ?1",
+                rusqlite::params![i64::from(page_size)],
+            ),
+        };
+        let mut statement = self
+            .conn
+            .prepare(sql)
+            .map_err(|error| format!("Failed to prepare core block-commit page query: {error}"))?;
+        let mut rows = statement
+            .query(parameters)
+            .map_err(|error| format!("Failed to query core block-commit page: {error}"))?;
+        let mut entries = Vec::with_capacity(page_size as usize);
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| format!("Failed to read core block-commit row: {error}"))?
+        {
+            entries.push(decode_block_commit_row(row)?);
+        }
+        Ok(entries)
+    }
+
     /// Returns the last block commitment in height order.
     pub fn latest_block_commit(&self) -> Result<Option<BlockCommitEntry>, String> {
         let mut statement = self
@@ -627,6 +765,13 @@ fn checked_u32(field: &str, value: i64) -> Result<u32, String> {
     u32::try_from(value).map_err(|_| format!("{field} is outside u32 range: {value}"))
 }
 
+fn require_positive_page_size(page_size: u32, label: &str) -> Result<(), String> {
+    if page_size == 0 {
+        return Err(format!("{label} page size must be greater than zero"));
+    }
+    Ok(())
+}
+
 fn to_sqlite_i64(field: &str, value: u64) -> Result<i64, String> {
     i64::try_from(value).map_err(|_| format!("{field} exceeds SQLite INTEGER range: {value}"))
 }
@@ -706,6 +851,21 @@ mod tests {
         assert_eq!(db.utxo_count().unwrap(), 1);
         assert_eq!(db.block_commit_count().unwrap(), 1);
         assert_eq!(db.latest_block_commit().unwrap().unwrap().block_height, 7);
+        assert!(
+            db.get_balance_history_entries(0, None)
+                .unwrap_err()
+                .contains("page size")
+        );
+        assert!(
+            db.get_utxo_entries(0, None)
+                .unwrap_err()
+                .contains("page size")
+        );
+        assert!(
+            db.get_block_commit_entries(0, None)
+                .unwrap_err()
+                .contains("page size")
+        );
         db.finalize_for_distribution().unwrap();
 
         let db = CoreSnapshotDb::open_for_verification(&path, 4096).unwrap();

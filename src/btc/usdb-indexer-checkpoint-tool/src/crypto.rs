@@ -1,7 +1,7 @@
 use crate::{CHECKPOINT_SIGNATURE_SCHEME, IndexerCheckpointManifest};
 use balance_history::{
-    SNAPSHOT_SIGNATURE_SCHEME_ED25519, SnapshotManifest, SnapshotSigningKeyFile,
-    SnapshotTrustedKeySet, signature_path_for_manifest_file,
+    CoreSnapshotManifest, SnapshotSigningKeyFile, SnapshotTrustedKeySet,
+    verify_snapshot_artifact_manifest_signature,
 };
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Signer, Verifier};
@@ -113,52 +113,16 @@ pub(crate) fn verify_manifest_signature(
 }
 
 pub(crate) fn verify_balance_history_manifest_signature(
-    manifest: &SnapshotManifest,
+    manifest: &CoreSnapshotManifest,
     manifest_path: &Path,
     trusted_keys_path: &Path,
 ) -> Result<(), String> {
-    if manifest.signature_scheme.as_deref() != Some(SNAPSHOT_SIGNATURE_SCHEME_ED25519) {
-        return Err(format!(
-            "Balance-history manifest {} is not signed with Ed25519",
-            manifest_path.display()
-        ));
-    }
-    let key_id = manifest
-        .signing_key_id
-        .as_deref()
-        .ok_or_else(|| "Balance-history manifest has no signing_key_id".to_string())?;
-    let trusted_keys = SnapshotTrustedKeySet::load(trusted_keys_path)?;
-    let verifying_key = trusted_keys.find_verifying_key(key_id)?.ok_or_else(|| {
-        format!(
-            "Balance-history snapshot signer {key_id} is not trusted by {}",
-            trusted_keys_path.display()
-        )
-    })?;
-    let signature_path = signature_path_for_manifest_file(manifest_path);
-    let encoded = std::fs::read_to_string(&signature_path).map_err(|error| {
-        format!(
-            "Failed to read balance-history signature {}: {error}",
-            signature_path.display()
-        )
-    })?;
-    let raw = base64::engine::general_purpose::STANDARD
-        .decode(encoded.trim().as_bytes())
-        .map_err(|error| {
-            format!(
-                "Failed to decode balance-history signature {}: {error}",
-                signature_path.display()
-            )
-        })?;
-    let bytes: [u8; 64] = raw.as_slice().try_into().map_err(|_| {
-        format!(
-            "Invalid balance-history signature length in {}: expected 64, got {}",
-            signature_path.display(),
-            raw.len()
-        )
-    })?;
-    verifying_key
-        .verify(&manifest.canonical_bytes()?, &Signature::from_bytes(&bytes))
-        .map_err(|error| {
-            format!("Balance-history signature verification failed for signer {key_id}: {error}")
-        })
+    verify_snapshot_artifact_manifest_signature(
+        manifest.signature_scheme.as_deref(),
+        manifest.signing_key_id.as_deref(),
+        manifest_path,
+        &manifest.signature_payload()?,
+        trusted_keys_path,
+    )
+    .map(|_| ())
 }
