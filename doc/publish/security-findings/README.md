@@ -30,6 +30,7 @@
 
 - [CodeQL 初始基线（2026-09-04）](./codeql-baseline-2026-09-04.md)
 - [Snapshot/checkpoint 安装边界审计（2026-09-04）](./snapshot-checkpoint-install-audit-2026-09-04.md)
+- [SourceDAO Stage B 安全基线（2026-09-04）](./sourcedao-stage-b-baseline-2026-09-04.md)
 
 基线文件记录一次不可变扫描事实；后续修复进度可以更新，但新一轮全量扫描应新增日期文件，
 不要覆盖旧基线。

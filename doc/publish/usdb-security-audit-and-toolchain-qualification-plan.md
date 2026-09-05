@@ -134,6 +134,11 @@ reorg/restart 和真实服务链路回归。
 
 合约源码问题与 Node/Hardhat 依赖问题分别修复，避免无法判断 bytecode 变化来源。
 
+当前首轮基线见 [SourceDAO Stage B 安全基线](./security-findings/sourcedao-stage-b-baseline-2026-09-04.md)。
+Slither 处于 report-only 阶段；USDB production contract 的 compiler settings、ABI、method selectors、
+bytecode 和 storage layout 已进入确定性 golden gate。已确认的治理与资产记账问题必须按独立
+artifact-changing batch 修复，不能与 Hardhat/npm 升级合并。
+
 ## 7. 阶段 C：Go 中的 USDB 增量
 
 先建立相对于选定 ETHW upstream revision 的 delta inventory，再集中审计：

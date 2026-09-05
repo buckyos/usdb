@@ -165,9 +165,10 @@ comparison。
 - `artifact/owner`：SourceDAO artifact/bootstrap toolchain / SourceDAO owner
 - `reachability`：不适用于 Solidity 合约结论
 - `decision`：`mitigate`
-- `next`：运行 Slither、initializer/权限/外部调用人工审计，并保持 bytecode、ABI、storage layout
-  和 bootstrap transcript golden comparison
-- `release_gate`：`mainnet`
+- `status`：Slither 0.11.6 report-only workflow、initializer/权限/外部调用首轮人工审计，以及 8 个
+  production contract 的 bytecode/ABI/storage-layout golden 已落地
+- `evidence`：[SourceDAO Stage B 安全基线](./sourcedao-stage-b-baseline-2026-09-04.md)
+- `release_gate`：由 SourceDAO 基线内逐项 finding 决定；不能用 `CodeQL=0` 覆盖 Solidity gate
 
 ## 5. 下一步
 
@@ -175,5 +176,6 @@ comparison。
 2. Snapshot/checkpoint 的首轮 symlink、staging inventory 和 cleanup 专项审计已经完成，结论见
    [Snapshot/checkpoint 安装边界审计](./snapshot-checkpoint-install-audit-2026-09-04.md)；strict JSON
    duplicate-key corpus 已落地，剩余真实 artifact 跨进程演练继续跟踪。
-3. 为 SourceDAO 增加 Solidity 专用扫描和人工 findings。
+3. SourceDAO 首轮 Solidity 扫描、人工 findings 与 contract golden 已完成；按基线顺序处理治理、
+   accounting、initializer/tooling 和 artifact-cleanup 批次。
 4. 按最终 go-ethereum binary/image 的可达性拆分 GO-CQL-001。

@@ -1,0 +1,25 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "sourcedao-security-baseline",
+  "type": "security",
+  "scopes": [
+    "release",
+    "security",
+    "sourcedao",
+    "testing"
+  ],
+  "summary": "Establish the SourceDAO Solidity security and deterministic contract artifact baseline",
+  "details": [
+    "SourceDAO now runs pinned Slither analysis in a report-only workflow that fails on scanner or malformed-report errors without blocking development solely because findings exist.",
+    "The USDB contract build records and checks compiler settings, ABI, selectors, creation and runtime bytecode, and storage layout for all eight production contracts.",
+    "The centralized security registry distinguishes confirmed governance and accounting defects from mitigated bootstrap risks and static-analysis false positives before contract bytecode changes are made."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}
