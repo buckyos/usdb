@@ -271,6 +271,9 @@ impl ScriptRegistryResolver {
             Some(bytes) => format!("sha256:{:x}", Sha256::digest(bytes)),
             None => "absent".to_string(),
         });
+        // Failed/conflicting bases stay disabled until the installer publishes a
+        // new verified activation. Its monotonic updated_at also invalidates this
+        // cache when a repair selects the same immutable artifact again.
         if self
             .cache
             .lock()
@@ -924,6 +927,77 @@ mod tests {
         );
         assert!(readiness.last_error.is_some());
         readiness.validate().unwrap();
+    }
+
+    #[test]
+    fn repaired_same_artifact_recovers_after_verified_republication_without_restart() {
+        for conflict in [false, true] {
+            let test = test_resolver("same_artifact_repair", true);
+            let expected_script = script(7);
+            let expected_hash = expected_script.to_btc_script_hash();
+            let manifest = activate_sidecar(
+                &test,
+                &[ScriptRegistryEntry {
+                    script_hash: expected_hash,
+                    script_pubkey: expected_script.clone(),
+                }],
+                None,
+            );
+            let state_path = test
+                .config
+                .script_registry_sidecar_dir()
+                .join(SCRIPT_REGISTRY_STATE_FILE);
+            let mut state = ScriptRegistryActivationState::load(&state_path).unwrap();
+            let db_path = test
+                .config
+                .script_registry_sidecar_dir()
+                .join(SCRIPT_REGISTRY_BASES_DIR)
+                .join(&manifest.registry_artifact_id)
+                .join(&manifest.file_name);
+            let original = std::fs::read(&db_path).unwrap();
+            if conflict {
+                Connection::open(&db_path)
+                    .unwrap()
+                    .execute(
+                        "UPDATE script_registry SET script_pubkey=?1 WHERE script_hash=?2",
+                        (script(8).as_bytes(), expected_hash.as_ref() as &[u8]),
+                    )
+                    .unwrap();
+            } else {
+                std::fs::remove_file(&db_path).unwrap();
+            }
+            let (_, failed) = test.resolver.resolve(&[expected_hash]).unwrap();
+            assert_eq!(
+                failed.state,
+                if conflict {
+                    ScriptRegistryState::Conflict
+                } else {
+                    ScriptRegistryState::Failed
+                }
+            );
+            assert!(!failed.capabilities.script_registry_complete_coverage);
+
+            let repaired_path = db_path.with_extension("repaired");
+            std::fs::write(&repaired_path, original).unwrap();
+            std::fs::rename(&repaired_path, &db_path).unwrap();
+            let (pending, _) = test.resolver.resolve(&[expected_hash]).unwrap();
+            assert_eq!(pending[0].status, ScriptHashResolutionStatus::Unresolved);
+
+            // Model the installer's verified publication, including same-ID retries.
+            // File repair alone must not silently clear a remembered conflict.
+            state.updated_at += 1;
+            state.save_atomic(&state_path).unwrap();
+            let (recovered, readiness) = test.resolver.resolve(&[expected_hash]).unwrap();
+            assert_eq!(recovered[0].status, ScriptHashResolutionStatus::FoundBase);
+            assert_eq!(recovered[0].script_pubkey.as_ref(), Some(&expected_script));
+            assert_eq!(readiness.state, ScriptRegistryState::Ready);
+            assert_eq!(
+                readiness.registry_artifact_id,
+                Some(manifest.registry_artifact_id)
+            );
+            assert!(readiness.capabilities.script_registry_complete_coverage);
+            readiness.validate().unwrap();
+        }
     }
 
     #[test]

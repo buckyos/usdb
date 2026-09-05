@@ -26,7 +26,7 @@ struct CoreInstallMarker {
 /// Result of validating and atomically activating one immutable registry sidecar.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScriptRegistryActivationReport {
-    /// True when the selected artifact was already active.
+    /// True when the selected artifact was already active and passed revalidation.
     pub already_active: bool,
     /// File-specific registry artifact identity.
     pub registry_artifact_id: String,
@@ -53,15 +53,35 @@ pub fn activate_script_registry_sidecar(
     trusted_keys_path: &Path,
 ) -> Result<ScriptRegistryActivationReport, String> {
     let state_path = config.script_registry_sidecar_dir().join("state.json");
-    let previous_ready = ScriptRegistryActivationState::load(&state_path)
-        .ok()
+    let previous = ScriptRegistryActivationState::load(&state_path).ok();
+    let previous_ready = previous
+        .as_ref()
         .filter(|state| state.state == ScriptRegistryState::Ready);
+    // Match the artifact directory even when its manifest is missing or malformed.
+    // A failed recheck of the current artifact must revoke its old readiness.
+    let rechecking_active = previous_ready
+        .and_then(|state| state.active.as_ref())
+        .is_some_and(|active| {
+            let active_dir = config
+                .script_registry_sidecar_dir()
+                .join("bases")
+                .join(&active.registry_artifact_id);
+            manifest_path.parent().is_some_and(|parent| {
+                parent.file_name() == active_dir.file_name()
+                    || parent
+                        .canonicalize()
+                        .ok()
+                        .zip(active_dir.canonicalize().ok())
+                        .is_some_and(|(target, active)| target == active)
+            })
+        });
     let result = activate_script_registry_sidecar_inner(
         config,
         manifest_path,
         core_manifest_path,
         trusted_keys_path,
         &state_path,
+        previous.as_ref(),
     );
     if let Err(error) = &result {
         log::error!(
@@ -70,13 +90,16 @@ pub fn activate_script_registry_sidecar(
             core_manifest_path.display(),
             error
         );
-        if previous_ready.is_none() {
+        if previous_ready.is_none() || rechecking_active {
             let failed = ScriptRegistryActivationState {
                 schema_version: SCRIPT_REGISTRY_ACTIVATION_STATE_VERSION.to_string(),
                 state: ScriptRegistryState::Failed,
-                active: None,
+                // Retain the last pointer for GC pinning, but never for serving.
+                active: previous.as_ref().and_then(|state| state.active.clone()),
                 last_error: Some(error.clone()),
-                updated_at: unix_timestamp(),
+                updated_at: previous.as_ref().map_or_else(unix_timestamp, |state| {
+                    unix_timestamp().max(state.updated_at.saturating_add(1))
+                }),
             };
             if let Err(state_error) = failed.save_atomic(&state_path) {
                 log::error!(
@@ -100,6 +123,7 @@ fn activate_script_registry_sidecar_inner(
     core_manifest_path: &Path,
     trusted_keys_path: &Path,
     state_path: &Path,
+    previous: Option<&ScriptRegistryActivationState>,
 ) -> Result<ScriptRegistryActivationReport, String> {
     let manifest = ScriptRegistryManifest::load(manifest_path)?;
     let core_manifest = CoreSnapshotManifest::load(core_manifest_path)?;
@@ -118,21 +142,11 @@ fn activate_script_registry_sidecar_inner(
         .join(&manifest.registry_artifact_id);
     require_same_directory(&expected_dir, manifest_path)?;
 
-    if let Ok(state) = ScriptRegistryActivationState::load(state_path)
-        && state.state == ScriptRegistryState::Ready
-        && state.active.as_ref() == Some(&pointer)
-    {
-        log::info!(
-            "Script-registry sidecar is already active: artifact_id={}, base_height={}",
-            manifest.registry_artifact_id,
-            manifest.base.base_height
-        );
-        return Ok(report(&manifest, manifest_sha256, true));
-    }
-
-    let has_active = ScriptRegistryActivationState::load(state_path)
-        .ok()
-        .is_some_and(|state| state.state == ScriptRegistryState::Ready);
+    let already_active = previous.is_some_and(|state| {
+        state.state == ScriptRegistryState::Ready && state.active.as_ref() == Some(&pointer)
+    });
+    // Keep a failed artifact pinned until a replacement has passed verification.
+    let has_active = previous.is_some_and(|state| state.active.is_some());
     if !has_active {
         ScriptRegistryActivationState {
             schema_version: SCRIPT_REGISTRY_ACTIVATION_STATE_VERSION.to_string(),
@@ -183,12 +197,24 @@ fn activate_script_registry_sidecar_inner(
         ));
     }
 
+    // The resolver caches by state-file content. Advance the publication timestamp
+    // even for same-second retries or clock rollback so verified repairs reopen it.
+    let updated_at = previous
+        .map(|state| {
+            state
+                .updated_at
+                .checked_add(1)
+                .map(|next| next.max(unix_timestamp()))
+                .ok_or_else(|| "Script-registry activation timestamp overflow".to_string())
+        })
+        .transpose()?
+        .unwrap_or_else(unix_timestamp);
     ScriptRegistryActivationState {
         schema_version: SCRIPT_REGISTRY_ACTIVATION_STATE_VERSION.to_string(),
         state: ScriptRegistryState::Ready,
         active: Some(pointer),
         last_error: None,
-        updated_at: unix_timestamp(),
+        updated_at,
     }
     .save_atomic(state_path)?;
     log::info!(
@@ -198,7 +224,7 @@ fn activate_script_registry_sidecar_inner(
         manifest.entry_count,
         signing_key_id
     );
-    Ok(report(&manifest, manifest_sha256, false))
+    Ok(report(&manifest, manifest_sha256, already_active))
 }
 
 fn validate_core_install_marker(
@@ -375,6 +401,10 @@ mod tests {
     }
 
     fn write_signed_artifact(name: &str) -> TestArtifact {
+        write_signed_artifact_with_script(name, 0x51)
+    }
+
+    fn write_signed_artifact_with_script(name: &str, opcode: u8) -> TestArtifact {
         let root = temp_root(name);
         let config = BalanceHistoryConfig {
             root_dir: root.clone(),
@@ -462,7 +492,7 @@ mod tests {
             core_snapshot_id: snapshot_id,
         };
         let work = root.join("registry-work.db");
-        let script = ScriptBuf::from_bytes(vec![0x51]);
+        let script = ScriptBuf::from_bytes(vec![opcode]);
         let mut db = ScriptRegistrySnapshotDb::create(&work).unwrap();
         db.put_entries(&[ScriptRegistryEntry {
             script_hash: script.to_btc_script_hash(),
@@ -521,7 +551,7 @@ mod tests {
         assert!(!first.already_active);
         assert_eq!(first.entry_count, 1);
 
-        let state = ScriptRegistryActivationState::load(
+        let mut state = ScriptRegistryActivationState::load(
             &artifact
                 .config
                 .script_registry_sidecar_dir()
@@ -530,9 +560,16 @@ mod tests {
         .unwrap();
         assert_eq!(state.state, ScriptRegistryState::Ready);
         assert_eq!(
-            state.active.unwrap().registry_artifact_id,
+            state.active.as_ref().unwrap().registry_artifact_id,
             first.registry_artifact_id
         );
+        // Force a clock rollback/same-second retry without sleeping in the test.
+        state.updated_at = unix_timestamp() + 100;
+        let state_path = artifact
+            .config
+            .script_registry_sidecar_dir()
+            .join("state.json");
+        state.save_atomic(&state_path).unwrap();
 
         let replay = activate_script_registry_sidecar(
             &artifact.config,
@@ -542,6 +579,9 @@ mod tests {
         )
         .unwrap();
         assert!(replay.already_active);
+        let republished = ScriptRegistryActivationState::load(&state_path).unwrap();
+        assert_eq!(republished.active, state.active);
+        assert!(republished.updated_at > state.updated_at);
     }
 
     #[test]
@@ -585,12 +625,19 @@ mod tests {
             .join("state.json");
         let active = ScriptRegistryActivationState::load(&state_path).unwrap();
 
-        let mut replacement = ScriptRegistryManifest::load(&artifact.manifest_path).unwrap();
-        replacement.generated_at += 1;
-        replacement.save(&artifact.manifest_path).unwrap();
+        let replacement = write_signed_artifact_with_script("replacement", 0x52);
+        let replacement_dir = replacement.manifest_path.parent().unwrap();
+        let destination = artifact
+            .config
+            .script_registry_sidecar_dir()
+            .join("bases")
+            .join(replacement_dir.file_name().unwrap());
+        std::fs::rename(replacement_dir, &destination).unwrap();
+        let replacement_path = destination.join(replacement.manifest_path.file_name().unwrap());
+        std::fs::write(replacement_path.with_extension("sig"), "invalid").unwrap();
         let error = activate_script_registry_sidecar(
             &artifact.config,
-            &artifact.manifest_path,
+            &replacement_path,
             &artifact.core_manifest_path,
             &artifact.trusted_keys_path,
         )
@@ -600,5 +647,66 @@ mod tests {
             ScriptRegistryActivationState::load(&state_path).unwrap(),
             active
         );
+    }
+
+    #[test]
+    fn reactivation_rechecks_files_revokes_failures_and_recovers() {
+        for damage in [
+            "missing-db",
+            "changed-db",
+            "missing-signature",
+            "changed-signature",
+            "changed-manifest",
+        ] {
+            let artifact = write_signed_artifact(damage);
+            let activate = || {
+                activate_script_registry_sidecar(
+                    &artifact.config,
+                    &artifact.manifest_path,
+                    &artifact.core_manifest_path,
+                    &artifact.trusted_keys_path,
+                )
+            };
+            activate().unwrap();
+            let state_path = artifact
+                .config
+                .script_registry_sidecar_dir()
+                .join("state.json");
+            let mut ready = ScriptRegistryActivationState::load(&state_path).unwrap();
+            ready.updated_at = unix_timestamp() + 100;
+            ready.save_atomic(&state_path).unwrap();
+            let path = match damage {
+                "missing-db" | "changed-db" => artifact
+                    .manifest_path
+                    .parent()
+                    .unwrap()
+                    .join("script_registry_42.db"),
+                "missing-signature" | "changed-signature" => {
+                    artifact.manifest_path.with_extension("sig")
+                }
+                _ => artifact.manifest_path.clone(),
+            };
+            let original = std::fs::read(&path).unwrap();
+            if damage.starts_with("missing") {
+                std::fs::remove_file(&path).unwrap();
+            } else {
+                let mut changed = original.clone();
+                changed[0] ^= 1;
+                std::fs::write(&path, changed).unwrap();
+            }
+            assert!(activate().is_err(), "{damage}");
+            let failed = ScriptRegistryActivationState::load(&state_path).unwrap();
+            assert_eq!(failed.state, ScriptRegistryState::Failed, "{damage}");
+            assert_eq!(failed.active, ready.active);
+            assert!(failed.last_error.is_some());
+            assert!(failed.updated_at > ready.updated_at);
+
+            std::fs::write(&path, original).unwrap();
+            assert!(!activate().unwrap().already_active);
+            let recovered = ScriptRegistryActivationState::load(&state_path).unwrap();
+            assert_eq!(recovered.state, ScriptRegistryState::Ready);
+            assert_eq!(recovered.active, ready.active);
+            assert!(recovered.updated_at > failed.updated_at);
+        }
     }
 }

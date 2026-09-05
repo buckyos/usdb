@@ -31,7 +31,8 @@ pub struct ScriptRegistryActivationState {
     pub active: Option<ActiveScriptRegistryPointer>,
     /// Last installer or validation failure for failed/conflict states.
     pub last_error: Option<String>,
-    /// Unix timestamp of the last atomic state transition.
+    /// Unix seconds of publication, advanced monotonically on verified activation
+    /// so same-artifact retries invalidate the resolver's cached state.
     pub updated_at: u64,
 }
 

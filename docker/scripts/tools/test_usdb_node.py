@@ -678,7 +678,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(registry["state"], "FAILED")
         self.assertEqual(NODE._overall_progress_state(components), "READY")
 
-    def test_script_registry_doctor_checks_active_pointer_and_file_sizes(self) -> None:
+    def active_registry_fixture(self):
         layout = NODE.load_release_layout(self.root, self.node_env)
         self.configure_full_node(layout, "registry-doctor")
         NODE.select_snapshot_release(layout)
@@ -718,6 +718,11 @@ class UsdbNodeTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+        return layout, env, record, artifact_dir
+
+    def test_script_registry_doctor_checks_active_pointer_and_file_sizes(self) -> None:
+        layout, env, record, artifact_dir = self.active_registry_fixture()
+        registry = record["components"]["script_registry"]
         self.assertEqual(NODE._script_registry_doctor_status(layout, env)["state"], "ok")
         database = artifact_dir / Path(
             next(item["path"] for item in registry["files"] if item["role"] == "database")
@@ -726,6 +731,100 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(
             NODE._script_registry_doctor_status(layout, env)["state"], "warning"
         )
+
+    def registry_readiness_fixture(self, record):
+        return {
+            "service": "balance-history",
+            "consensus_ready": True,
+            "script_registry": {
+                "state": "ready",
+                "coverage_mode": "snapshot_plus_sidecar",
+                "registry_artifact_id": record["components"]["script_registry"]["artifact_id"],
+                "core_snapshot_id": record["core_snapshot_id"],
+                "base_height": record["height"],
+                "base_block_hash": record["btc_block_hash"],
+                "capabilities": {
+                    "script_registry_lookup": True,
+                    "script_registry_complete_coverage": True,
+                },
+                "last_error": None,
+            },
+        }
+
+    def test_registry_watch_requires_runtime_readiness_and_matching_coverage(self) -> None:
+        layout, env, record, _artifact_dir = self.active_registry_fixture()
+        ready = self.registry_readiness_fixture(record)
+        for runtime, expected in [
+            (None, "WAITING"),
+            ({}, "WAITING"),
+            ({"state": "absent"}, "WAITING"),
+            ({"state": "failed", "last_error": "SQLite open failed"}, "FAILED"),
+            ({"state": "conflict", "last_error": "hash mismatch"}, "FAILED"),
+            (ready["script_registry"], "READY"),
+            ({**ready["script_registry"], "registry_artifact_id": "9" * 64}, "BLOCKED"),
+            ({**ready["script_registry"], "core_snapshot_id": "9" * 64}, "BLOCKED"),
+            ({**ready["script_registry"], "base_height": 1}, "BLOCKED"),
+            ({**ready["script_registry"], "base_block_hash": "9" * 64}, "BLOCKED"),
+            ({**ready["script_registry"], "coverage_mode": "post_snapshot_only"}, "BLOCKED"),
+            ({**ready["script_registry"], "capabilities": {}}, "BLOCKED"),
+        ]:
+            with self.subTest(runtime=runtime):
+                observation = {"script_registry": runtime} if runtime is not None else None
+                registry = NODE._script_registry_component(
+                    layout, env, None, observation, "RPC unavailable" if runtime is None else None
+                )
+                self.assertEqual(registry["state"], expected)
+                core = [
+                    NODE._component_progress(component_id, "READY", "ready")
+                    for component_id, _label in NODE.PROGRESS_COMPONENTS
+                    if component_id != "script_registry"
+                ]
+                self.assertEqual(NODE._overall_progress_state(core + [registry]), "READY")
+
+    def test_registry_watch_rejects_missing_files_even_when_runtime_is_ready(self) -> None:
+        layout, env, record, artifact_dir = self.active_registry_fixture()
+        readiness = self.registry_readiness_fixture(record)
+        for item in record["components"]["script_registry"]["files"]:
+            path = artifact_dir / Path(item["path"]).name
+            original = path.read_bytes()
+            with self.subTest(role=item["role"]):
+                path.unlink()
+                registry = NODE._script_registry_component(layout, env, None, readiness)
+                self.assertEqual(registry["state"], "BLOCKED")
+                path.write_bytes(original)
+                path.write_bytes(b"")
+                registry = NODE._script_registry_component(layout, env, None, readiness)
+                self.assertEqual(registry["state"], "BLOCKED")
+                path.write_bytes(original)
+
+        state_path = artifact_dir.parent.parent / "state.json"
+        state = json.loads(state_path.read_text())
+        state["active"]["manifest_file"] = "../../outside.json"
+        state_path.write_text(json.dumps(state))
+        self.assertEqual(
+            NODE._script_registry_component(layout, env, None, readiness)["state"],
+            "BLOCKED",
+        )
+
+    def test_registry_watch_reuses_balance_readiness_and_waits_when_service_stops(self) -> None:
+        layout, _env, record, _artifact_dir = self.active_registry_fixture()
+        readiness = self.registry_readiness_fixture(record)
+        for running in [True, False]:
+            with (
+                self.subTest(running=running),
+                mock.patch.object(NODE, "_collect_compose_services", return_value={
+                    "balance-history": {"state": "running" if running else "exited", "exit_code": 0}
+                }),
+                mock.patch.object(NODE, "_read_service_readiness", return_value=(readiness, None)) as rpc,
+            ):
+                report = NODE.collect_node_progress(layout)
+                registry = next(item for item in report["components"] if item["id"] == "script_registry")
+                self.assertEqual(registry["state"], "READY" if running else "WAITING")
+                self.assertEqual(report["auxiliary_state"], "READY" if running else "PARTIAL")
+                if running:
+                    rpc.assert_called_once_with(layout, "run_testnet_runtime.sh", ["data-status"], "balance-history")
+                else:
+                    rpc.assert_not_called()
 
     def test_snapshot_gc_is_dry_run_and_preserves_selected_artifacts(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

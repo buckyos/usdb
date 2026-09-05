@@ -231,6 +231,16 @@ sidecar 不可用时，余额和共识服务继续运行；只有 snapshot heigh
 pointer/manifest digest、路径约束、manifest 与 live core identity、SQLite schema/meta，并对实际
 返回的每条 `script_pubkey` 重新计算 canonical script hash。
 
+重复执行 activation 也必须完整验证实际文件；`already_active=true` 仅表示本次通过校验的
+artifact 原本已被选中，不允许据此跳过校验。每次验证成功均重新原子发布 `state.json`，
+`updated_at` 取当前 Unix 秒数与前次值加一的较大值，保证同秒重试及系统时钟回退时仍产生
+不同的状态内容。resolver 因此会重新打开同一 artifact，清除旧的 failed/conflict 缓存；
+仅修复文件而未重新验证激活时，旧失败状态继续生效。
+
+当前 active artifact 复验失败时写入 `failed`，保留 pointer 仅用于 GC 引用保护；
+只有安装不同 artifact 的替换尝试失败时，才保留原有 ready 状态。文件修复完成后可通过
+`usdb-node snapshot install-registry` 重新校验激活，无需重启 balance-history。
+
 约束：
 
 - sidecar 文件以 SQLite `immutable=1`、`query_only=true` 打开；
@@ -699,10 +709,14 @@ registry 保持 append-like：
 - `script-registry-installer` 在 core loader 成功后独立下载 registry，并由 balance-history
   `activate-script-registry` 重新验证 manifest 签名、DB SHA-256、SQLite integrity/schema/meta 和精确
   entry count；全部通过后才原子替换 `state.json` active pointer。
-- `attempt.json` 仅描述当前下载/校验尝试，不能替代 active pointer。替换失败时保留之前 verified ready
-  pointer；首次安装失败只进入 failed 状态，不阻断 balance-history、indexer 或 USDB chain readiness。
+- `attempt.json` 仅描述当前下载/校验尝试，不能替代 active pointer。不同 artifact 替换失败时保留之前
+  verified ready pointer；当前 artifact 复验失败则撤销 ready。失败不阻断 balance-history、indexer
+  或 USDB chain readiness。
 - `usdb-node status --watch` 固定显示 core snapshot 与 script registry 两行，结构化进度升级为 v5 并增加
   `auxiliary_state`；registry 的 `FAILED/BLOCKED` 不改变 core `overall_state`。
+  registry 只有通过本地 pointer/record/文件检查，且运行服务的 registry readiness 明确报告所选
+  artifact 与 core identity 匹配、coverage 完整时，才显示 READY。RPC 不可用或服务未运行时显示
+  WAITING；运行时 failed/conflict 显示 FAILED。watch 复用 balance-history readiness RPC，不扫描大文件。
 - lifecycle status 升级为 v3；可重试的 pending/failed registry 给出
   `usdb-node snapshot install-registry`，但节点核心状态仍可保持 READY。
 - `doctor` 只读核对 release selection、active pointer、安装 record、文件大小和 manifest digest；完整签名、

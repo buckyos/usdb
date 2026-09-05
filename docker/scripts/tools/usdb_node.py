@@ -2408,6 +2408,8 @@ def _script_registry_component(
     layout: ReleaseLayout,
     env: dict[str, str],
     service: dict[str, Any] | None,
+    balance_readiness: dict[str, Any] | None = None,
+    balance_error: str | None = None,
 ) -> dict[str, Any]:
     if env.get("BH_SCRIPT_REGISTRY_ENABLED", "0") != "1":
         return _component_progress(
@@ -2428,6 +2430,7 @@ def _script_registry_component(
         sidecar_root = root / "auxiliary/script-registry"
         state_path = sidecar_root / "state.json"
         attempt_path = sidecar_root / "attempt.json"
+        state: dict[str, Any] = {}
         if state_path.is_symlink():
             raise ValueError("script-registry active state must not be a symlink")
         if state_path.is_file() and not state_path.is_symlink():
@@ -2440,6 +2443,46 @@ def _script_registry_component(
                 and isinstance(active, dict)
                 and active.get("registry_artifact_id") == expected_id
             ):
+                local = _script_registry_doctor_status(layout, env)
+                if local["state"] != "ok":
+                    raise ValueError(local["summary"])
+                runtime = (
+                    balance_readiness.get("script_registry")
+                    if balance_readiness is not None
+                    else None
+                )
+                if not isinstance(runtime, dict):
+                    return _component_progress(
+                        "script_registry",
+                        "WAITING",
+                        "local sidecar checks passed; waiting for balance-history registry readiness"
+                        + (f": {balance_error}" if balance_error else ""),
+                    )
+                if runtime.get("state") in {"failed", "conflict"}:
+                    return _component_progress(
+                        "script_registry",
+                        "FAILED",
+                        f"runtime registry {runtime['state']}: {runtime.get('last_error') or 'unknown error'}",
+                    )
+                if runtime.get("state") != "ready":
+                    return _component_progress(
+                        "script_registry",
+                        "WAITING",
+                        f"waiting for runtime sidecar activation: state={runtime.get('state')}",
+                    )
+                capabilities = runtime.get("capabilities")
+                if (
+                    runtime.get("registry_artifact_id") != expected_id
+                    or runtime.get("core_snapshot_id") != record["core_snapshot_id"]
+                    or runtime.get("base_height") != record["height"]
+                    or runtime.get("base_block_hash") != record["btc_block_hash"]
+                    or runtime.get("coverage_mode") != "snapshot_plus_sidecar"
+                    or not isinstance(capabilities, dict)
+                    or capabilities.get("script_registry_lookup") is not True
+                    or capabilities.get("script_registry_complete_coverage") is not True
+                    or runtime.get("last_error") is not None
+                ):
+                    raise ValueError("runtime registry identity or coverage differs from the selected sidecar")
                 return _component_progress(
                     "script_registry",
                     "READY",
@@ -2488,6 +2531,12 @@ def _script_registry_component(
                 "script_registry",
                 "FAILED",
                 f"optional sidecar install failed: {error or 'unknown error'}",
+            )
+        if state.get("state") in {"failed", "conflict"}:
+            return _component_progress(
+                "script_registry",
+                "FAILED",
+                f"optional sidecar activation failed: {state.get('last_error') or 'unknown error'}",
             )
         if service is not None and service.get("state") == "running":
             return _component_progress(
@@ -2556,6 +2605,8 @@ def _script_registry_doctor_status(
             "updated_at",
         }:
             raise ValueError("script-registry active state fields are not canonical")
+        if state["schema_version"] != "balance-history-script-registry-activation:v1":
+            raise ValueError("script-registry active state has an unsupported schema")
         active = state.get("active")
         if state.get("state") != "ready" or not isinstance(active, dict):
             return {
@@ -2569,12 +2620,20 @@ def _script_registry_doctor_status(
             "manifest_sha256",
         }:
             raise ValueError("script-registry active pointer fields are not canonical")
+        if state["last_error"] is not None:
+            raise ValueError("ready script-registry state must not contain an error")
         if active["registry_artifact_id"] != expected_id:
             return {
                 "state": "warning",
                 "summary": "a previous verified sidecar remains active while the selected replacement is pending",
                 "action": "usdb-node snapshot install-registry",
             }
+        manifest_name = next(
+            PurePosixPath(item["path"]).name
+            for item in registry["files"] if item["role"] == "manifest"
+        )
+        if active["manifest_file"] != manifest_name:
+            raise ValueError("active script-registry manifest differs from the release record")
         artifact_dir = sidecar_root / "bases" / expected_id
         if not artifact_dir.is_dir() or artifact_dir.is_symlink():
             raise ValueError("active script-registry artifact directory is missing or unsafe")
@@ -3395,12 +3454,6 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         env,
         services.get("snapshot-loader"),
     )
-    registry_component = _script_registry_component(
-        layout,
-        env,
-        services.get("script-registry-installer"),
-    )
-
     bitcoin_service = services.get("btc-node")
     bitcoin: dict[str, Any] | None = None
     bitcoin_component = _failed_container_component(
@@ -3467,6 +3520,14 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             ["data-status"],
             "balance-history",
         )
+    # Reuse the same RPC observation for core and optional registry progress.
+    registry_component = _script_registry_component(
+        layout,
+        env,
+        services.get("script-registry-installer"),
+        balance_readiness,
+        balance_error,
+    )
     try:
         data_start = _bitcoin_data_start_anchor(layout, env)
         data_start_detail = (
