@@ -31,6 +31,43 @@ class MainnetSnapshotReleaseWrapperTests(unittest.TestCase):
         self.block_hash = "1" * 64
         self.revision = "a" * 40
         self.file_hash = "3" * 64
+        self.core_snapshot_id = "2" * 64
+        self.core_artifact_id = "5" * 64
+        self.registry_artifact_id = "6" * 64
+        self.core_report = {
+            "component": "core",
+            "height": self.height,
+            "network": "bitcoin",
+            "btc_block_hash": self.block_hash,
+            "core_snapshot_id": self.core_snapshot_id,
+            "artifact_id": self.core_artifact_id,
+            "artifact_dir": f"snapshots/{self.height_dir}/{self.block_hash}/core",
+            "file": f"balance_history_core_{self.height}.db",
+            "manifest_file": f"balance_history_core_{self.height}.manifest.json",
+            "signature_file": f"balance_history_core_{self.height}.manifest.sig",
+            "file_sha256": self.file_hash,
+            "signing_key_id": "test-signer",
+            "trusted_keys_sha256": "4" * 64,
+        }
+        self.registry_report = {
+            "component": "script_registry",
+            "height": self.height,
+            "network": "bitcoin",
+            "btc_block_hash": self.block_hash,
+            "core_snapshot_id": self.core_snapshot_id,
+            "artifact_id": self.registry_artifact_id,
+            "artifact_dir": f"snapshots/{self.height_dir}/{self.block_hash}/script-registry",
+            "file": f"script_registry_{self.height}.db",
+            "manifest_file": f"script_registry_{self.height}.manifest.json",
+            "signature_file": f"script_registry_{self.height}.manifest.sig",
+            "file_sha256": "7" * 64,
+            "signing_key_id": "test-signer",
+            "trusted_keys_sha256": "4" * 64,
+        }
+        self.finalization_report = {
+            "core": self.core_report,
+            "script_registry": self.registry_report,
+        }
 
         (self.bitcoin_data / "blocks").mkdir(parents=True)
         (self.bitcoin_data / ".cookie").write_text("user:password", encoding="utf-8")
@@ -59,7 +96,7 @@ esac
 printf '%s\n' "$*" >>"$FAKE_SNAPSHOT_TOOL_INVOCATIONS"
 case "$*" in
   *memory-plan*) printf '%s\n' '{{"source":"test","memory_limit_bytes":1000000,"total_cache_bytes":660000,"utxo_cache_bytes":165000,"balance_cache_bytes":495000,"max_memory_percent":80}}' ;;
-  *finalize-artifact*) printf '%s\n' '{{"height":{self.height},"network":"bitcoin","btc_block_hash":"{self.block_hash}","snapshot_id":"{'2' * 64}","artifact_dir":"snapshots/{self.height_dir}/{self.block_hash}","snapshot_file":"snapshot_{self.height}.db","manifest_file":"snapshot_{self.height}.manifest.json","signature_file":"snapshot_{self.height}.manifest.sig","file_sha256":"{self.file_hash}","signing_key_id":"test-signer","trusted_keys_sha256":"{'4' * 64}"}}' ;;
+  *finalize-artifact*) printf '%s\n' '{json.dumps(self.finalization_report, separators=(",", ":"))}' ;;
   *) printf 'unexpected snapshot-tool invocation: %s\n' "$*" >&2; exit 2 ;;
 esac
 ''',
@@ -88,36 +125,32 @@ exit 0
             encoding="utf-8",
         )
         artifact = self.snapshot_root / "builder/snapshots" / self.height_dir / self.block_hash
-        artifact.mkdir(parents=True)
-        (artifact / f"snapshot_{self.height}.db").write_bytes(b"test snapshot")
-        (artifact / "complete.json").write_text(
-            json.dumps(
-                {
-                    "snapshot_file": f"snapshot_{self.height}.db",
-                    "file_sha256": self.file_hash,
-                }
-            ),
-            encoding="utf-8",
-        )
+        core_dir = artifact / "core"
+        registry_dir = artifact / "script-registry"
+        core_dir.mkdir(parents=True)
+        registry_dir.mkdir()
+        for directory, report in (
+            (core_dir, self.core_report),
+            (registry_dir, self.registry_report),
+        ):
+            (directory / report["file"]).write_bytes(b"test snapshot")
+            (directory / report["manifest_file"]).write_text("{}", encoding="utf-8")
+            (directory / report["signature_file"]).write_text("signature", encoding="utf-8")
+            (directory / "complete.json").write_text(
+                json.dumps({"completed_at": "2026-08-30T00:00:00+00:00"}),
+                encoding="utf-8",
+            )
         marker = self.snapshot_root / "releases/finalized" / f"{self.height_dir}-{self.block_hash}"
         marker.mkdir(parents=True)
         (marker / "artifact-finalized.json").write_text(
             json.dumps(
                 {
-                    "version": 1,
-                    "height": self.height,
-                    "network": "bitcoin",
-                    "btc_block_hash": self.block_hash,
-                    "snapshot_id": "2" * 64,
-                    "snapshot_file": f"snapshot_{self.height}.db",
-                    "manifest_file": f"snapshot_{self.height}.manifest.json",
-                    "signature_file": f"snapshot_{self.height}.manifest.sig",
-                    "file_sha256": self.file_hash,
-                    "signing_key_id": "test-signer",
-                    "trusted_keys_sha256": "4" * 64,
+                    "schema_version": "usdb-snapshot-artifact-finalization:v2",
+                    "artifacts": self.finalization_report,
                     "producer_revision": self.revision,
                     "finalizer_revision": "b" * 40,
                     "finalized_at_utc": "2026-08-30T00:00:00+00:00",
+                    "trusted_keys_sha256": "4" * 64,
                 }
             ),
             encoding="utf-8",
@@ -150,11 +183,11 @@ if command == "prepare":
     print(json.dumps({
         "record_path": str(record),
         "record_sha256": "2" * 64,
-        "record_url": value("--public-base-url") + "/snapshot-records/v2/" + "2" * 64 + ".json",
+        "record_url": value("--public-base-url") + "/snapshot-records/v3/" + "2" * 64 + ".json",
         "snapshot_release_id": "test-release",
     }))
 elif command == "upload":
-    print(json.dumps({"record_url": "https://usdb-snapshot.tbudr.top/snapshot-records/v2/test.json"}))
+    print(json.dumps({"record_url": "https://usdb-snapshot.tbudr.top/snapshot-records/v3/test.json"}))
 else:
     raise SystemExit("unexpected command")
 ''',
@@ -237,7 +270,7 @@ else:
         result = self._run("finalize")
         self.assertEqual(result.returncode, 0, result.stderr)
         finalized = json.loads(marker.read_text(encoding="utf-8"))
-        self.assertEqual(finalized["file_sha256"], self.file_hash)
+        self.assertEqual(finalized["artifacts"]["core"]["file_sha256"], self.file_hash)
         self.assertEqual(finalized["producer_revision"], self.revision)
         snapshot_calls = self.snapshot_tool_invocations.read_text(encoding="utf-8")
         self.assertIn("finalize-artifact", snapshot_calls)

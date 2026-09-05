@@ -20,11 +20,14 @@
     "Core installation no longer reads or imports script-registry rows, allowing balance-history startup as soon as the required core artifact is installed while optional registry-sidecar work proceeds independently.",
     "Balance-history now resolves script hashes through a writable RocksDB overlay and an optional immutable SQLite base selected by a strict atomic active pointer; sidecar activation, lookup, integrity, or conflict failures remain isolated from core query and consensus readiness.",
     "Registry readiness and resolve responses now expose explicit full-replay, snapshot-plus-sidecar, or post-snapshot-only coverage, and distinguish overlay/base hits, definitive misses, unresolved historical misses, and conflicts across the Rust client, CLI, control-plane, and console explorer.",
-    "The mainnet wrapper fails closed for finalization, installation, packaging, and remote publication until the split-artifact deployment pipeline is completed."
+    "The mainnet wrapper, object-storage publisher, release manifest, node installer, Compose runtime, status and doctor paths now use the split v3 release record directly; core remains the startup gate while registry acquisition and activation are independently observable and non-blocking.",
+    "Script-registry activation verifies the detached signature, full database hash, SQLite integrity, schema, metadata and exact row count before atomically publishing the active pointer; a failed replacement preserves the previous verified pointer, while explicit dry-run-first garbage collection protects every approved, selected or active artifact."
   ],
   "operator_actions": [
     "Use a new snapshot-builder root and regenerate split artifacts before publishing a release that contains this change; do not reuse legacy single-file builder state.",
-    "Install the generated core database together with its matching split v1 core manifest; existing single-file snapshot markers or snapshot-installed RocksDB data must be replaced for this development-stage format change."
+    "Install the generated core database together with its matching split v1 core manifest; existing single-file snapshot markers or snapshot-installed RocksDB data must be replaced for this development-stage format change.",
+    "Regenerate and republish a split v3 snapshot release record before enabling snapshots in a new release; the checked-in legacy v2 record is intentionally no longer selected.",
+    "Use usdb-node status or doctor to inspect optional registry state, and review the dry-run output before invoking usdb-node snapshot gc --confirm."
   ],
   "compatibility": {
     "network_reset": false,

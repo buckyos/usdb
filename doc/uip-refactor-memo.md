@@ -1532,3 +1532,24 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
   latch 均持久拒绝，三份新 generation baseline 均为 1。
 - 候选 release 上线前仍需使用 digest-pinned 镜像完成 BTC 双节点 depth 9/10 边界、三个真实 geth
   停机、空 generation 重新出块、两个 validator/late joiner 收敛及旧 network identity 隔离测试。
+
+## Balance-History Split Snapshot 发布与部署闭环
+
+状态：2026-09-05 批次 1 至 4 已提交；批次 5 已实现并完成定向测试，等待 review，尚未提交。
+
+- snapshot release record 直接升级为 v3，必选 core 与可选 script registry 使用独立 artifact ID、
+  object prefix、文件清单、断点 staging 和 immutable 安装目录；旧 v2 单文件 record 不保留兼容入口。
+- release manifest 升级为 v7。core 下载与 RocksDB 导入继续作为启动 gate；registry 由独立 Compose
+  installer 在 core loader 成功后获取，不参与 balance-history、indexer 或 USDB chain readiness。
+- registry 安装调用 balance-history 原生命令校验 manifest 签名、完整 DB SHA-256、SQLite
+  integrity/schema/meta 和精确 row count，全部通过后才原子发布 `state.json` active pointer。
+  `attempt.json` 仅记录当前尝试；替换失败保留上一份 verified ready pointer。
+- `usdb-node` 进度 schema 升级为 v5，固定区分 core snapshot 与 script registry，并用
+  `auxiliary_state` 表达 optional sidecar；lifecycle status 升级为 v3，registry 失败不会污染 core
+  `overall_state`，并为可重试状态提供 `snapshot install-registry`。
+- `doctor` 只读检查 release binding、active pointer、已安装 record、文件大小和 manifest digest。
+  `snapshot gc` 默认 dry-run，只有 `--confirm` 才删除未被 release、当前 core 选择或 active registry
+  pointer 保护的 recognized immutable artifact。
+- 主网 wrapper 已恢复 split `finalize/prepare-release/publish/validate-install/archive`，发布工具严格校验
+  两类 completion marker 和 finalization identity。Python 工具测试、ShellCheck 与 Rust registry
+  activation 定向测试已通过；真实 R2 和目标节点 E2E 留到批次 6。

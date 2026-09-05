@@ -61,6 +61,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         openssl \
+        python3 \
         tini \
     && rm -rf /var/lib/apt/lists/*
 

@@ -23,9 +23,10 @@ from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
 
-RECORD_SCHEMA_VERSION = "usdb-snapshot-release-record:v2"
-ARTIFACT_TYPE = "balance-history"
-SNAPSHOT_MANIFEST_VERSION = "balance-history-snapshot-manifest:v3"
+RECORD_SCHEMA_VERSION = "usdb-snapshot-release-record:v3"
+ARTIFACT_TYPE = "balance-history-split"
+CORE_MANIFEST_VERSION = "balance-history-core-snapshot-manifest:v1"
+REGISTRY_MANIFEST_VERSION = "balance-history-script-registry-manifest:v1"
 SIGNATURE_SCHEME = "ed25519"
 DEFAULT_BUCKET = "usdb-snapshot"
 DEFAULT_ENDPOINT_URL = "https://87e0bdf811b13ee87fd0bcec7a4fd1e7.r2.cloudflarestorage.com"
@@ -39,10 +40,11 @@ PARALLEL_DOWNLOAD_MIN_SIZE = 128 * 1024 * 1024
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_ID_RE = re.compile(r"^balance-history-[a-z0-9-]+-h[0-9]+-[0-9a-f]{16}$")
+EXPECTED_COMPONENTS = ("core", "script_registry")
 EXPECTED_FILE_ROLES = (
-    "snapshot_db",
-    "snapshot_manifest",
-    "snapshot_signature",
+    "database",
+    "manifest",
+    "signature",
     "completion_marker",
 )
 
@@ -264,6 +266,94 @@ def _validate_trusted_catalog(path: Path, signing_key_id: str) -> str:
     return _sha256(path)
 
 
+def _validate_completion_marker(
+    marker: dict[str, Any],
+    *,
+    component_name: str,
+    height: int,
+    network: str,
+    btc_block_hash: str,
+    core_snapshot_id: str,
+    artifact_id: str,
+    database_name: str,
+    manifest_name: str,
+    signature_name: str,
+    database_sha256: str,
+) -> int:
+    common = {
+        "btc_block_hash",
+        "completed_at",
+        "file_sha256",
+        "height",
+        "manifest_file",
+        "network",
+        "signature_file",
+        "version",
+    }
+    if component_name == "core":
+        expected = common | {
+            "balance_history_count",
+            "block_commit_count",
+            "core_artifact_id",
+            "snapshot_file",
+            "snapshot_id",
+            "utxo_count",
+        }
+        artifact_field = "core_artifact_id"
+        database_field = "snapshot_file"
+        snapshot_field = "snapshot_id"
+        count_fields = ("balance_history_count", "utxo_count", "block_commit_count")
+    else:
+        expected = common | {
+            "core_snapshot_id",
+            "entry_count",
+            "registry_artifact_id",
+            "registry_file",
+        }
+        artifact_field = "registry_artifact_id"
+        database_field = "registry_file"
+        snapshot_field = "core_snapshot_id"
+        count_fields = ("entry_count",)
+    _require_exact_keys(marker, expected, f"{component_name} completion marker")
+    _require(marker["version"] == 1, f"unsupported {component_name} completion marker")
+    _require(
+        (
+            marker["height"],
+            marker["network"],
+            marker["btc_block_hash"],
+            marker[snapshot_field],
+            marker[artifact_field],
+        )
+        == (height, network, btc_block_hash, core_snapshot_id, artifact_id),
+        f"{component_name} completion marker identity mismatch",
+    )
+    _require(
+        (
+            marker[database_field],
+            marker["manifest_file"],
+            marker["signature_file"],
+            marker["file_sha256"],
+        )
+        == (database_name, manifest_name, signature_name, database_sha256),
+        f"{component_name} completion marker file identity mismatch",
+    )
+    for field in count_fields:
+        _require(
+            isinstance(marker[field], int)
+            and not isinstance(marker[field], bool)
+            and marker[field] >= 0,
+            f"{component_name} completion marker {field} must be a non-negative integer",
+        )
+    completed_at = marker["completed_at"]
+    _require(
+        isinstance(completed_at, int)
+        and not isinstance(completed_at, bool)
+        and completed_at >= 0,
+        f"{component_name} completion time must be a Unix timestamp",
+    )
+    return completed_at
+
+
 def prepare_release_record(
     *,
     artifact_dir: Path,
@@ -278,159 +368,182 @@ def prepare_release_record(
     _require(REVISION_RE.fullmatch(producer_revision) is not None, "producer revision must be a lowercase 40-character Git commit")
     public_base = _normalize_https_base(public_base_url, "public base URL")
 
-    complete_path = artifact / "complete.json"
-    _require(complete_path.is_file() and not complete_path.is_symlink(), f"snapshot completion marker is missing or not regular: {complete_path}")
-    complete = _load_json(complete_path)
-    _require_exact_keys(
-        complete,
-        {
-            "balance_history_count",
-            "block_commit_count",
-            "btc_block_hash",
-            "completed_at",
-            "file_sha256",
-            "height",
-            "manifest_file",
-            "network",
-            "script_registry_count",
-            "signature_file",
-            "snapshot_file",
-            "snapshot_id",
-            "utxo_count",
-            "version",
-        },
-        "snapshot completion marker",
-    )
-    _require(complete["version"] == 1, "unsupported snapshot completion marker version")
-    for count_key in (
-        "balance_history_count",
-        "block_commit_count",
-        "script_registry_count",
-        "utxo_count",
-    ):
-        count = complete[count_key]
-        _require(isinstance(count, int) and not isinstance(count, bool) and count >= 0, f"snapshot completion marker {count_key} must be non-negative")
-    _require(isinstance(complete["completed_at"], int) and not isinstance(complete["completed_at"], bool) and complete["completed_at"] >= 0, "snapshot completion time must be a Unix timestamp")
-    height = _require_u32(complete["height"], "snapshot height")
-    network = complete["network"]
-    _require(isinstance(network, str) and re.fullmatch(r"[a-z0-9-]+", network) is not None, "invalid snapshot network")
-    btc_block_hash = _require_sha256(complete["btc_block_hash"], "BTC block hash")
-    snapshot_id = _require_sha256(complete["snapshot_id"], "snapshot ID")
-    expected_db_sha256 = _require_sha256(complete["file_sha256"], "snapshot DB SHA-256")
-    snapshot_name = _safe_basename(complete["snapshot_file"], "snapshot file")
-    manifest_name = _safe_basename(complete["manifest_file"], "snapshot manifest")
-    signature_name = _safe_basename(complete["signature_file"], "snapshot signature")
-    snapshot_path = artifact / snapshot_name
-    manifest_path = artifact / manifest_name
-    signature_path = artifact / signature_name
-    for path in (snapshot_path, manifest_path, signature_path):
-        _require(path.is_file() and not path.is_symlink(), f"snapshot artifact file is missing or not regular: {path}")
-
-    manifest = _load_json(manifest_path)
-    _require(manifest.get("manifest_version") == SNAPSHOT_MANIFEST_VERSION, "unsupported snapshot manifest version")
-    _require(manifest.get("file_name") == snapshot_name, "snapshot manifest file_name mismatch")
-    _require(manifest.get("file_sha256") == expected_db_sha256, "snapshot DB digest differs between manifest and completion marker")
-    _require(manifest.get("signature_scheme") == SIGNATURE_SCHEME, "public snapshot must use an Ed25519 signature")
-    signing_key_id = manifest.get("signing_key_id")
-    _require(isinstance(signing_key_id, str) and bool(signing_key_id), "signed snapshot is missing signing_key_id")
-    state_ref = manifest.get("state_ref")
-    db_identity = manifest.get("db_identity")
-    _require(isinstance(state_ref, dict), "snapshot manifest state_ref is required")
-    _require(isinstance(db_identity, dict), "snapshot manifest db_identity is required")
-    _require(state_ref.get("block_height") == height, "snapshot manifest height mismatch")
-    _require(state_ref.get("stable_block_hash") == btc_block_hash, "snapshot manifest BTC block hash mismatch")
-    _require(state_ref.get("snapshot_id") == snapshot_id, "snapshot manifest snapshot ID mismatch")
-    _require(db_identity.get("btc_network") == network, "snapshot manifest network mismatch")
-    _require(manifest.get("balance_query_floor") == height, "snapshot balance query floor mismatch")
-    _require(manifest.get("history_query_floor") == min(height + 1, 0xFFFFFFFF), "snapshot history query floor mismatch")
-    _require(manifest_path.with_suffix(".sig").name == signature_name, "snapshot signature basename does not match manifest")
-
-    trusted_keys_path = trusted_keys.expanduser().resolve()
-    _require(trusted_keys_path.is_file() and not trusted_keys_path.is_symlink(), f"trusted-key catalog does not exist: {trusted_keys_path}")
-    trusted_keys_sha256 = _validate_trusted_catalog(trusted_keys_path, signing_key_id)
-
     finalization_path = finalization_marker.expanduser().resolve()
     _require(finalization_path.is_file() and not finalization_path.is_symlink(), f"artifact finalization marker is missing or not regular: {finalization_path}")
     finalization = _load_json(finalization_path)
     _require_exact_keys(
         finalization,
         {
-            "btc_block_hash",
-            "file_sha256",
+            "artifacts",
             "finalized_at_utc",
             "finalizer_revision",
-            "height",
-            "manifest_file",
-            "network",
             "producer_revision",
-            "signature_file",
-            "signing_key_id",
-            "snapshot_file",
-            "snapshot_id",
+            "schema_version",
             "trusted_keys_sha256",
-            "version",
         },
-        "artifact finalization marker",
+        "split artifact finalization marker",
     )
-    _require(
-        finalization.get("version") == 1
-        and finalization.get("height") == height
-        and finalization.get("network") == network
-        and finalization.get("btc_block_hash") == btc_block_hash
-        and finalization.get("snapshot_id") == snapshot_id
-        and finalization.get("snapshot_file") == snapshot_name
-        and finalization.get("manifest_file") == manifest_name
-        and finalization.get("signature_file") == signature_name
-        and finalization.get("file_sha256") == expected_db_sha256
-        and finalization.get("signing_key_id") == signing_key_id
-        and finalization.get("trusted_keys_sha256") == trusted_keys_sha256
-        and finalization.get("producer_revision") == producer_revision,
-        "artifact finalization marker does not match snapshot artifact",
-    )
-    _require(isinstance(finalization.get("finalized_at_utc"), str) and bool(finalization["finalized_at_utc"]), "artifact finalization timestamp is required")
+    _require(finalization["schema_version"] == "usdb-snapshot-artifact-finalization:v2", "unsupported split artifact finalization marker")
+    _require(finalization["producer_revision"] == producer_revision, "finalization marker producer revision mismatch")
+    _require(isinstance(finalization["finalized_at_utc"], str) and bool(finalization["finalized_at_utc"]), "artifact finalization timestamp is required")
+    _require(isinstance(finalization["finalizer_revision"], str) and REVISION_RE.fullmatch(finalization["finalizer_revision"]) is not None, "invalid finalizer revision")
 
-    preliminary_files = [
-        ("snapshot_db", snapshot_path),
-        ("snapshot_manifest", manifest_path),
-        ("snapshot_signature", signature_path),
-        ("completion_marker", complete_path),
-    ]
-    identity_files = []
-    for role, path in preliminary_files:
-        digest = expected_db_sha256 if role == "snapshot_db" else _sha256(path)
-        identity_files.append(
-            {"path": path.name, "role": role, "sha256": digest, "size": path.stat().st_size}
+    trusted_keys_path = trusted_keys.expanduser().resolve()
+    _require(trusted_keys_path.is_file() and not trusted_keys_path.is_symlink(), f"trusted-key catalog does not exist: {trusted_keys_path}")
+    trusted_keys_sha256 = _sha256(trusted_keys_path)
+    _require(finalization["trusted_keys_sha256"] == trusted_keys_sha256, "finalization marker trusted-key catalog mismatch")
+
+    artifacts = finalization["artifacts"]
+    _require(isinstance(artifacts, dict), "finalization marker artifacts must be an object")
+    _require_exact_keys(artifacts, set(EXPECTED_COMPONENTS), "finalization marker artifacts")
+    _require(isinstance(artifacts["core"], dict), "finalization marker must contain core artifact")
+    _require(artifacts["script_registry"] is None or isinstance(artifacts["script_registry"], dict), "finalization marker script_registry must be an object or null")
+
+    components: dict[str, Any] = {}
+    height: int | None = None
+    network: str | None = None
+    btc_block_hash: str | None = None
+    core_snapshot_id: str | None = None
+    for component_name in EXPECTED_COMPONENTS:
+        finalized = artifacts[component_name]
+        if finalized is None:
+            continue
+        expected_component = "core" if component_name == "core" else "script_registry"
+        _require_exact_keys(
+            finalized,
+            {
+                "artifact_dir",
+                "artifact_id",
+                "btc_block_hash",
+                "component",
+                "core_snapshot_id",
+                "file",
+                "file_sha256",
+                "height",
+                "manifest_file",
+                "network",
+                "signature_file",
+                "signing_key_id",
+                "trusted_keys_sha256",
+            },
+            f"{component_name} finalization report",
         )
-    snapshot_entry = next(item for item in identity_files if item["role"] == "snapshot_db")
-    _require(snapshot_entry["sha256"] == expected_db_sha256, "snapshot DB SHA-256 identity mismatch")
+        _require(finalized["component"] == expected_component, f"{component_name} finalization component mismatch")
+        component_height = _require_u32(finalized["height"], f"{component_name} height")
+        component_network = finalized["network"]
+        _require(isinstance(component_network, str) and re.fullmatch(r"[a-z0-9-]+", component_network) is not None, f"invalid {component_name} network")
+        component_block_hash = _require_sha256(finalized["btc_block_hash"], f"{component_name} BTC block hash")
+        component_snapshot_id = _require_sha256(finalized["core_snapshot_id"], f"{component_name} core snapshot ID")
+        artifact_id = _require_sha256(finalized["artifact_id"], f"{component_name} artifact ID")
+        db_sha256 = _require_sha256(finalized["file_sha256"], f"{component_name} DB SHA-256")
+        signing_key_id = finalized["signing_key_id"]
+        _require(isinstance(signing_key_id, str) and bool(signing_key_id), f"{component_name} signing key ID is required")
+        _require(finalized["trusted_keys_sha256"] == trusted_keys_sha256, f"{component_name} trusted-key digest mismatch")
+        _validate_trusted_catalog(trusted_keys_path, signing_key_id)
+        if height is None:
+            height = component_height
+            network = component_network
+            btc_block_hash = component_block_hash
+            core_snapshot_id = component_snapshot_id
+        _require((component_height, component_network, component_block_hash, component_snapshot_id) == (height, network, btc_block_hash, core_snapshot_id), f"{component_name} identity differs from core")
+
+        component_dir_name = "core" if component_name == "core" else "script-registry"
+        reported_dir_value = finalized["artifact_dir"]
+        _require(
+            isinstance(reported_dir_value, str) and bool(reported_dir_value),
+            f"invalid {component_name} finalization artifact directory",
+        )
+        reported_dir = PurePosixPath(reported_dir_value)
+        _require(
+            not reported_dir.is_absolute()
+            and ".." not in reported_dir.parts
+            and reported_dir.name == component_dir_name,
+            f"invalid {component_name} finalization artifact directory",
+        )
+        component_dir = artifact / component_dir_name
+        _require(component_dir.is_dir() and not component_dir.is_symlink(), f"{component_name} artifact directory is missing: {component_dir}")
+        complete_path = component_dir / "complete.json"
+        db_name = _safe_basename(finalized["file"], f"{component_name} database")
+        manifest_name = _safe_basename(finalized["manifest_file"], f"{component_name} manifest")
+        signature_name = _safe_basename(finalized["signature_file"], f"{component_name} signature")
+        paths = [component_dir / db_name, component_dir / manifest_name, component_dir / signature_name, complete_path]
+        for path in paths:
+            _require(path.is_file() and not path.is_symlink(), f"{component_name} artifact file is missing or not regular: {path}")
+        manifest = _load_json(component_dir / manifest_name)
+        expected_manifest_version = CORE_MANIFEST_VERSION if component_name == "core" else REGISTRY_MANIFEST_VERSION
+        expected_artifact_type = "balance_history_core" if component_name == "core" else "balance_history_script_registry"
+        id_field = "core_artifact_id" if component_name == "core" else "registry_artifact_id"
+        _require(manifest.get("manifest_version") == expected_manifest_version, f"unsupported {component_name} manifest version")
+        _require(manifest.get("artifact_type") == expected_artifact_type, f"{component_name} artifact_type mismatch")
+        _require(manifest.get(id_field) == artifact_id, f"{component_name} artifact ID differs from manifest")
+        _require(manifest.get("file_name") == db_name and manifest.get("file_sha256") == db_sha256, f"{component_name} file identity differs from manifest")
+        _require(manifest.get("signature_scheme") == SIGNATURE_SCHEME and manifest.get("signing_key_id") == signing_key_id, f"{component_name} signing identity differs from manifest")
+        if component_name == "core":
+            _require(manifest.get("core_snapshot_id") == core_snapshot_id, "core snapshot ID differs from manifest")
+        else:
+            base = manifest.get("base")
+            _require(isinstance(base, dict), "registry manifest base is required")
+            _require((base.get("base_height"), base.get("btc_network"), base.get("base_block_hash"), base.get("core_snapshot_id")) == (height, network, btc_block_hash, core_snapshot_id), "registry manifest base differs from core")
+        _require((component_dir / manifest_name).with_suffix(".sig").name == signature_name, f"{component_name} signature basename mismatch")
+
+        completed_at = _validate_completion_marker(
+            _load_json(complete_path),
+            component_name=component_name,
+            height=height,
+            network=network,
+            btc_block_hash=btc_block_hash,
+            core_snapshot_id=core_snapshot_id,
+            artifact_id=artifact_id,
+            database_name=db_name,
+            manifest_name=manifest_name,
+            signature_name=signature_name,
+            database_sha256=db_sha256,
+        )
+        preliminary = list(zip(EXPECTED_FILE_ROLES, paths, strict=True))
+        files: list[dict[str, Any]] = []
+        object_prefix = f"snapshots/v3/balance-history/{network}/{height:012d}/{component_dir_name}/{artifact_id}"
+        for role, path in preliminary:
+            digest = db_sha256 if role == "database" else _sha256(path)
+            relative_path = f"{component_dir_name}/{path.name}"
+            files.append({
+                "object_key": f"{object_prefix}/{path.name}",
+                "path": relative_path,
+                "role": role,
+                "sha256": digest,
+                "size": path.stat().st_size,
+            })
+        components[component_name] = {
+            "artifact_id": artifact_id,
+            "completed_at": completed_at,
+            "files": files,
+            "object_prefix": object_prefix,
+            "signing_key_id": signing_key_id,
+        }
+
+    assert height is not None and network is not None and btc_block_hash is not None and core_snapshot_id is not None
+    components.setdefault("script_registry", None)
     artifact_set_id = _sha256_bytes(
         json.dumps(
             {
-                "files": identity_files,
+                "btc_block_hash": btc_block_hash,
+                "components": components,
+                "core_snapshot_id": core_snapshot_id,
                 "height": height,
                 "network": network,
-                "snapshot_id": snapshot_id,
             },
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
     )
     release_id = f"balance-history-{network}-h{height}-{artifact_set_id[:16]}"
-    object_prefix = f"snapshots/v2/balance-history/{network}/{height:012d}/{artifact_set_id}"
-    files = [
-        {**item, "object_key": f"{object_prefix}/{item['path']}"}
-        for item in identity_files
-    ]
-
     record = {
-        "artifact_completed_at": complete["completed_at"],
         "artifact_set_id": artifact_set_id,
         "artifact_type": ARTIFACT_TYPE,
         "btc_block_hash": btc_block_hash,
-        "files": files,
+        "components": components,
+        "core_snapshot_id": core_snapshot_id,
         "height": height,
         "network": network,
-        "object_prefix": object_prefix,
         "producer": {
             "artifact_finalization_marker_sha256": _sha256(finalization_path),
             "artifact_finalized_at_utc": finalization["finalized_at_utc"],
@@ -439,12 +552,10 @@ def prepare_release_record(
         },
         "public_base_url": public_base,
         "schema_version": RECORD_SCHEMA_VERSION,
-        "snapshot_id": snapshot_id,
         "snapshot_release_id": release_id,
         "trusted_keys": {
             "file_name": trusted_keys_path.name,
             "sha256": trusted_keys_sha256,
-            "signing_key_id": signing_key_id,
         },
     }
     validate_release_record(record)
@@ -459,18 +570,16 @@ def validate_release_record(record: dict[str, Any]) -> None:
     _require_exact_keys(
         record,
         {
-            "artifact_completed_at",
             "artifact_set_id",
             "artifact_type",
             "btc_block_hash",
-            "files",
+            "components",
+            "core_snapshot_id",
             "height",
             "network",
-            "object_prefix",
             "producer",
             "public_base_url",
             "schema_version",
-            "snapshot_id",
             "snapshot_release_id",
             "trusted_keys",
         },
@@ -481,16 +590,13 @@ def validate_release_record(record: dict[str, Any]) -> None:
     network = record["network"]
     _require(isinstance(network, str) and re.fullmatch(r"[a-z0-9-]+", network) is not None, "invalid snapshot network")
     height = _require_u32(record["height"], "snapshot height")
-    _require_sha256(record["btc_block_hash"], "BTC block hash")
-    snapshot_id = _require_sha256(record["snapshot_id"], "snapshot ID")
+    btc_block_hash = _require_sha256(record["btc_block_hash"], "BTC block hash")
+    core_snapshot_id = _require_sha256(record["core_snapshot_id"], "core snapshot ID")
     artifact_set_id = _require_sha256(record["artifact_set_id"], "artifact set ID")
     release_id = record["snapshot_release_id"]
     _require(isinstance(release_id, str) and RELEASE_ID_RE.fullmatch(release_id) is not None, "invalid snapshot release ID")
     _require(release_id == f"balance-history-{network}-h{height}-{artifact_set_id[:16]}", "snapshot release ID does not match artifact identity")
-    expected_prefix = f"snapshots/v2/balance-history/{network}/{height:012d}/{artifact_set_id}"
-    _require(record["object_prefix"] == expected_prefix, "snapshot object prefix does not match artifact identity")
     _normalize_https_base(record["public_base_url"], "public base URL")
-    _require(isinstance(record["artifact_completed_at"], int) and not isinstance(record["artifact_completed_at"], bool) and record["artifact_completed_at"] >= 0, "artifact completion time must be a Unix timestamp")
 
     producer = record["producer"]
     _require(isinstance(producer, dict), "snapshot producer must be an object")
@@ -511,34 +617,56 @@ def validate_release_record(record: dict[str, Any]) -> None:
 
     trusted = record["trusted_keys"]
     _require(isinstance(trusted, dict), "trusted_keys must be an object")
-    _require_exact_keys(trusted, {"file_name", "sha256", "signing_key_id"}, "trusted_keys")
+    _require_exact_keys(trusted, {"file_name", "sha256"}, "trusted_keys")
     _safe_basename(trusted["file_name"], "trusted-key catalog file name")
     _require_sha256(trusted["sha256"], "trusted-key catalog SHA-256")
-    _require(isinstance(trusted["signing_key_id"], str) and bool(trusted["signing_key_id"]), "trusted signing key ID is required")
 
-    files = record["files"]
-    _require(isinstance(files, list) and len(files) == len(EXPECTED_FILE_ROLES), "snapshot release record must contain exactly four files")
-    roles: set[str] = set()
-    paths: set[str] = set()
-    identity_files: list[dict[str, Any]] = []
-    for index, item in enumerate(files):
-        _require(isinstance(item, dict), f"snapshot file entry {index} must be an object")
-        _require_exact_keys(item, {"object_key", "path", "role", "sha256", "size"}, f"snapshot file entry {index}")
-        role = item["role"]
-        _require(role == EXPECTED_FILE_ROLES[index] and role not in roles, "snapshot file roles are not in canonical order or are duplicated")
-        path = _safe_basename(item["path"], "snapshot release file path")
-        _require(path not in paths, "snapshot release file path is duplicated")
-        _require(item["object_key"] == f"{expected_prefix}/{path}", "snapshot object key does not match record prefix")
-        _safe_object_key(item["object_key"], "snapshot object key")
-        sha256 = _require_sha256(item["sha256"], "snapshot file SHA-256")
-        _require(isinstance(item["size"], int) and not isinstance(item["size"], bool) and item["size"] > 0, "snapshot file size must be positive")
-        roles.add(role)
-        paths.add(path)
-        identity_files.append({"path": path, "role": role, "sha256": sha256, "size": item["size"]})
-    _require(roles == set(EXPECTED_FILE_ROLES), "snapshot release record file roles are incomplete")
+    components = record["components"]
+    _require(isinstance(components, dict), "snapshot components must be an object")
+    _require_exact_keys(components, set(EXPECTED_COMPONENTS), "snapshot components")
+    _require(isinstance(components["core"], dict), "snapshot core component is required")
+    _require(components["script_registry"] is None or isinstance(components["script_registry"], dict), "snapshot script_registry component must be an object or null")
+    all_paths: set[str] = set()
+    for component_name in EXPECTED_COMPONENTS:
+        component = components[component_name]
+        if component is None:
+            continue
+        _require_exact_keys(component, {"artifact_id", "completed_at", "files", "object_prefix", "signing_key_id"}, f"snapshot component {component_name}")
+        artifact_id = _require_sha256(component["artifact_id"], f"{component_name} artifact ID")
+        _require(isinstance(component["completed_at"], int) and not isinstance(component["completed_at"], bool) and component["completed_at"] >= 0, f"{component_name} completion time must be a Unix timestamp")
+        _require(isinstance(component["signing_key_id"], str) and bool(component["signing_key_id"]), f"{component_name} signing key ID is required")
+        component_dir = "core" if component_name == "core" else "script-registry"
+        expected_prefix = f"snapshots/v3/balance-history/{network}/{height:012d}/{component_dir}/{artifact_id}"
+        _require(component["object_prefix"] == expected_prefix, f"{component_name} object prefix mismatch")
+        files = component["files"]
+        _require(isinstance(files, list) and len(files) == len(EXPECTED_FILE_ROLES), f"{component_name} must contain exactly four files")
+        roles: set[str] = set()
+        for index, item in enumerate(files):
+            _require(isinstance(item, dict), f"{component_name} file entry {index} must be an object")
+            _require_exact_keys(item, {"object_key", "path", "role", "sha256", "size"}, f"{component_name} file entry {index}")
+            role = item["role"]
+            _require(role == EXPECTED_FILE_ROLES[index] and role not in roles, f"{component_name} file roles are not canonical")
+            path = _safe_object_key(item["path"], f"{component_name} file path")
+            path_parts = PurePosixPath(path).parts
+            _require(len(path_parts) == 2 and path_parts[0] == component_dir, f"{component_name} file path must stay inside {component_dir}")
+            _safe_basename(path_parts[1], f"{component_name} file basename")
+            _require(path not in all_paths, "snapshot release file path is duplicated")
+            _require(item["object_key"] == f"{expected_prefix}/{path_parts[1]}", f"{component_name} object key mismatch")
+            _safe_object_key(item["object_key"], f"{component_name} object key")
+            _require_sha256(item["sha256"], f"{component_name} file SHA-256")
+            _require(isinstance(item["size"], int) and not isinstance(item["size"], bool) and item["size"] > 0, f"{component_name} file size must be positive")
+            roles.add(role)
+            all_paths.add(path)
+        _require(roles == set(EXPECTED_FILE_ROLES), f"{component_name} file roles are incomplete")
     expected_artifact_set_id = _sha256_bytes(
         json.dumps(
-            {"files": identity_files, "height": height, "network": network, "snapshot_id": snapshot_id},
+            {
+                "btc_block_hash": btc_block_hash,
+                "components": components,
+                "core_snapshot_id": core_snapshot_id,
+                "height": height,
+                "network": network,
+            },
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
@@ -546,8 +674,24 @@ def validate_release_record(record: dict[str, Any]) -> None:
     _require(artifact_set_id == expected_artifact_set_id, "artifact set ID does not match file inventory")
 
 
+def _component(record: dict[str, Any], component_name: str) -> dict[str, Any]:
+    _require(component_name in EXPECTED_COMPONENTS, f"unsupported snapshot component {component_name}")
+    component = record["components"][component_name]
+    _require(component is not None, f"snapshot release has no {component_name} component")
+    return component
+
+
+def _all_files(record: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item
+        for component_name in EXPECTED_COMPONENTS
+        if record["components"][component_name] is not None
+        for item in record["components"][component_name]["files"]
+    ]
+
+
 def _validate_local_files(record: dict[str, Any], source_dir: Path) -> None:
-    for item in record["files"]:
+    for item in _all_files(record):
         path = source_dir / item["path"]
         _require(path.is_file() and not path.is_symlink(), f"snapshot release source file is missing or not regular: {path}")
         _require(path.stat().st_size == item["size"], f"snapshot release source file size mismatch: {path}")
@@ -725,7 +869,7 @@ def upload_release(record_path: Path, source_dir: Path, client: Any) -> dict[str
     _require(source.is_dir(), f"snapshot release source directory does not exist: {source}")
     _validate_local_files(record, source)
     statuses: dict[str, str] = {}
-    for item in record["files"]:
+    for item in _all_files(record):
         suffix = Path(item["path"]).suffix.lower()
         content_type = "application/json" if suffix == ".json" else "application/octet-stream"
         statuses[item["object_key"]] = _publish_object(
@@ -739,7 +883,7 @@ def upload_release(record_path: Path, source_dir: Path, client: Any) -> dict[str
     record_content = record_file.read_bytes()
     record_sha256 = _sha256_bytes(record_content)
     _require(record_content == _canonical_json(record), "snapshot release record is not canonical JSON")
-    record_key = f"snapshot-records/v2/{record_sha256}.json"
+    record_key = f"snapshot-records/v3/{record_sha256}.json"
     statuses[record_key] = _publish_object(
         client,
         record_file,
@@ -819,29 +963,35 @@ def verify_public_release(record_path: Path, trusted_keys: Path) -> dict[str, An
     _require(trusted_path.is_file() and not trusted_path.is_symlink(), f"trusted-key catalog does not exist: {trusted_path}")
     _require(trusted_path.name == record["trusted_keys"]["file_name"], "trusted-key catalog file name does not match snapshot release record")
     _require(_sha256(trusted_path) == record["trusted_keys"]["sha256"], "trusted-key catalog does not match snapshot release record")
-    _validate_trusted_catalog(trusted_path, record["trusted_keys"]["signing_key_id"])
+    for component_name in EXPECTED_COMPONENTS:
+        component = record["components"][component_name]
+        if component is not None:
+            _validate_trusted_catalog(trusted_path, component["signing_key_id"])
 
     record_sha256 = _sha256_bytes(record_content)
-    record_url = f"{record['public_base_url']}/snapshot-records/v2/{record_sha256}.json"
+    record_url = f"{record['public_base_url']}/snapshot-records/v3/{record_sha256}.json"
     downloaded_record, record_size, _ = _read_public_url(record_url, method="GET")
     _require(record_size == len(record_content), "public snapshot release record size mismatch")
     _require(downloaded_record == record_content, "public snapshot release record content mismatch")
 
     verified_size = 0
-    for item in record["files"]:
+    database_ranges = 0
+    files = _all_files(record)
+    for item in files:
         object_url = _quoted_object_url(record["public_base_url"], item["object_key"])
         _, size, _ = _read_public_url(object_url, method="HEAD")
         _require(size == item["size"], f"public snapshot object size mismatch: {item['object_key']}")
-        if item["role"] == "snapshot_db":
+        if item["role"] == "database":
             _probe_public_byte_range(object_url, item["size"])
+            database_ranges += 1
         verified_size += size
     return {
         "record_url": record_url,
         "record_sha256": record_sha256,
         "snapshot_release_id": record["snapshot_release_id"],
-        "verified_file_count": len(record["files"]),
+        "verified_file_count": len(files),
         "verified_size_bytes": verified_size,
-        "snapshot_db_byte_range_verified": True,
+        "database_byte_ranges_verified": database_ranges,
     }
 
 
@@ -1152,18 +1302,18 @@ def _fsync_path(path: Path) -> None:
 
 
 def _validate_release_directory(
-    record: dict[str, Any],
+    files: list[dict[str, Any]],
     directory: Path,
     *,
     allow_transient: bool,
 ) -> None:
     """Ensures a release directory contains only regular managed entries."""
-    expected_files = {item["path"] for item in record["files"]}
+    expected_files = {PurePosixPath(item["path"]).name for item in files}
     expected_files.add("snapshot-release-record.json")
     transient_files: set[str] = set()
     transient_directories: set[str] = set()
-    for item in record["files"]:
-        part_name = f"{item['path']}.part"
+    for item in files:
+        part_name = f"{PurePosixPath(item['path']).name}.part"
         transient_files.add(part_name)
         transient_files.add(f"{part_name}.ranges.json")
         transient_directories.add(f"{part_name}.ranges")
@@ -1196,6 +1346,8 @@ def _validate_release_directory(
 
 @dataclass(frozen=True)
 class InstalledSnapshot:
+    component: str
+    artifact_id: str
     release_id: str
     release_dir: Path
     record_path: Path
@@ -1206,33 +1358,47 @@ class InstalledSnapshot:
     network: str
 
 
-def _installed_snapshot(record: dict[str, Any], release_dir: Path) -> InstalledSnapshot:
-    by_role = {item["role"]: release_dir / item["path"] for item in record["files"]}
+def _installed_snapshot(
+    record: dict[str, Any], component_name: str, release_dir: Path
+) -> InstalledSnapshot:
+    component = _component(record, component_name)
+    by_role = {
+        item["role"]: release_dir / PurePosixPath(item["path"]).name
+        for item in component["files"]
+    }
     return InstalledSnapshot(
+        component=component_name,
+        artifact_id=component["artifact_id"],
         release_id=record["snapshot_release_id"],
         release_dir=release_dir,
         record_path=release_dir / "snapshot-release-record.json",
-        snapshot_file=by_role["snapshot_db"],
-        manifest_file=by_role["snapshot_manifest"],
-        signature_file=by_role["snapshot_signature"],
+        snapshot_file=by_role["database"],
+        manifest_file=by_role["manifest"],
+        signature_file=by_role["signature"],
         height=record["height"],
         network=record["network"],
     )
 
 
-def _verify_installed_release(record: dict[str, Any], release_dir: Path, record_content: bytes) -> InstalledSnapshot:
+def _verify_installed_release(
+    record: dict[str, Any],
+    component_name: str,
+    release_dir: Path,
+    record_content: bytes,
+) -> InstalledSnapshot:
+    component = _component(record, component_name)
     _require(release_dir.is_dir() and not release_dir.is_symlink(), f"installed snapshot release is missing or invalid: {release_dir}")
-    _validate_release_directory(record, release_dir, allow_transient=False)
+    _validate_release_directory(component["files"], release_dir, allow_transient=False)
     installed_record = release_dir / "snapshot-release-record.json"
     _require(installed_record.read_bytes() == record_content, f"installed snapshot release record mismatch: {release_dir}")
-    for item in record["files"]:
+    for item in component["files"]:
         _verify_download(
-            release_dir / item["path"],
+            release_dir / PurePosixPath(item["path"]).name,
             item["size"],
             item["sha256"],
             progress_label=f"Verify cached {item['path']}",
         )
-    return _installed_snapshot(record, release_dir)
+    return _installed_snapshot(record, component_name, release_dir)
 
 
 def install_release(
@@ -1240,6 +1406,7 @@ def install_release(
     record_url: str,
     destination_root: Path,
     trusted_keys: Path,
+    component: str = "core",
     approved_record_path: Path | None = None,
     curl_executable: str = "curl",
     expected_network: str | None = None,
@@ -1310,6 +1477,7 @@ def install_release(
                     record_part.replace(record_cache)
         record = _load_json(record_cache)
         validate_release_record(record)
+        selected = _component(record, component)
         record_content = record_cache.read_bytes()
         _require(record_content == _canonical_json(record), "downloaded snapshot release record is not canonical JSON")
         if expected_network is not None:
@@ -1323,22 +1491,24 @@ def install_release(
         _require(trusted_path.is_file() and not trusted_path.is_symlink(), f"trusted-key catalog does not exist: {trusted_path}")
         _require(trusted_path.name == record["trusted_keys"]["file_name"], "local trusted-key catalog file name does not match snapshot release record")
         _require(_sha256(trusted_path) == record["trusted_keys"]["sha256"], "local trusted-key catalog does not match snapshot release record")
-        _validate_trusted_catalog(trusted_path, record["trusted_keys"]["signing_key_id"])
+        _validate_trusted_catalog(trusted_path, selected["signing_key_id"])
 
         release_id = record["snapshot_release_id"]
-        destination = root / release_id
+        destination_name = release_id if component == "core" else selected["artifact_id"]
+        destination = root / destination_name
         if _path_exists(destination):
             print(
                 f"Snapshot artifact exists; verifying before reuse: {destination}",
                 file=sys.stderr,
                 flush=True,
             )
-            return _verify_installed_release(record, destination, record_content)
-        staging = root / f".{release_id}.installing"
+            return _verify_installed_release(record, component, destination, record_content)
+        staging = root / f".{destination_name}.{component}.installing"
         _ensure_managed_directory(staging, "snapshot release staging directory")
-        _validate_release_directory(record, staging, allow_transient=True)
-        for item in record["files"]:
-            final_path = staging / item["path"]
+        _validate_release_directory(selected["files"], staging, allow_transient=True)
+        for item in selected["files"]:
+            file_name = PurePosixPath(item["path"]).name
+            final_path = staging / file_name
             _require_managed_file(final_path, "staged snapshot file")
             if _path_exists(final_path):
                 try:
@@ -1372,7 +1542,7 @@ def install_release(
                 part_path.unlink()
             object_url = _quoted_object_url(record_base, item["object_key"])
             use_parallel_ranges = (
-                item["role"] == "snapshot_db"
+                item["role"] == "database"
                 and item["size"] >= PARALLEL_DOWNLOAD_MIN_SIZE
                 and download_concurrency > 1
             )
@@ -1382,7 +1552,7 @@ def install_release(
                 and 0 < part_path.stat().st_size < item["size"]
             )
             print(
-                f"Downloading snapshot artifact: {item['path']}",
+                f"Downloading {component} snapshot artifact: {file_name}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -1412,9 +1582,9 @@ def install_release(
             _cleanup_range_download(part_path)
             part_path.replace(final_path)
         _write_new_or_identical(staging / "snapshot-release-record.json", record_content)
-        _validate_release_directory(record, staging, allow_transient=False)
-        for item in record["files"]:
-            _fsync_path(staging / item["path"])
+        _validate_release_directory(selected["files"], staging, allow_transient=False)
+        for item in selected["files"]:
+            _fsync_path(staging / PurePosixPath(item["path"]).name)
         _fsync_path(staging / "snapshot-release-record.json")
         _fsync_path(staging)
         print(
@@ -1428,7 +1598,7 @@ def install_release(
         # All files were hashed and fsynced immediately before the atomic rename.
         # Rehashing the immutable 250+ GiB database here would double install time.
         print(f"Snapshot artifact ready: {destination}", file=sys.stderr, flush=True)
-        return _installed_snapshot(record, destination)
+        return _installed_snapshot(record, component, destination)
 
 
 def _print_json(value: dict[str, Any]) -> None:
@@ -1467,10 +1637,11 @@ def build_parser() -> argparse.ArgumentParser:
     upload.add_argument("--progress", action="store_true")
     upload.add_argument("--aws-executable", default="aws", help=argparse.SUPPRESS)
 
-    install = subparsers.add_parser("install", help="Resume, verify, and atomically install one public snapshot release")
+    install = subparsers.add_parser("install", help="Resume, verify, and atomically install one split snapshot component")
     install.add_argument("--record-url", required=True)
     install.add_argument("--destination-root", type=Path, required=True)
     install.add_argument("--trusted-keys", type=Path, required=True)
+    install.add_argument("--component", choices=EXPECTED_COMPONENTS, default="core")
     install.add_argument("--expected-network")
     install.add_argument("--max-height", type=int)
     install.add_argument(
@@ -1507,10 +1678,10 @@ def main() -> int:
             )
             _print_json(
                 {
-                    "record_object_key": f"snapshot-records/v2/{digest}.json",
+                    "record_object_key": f"snapshot-records/v3/{digest}.json",
                     "record_path": str(path),
                     "record_sha256": digest,
-                    "record_url": f"{record['public_base_url']}/snapshot-records/v2/{digest}.json",
+                    "record_url": f"{record['public_base_url']}/snapshot-records/v3/{digest}.json",
                     "snapshot_release_id": record["snapshot_release_id"],
                 }
             )
@@ -1532,6 +1703,7 @@ def main() -> int:
                 record_url=args.record_url,
                 destination_root=args.destination_root,
                 trusted_keys=args.trusted_keys,
+                component=args.component,
                 curl_executable=args.curl_executable,
                 expected_network=args.expected_network,
                 max_height=args.max_height,
@@ -1540,6 +1712,8 @@ def main() -> int:
             )
             _print_json(
                 {
+                    "artifact_id": installed.artifact_id,
+                    "component": installed.component,
                     "height": installed.height,
                     "manifest_file": str(installed.manifest_file),
                     "network": installed.network,

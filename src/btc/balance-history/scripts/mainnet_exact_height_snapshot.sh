@@ -82,13 +82,13 @@ Commands:
   status     Show the persisted builder/job state.
   list       List all persisted snapshot jobs.
   verify     Reopen the completed artifact and recheck the current canonical hash.
-  finalize   Disabled until the split-artifact release pipeline lands in deployment batch 5.
+  finalize   Verify signed core/registry artifacts and freeze one release marker.
   validate-install
-             Disabled until the core-only installer lands in deployment batch 3/5.
-  archive    Disabled until split-artifact packaging lands in deployment batch 5.
+             Restore only the core artifact into an isolated validation root.
+  archive    Create an optional offline archive containing both split components.
   prepare-release
-             Disabled until split-artifact release records land in deployment batch 5.
-  publish    Disabled until split-artifact object-storage upload lands in deployment batch 5.
+             Build a content-addressed split v3 release record.
+  publish    Upload both components and the immutable release record.
   paths      Print all resolved operational paths without modifying them.
 
 Primary overrides:
@@ -125,10 +125,6 @@ warn() {
 die() {
   printf '[balance-history-mainnet-snapshot] ERROR: %s\n' "$*" >&2
   exit 2
-}
-
-split_release_pipeline_unavailable() {
-  die "$1"
 }
 
 parse_target_args() {
@@ -617,7 +613,8 @@ run_finalize() {
       finalize-artifact \
       --height "$HEIGHT" \
       --block-hash "$REQUESTED_HASH" \
-      --trusted-keys "$TRUSTED_KEYS"
+      --trusted-keys "$TRUSTED_KEYS" \
+      --component all
   )"
   jq -e . >/dev/null <<<"$finalization_output" || \
     die "Snapshot finalization tool returned invalid JSON"
@@ -626,52 +623,31 @@ run_finalize() {
   marker_dir="${FINALIZATION_BASE}/${height_dir}-${REQUESTED_HASH}"
   marker="${marker_dir}/artifact-finalized.json"
   mkdir -p "$marker_dir"
-  if [[ -f "$marker" ]]; then
-    jq -e \
-      --arg producer_revision "$producer_revision" \
-      --arg finalizer_revision "$finalizer_revision" \
-      --slurpfile report "$report" '
-      .version == 1
-      and .height == $report[0].height
-      and .network == $report[0].network
-      and .btc_block_hash == $report[0].btc_block_hash
-      and .snapshot_id == $report[0].snapshot_id
-      and .snapshot_file == $report[0].snapshot_file
-      and .manifest_file == $report[0].manifest_file
-      and .signature_file == $report[0].signature_file
-      and .file_sha256 == $report[0].file_sha256
-      and .signing_key_id == $report[0].signing_key_id
-      and .trusted_keys_sha256 == $report[0].trusted_keys_sha256
-      and .producer_revision == $producer_revision
-      and .finalizer_revision == $finalizer_revision
-      and (.finalized_at_utc | type == "string" and length > 0)
-    ' "$marker" >/dev/null || die "Existing finalization marker does not match artifact: ${marker}"
-    log "Artifact finalization already verified: ${marker}"
-  else
-    python3 - "$marker" "$report" "$producer_revision" "$finalizer_revision" <<'PY'
+  jq -e '
+    (.core | type == "object")
+    and (.core.component == "core")
+    and (.script_registry == null or (.script_registry | type == "object"))
+    and (.script_registry == null or .script_registry.component == "script_registry")
+  ' "$report" >/dev/null || die "Split finalization report is incomplete: ${report}"
+
+  if [[ ! -f "$marker" ]]; then
+    python3 - "$marker" "$report" "$producer_revision" "$finalizer_revision" "$TRUSTED_KEYS" <<'PY'
 import json
+import hashlib
 import os
 import sys
 from datetime import datetime, timezone
 
-path, report_path, producer_revision, finalizer_revision = sys.argv[1:]
+path, report_path, producer_revision, finalizer_revision, trusted_keys = sys.argv[1:]
 with open(report_path, encoding="utf-8") as source:
     report = json.load(source)
 record = {
-    "version": 1,
-    "height": report["height"],
-    "network": report["network"],
-    "btc_block_hash": report["btc_block_hash"],
-    "snapshot_id": report["snapshot_id"],
-    "snapshot_file": report["snapshot_file"],
-    "manifest_file": report["manifest_file"],
-    "signature_file": report["signature_file"],
-    "file_sha256": report["file_sha256"],
-    "signing_key_id": report["signing_key_id"],
-    "trusted_keys_sha256": report["trusted_keys_sha256"],
+    "schema_version": "usdb-snapshot-artifact-finalization:v2",
+    "artifacts": report,
     "producer_revision": producer_revision,
     "finalizer_revision": finalizer_revision,
     "finalized_at_utc": datetime.now(timezone.utc).isoformat(),
+    "trusted_keys_sha256": hashlib.sha256(open(trusted_keys, "rb").read()).hexdigest(),
 }
 temporary = f"{path}.tmp.{os.getpid()}"
 try:
@@ -692,12 +668,31 @@ finally:
     except FileNotFoundError:
         pass
 PY
+  else
+    python3 - "$marker" "$report" "$producer_revision" "$finalizer_revision" "$TRUSTED_KEYS" <<'PY'
+import hashlib
+import json
+import sys
+
+marker_path, report_path, producer_revision, finalizer_revision, trusted_keys = sys.argv[1:]
+with open(marker_path, encoding="utf-8") as source:
+    marker = json.load(source)
+with open(report_path, encoding="utf-8") as source:
+    report = json.load(source)
+assert marker["schema_version"] == "usdb-snapshot-artifact-finalization:v2"
+assert marker["artifacts"] == report
+assert marker["producer_revision"] == producer_revision
+assert marker["finalizer_revision"] == finalizer_revision
+assert marker["trusted_keys_sha256"] == hashlib.sha256(open(trusted_keys, "rb").read()).hexdigest()
+assert isinstance(marker["finalized_at_utc"], str) and marker["finalized_at_utc"]
+PY
+    log "Artifact finalization already verified: ${marker}"
   fi
   log "Finalized artifact height=${HEIGHT} hash=${REQUESTED_HASH} marker=${marker}"
 }
 
 resolve_finalized_snapshot() {
-  local target_record height_dir complete file_hash marker_file_hash
+  local target_record height_dir
 
   check_static_preflight
   create_operational_dirs
@@ -714,33 +709,27 @@ resolve_finalized_snapshot() {
     die "Pinned target record has no producer code revision: ${target_record}"
   [[ "$FINALIZED_PRODUCER_REVISION" =~ ^[0-9a-f]{40}$ ]] || \
     die "Pinned target producer revision is invalid: ${FINALIZED_PRODUCER_REVISION}"
-  complete="${FINALIZED_ARTIFACT_DIR}/complete.json"
-  [[ -f "$complete" ]] || die "Finalized snapshot artifact is missing: ${complete}"
+  [[ -d "${FINALIZED_ARTIFACT_DIR}/core" ]] || \
+    die "Finalized core artifact is missing: ${FINALIZED_ARTIFACT_DIR}/core"
   [[ -f "$FINALIZED_FINALIZATION_MARKER" ]] || \
     die "Artifact finalization marker is missing: ${FINALIZED_FINALIZATION_MARKER}; run finalize first"
-  file_hash="$(jq -er '.file_sha256' "$complete")" || die "Completed artifact has no file SHA-256: ${complete}"
-  marker_file_hash="$(jq -er '.file_sha256' "$FINALIZED_FINALIZATION_MARKER")" || \
-    die "Artifact finalization marker has no file SHA-256: ${FINALIZED_FINALIZATION_MARKER}"
-  [[ "$file_hash" =~ ^[0-9a-f]{64}$ ]] || die "Completed artifact file SHA-256 is invalid: ${file_hash}"
-  [[ "$marker_file_hash" == "$file_hash" ]] || \
-    die "Artifact finalization marker does not match finalized artifact"
   jq -e \
-    --argjson height "$HEIGHT" \
-    --arg block_hash "$REQUESTED_HASH" \
     --arg producer_revision "$FINALIZED_PRODUCER_REVISION" '
-      .version == 1
-      and .height == $height
-      and .network == "bitcoin"
-      and .btc_block_hash == $block_hash
+      .schema_version == "usdb-snapshot-artifact-finalization:v2"
       and .producer_revision == $producer_revision
       and (.finalizer_revision | type == "string" and test("^[0-9a-f]{40}$"))
-      and (.snapshot_id | type == "string" and test("^[0-9a-f]{64}$"))
-      and (.signing_key_id | type == "string" and length > 0)
       and (.trusted_keys_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
       and (.finalized_at_utc | type == "string" and length > 0)
+      and (.artifacts.core.component == "core")
+      and (.artifacts.core.height | type == "number")
+      and (.artifacts.script_registry == null or .artifacts.script_registry.component == "script_registry")
     ' "$FINALIZED_FINALIZATION_MARKER" >/dev/null || \
     die "Artifact finalization marker identity is invalid: ${FINALIZED_FINALIZATION_MARKER}"
-  FINALIZED_FILE_SHA256="$file_hash"
+  [[ "$(jq -er '.artifacts.core.height' "$FINALIZED_FINALIZATION_MARKER")" == "$HEIGHT" ]] || \
+    die "Core finalization height does not match the requested target"
+  [[ "$(jq -er '.artifacts.core.btc_block_hash' "$FINALIZED_FINALIZATION_MARKER")" == "$REQUESTED_HASH" ]] || \
+    die "Core finalization block hash does not match the requested target"
+  FINALIZED_FILE_SHA256="$(jq -er '.artifacts.core.file_sha256' "$FINALIZED_FINALIZATION_MARKER")"
   FINALIZED_FINALIZER_REVISION="$(jq -er '.finalizer_revision' "$FINALIZED_FINALIZATION_MARKER")"
 }
 
@@ -776,10 +765,14 @@ run_validate_install() {
   fi
 
   generate_validation_config "$validation_root"
+  local core_file core_manifest
+  core_file="$(jq -er '.artifacts.core.file' "$FINALIZED_FINALIZATION_MARKER")"
+  core_manifest="$(jq -er '.artifacts.core.manifest_file' "$FINALIZED_FINALIZATION_MARKER")"
   "$BALANCE_HISTORY" \
     --root-dir "$validation_root" \
     install-snapshot \
-    --file "${FINALIZED_ARTIFACT_DIR}/$(jq -er '.snapshot_file' "${FINALIZED_ARTIFACT_DIR}/complete.json")"
+    --file "${FINALIZED_ARTIFACT_DIR}/core/${core_file}" \
+    --manifest "${FINALIZED_ARTIFACT_DIR}/core/${core_manifest}"
   python3 - "$report" "$HEIGHT" "$REQUESTED_HASH" "$FINALIZED_FILE_SHA256" \
     "$FINALIZED_PRODUCER_REVISION" "$FINALIZED_FINALIZER_REVISION" "$validation_revision" \
     "$validation_root" <<'PY'
@@ -973,23 +966,23 @@ case "$COMMAND" in
     ;;
   finalize)
     parse_target_args "$@"
-    split_release_pipeline_unavailable "Split core/registry artifact finalization is not wired into this mainnet wrapper yet; use the snapshot tool for local component verification and wait for deployment batch 5 before public release"
+    run_finalize
     ;;
   validate-install)
     parse_target_args "$@"
-    split_release_pipeline_unavailable "Split core/registry artifact installation is not wired into this mainnet wrapper yet; complete deployment batch 5 before using this command"
+    run_validate_install
     ;;
   archive)
     parse_target_args "$@"
-    split_release_pipeline_unavailable "Split core/registry artifact archiving is not wired into this mainnet wrapper yet; complete deployment batch 5 before using this command"
+    run_archive
     ;;
   prepare-release)
     parse_target_args "$@"
-    split_release_pipeline_unavailable "Split core/registry release records are not wired into this mainnet wrapper yet; complete deployment batch 5 before using this command"
+    run_prepare_release
     ;;
   publish)
     parse_target_args "$@"
-    split_release_pipeline_unavailable "Split core/registry remote publication is not wired into this mainnet wrapper yet; complete deployment batch 5 before using this command"
+    run_publish
     ;;
   paths)
     (($# == 0)) || die "paths does not accept arguments"

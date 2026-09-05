@@ -96,7 +96,8 @@ release 读取，但新工具不会自动移动、复制或认领这些目录。
 
 ## 4. Release compatibility contract
 
-`usdb-release-manifest:v6` 保留 `runtime_compatibility`，并增加不可变 CI qualification 证据：
+`usdb-release-manifest:v7` 保留 `runtime_compatibility` 与不可变 CI qualification 证据，并增加 split v3
+snapshot 的 required core / optional script-registry component binding：
 
 - 每个服务的 storage schema；
 - 影响数据语义的 BTC network、index origin、registry、chain ID 和 genesis hash；

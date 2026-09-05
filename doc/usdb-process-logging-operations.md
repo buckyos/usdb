@@ -125,7 +125,8 @@ data。
 - 每个 block batch 的高度范围、块数、总耗时、各 preload/process/write 阶段耗时、变更数和 cache 数量
 - 每轮同步的范围、batch 数、底层及调用层 flush 耗时和总耗时
 - reorg rollback 的 undo validation、marker、逐块回滚、marker 清理和总耗时；失败时 readiness 保持 recovery pending
-- snapshot create/install 的 balance、UTXO、block commit、script registry、finalize、file hash、source verification、staging 和 swap 耗时
+- snapshot create 的 balance、UTXO、block commit、script registry 与 finalize 耗时，以及 core install 的
+  file hash、source verification、staging、三类核心数据导入和 swap 耗时
 
 `usdb-indexer` 的关键记录包括：
 

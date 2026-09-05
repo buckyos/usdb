@@ -69,6 +69,7 @@ log "checking testnet network and release manifests"
 shellcheck \
   "$REPO_DIR/docker/scripts/entrypoints/start_bitcoin_core.sh" \
   "$REPO_DIR/docker/scripts/entrypoints/snapshot_loader.sh" \
+  "$REPO_DIR/docker/scripts/entrypoints/script_registry_installer.sh" \
   "$REPO_DIR/docker/scripts/helpers/snapshot_marker.sh" \
   "$REPO_DIR/docker/scripts/tools/install_usdb_node.sh" \
   "$REPO_DIR/docker/scripts/tools/prepare_usdb_firewall.sh" \

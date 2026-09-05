@@ -26,7 +26,7 @@ from validate_network_bundle import (  # noqa: E402
 from snapshot_distribution import validate_release_record  # noqa: E402
 from runtime_compatibility import build_runtime_compatibility  # noqa: E402
 
-SCHEMA_VERSION = "usdb-release-manifest:v6"
+SCHEMA_VERSION = "usdb-release-manifest:v7"
 QUALIFICATION_SCHEMA_VERSION = "usdb-ci-qualification:v1"
 SNAPSHOT_RECORD_RELATIVE_PATH = Path(
     "snapshots/balance-history-snapshot-release-record.json"
@@ -250,10 +250,17 @@ def build_snapshot_state(bundle_dir: Path) -> dict[str, Any]:
 
     record_sha256 = sha256(record_path)
     record_url = (
-        f"{record['public_base_url']}/snapshot-records/v2/{record_sha256}.json"
+        f"{record['public_base_url']}/snapshot-records/v3/{record_sha256}.json"
     )
-    download_size = sum(item["size"] for item in record["files"])
-    snapshot_file = next(item for item in record["files"] if item["role"] == "snapshot_db")
+    core = record["components"]["core"]
+    core_download_size = sum(item["size"] for item in core["files"])
+    core_database = next(item for item in core["files"] if item["role"] == "database")
+    registry = record["components"]["script_registry"]
+    registry_download_size = (
+        sum(item["size"] for item in registry["files"])
+        if registry is not None
+        else 0
+    )
     return {
         "status": "available",
         "bootstrap_mode": "optional-signed-snapshot",
@@ -266,13 +273,33 @@ def build_snapshot_state(bundle_dir: Path) -> dict[str, Any]:
         "artifact_set_id": record["artifact_set_id"],
         "height": record["height"],
         "btc_block_hash": record["btc_block_hash"],
-        "snapshot_id": record["snapshot_id"],
-        "download_size_bytes": download_size,
-        "snapshot_db_size_bytes": snapshot_file["size"],
+        "snapshot_id": record["core_snapshot_id"],
+        "download_size_bytes": core_download_size,
+        "total_download_size_bytes": core_download_size + registry_download_size,
+        "snapshot_db_size_bytes": core_database["size"],
+        "core": {
+            "artifact_id": core["artifact_id"],
+            "download_size_bytes": core_download_size,
+        },
+        "script_registry": (
+            {
+                "artifact_id": registry["artifact_id"],
+                "download_size_bytes": registry_download_size,
+                "optional": True,
+            }
+            if registry is not None
+            else {"status": "not_published", "optional": True}
+        ),
         "trusted_keys": {
             "path": trusted_artifact["path"],
             "sha256": trusted_sha256,
-            "signing_key_id": record["trusted_keys"]["signing_key_id"],
+            "signing_key_ids": sorted(
+                {
+                    component["signing_key_id"]
+                    for component in record["components"].values()
+                    if component is not None
+                }
+            ),
         },
     }
 

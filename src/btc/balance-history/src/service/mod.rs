@@ -1,6 +1,7 @@
 mod client;
 mod rpc;
 mod script_registry_contract;
+mod script_registry_installer;
 mod script_registry_resolver;
 mod server;
 mod state_ref;
@@ -9,5 +10,6 @@ mod state_ref;
 pub use client::*;
 pub use rpc::*;
 pub use script_registry_contract::*;
+pub use script_registry_installer::*;
 pub use server::*;
 pub use state_ref::*;

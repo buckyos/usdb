@@ -211,6 +211,17 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         self.assertNotIn("usdb-chain-data:", content)
         self.assertNotIn("control-plane-data:", content)
 
+    def test_optional_registry_installer_is_independent_from_core_readiness(self) -> None:
+        content = (ROOT / "docker/compose.runtime.yml").read_text(encoding="utf-8")
+        registry = content.split("  script-registry-installer:", 1)[1].split(
+            "\n  usdb-indexer:", 1
+        )[0]
+
+        self.assertIn("script_registry_installer.sh", registry)
+        self.assertIn("snapshot-loader:", registry)
+        self.assertNotIn("balance-history:", registry)
+        self.assertIn('restart: "on-failure:3"', registry)
+
     def test_runtime_runner_exposes_phased_data_start(self) -> None:
         content = (ROOT / "docker/scripts/tools/run_testnet_runtime.sh").read_text(encoding="utf-8")
         for action in (

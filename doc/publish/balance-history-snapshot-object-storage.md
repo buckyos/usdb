@@ -1,6 +1,6 @@
 # Balance-History Snapshot 对象存储发布与安装
 
-Status: first implementation complete; live R2 upload and target-host installation pending.
+Status: split v3 implementation complete; live R2 upload and target-host installation pending.
 
 ## 1. 边界
 
@@ -22,33 +22,41 @@ release record、node kit、Compose env 或运维日志。节点只访问公开 
 
 ## 2. 发布模型
 
-`snapshot_distribution.py` 发布原始 immutable artifact，而不是大 tar：
+`snapshot_distribution.py` 发布两个可独立处理的 immutable component，而不是大 tar：
 
 ```text
-snapshot_<H>.db
-snapshot_<H>.manifest.json
-snapshot_<H>.manifest.sig
-complete.json
+core/
+  balance_history_core_<H>.db
+  balance_history_core_<H>.manifest.json
+  balance_history_core_<H>.manifest.sig
+  complete.json
+script-registry/                       # optional
+  script_registry_<H>.db
+  script_registry_<H>.manifest.json
+  script_registry_<H>.manifest.sig
+  complete.json
 ```
 
-这样可以直接断点续传 DB，避免节点同时保留 tar 和解包后的 DB 所造成的接近双倍磁盘占用。`finalize`
-只重算 DB SHA-256 并验证 marker/manifest/Ed25519 签名，不打开 SQLite 或恢复 RocksDB；完整恢复演练由
+core 固定包含 balance、live UTXO 和 block commit；script registry 是不参与共识和启动 gate 的历史查询
+sidecar。两个 DB 均可独立断点续传，避免节点同时保留 tar 和解包后的 DB 所造成的接近双倍磁盘占用。
+`finalize` 只重算所选 component 的 DB SHA-256 并验证 marker/manifest/Ed25519 签名，不恢复 RocksDB；完整恢复演练由
 独立 `validate-install` 命令承担。只有明确需要离线归档时才执行 `archive`。
 
 每个 release record 固定：
 
-- network、height、BTC block hash 和 snapshot ID；
-- 四个文件的 basename、size、SHA-256 和 object key；
+- network、height、BTC block hash 和 core snapshot ID；
+- 必选 core 与可选 script registry 的独立 artifact ID、signer 和 object prefix；
+- 每个 component 四个文件的 basename、size、SHA-256 和 object key；
 - artifact producer USDB revision 与执行轻量 finalization 的 USDB revision；
 - artifact-finalization marker 的 SHA-256 和时间；
 - signer key ID、public trusted-key catalog basename 和 SHA-256；
 - public HTTPS base。
 
-四个文件的完整 inventory 生成 `artifact_set_id`。对象路径同时包含完整 `artifact_set_id`，因此重新
-签名、manifest 时间或任一 sidecar 变化都会进入新目录，不覆盖旧对象。Release record 自身写入：
+两个 component inventory 共同生成 `artifact_set_id`。对象路径包含各自完整 artifact ID，因此重新签名、
+manifest 时间或任一 component 变化都会进入新目录，不覆盖旧对象。Release record 自身写入：
 
 ```text
-snapshot-records/v2/<record-sha256>.json
+snapshot-records/v3/<record-sha256>.json
 ```
 
 上传顺序固定为“数据文件在前，release record 最后”。不发布可信语义不明确的 `latest.json`；运维或
@@ -59,7 +67,7 @@ USDB release 必须记录明确的 content-addressed record URL。
 要求：
 
 - `mainnet_exact_height_snapshot.sh finalize --height H` 已成功；
-- artifact 的 `complete.json`、DB、manifest 和 detached signature 相邻；
+- core 和可选 registry 目录内各自具有 `complete.json`、DB、manifest 和 detached signature；
 - 对应 release finalization 目录存在 `artifact-finalized.json`；
 - public trusted-key catalog 已 review，且包含 manifest 的 signer；
 - 已安装 AWS CLI，并通过 profile 或标准 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` 提供凭证；
@@ -120,8 +128,9 @@ H=<snapshot-height>
 bash "$SNAPSHOT_SCRIPT" prepare-release --height "$H"
 ```
 
-`prepare-release` 会重新确认高度对应的 BTC canonical hash，并使用 finalize 已固定的 DB hash 构造
-release record，不再重复扫描整个 SQLite。输出 JSON 中包含
+`prepare-release` 会重新确认高度对应的 BTC canonical hash，精确校验两类 completion marker、manifest、
+finalization report、signer 与文件 identity，并使用 finalize 已固定的 DB hash 构造 v3 release record，
+不再重复扫描整个 SQLite。输出 JSON 中包含
 record path、record SHA-256 和最终公开 URL，报告同时写入 snapshot release 目录。同一输入重跑是幂等
 的；同名但内容不同的本地 record 会被拒绝覆盖。缺少 pinned target、`complete.json` 或 independent
 artifact-finalization marker 时会失败关闭。
@@ -214,14 +223,14 @@ usdb-node up
 标准节点命令不接受自由输入的 record URL；它从当前 release manifest 读取并复核已批准 URL/哈希。
 `RECORD_URL` 仅用于本页前面的发布者审计。`snapshot install` 会：
 
-1. 先下载较小的 content-addressed release record；
-2. 在下载 DB 前校验 record schema、network、network bundle 的 index origin 和本地 trusted catalog；
+1. 先下载较小的 content-addressed v3 release record；
+2. 在下载 DB 前校验 record schema、component identity、network、network bundle 的 index origin 和本地 trusted catalog；
 3. 对大于等于 `128 MiB` 的 DB 默认使用 `8 x 64 MiB` 并行 HTTP Range；预分配 `.part`，将已 fsync 的
    chunk 记录到 `.ranges.json`，中断后只补缺失 chunk；小文件和旧连续 `.part` 继续单路续传；
 4. 汇总分片后对完整 `.part` 校验 size 和 SHA-256；
-5. 原子发布到 `<USDB_DATA_ROOT>/artifacts/balance-history/<snapshot-release-id>`；
+5. core 原子发布到 `<USDB_DATA_ROOT>/artifacts/balance-history/<snapshot-release-id>`；
 6. 在下载前持久化 bundle-scoped `node.env` 中的批准 snapshot 选择，并在未完成时阻止后续 runtime；
-7. 重新执行 runtime snapshot validator。
+7. 重新执行 runtime core snapshot validator。
 
 完整 DB 的 SHA-256 是下载结束后的独立顺序读取阶段，终端会显示 `Verify downloaded ...` 的已处理字节、
 百分比、吞吐和 ETA。首次下载在该校验及 fsync 后直接原子发布，不会再对同一 250+ GiB 文件执行第二次
@@ -257,10 +266,35 @@ snapshot data-start gate 不要求 Bitcoin 完成 IBD 或 txindex；额外的 st
 balance-history 可消费的 stable frontier，导入和后续索引可与 Bitcoin 追 tip 并行。
 USDB chain 的最终启动仍重新要求完整 Bitcoin readiness 和两个索引服务的 consensus readiness。
 
+core loader 成功后，独立 `script-registry-installer` 才下载 v3 record 中的可选 registry component 到
+`<BH_DATA_HOST_DIR>/auxiliary/script-registry/bases/<registry-artifact-id>`。它调用 balance-history 原生命令
+完整验证签名、DB hash、SQLite integrity/schema/meta 和精确 entry count，全部成功后才原子更新
+`state.json` active pointer。`attempt.json` 只记录本次下载/校验状态；失败不会覆盖旧 ready pointer，也不会
+阻断 core readiness。`usdb-node status --watch` 和 `doctor` 会独立显示这一辅助状态。
+有限自动重试耗尽后可显式重新提交同一 release-approved 安装任务：
+
+```bash
+usdb-node snapshot install-registry
+```
+
+该命令不接受 URL 或 artifact ID 覆盖，也不会改变 core 选择。
+
+历史 artifact 清理必须先预览：
+
+```bash
+usdb-node snapshot gc
+usdb-node snapshot gc --confirm
+```
+
+第一条只输出候选；第二条只删除未被当前 release、core/registry 选择或 registry active pointer 引用的合法
+immutable 目录。未知和临时目录不会被删除；匹配 artifact 命名但不是安全真实目录，或 active pointer
+不可读时失败关闭。
+
 ## 7. Paired Checkpoint 与后续工作
 
-当前 `v1` release record 只接受 `artifact_type=balance-history`。当 `H > index_origin_height` 时，fresh
-indexer 在大文件下载前拒绝该 record。不要通过修改 node.env 绕过这个限制。
+当前 `v3` release record 只接受 `artifact_type=balance-history-split`，且 core 必选、script registry 可选。
+当 `H > index_origin_height` 时，fresh indexer 在大文件下载前拒绝该 record。不要通过修改 node.env 绕过
+这个限制。
 
 `paired-checkpoint` 继续使用独立的严格双 artifact 工具链。后续对象存储 schema 应扩展为同时提交：
 
@@ -272,12 +306,13 @@ indexer 在大文件下载前拒绝该 record。不要通过修改 node.env 绕�
 
 ## 8. 当前验证边界
 
-自动化已覆盖 release record 一致性、DB 篡改拒绝、S3 record-last 顺序、重复上传幂等、临时 AWS upload
-配置、错误 catalog、高度提前拒绝、并行 Range 缺片恢复/HTTP 200 拒绝、断点 staging、原子安装、
-node.env 选择和已有 DB 拒绝。仍需完成：
+自动化已覆盖 split release record 与 completion marker 一致性、DB 篡改拒绝、S3 record-last 顺序、重复
+上传幂等、core/registry 独立下载、错误 catalog、高度提前拒绝、并行 Range 缺片恢复/HTTP 200 拒绝、
+断点 staging、原子安装、active pointer 失败保护、显式 registry retry、非阻断状态、doctor 和保守 GC。
+仍需完成：
 
 - 使用真实 R2 凭证的小文件 upload/head/download smoke；
 - 最新主网大 DB 的中断上传和 HTTP Range 恢复；
 - 空白目标机通过 `usdb-node snapshot install` 启动并核对 provenance/state-ref；
-- 完成 manifest v5 已冻结 record URL/hash 的首个真实节点下载、安装和 state-ref 验收；
+- 完成 manifest v7 已冻结 v3 record URL/hash 的首个真实节点 core/registry 下载、安装和 state-ref 验收；
 - paired-checkpoint 对象存储 schema 和真实 joiner 演练。

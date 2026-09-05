@@ -19,7 +19,7 @@ BUILDER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = BUILDER
 SPEC.loader.exec_module(BUILDER)
 
-from release_manifest import build_network_identity, build_snapshot_state
+from release_manifest import SCHEMA_VERSION, build_network_identity, build_snapshot_state
 from runtime_compatibility import build_runtime_compatibility
 
 REPOSITORY_ROOT = MODULE_PATH.resolve().parents[3]
@@ -37,7 +37,7 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         network_identity = build_network_identity(self.bundle)
         content = json.dumps(
             {
-                "schema_version": "usdb-release-manifest:v6",
+                "schema_version": SCHEMA_VERSION,
                 "release_id": "usdb-testnet-v0-r1",
                 "network_bundle": network_identity,
                 "snapshot": build_snapshot_state(self.bundle),

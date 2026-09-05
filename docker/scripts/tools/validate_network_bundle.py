@@ -9,6 +9,7 @@ import hmac
 import json
 import re
 import sys
+import urllib.parse
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -33,7 +34,7 @@ BTC_REGISTRY_STABLE_LAG_BLOCKS = {
     EXPECTED_BTC_REGISTRY: 10,
 }
 EXPECTED_BOOTSTRAP_ADMIN = "0x0b5223FD31cDc1536f31b3627e6D7025b52310c9"
-EXPECTED_SNAPSHOT_MANIFEST_VERSION = "balance-history-snapshot-manifest:v3"
+EXPECTED_SNAPSHOT_MANIFEST_VERSION = "balance-history-core-snapshot-manifest:v1"
 EXPECTED_SNAPSHOT_SIGNATURE_SCHEME = "ed25519"
 EXPECTED_INDEXER_CHECKPOINT_MANIFEST_VERSION = "usdb-indexer-checkpoint-manifest:v1"
 EXPECTED_INDEXER_CHECKPOINT_DATA_SCHEMA_VERSION = "usdb-indexer-data:v1"
@@ -205,6 +206,13 @@ def validate_runtime_snapshot(
     require(
         manifest.get("manifest_version") == EXPECTED_SNAPSHOT_MANIFEST_VERSION,
         "unsupported balance-history snapshot manifest version",
+    )
+    require(
+        manifest.get("artifact_type") == "balance_history_core"
+        and manifest.get("snapshot_schema_version")
+        == "balance-history-core-snapshot:v1"
+        and manifest.get("registry_included") is False,
+        "release snapshot must be a registry-free core artifact",
     )
     require(
         manifest.get("file_name") == snapshot_file.name,
@@ -844,6 +852,34 @@ def validate_node_env(
     require(snapshot_dir.is_absolute(), "BH_SNAPSHOT_HOST_DIR must be an absolute path")
     snapshot_file = env.get("BH_SNAPSHOT_FILE", "")
     snapshot_manifest = env.get("BH_SNAPSHOT_MANIFEST", "")
+    registry_enabled = env.get("BH_SCRIPT_REGISTRY_ENABLED", "0")
+    registry_record_url = env.get("BH_SCRIPT_REGISTRY_RECORD_URL", "")
+    registry_artifact_id = env.get("BH_SCRIPT_REGISTRY_ARTIFACT_ID", "")
+    require(registry_enabled in {"0", "1"}, "BH_SCRIPT_REGISTRY_ENABLED must be 0 or 1")
+    if registry_enabled == "0":
+        require(not registry_record_url, "disabled script registry requires an empty record URL")
+        require(not registry_artifact_id, "disabled script registry requires an empty artifact ID")
+    else:
+        require(snapshot_mode == "balance-history", "script registry requires a balance-history snapshot")
+        parsed_registry_url = urllib.parse.urlparse(registry_record_url)
+        require(
+            parsed_registry_url.scheme == "https"
+            and bool(parsed_registry_url.netloc)
+            and parsed_registry_url.username is None
+            and parsed_registry_url.password is None
+            and not parsed_registry_url.query
+            and not parsed_registry_url.fragment
+            and PurePosixPath(parsed_registry_url.path).parent.name == "v3"
+            and PurePosixPath(parsed_registry_url.path).parent.parent.name
+            == "snapshot-records"
+            and re.fullmatch(r"[0-9a-f]{64}\.json", Path(parsed_registry_url.path).name)
+            is not None,
+            "script-registry record URL must be digest-pinned HTTPS",
+        )
+        require(
+            re.fullmatch(r"[0-9a-f]{64}", registry_artifact_id) is not None,
+            "script-registry artifact ID must be lowercase SHA-256",
+        )
     checkpoint_manifest = env.get("USDB_INDEXER_CHECKPOINT_MANIFEST", "")
     if snapshot_mode == "none":
         require(not snapshot_file, "SNAPSHOT_MODE=none requires empty BH_SNAPSHOT_FILE")

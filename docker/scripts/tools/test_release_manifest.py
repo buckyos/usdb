@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from snapshot_test_fixture import install_split_snapshot_record
+
 MODULE_PATH = Path(__file__).with_name("release_manifest.py")
 SPEC = importlib.util.spec_from_file_location("release_manifest", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -24,6 +26,7 @@ class ReleaseManifestTests(unittest.TestCase):
         source = MODULE_PATH.parents[2] / "networks/testnet-v0"
         self.bundle = self.root / "testnet-v0"
         shutil.copytree(source, self.bundle, ignore=shutil.ignore_patterns("node.env", "runtime"))
+        install_split_snapshot_record(self.bundle)
         self.compatibility_lock = self.root / "ci-revisions.json"
         self.compatibility_lock.write_text(
             json.dumps(
@@ -132,9 +135,20 @@ class ReleaseManifestTests(unittest.TestCase):
         self.assertEqual(snapshot["status"], "available")
         self.assertEqual(snapshot["bootstrap_mode"], "optional-signed-snapshot")
         self.assertEqual(snapshot["height"], 963800)
+        self.assertEqual(snapshot["core"]["artifact_id"], "33" * 32)
+        self.assertEqual(snapshot["script_registry"]["artifact_id"], "44" * 32)
+        self.assertTrue(snapshot["script_registry"]["optional"])
+        self.assertEqual(
+            snapshot["total_download_size_bytes"],
+            snapshot["download_size_bytes"]
+            + snapshot["script_registry"]["download_size_bytes"],
+        )
+        self.assertEqual(snapshot["trusted_keys"]["signing_key_ids"], ["usdb-mainnet-snapshot-v1"])
         self.assertEqual(
             snapshot["record"]["sha256"],
-            "aca7ac6a9c083e840977d846018514945ab089e7a804cafbfb1c65a40583338f",
+            RELEASE.sha256(
+                self.bundle / "snapshots/balance-history-snapshot-release-record.json"
+            ),
         )
         self.assertEqual(
             snapshot["trusted_keys"]["sha256"],

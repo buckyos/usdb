@@ -2,7 +2,7 @@
 
 ## 1. 文档状态
 
-- 状态：Draft；批次 1 至 3 已提交，批次 4 已实现并等待评审。
+- 状态：Draft；批次 1 至 4 已提交，批次 5 已实现并等待评审。
 - 适用阶段：USDB 开发期，不保留旧 snapshot schema 或安装流程的兼容双栈。
 - 已确认方向：将 `script_registry` 从 core snapshot 剥离为独立、只读的 SQLite
   sidecar；snapshot 安装节点不再把历史 registry 导入 RocksDB。
@@ -13,9 +13,11 @@
 - 批次 3（`b60b130`）：core installer 只接受 split v1 core manifest，只导入 balance、live UTXO 和
   block commit；结构化 provenance、完成 marker 和七阶段进度已同步切换。network bundle 与
   远端对象存储发布仍属于后续批次。
-- 批次 4：运行时通过固定 `state.json` active pointer 热加载 immutable SQLite base，按
+- 批次 4（`0e82d71`）：运行时通过固定 `state.json` active pointer 热加载 immutable SQLite base，按
   RocksDB overlay 优先的顺序派生 coverage-aware 结果；RPC、client、CLI、control-plane 和
-  explorer 已切换到分层状态。远端下载、签名安装、pointer 写入、GC 和 doctor 属于批次 5。
+  explorer 已切换到分层状态。
+- 批次 5：对象存储 record v3、core/registry 独立下载、签名校验后 pointer 发布、显式 GC、
+  doctor 和部署状态闭环已实现并等待评审。
 - 本文冻结目标语义、存储边界和实施顺序；每个批次通过评审后再提交。
 
 相关文档：
@@ -631,7 +633,7 @@ registry 保持 append-like：
 - 冻结 coverage、RPC result 和 readiness 状态机。
 - 更新 snapshot、RPC、readiness 和发布文档。
 
-### 批次 2：Snapshot 生成与校验工具（已实现，待评审）
+### 批次 2：Snapshot 生成与校验工具（已提交）
 
 - 生成独立 core 和 registry SQLite。
 - registry 使用 `WITHOUT ROWID`。
@@ -654,12 +656,11 @@ registry 保持 append-like：
   RocksDB durable height 严格等于 `H`；
 - 本批次中的“publish”指 builder 临时 component 目录到 immutable component 目录的原子本地
   发布；对象存储 record、上传和 node bundle 仍在批次 5 统一切换。
-- 主网包装脚本在批次 5 完成前对 finalize/install/archive/remote publish 明确 fail closed，避免
-  把 split artifact 送入旧单文件发布流程。
+- 主网包装脚本由批次 5 直接使用 split finalization report 和 v3 release record，不再进入旧单文件流程。
 
 ### 批次 3：Core-only 安装
 
-- 已实现，等待评审。
+- 已提交。
 - core installer 强制加载 split v1 core manifest，校验 artifact hash、SQLite integrity/schema、
   精确表计数、DB/consensus identity、最新 block commit 和 staged state-ref。
 - 只向 staging RocksDB 导入 balance、live UTXO 和 block commit；新 RocksDB 的 registry
@@ -674,7 +675,7 @@ registry 保持 append-like：
 
 ### 批次 4：分层 Registry Resolver
 
-- 已实现，等待评审。
+- 已提交。
 - immutable reader 使用 `immutable=1`、`query_only=true`、bounded page cache 和 bounded
   `IN` batch；运行时打开只校验 active pointer、manifest digest、core identity、schema 和
   SQLite metadata，不重复执行发布安装阶段的全文件 hash/integrity/count 扫描。
@@ -687,9 +688,25 @@ registry 保持 append-like：
 
 ### 批次 5：部署和发布闭环
 
-- 更新 object storage record、network bundle、release manifest 和 installer。
-- 更新 Docker gate、controller、status、doctor 和日志。
-- 增加 core-only 与 optional sidecar 的能力声明。
+- 已实现，等待评审。
+- object storage release record 直接升级为 `usdb-snapshot-release-record:v3`，包含必选 `core`
+  与可选 `script_registry` component；两者有独立 artifact ID、对象前缀、文件清单和下载目录。
+- release manifest 直接升级为 v7，只把 core 下载和导入纳入启动 gate；registry 选择和下载规模作为
+  optional auxiliary state 冻结。新 release 不接受旧 v2 单文件 record。
+- `script-registry-installer` 在 core loader 成功后独立下载 registry，并由 balance-history
+  `activate-script-registry` 重新验证 manifest 签名、DB SHA-256、SQLite integrity/schema/meta 和精确
+  entry count；全部通过后才原子替换 `state.json` active pointer。
+- `attempt.json` 仅描述当前下载/校验尝试，不能替代 active pointer。替换失败时保留之前 verified ready
+  pointer；首次安装失败只进入 failed 状态，不阻断 balance-history、indexer 或 USDB chain readiness。
+- `usdb-node status --watch` 固定显示 core snapshot 与 script registry 两行，结构化进度升级为 v5 并增加
+  `auxiliary_state`；registry 的 `FAILED/BLOCKED` 不改变 core `overall_state`。
+- lifecycle status 升级为 v3；可重试的 pending/failed registry 给出
+  `usdb-node snapshot install-registry`，但节点核心状态仍可保持 READY。
+- `doctor` 只读核对 release selection、active pointer、安装 record、文件大小和 manifest digest；完整签名、
+  文件 hash、SQLite integrity 与 count 仍由 activation 命令承担。
+- `usdb-node snapshot gc` 默认只报告候选；只有 `--confirm` 才删除未被 release、当前 core/registry 选择或
+  active registry pointer 引用的 recognized immutable artifact 目录。未知目录和临时目录不会被删除；
+  匹配 artifact 命名但不是安全真实目录，或 active pointer 不可读时失败关闭。
 
 ### 批次 6：集中验证
 

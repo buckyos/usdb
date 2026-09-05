@@ -134,8 +134,9 @@ managed 模式的完整 firewall check 依据 `node.env` 对照 SSH、USDB P2P�
 `setup` 拒绝覆盖已有 `node.env` 或 `rpcauth`。角色切换使用 `set-role`，不重新生成 secret。
 
 正式 snapshot 是可选启动加速器。release manifest 已冻结经过 review 的 content-addressed record、
-高度、BTC block hash、snapshot ID、下载规模和 trusted-key catalog。交互式 `setup` 会显示这些信息并
-询问是否使用；选择后只把 release-approved snapshot 固定到 `node.env`，不在前台执行长时间下载。
+高度、BTC block hash、core snapshot ID、core/可选 registry 下载规模和 trusted-key catalog。交互式 `setup` 会显示这些信息并
+按 core 与 registry 总持久占用计算推荐磁盘空间，再询问是否使用；选择后只把 release-approved snapshot
+固定到 `node.env`，不在前台执行长时间下载。
 artifact 下载、校验和选择由后续 systemd bootstrap controller 可续传执行，不要求运维人员填写 URL；
 live RocksDB 导入仍由之后的 `snapshot-loader` 完成。
 
@@ -147,7 +148,8 @@ usdb-node snapshot install
 
 该命令只使用当前 release 批准的 record，不接受任意 URL，也不需要 S3 凭证。它先把 snapshot 选择写入
 `node.env`，再校验小 record 与 bundle trusted-key catalog、默认用 `8 x 64 MiB` HTTP Range 并行续传
-大文件、逐文件校验并原子发布。高级硬件可通过 `--download-concurrency` 和
+必选 core 文件、逐文件校验并原子发布。可选 registry 由 runtime sidecar 独立获取，不延长 core 下载或
+启动 gate。高级硬件可通过 `--download-concurrency` 和
 `--download-chunk-size-mib` 覆盖本次下载参数。
 如果 `<USDB_DATA_ROOT>/artifacts/balance-history/<snapshot-release-id>` 已完整存在，命令使用 release bundle
 内冻结的本地 record 逐文件复核 size/SHA-256，跳过全部网络下载并直接完成 snapshot 选择。目录存在但
@@ -163,12 +165,19 @@ bundle index origin、network/catalog 不匹配、磁盘文件异常或 balance-
 完整操作见
 [Snapshot 对象存储发布与安装](./balance-history-snapshot-object-storage.md)。
 
+旧 artifact 清理是独立的显式运维动作。先运行 `usdb-node snapshot gc` 查看 core 与 registry 候选；只有
+核对结果后才运行 `usdb-node snapshot gc --confirm`。GC 保护 release-approved core/registry、当前
+`BH_SNAPSHOT_MANIFEST` 选择和 `state.json` active registry pointer；它不会删除未知目录、symlink 或
+不完整下载目录，也不会由 `setup/up/controller` 隐式触发。
+
 `doctor` 是一次性、只读的启动前检查，不是后台健康监控服务。它会检查：
 
 - Linux kernel/架构、Docker/Compose、Git、Python、curl、jq 和 Docker daemon/user access；
 - release manifest、network bundle 和节点私有配置是否相互一致；
 - `node.env` 的路径、RPC credential、安全 bind address 和角色配置是否有效；
 - 三张 image 是否仍是当前已安装 release 冻结的 digest。
+- 可选 registry 的 release selection、active pointer、安装 record、文件大小和 manifest digest；pending 或
+  replacement failure 以辅助 warning 展示，不阻断核心节点。
 - 始终检查安全 bind address；managed 模式额外检查 UFW active/default/rules，external 模式明确跳过 UFW。
 
 `doctor` 不拉取 image、不启动或停止容器，也不修改 `node.env`。首次配置后单独执行它，便于在开放防火墙或
@@ -281,11 +290,12 @@ controller 默认单次同步等待上限是 7 天；超时或其他临时失败
 Bitcoin、balance-history、usdb-indexer readiness 等待会定期把 elapsed、同步高度、百分比和 blocker 写入
 journal。
 
-交互式 TTY 中，`up` 提交 controller 后会自动显示固定五行的只读进度面板：可选 snapshot、Bitcoin、
-balance-history、usdb-indexer 和 USDB chain。snapshot 未选择时显示 `SKIPPED`；并行 range 下载按已完成
+交互式 TTY 中，`up` 提交 controller 后会自动显示固定六行的只读进度面板：core snapshot、可选 script
+registry、Bitcoin、balance-history、usdb-indexer 和 USDB chain。snapshot 未选择时两类 artifact 均显示
+`SKIPPED`；并行 range 下载按已完成
 chunk 的实际字节计数，不把预分配文件误算为完成。artifact 下载并校验完成后显示 `WAITING`，明确等待
 Bitcoin tip 达到 stable anchor 加 registry lag 的 data-start gate；`snapshot-loader` 开始把 SQLite 导入 live RocksDB 后显示 `IMPORTING`，并区分 source
-verify、staging DB、balance history、UTXO、block commit、script registry、finalize 和 atomic swap 八个阶段。
+verify、staging DB、balance history、UTXO、block commit、finalize 和 atomic swap 七个阶段。
 只有匹配的 `snapshot-loader.done.json` 与非空 live DB 同时存在才显示 `READY`。USDB chain 使用标准
 `eth_syncing`、`eth_blockNumber` 和 `net_peerCount`，同时只读核对 `eth_chainId` 与 genesis hash。面板只观察
 已有状态，不启动、停止、重试或放宽任何 readiness gate；非 TTY、重定向和 `up --json` 提交 controller
@@ -299,14 +309,15 @@ usdb-node status --progress-json
 ```
 
 面板状态为 `WAITING/STARTING/SYNCING/INSTALLING/VERIFYING/IMPORTING/READY/SKIPPED/BLOCKED/FAILED`。
-`--progress-json` 输出 `usdb-node-progress:v4`，固定包含 `controller_state` 和五个 component；独立的
+`--progress-json` 输出 `usdb-node-progress:v5`，固定包含 `controller_state`、`auxiliary_state` 和六个
+component；独立的
 `Core snapshot import` 行在导入期间使用当前阶段的 `stage_current/stage_total` 绘制进度条，并额外包含
 `stage/stage_index/stage_count`、任务和阶段开始时间、累计和阶段耗时、阶段平均速率、阶段 ETA、最近更新时间及
 `aggregate_current/aggregate_total`。字节 hash 校验和 entry 导入没有可靠的统一工作量，因此面板不构造虚假的
 全流程百分比；七个阶段依次为 source verification、staging DB open、balance、UTXO、block commit、
 finalize 和 atomic swap。source hash 结束后的 SQLite integrity 与精确 count 子阶段保持 heartbeat，
 但不显示无法可靠估算的百分比；每次阶段切换时进度条明确重置为新阶段口径。这是观测接口，不可代替下述
-`usdb-node-status:v2` 生命周期判断。balance-history 或 usdb-indexer 尚未启动时，其 component 只返回
+`usdb-node-status:v3` 生命周期判断。balance-history 或 usdb-indexer 尚未启动时，其 component 只返回
 `WAITING` 和上游门禁说明，`current/total/progress_percent` 保持 `null`；只有服务启动并返回自身 readiness
 后才显示该服务的同步进度，避免把 Bitcoin 或 balance-history 的上游高度误标成下游服务进度。连续运行的
 `up` 面板或 `status --watch` 在 readiness RPC 暂时超时时，最多保留 60 秒最近一次成功观测并显式标记
@@ -321,6 +332,10 @@ finalize 和 atomic swap。source hash 结束后的 SQLite integrity 与精确 c
 `balance-history-core-install-marker:v1`，并绑定当前 core manifest 路径及 SHA-256；旧 marker 会 fail closed。
 导入期间预创建但未运行的 balance-history 容器显示为
 `WAITING`；只有独立 snapshot-loader 成功退出并完成 live RocksDB 原子切换后，balance-history 才开始运行。
+registry 行由独立 installer 的 `attempt.json` 和严格 `state.json` active pointer 驱动；其失败将
+`auxiliary_state` 置为 `PARTIAL`，但不改变由其余五项计算的 `overall_state`。
+有限自动重试耗尽后，`status` 会对可重试状态给出 `usdb-node snapshot install-registry`；该命令只重新
+提交 release-approved sidecar service，不允许覆盖 record URL 或 artifact ID。
 
 `usdb-node status` 查询的是完整节点生命周期，而不只是已启动服务的 readiness。它先检查 release kit、私有
 配置、release activation、数据契约和 snapshot 安装状态。Bitcoin 容器已经 running、但仍处于 IBD/txindex
@@ -354,8 +369,9 @@ data-start/origin gate 后，balance-history 和 usdb-indexer 可先后进入 `S
 usdb-node status --json
 ```
 
-输出 schema 为 `usdb-node-status:v2`，包含 `release_id`、`network_bundle_id`、`overall_state`、分层
-`checks`、`up.mode`、有序 `next_actions` 和 `operator_guidance`。只有 `READY` 返回退出码 `0`，其他状态
+输出 schema 为 `usdb-node-status:v3`，包含 `release_id`、`network_bundle_id`、`overall_state`、
+`auxiliary_state`、分层 `checks`、`up.mode`、有序 `next_actions` 和 `operator_guidance`。只有 `READY`
+返回退出码 `0`，其他状态
 返回 `1`；调用方应读取 `overall_state`，不要从人类可读文本或底层连接错误推断安装阶段。
 
 ### 4.1 受限恢复

@@ -180,6 +180,9 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         }
         manifest = {
             "manifest_version": VALIDATOR.EXPECTED_SNAPSHOT_MANIFEST_VERSION,
+            "artifact_type": "balance_history_core",
+            "snapshot_schema_version": "balance-history-core-snapshot:v1",
+            "registry_included": False,
             "file_name": file_name,
             "file_sha256": "0" * 64,
             "state_ref": state_ref,
@@ -503,6 +506,39 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             BH_SNAPSHOT_MANIFEST=snapshot_manifest,
         )
         self.validate_node_env(path, True)
+
+    def test_runtime_accepts_digest_pinned_optional_registry_selection(self) -> None:
+        snapshot_file, snapshot_manifest = self.write_snapshot_artifacts(
+            963800,
+            "snapshot_963800",
+        )
+        path = self.write_node_env(
+            SNAPSHOT_MODE="balance-history",
+            BH_SNAPSHOT_FILE=snapshot_file,
+            BH_SNAPSHOT_MANIFEST=snapshot_manifest,
+            BH_SCRIPT_REGISTRY_ENABLED="1",
+            BH_SCRIPT_REGISTRY_RECORD_URL=(
+                "https://snapshots.example.test/snapshot-records/v3/"
+                + "4" * 64
+                + ".json"
+            ),
+            BH_SCRIPT_REGISTRY_ARTIFACT_ID="5" * 64,
+        )
+        self.validate_node_env(path, True)
+
+    def test_runtime_rejects_registry_record_outside_v3_namespace(self) -> None:
+        path = self.write_node_env(
+            SNAPSHOT_MODE="balance-history",
+            BH_SCRIPT_REGISTRY_ENABLED="1",
+            BH_SCRIPT_REGISTRY_RECORD_URL=(
+                "https://snapshots.example.test/snapshot-records/v2/"
+                + "4" * 64
+                + ".json"
+            ),
+            BH_SCRIPT_REGISTRY_ARTIFACT_ID="5" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "digest-pinned HTTPS"):
+            self.validate_node_env(path, False)
 
     def test_runtime_accepts_snapshot_below_network_origin_with_dynamic_name(self) -> None:
         snapshot_file, snapshot_manifest = self.write_snapshot_artifacts(

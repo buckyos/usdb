@@ -23,7 +23,7 @@ import urllib.request
 from contextlib import contextmanager, nullcontext, redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
 
 
@@ -65,6 +65,9 @@ from validate_network_bundle import (  # noqa: E402
 
 
 RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
+SNAPSHOT_RELEASE_ID_RE = re.compile(
+    r"^balance-history-[a-z0-9-]+-h[0-9]+-[0-9a-f]{16}$"
+)
 IMAGE_RE = re.compile(r"^ghcr\.io/buckyos/[a-z0-9-]+@sha256:[0-9a-f]{64}$")
 ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -74,9 +77,9 @@ ENV_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 MIN_DATA_ROOT_BYTES = 3 * 1024**4 // 2
 RECOMMENDED_DATA_ROOT_BYTES = 2 * 1024**4
 FIREWALL_MODES = ("external", "managed")
-NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v2"
+NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v3"
 NODE_UP_SCHEMA_VERSION = "usdb-node-up:v1"
-NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v4"
+NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v5"
 SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION = "balance-history-core-snapshot-install-progress:v1"
 SNAPSHOT_IMPORT_MARKER_SCHEMA_VERSION = "balance-history-core-install-marker:v1"
 CONTROLLER_MANUAL_EXIT_CODE = 2
@@ -106,6 +109,7 @@ CURSOR_SHOW = "\x1b[?25h"
 SCREEN_CLEAR = "\x1b[H\x1b[2J"
 PROGRESS_COMPONENTS = (
     ("snapshot", "Core snapshot"),
+    ("script_registry", "Script registry"),
     ("bitcoin", "Bitcoin"),
     ("balance_history", "Balance history"),
     ("usdb_indexer", "USDB indexer"),
@@ -941,7 +945,12 @@ def configure_node(
             "USDB_MINER_THREADS": str(miner_threads),
         }
         if select_snapshot:
-            updates.update(_snapshot_env_updates(_approved_snapshot_record(layout)))
+            updates.update(
+                _snapshot_env_updates(
+                    _approved_snapshot_record(layout),
+                    layout.snapshot["record"]["url"],
+                )
+            )
         content = render_env(template_path.read_text(encoding="utf-8"), updates)
         _atomic_write_private(layout.node_env, content)
         _validate_node_config(
@@ -1005,7 +1014,7 @@ def _human_bytes(value: int) -> str:
 
 
 def _snapshot_required_free_bytes(snapshot: dict[str, Any]) -> int:
-    download_size = snapshot["download_size_bytes"]
+    download_size = snapshot["total_download_size_bytes"]
     database_size = snapshot["snapshot_db_size_bytes"]
     safety_margin = max(64 * 1024**3, database_size // 5)
     return download_size + database_size + safety_margin
@@ -1154,7 +1163,18 @@ def setup_node(
         print("Release-approved balance-history snapshot:", file=output)
         print(f"  ID: {snapshot['snapshot_release_id']}", file=output)
         print(f"  BTC height: {snapshot['height']}", file=output)
-        print(f"  Download: {_human_bytes(snapshot['download_size_bytes'])}", file=output)
+        print(f"  Core download: {_human_bytes(snapshot['download_size_bytes'])}", file=output)
+        registry = snapshot["script_registry"]
+        if "download_size_bytes" in registry:
+            print(
+                "  Optional registry download: "
+                f"{_human_bytes(registry['download_size_bytes'])}",
+                file=output,
+            )
+        print(
+            f"  Total download: {_human_bytes(snapshot['total_download_size_bytes'])}",
+            file=output,
+        )
         print(f"  Recommended free space: {_human_bytes(required_free)}", file=output)
         print(f"  Current free space: {_human_bytes(available_free)}", file=output)
         install_snapshot = _prompt_yes_no(
@@ -1383,13 +1403,20 @@ def _bitcoin_data_start_anchor(
     )
 
 
-def _snapshot_env_updates(record: dict[str, Any]) -> dict[str, str]:
-    by_role = {item["role"]: item for item in record["files"]}
+def _snapshot_env_updates(record: dict[str, Any], record_url: str) -> dict[str, str]:
+    core = record["components"]["core"]
+    by_role = {item["role"]: item for item in core["files"]}
     release_root = f"/snapshots/{record['snapshot_release_id']}"
+    registry = record["components"]["script_registry"]
     return {
         "SNAPSHOT_MODE": "balance-history",
-        "BH_SNAPSHOT_FILE": f"{release_root}/{by_role['snapshot_db']['path']}",
-        "BH_SNAPSHOT_MANIFEST": f"{release_root}/{by_role['snapshot_manifest']['path']}",
+        "BH_SNAPSHOT_FILE": f"{release_root}/{PurePosixPath(by_role['database']['path']).name}",
+        "BH_SNAPSHOT_MANIFEST": f"{release_root}/{PurePosixPath(by_role['manifest']['path']).name}",
+        "BH_SCRIPT_REGISTRY_ENABLED": "1" if registry is not None else "0",
+        "BH_SCRIPT_REGISTRY_RECORD_URL": record_url if registry is not None else "",
+        "BH_SCRIPT_REGISTRY_ARTIFACT_ID": (
+            registry["artifact_id"] if registry is not None else ""
+        ),
         "USDB_INDEXER_CHECKPOINT_MANIFEST": "",
     }
 
@@ -1407,7 +1434,7 @@ def select_snapshot_release(layout: ReleaseLayout) -> dict[str, Any]:
             "use a fresh data root or an explicit reviewed recovery procedure"
         )
     record = _approved_snapshot_record(layout)
-    updates = _snapshot_env_updates(record)
+    updates = _snapshot_env_updates(record, layout.snapshot["record"]["url"])
     if all(env.get(key, "") == value for key, value in updates.items()):
         return record
 
@@ -1446,6 +1473,7 @@ def install_snapshot_release(
         record_url=layout.snapshot["record"]["url"],
         destination_root=snapshot_root,
         trusted_keys=_snapshot_trusted_keys(layout),
+        component="core",
         approved_record_path=layout.bundle_dir / layout.snapshot["record"]["path"],
         expected_network=env.get("BTC_NETWORK", "bitcoin"),
         max_height=btc_source["index_origin_height"],
@@ -1460,6 +1488,139 @@ def install_snapshot_release(
         require_bitcoin_runtime=False,
     )
     return installed.release_dir
+
+
+def install_script_registry_release(layout: ReleaseLayout) -> None:
+    if not layout.node_env.is_file():
+        raise ValueError("node is not configured; run setup or configure first")
+    env = read_env(layout.node_env)
+    if env.get("BH_SCRIPT_REGISTRY_ENABLED", "0") != "1":
+        raise ValueError("the current release selection has no optional script registry")
+    record = _approved_snapshot_record(layout)
+    registry = record["components"]["script_registry"]
+    if not isinstance(registry, dict):
+        raise ValueError("the release-approved snapshot has no optional script registry")
+    if env.get("BH_SCRIPT_REGISTRY_RECORD_URL") != layout.snapshot["record"]["url"]:
+        raise ValueError("script-registry record URL differs from the release manifest")
+    if env.get("BH_SCRIPT_REGISTRY_ARTIFACT_ID") != registry["artifact_id"]:
+        raise ValueError("script-registry artifact ID differs from the release record")
+    _validate_node_config(
+        layout,
+        require_runtime=False,
+        require_bitcoin_runtime=False,
+    )
+    run_helper(
+        layout,
+        "run_testnet_runtime.sh",
+        ["install-registry"],
+        output_to_stderr=True,
+    )
+
+
+def gc_snapshot_artifacts(layout: ReleaseLayout, *, confirm: bool) -> dict[str, Any]:
+    if not layout.node_env.is_file():
+        raise ValueError("node is not configured; run setup or configure first")
+    env = read_env(layout.node_env)
+    snapshot_root = Path(env.get("BH_SNAPSHOT_HOST_DIR", "")).expanduser().resolve()
+    balance_root = Path(env.get("BH_DATA_HOST_DIR", "")).expanduser().resolve()
+    registry_root = balance_root / "auxiliary/script-registry/bases"
+    protected_core: set[str] = set()
+    protected_registry: set[str] = set()
+
+    if layout.snapshot.get("status") == "available":
+        record = _approved_snapshot_record(layout)
+        protected_core.add(record["snapshot_release_id"])
+        registry = record["components"]["script_registry"]
+        if isinstance(registry, dict):
+            protected_registry.add(registry["artifact_id"])
+    selected_manifest = env.get("BH_SNAPSHOT_MANIFEST", "")
+    selected_parts = PurePosixPath(selected_manifest).parts
+    if len(selected_parts) >= 3 and selected_parts[0] == "/" and selected_parts[1] == "snapshots":
+        protected_core.add(selected_parts[2])
+    elif len(selected_parts) >= 2 and selected_parts[0] == "snapshots":
+        protected_core.add(selected_parts[1])
+
+    state_path = balance_root / "auxiliary/script-registry/state.json"
+    selected_registry = env.get("BH_SCRIPT_REGISTRY_ARTIFACT_ID", "")
+    if SHA256_RE.fullmatch(selected_registry) is not None:
+        protected_registry.add(selected_registry)
+    if state_path.exists() or state_path.is_symlink():
+        if not state_path.is_file() or state_path.is_symlink():
+            raise ValueError(
+                "refusing snapshot GC because active registry state is not a regular file"
+            )
+        try:
+            state = _load_json(state_path)
+            if set(state) != {
+                "schema_version",
+                "state",
+                "active",
+                "last_error",
+                "updated_at",
+            }:
+                raise ValueError("active registry state fields are not canonical")
+            if state.get("schema_version") != "balance-history-script-registry-activation:v1":
+                raise ValueError("active registry state has an unsupported schema")
+            active = state.get("active")
+            if active is not None:
+                registry_id = active.get("registry_artifact_id") if isinstance(active, dict) else None
+                manifest_file = active.get("manifest_file") if isinstance(active, dict) else None
+                manifest_sha256 = active.get("manifest_sha256") if isinstance(active, dict) else None
+                if (
+                    not isinstance(active, dict)
+                    or set(active)
+                    != {
+                        "registry_artifact_id",
+                        "manifest_file",
+                        "manifest_sha256",
+                    }
+                    or not isinstance(registry_id, str)
+                    or SHA256_RE.fullmatch(registry_id) is None
+                    or not isinstance(manifest_sha256, str)
+                    or SHA256_RE.fullmatch(manifest_sha256) is None
+                    or not isinstance(manifest_file, str)
+                    or PurePosixPath(manifest_file).name != manifest_file
+                ):
+                    raise ValueError("active registry pointer is not canonical")
+                protected_registry.add(registry_id)
+        except (OSError, ValueError) as error:
+            raise ValueError(
+                f"refusing snapshot GC because active registry state is unreadable: {error}"
+            ) from error
+
+    candidates: list[tuple[str, Path]] = []
+    for component, root, pattern, protected in (
+        ("core", snapshot_root, SNAPSHOT_RELEASE_ID_RE, protected_core),
+        ("script_registry", registry_root, SHA256_RE, protected_registry),
+    ):
+        if not root.exists():
+            continue
+        if not root.is_dir() or root.is_symlink():
+            raise ValueError(f"snapshot GC root is not a real directory: {root}")
+        for path in sorted(root.iterdir()):
+            if not pattern.fullmatch(path.name) or path.name in protected:
+                continue
+            if not path.is_dir() or path.is_symlink():
+                raise ValueError(f"snapshot GC candidate is not a real directory: {path}")
+            candidates.append((component, path))
+
+    removed: list[str] = []
+    if confirm:
+        for _component_name, path in candidates:
+            shutil.rmtree(path)
+            removed.append(str(path))
+    return {
+        "confirmed": confirm,
+        "candidates": [
+            {"component": component, "path": str(path)}
+            for component, path in candidates
+        ],
+        "protected": {
+            "core": sorted(protected_core),
+            "script_registry": sorted(protected_registry),
+        },
+        "removed": removed,
+    }
 
 
 def _helper_environment(
@@ -1630,6 +1791,12 @@ def doctor(layout: ReleaseLayout, *, output_to_stderr: bool = False) -> None:
         "run_testnet_runtime.sh",
         ["validate-node"],
         output_to_stderr=output_to_stderr,
+    )
+    registry = _script_registry_doctor_status(layout, read_env(layout.node_env))
+    output = sys.stderr if output_to_stderr else sys.stdout
+    print(
+        f"Script registry {registry['state'].upper()}: {registry['summary']}",
+        file=output,
     )
     if configured_firewall_mode(layout) == "managed":
         run_firewall_action(layout, "check", output_to_stderr=output_to_stderr)
@@ -2071,11 +2238,11 @@ def _bitcoin_replay_component(
     return component
 
 
-def _snapshot_staging_bytes(staging: Path, record: dict[str, Any]) -> int:
+def _snapshot_staging_bytes(staging: Path, files: list[dict[str, Any]]) -> int:
     completed_bytes = 0
-    for item in record["files"]:
+    for item in files:
         expected_size = item["size"]
-        final_path = staging / item["path"]
+        final_path = staging / PurePosixPath(item["path"]).name
         if final_path.is_file() and not final_path.is_symlink():
             completed_bytes += min(final_path.stat().st_size, expected_size)
             continue
@@ -2141,8 +2308,9 @@ def _snapshot_lifecycle_status(
             "summary": str(error),
             "mode": mode,
         }
-    expected = _snapshot_env_updates(record)
-    expected_bytes = sum(item["size"] for item in record["files"])
+    expected = _snapshot_env_updates(record, layout.snapshot["record"]["url"])
+    core = record["components"]["core"]
+    expected_bytes = sum(item["size"] for item in core["files"])
     for key in ("BH_SNAPSHOT_FILE", "BH_SNAPSHOT_MANIFEST"):
         if env.get(key) != expected[key]:
             return {
@@ -2155,7 +2323,7 @@ def _snapshot_lifecycle_status(
     root = Path(env.get("BH_SNAPSHOT_HOST_DIR", "")).expanduser().resolve()
     release_id = record["snapshot_release_id"]
     destination = root / release_id
-    staging = root / f".{release_id}.installing"
+    staging = root / f".{release_id}.core.installing"
     if destination.exists():
         if not destination.is_dir() or destination.is_symlink():
             return {
@@ -2177,8 +2345,8 @@ def _snapshot_lifecycle_status(
                 "mode": mode,
                 "snapshot_release_id": release_id,
             }
-        for item in record["files"]:
-            path = destination / item["path"]
+        for item in core["files"]:
+            path = destination / PurePosixPath(item["path"]).name
             if not path.is_file() or path.is_symlink() or path.stat().st_size != item["size"]:
                 return {
                     "state": "invalid",
@@ -2206,10 +2374,10 @@ def _snapshot_lifecycle_status(
             }
         present_files = sum(
             1
-            for item in record["files"]
-            if (staging / item["path"]).is_file()
+            for item in core["files"]
+            if (staging / PurePosixPath(item["path"]).name).is_file()
         )
-        completed_bytes = _snapshot_staging_bytes(staging, record)
+        completed_bytes = _snapshot_staging_bytes(staging, core["files"])
         return {
             "state": "incomplete",
             "summary": (
@@ -2220,7 +2388,7 @@ def _snapshot_lifecycle_status(
             "mode": mode,
             "snapshot_release_id": release_id,
             "complete_file_count": present_files,
-            "expected_file_count": len(record["files"]),
+            "expected_file_count": len(core["files"]),
             "completed_bytes": completed_bytes,
             "expected_bytes": expected_bytes,
         }
@@ -2230,10 +2398,209 @@ def _snapshot_lifecycle_status(
         "mode": mode,
         "snapshot_release_id": release_id,
         "complete_file_count": 0,
-        "expected_file_count": len(record["files"]),
+        "expected_file_count": len(core["files"]),
         "completed_bytes": 0,
         "expected_bytes": expected_bytes,
     }
+
+
+def _script_registry_component(
+    layout: ReleaseLayout,
+    env: dict[str, str],
+    service: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if env.get("BH_SCRIPT_REGISTRY_ENABLED", "0") != "1":
+        return _component_progress(
+            "script_registry",
+            "SKIPPED",
+            "optional historical script-registry sidecar is disabled",
+        )
+    try:
+        record = _approved_snapshot_record(layout)
+        registry = record["components"]["script_registry"]
+        if not isinstance(registry, dict):
+            raise ValueError("release record has no script-registry component")
+        expected_id = registry["artifact_id"]
+        if env.get("BH_SCRIPT_REGISTRY_ARTIFACT_ID") != expected_id:
+            raise ValueError("selected script-registry artifact differs from the release record")
+        expected_bytes = sum(item["size"] for item in registry["files"])
+        root = Path(env["BH_DATA_HOST_DIR"]).expanduser().resolve()
+        sidecar_root = root / "auxiliary/script-registry"
+        state_path = sidecar_root / "state.json"
+        attempt_path = sidecar_root / "attempt.json"
+        if state_path.is_symlink():
+            raise ValueError("script-registry active state must not be a symlink")
+        if state_path.is_file() and not state_path.is_symlink():
+            state = _load_json(state_path)
+            active = state.get("active")
+            if (
+                state.get("schema_version")
+                == "balance-history-script-registry-activation:v1"
+                and state.get("state") == "ready"
+                and isinstance(active, dict)
+                and active.get("registry_artifact_id") == expected_id
+            ):
+                return _component_progress(
+                    "script_registry",
+                    "READY",
+                    f"optional sidecar active at BTC height {record['height']}",
+                    current=expected_bytes,
+                    total=expected_bytes,
+                    unit="bytes",
+                )
+        attempt: dict[str, Any] = {}
+        if attempt_path.is_symlink():
+            raise ValueError("script-registry attempt state must not be a symlink")
+        if attempt_path.is_file() and not attempt_path.is_symlink():
+            attempt = _load_json(attempt_path)
+            if attempt.get("schema_version") != "balance-history-script-registry-attempt:v1":
+                raise ValueError("script-registry attempt state has an unsupported schema")
+            if attempt.get("artifact_id") not in {None, expected_id}:
+                raise ValueError("script-registry attempt targets a different artifact")
+        attempt_state = attempt.get("state")
+        if attempt_state == "downloading":
+            staging = (
+                sidecar_root
+                / "bases"
+                / f".{expected_id}.script_registry.installing"
+            )
+            completed = _snapshot_staging_bytes(staging, registry["files"])
+            return _component_progress(
+                "script_registry",
+                "INSTALLING",
+                "downloading and hashing optional registry sidecar",
+                current=completed,
+                total=expected_bytes,
+                unit="bytes",
+            )
+        if attempt_state == "verifying":
+            return _component_progress(
+                "script_registry",
+                "VERIFYING",
+                "verifying signature, SQLite integrity, identity and exact row count",
+                current=expected_bytes,
+                total=expected_bytes,
+                unit="bytes",
+            )
+        if attempt_state == "failed":
+            error = attempt.get("last_error")
+            return _component_progress(
+                "script_registry",
+                "FAILED",
+                f"optional sidecar install failed: {error or 'unknown error'}",
+            )
+        if service is not None and service.get("state") == "running":
+            return _component_progress(
+                "script_registry",
+                "STARTING",
+                "optional sidecar installer is starting",
+            )
+        return _component_progress(
+            "script_registry",
+            "WAITING",
+            "optional sidecar is selected and waiting for the core snapshot gate",
+        )
+    except (KeyError, OSError, ValueError) as error:
+        return _component_progress("script_registry", "BLOCKED", str(error))
+
+
+def _script_registry_doctor_status(
+    layout: ReleaseLayout,
+    env: dict[str, str],
+) -> dict[str, str]:
+    if env.get("BH_SCRIPT_REGISTRY_ENABLED", "0") != "1":
+        return {
+            "state": "skipped",
+            "summary": "optional historical script-registry sidecar is disabled",
+        }
+    try:
+        record = _approved_snapshot_record(layout)
+        registry = record["components"]["script_registry"]
+        if not isinstance(registry, dict):
+            raise ValueError("release record has no script-registry component")
+        expected_id = registry["artifact_id"]
+        if env.get("BH_SCRIPT_REGISTRY_RECORD_URL") != layout.snapshot["record"]["url"]:
+            raise ValueError("script-registry record URL differs from the release manifest")
+        if env.get("BH_SCRIPT_REGISTRY_ARTIFACT_ID") != expected_id:
+            raise ValueError("script-registry artifact ID differs from the release record")
+        root = Path(env["BH_DATA_HOST_DIR"]).expanduser().resolve()
+        sidecar_root = root / "auxiliary/script-registry"
+        state_path = sidecar_root / "state.json"
+        if not state_path.exists():
+            attempt_path = sidecar_root / "attempt.json"
+            if state_path.is_symlink():
+                raise ValueError("script-registry active state must not be a symlink")
+            if attempt_path.exists() or attempt_path.is_symlink():
+                if not attempt_path.is_file() or attempt_path.is_symlink():
+                    raise ValueError("script-registry attempt state is not a regular file")
+                attempt = _load_json(attempt_path)
+                if attempt.get("state") == "failed":
+                    return {
+                        "state": "warning",
+                        "summary": "latest optional sidecar installation attempt failed",
+                        "action": "usdb-node snapshot install-registry",
+                    }
+            return {
+                "state": "pending",
+                "summary": "optional sidecar is selected but has not been activated",
+                "action": "usdb-node snapshot install-registry",
+            }
+        if not state_path.is_file() or state_path.is_symlink():
+            raise ValueError("script-registry active state is not a regular file")
+        state = _load_json(state_path)
+        if set(state) != {
+            "schema_version",
+            "state",
+            "active",
+            "last_error",
+            "updated_at",
+        }:
+            raise ValueError("script-registry active state fields are not canonical")
+        active = state.get("active")
+        if state.get("state") != "ready" or not isinstance(active, dict):
+            return {
+                "state": "warning",
+                "summary": f"optional sidecar is not active: state={state.get('state')}",
+                "action": "usdb-node snapshot install-registry",
+            }
+        if set(active) != {
+            "registry_artifact_id",
+            "manifest_file",
+            "manifest_sha256",
+        }:
+            raise ValueError("script-registry active pointer fields are not canonical")
+        if active["registry_artifact_id"] != expected_id:
+            return {
+                "state": "warning",
+                "summary": "a previous verified sidecar remains active while the selected replacement is pending",
+                "action": "usdb-node snapshot install-registry",
+            }
+        artifact_dir = sidecar_root / "bases" / expected_id
+        if not artifact_dir.is_dir() or artifact_dir.is_symlink():
+            raise ValueError("active script-registry artifact directory is missing or unsafe")
+        approved_record = layout.bundle_dir / layout.snapshot["record"]["path"]
+        installed_record = artifact_dir / "snapshot-release-record.json"
+        if (
+            not installed_record.is_file()
+            or installed_record.is_symlink()
+            or installed_record.read_bytes() != approved_record.read_bytes()
+        ):
+            raise ValueError("active script-registry release record is missing or differs")
+        for item in registry["files"]:
+            path = artifact_dir / PurePosixPath(item["path"]).name
+            if not path.is_file() or path.is_symlink() or path.stat().st_size != item["size"]:
+                raise ValueError(
+                    f"active script-registry file is missing or has the wrong size: {path.name}"
+                )
+        manifest = artifact_dir / active["manifest_file"]
+        if _sha256(manifest) != active["manifest_sha256"]:
+            raise ValueError("active script-registry manifest digest differs from its pointer")
+        return {
+            "state": "ok",
+            "summary": f"verified optional sidecar is active: {expected_id}",
+        }
+    except (KeyError, OSError, ValueError) as error:
+        return {"state": "warning", "summary": str(error)}
 
 
 def _collect_compose_services(
@@ -2949,7 +3316,11 @@ def _chain_component(
 
 
 def _overall_progress_state(components: list[dict[str, Any]]) -> str:
-    states = {component["state"] for component in components}
+    states = {
+        component["state"]
+        for component in components
+        if component["id"] != "script_registry"
+    }
     for state in (
         "FAILED",
         "BLOCKED",
@@ -2981,6 +3352,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             "observed_at": observed_at,
             "controller_state": controller_state,
             "overall_state": "WAITING",
+            "auxiliary_state": "PARTIAL",
             "components": components,
         }
     try:
@@ -2997,7 +3369,8 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         services = _collect_compose_services(layout, command_timeout_secs=8)
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         snapshot_component = _snapshot_component(snapshot_lifecycle, env, None)
-        components = [snapshot_component]
+        registry_component = _script_registry_component(layout, env, None)
+        components = [snapshot_component, registry_component]
         components.extend(
             _component_progress(component_id, "BLOCKED", str(error))
             for component_id in ("bitcoin", "balance_history", "usdb_indexer", "usdb_chain")
@@ -3009,6 +3382,11 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             "observed_at": observed_at,
             "controller_state": controller_state,
             "overall_state": _overall_progress_state(components),
+            "auxiliary_state": (
+                "READY"
+                if registry_component["state"] in {"READY", "SKIPPED"}
+                else "PARTIAL"
+            ),
             "components": components,
         }
 
@@ -3016,6 +3394,11 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         snapshot_lifecycle,
         env,
         services.get("snapshot-loader"),
+    )
+    registry_component = _script_registry_component(
+        layout,
+        env,
+        services.get("script-registry-installer"),
     )
 
     bitcoin_service = services.get("btc-node")
@@ -3127,6 +3510,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
     chain_component = _chain_component(layout, env, services.get("usdb-chain"))
     components = [
         snapshot_component,
+        registry_component,
         bitcoin_component,
         balance_component,
         indexer_component,
@@ -3139,6 +3523,11 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         "observed_at": observed_at,
         "controller_state": controller_state,
         "overall_state": _overall_progress_state(components),
+        "auxiliary_state": (
+            "READY"
+            if registry_component["state"] in {"READY", "SKIPPED"}
+            else "PARTIAL"
+        ),
         "components": components,
     }
 
@@ -3515,6 +3904,16 @@ def _finish_node_status(
         "summary": recovery["up_summary"],
     }
     report["operator_guidance"] = [*recovery["guidance"], *additional_guidance]
+    registry = report["checks"].get("script_registry")
+    if isinstance(registry, dict):
+        report["auxiliary_state"] = (
+            "READY" if registry.get("state") in {"ok", "skipped"} else "PARTIAL"
+        )
+        action = registry.get("action")
+        if overall_state == "READY" and isinstance(action, str) and action:
+            report["next_actions"].append(action)
+    else:
+        report["auxiliary_state"] = "UNKNOWN"
     controller = report["checks"].get("controller")
     if (
         overall_state
@@ -3622,6 +4021,7 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
                 "with the release-approved record.",
             ),
         )
+    checks["script_registry"] = _script_registry_doctor_status(layout, env)
 
     if activation_required:
         return _finish_node_status(report, "ACTIVATION_REQUIRED")
@@ -3675,6 +4075,7 @@ def _print_node_status_report(report: dict[str, Any]) -> None:
         "activation": "Activation",
         "data": "Local data",
         "snapshot": "Snapshot",
+        "script_registry": "Script registry",
         "runtime": "Runtime",
     }
     for key, label in labels.items():
@@ -4131,6 +4532,19 @@ workflow:
         default=DEFAULT_DOWNLOAD_CHUNK_SIZE_MIB,
         help="advanced HTTP Range chunk size override",
     )
+    snapshot_gc = snapshot_actions.add_parser(
+        "gc",
+        help="List or explicitly delete unreferenced immutable snapshot artifacts",
+    )
+    snapshot_gc.add_argument(
+        "--confirm",
+        action="store_true",
+        help="delete the listed candidates; without this flag the command is read-only",
+    )
+    snapshot_actions.add_parser(
+        "install-registry",
+        help="Start or retry the release-approved optional script-registry installer",
+    )
 
     firewall = subparsers.add_parser("firewall", help="Check or apply the host UFW profile")
     firewall_actions = firewall.add_subparsers(dest="firewall_action", required=True)
@@ -4381,12 +4795,19 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         doctor(layout)
         print(f"USDB node preflight passed: {layout.release_id}")
     elif args.command == "snapshot":
-        release_dir = install_snapshot_release(
-            layout,
-            download_concurrency=args.download_concurrency,
-            download_chunk_size_mib=args.download_chunk_size_mib,
-        )
-        print(f"Installed and selected signed balance-history snapshot: {release_dir}")
+        if args.snapshot_action == "install":
+            release_dir = install_snapshot_release(
+                layout,
+                download_concurrency=args.download_concurrency,
+                download_chunk_size_mib=args.download_chunk_size_mib,
+            )
+            print(f"Installed and selected signed balance-history snapshot: {release_dir}")
+        elif args.snapshot_action == "gc":
+            report = gc_snapshot_artifacts(layout, confirm=args.confirm)
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            install_script_registry_release(layout)
+            print("Started the release-approved optional script-registry installer")
     elif args.command == "firewall":
         if args.firewall_action == "apply" and not args.confirm:
             raise ValueError("firewall apply requires --confirm")

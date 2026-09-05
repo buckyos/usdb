@@ -16,6 +16,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
+from snapshot_test_fixture import install_split_snapshot_record
+
 
 MODULE_PATH = Path(__file__).with_name("usdb_node.py")
 SPEC = importlib.util.spec_from_file_location("usdb_node", MODULE_PATH)
@@ -45,13 +47,14 @@ class UsdbNodeTests(unittest.TestCase):
         self.bundle = self.root / "docker/networks/usdb-testnet-v0"
         self.bundle.parent.mkdir(parents=True)
         shutil.copytree(SOURCE_BUNDLE, self.bundle)
+        install_split_snapshot_record(self.bundle)
         self.release_dir = self.root / "release"
         self.release_dir.mkdir()
         self.manifest_path = self.release_dir / "usdb-release-manifest.json"
         digest = "1" * 64
         network_identity = NODE.build_network_identity(self.bundle)
         self.manifest = {
-            "schema_version": "usdb-release-manifest:v6",
+            "schema_version": NODE.RELEASE_MANIFEST_SCHEMA_VERSION,
             "release_id": "usdb-testnet-v0-r1",
             "network_bundle": network_identity,
             "snapshot": NODE.build_snapshot_state(self.bundle),
@@ -621,7 +624,7 @@ class UsdbNodeTests(unittest.TestCase):
             ]
         }
 
-        self.assertEqual(NODE._snapshot_staging_bytes(staging, record), 60)
+        self.assertEqual(NODE._snapshot_staging_bytes(staging, record["files"]), 60)
 
     def test_progress_renderer_has_stable_component_rows(self) -> None:
         components = [
@@ -640,7 +643,208 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIn("phase=bitcoin", rendered)
         positions = [rendered.index(label) for _component_id, label in NODE.PROGRESS_COMPONENTS]
         self.assertEqual(positions, sorted(positions))
-        self.assertEqual(rendered.count("[------------------------]"), 5)
+        self.assertEqual(
+            rendered.count("[------------------------]"), len(NODE.PROGRESS_COMPONENTS)
+        )
+
+    def test_optional_registry_failure_does_not_block_core_progress(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "optional-registry-failure")
+        NODE.select_snapshot_release(layout)
+        env = NODE.read_env(layout.node_env)
+        record = NODE._approved_snapshot_record(layout)
+        sidecar_root = Path(env["BH_DATA_HOST_DIR"]) / "auxiliary/script-registry"
+        sidecar_root.mkdir(parents=True)
+        (sidecar_root / "attempt.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "balance-history-script-registry-attempt:v1",
+                    "artifact_id": record["components"]["script_registry"]["artifact_id"],
+                    "state": "failed",
+                    "last_error": "network unavailable",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = NODE._script_registry_component(layout, env, None)
+        components = [
+            NODE._component_progress(component_id, "READY", "ready")
+            for component_id, _label in NODE.PROGRESS_COMPONENTS
+            if component_id != "script_registry"
+        ]
+        components.insert(1, registry)
+
+        self.assertEqual(registry["state"], "FAILED")
+        self.assertEqual(NODE._overall_progress_state(components), "READY")
+
+    def test_script_registry_doctor_checks_active_pointer_and_file_sizes(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "registry-doctor")
+        NODE.select_snapshot_release(layout)
+        env = NODE.read_env(layout.node_env)
+        record = NODE._approved_snapshot_record(layout)
+        registry = record["components"]["script_registry"]
+        sidecar_root = Path(env["BH_DATA_HOST_DIR"]) / "auxiliary/script-registry"
+        artifact_dir = sidecar_root / "bases" / registry["artifact_id"]
+        artifact_dir.mkdir(parents=True)
+        approved_record = layout.bundle_dir / layout.snapshot["record"]["path"]
+        (artifact_dir / "snapshot-release-record.json").write_bytes(
+            approved_record.read_bytes()
+        )
+        for item in registry["files"]:
+            (artifact_dir / Path(item["path"]).name).write_bytes(b"x" * item["size"])
+        manifest_name = Path(
+            next(item["path"] for item in registry["files"] if item["role"] == "manifest")
+        ).name
+        manifest_path = artifact_dir / manifest_name
+        sidecar_root.mkdir(parents=True, exist_ok=True)
+        (sidecar_root / "state.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "balance-history-script-registry-activation:v1",
+                    "state": "ready",
+                    "active": {
+                        "registry_artifact_id": registry["artifact_id"],
+                        "manifest_file": manifest_name,
+                        "manifest_sha256": hashlib.sha256(
+                            manifest_path.read_bytes()
+                        ).hexdigest(),
+                    },
+                    "last_error": None,
+                    "updated_at": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(NODE._script_registry_doctor_status(layout, env)["state"], "ok")
+        database = artifact_dir / Path(
+            next(item["path"] for item in registry["files"] if item["role"] == "database")
+        ).name
+        database.write_bytes(b"")
+        self.assertEqual(
+            NODE._script_registry_doctor_status(layout, env)["state"], "warning"
+        )
+
+    def test_snapshot_gc_is_dry_run_and_preserves_selected_artifacts(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "snapshot-gc")
+        record = NODE.select_snapshot_release(layout)
+        env = NODE.read_env(layout.node_env)
+        snapshot_root = Path(env["BH_SNAPSHOT_HOST_DIR"])
+        registry_root = (
+            Path(env["BH_DATA_HOST_DIR"]) / "auxiliary/script-registry/bases"
+        )
+        selected_core = snapshot_root / record["snapshot_release_id"]
+        stale_core = snapshot_root / f"balance-history-bitcoin-h1-{'9' * 16}"
+        selected_registry = registry_root / record["components"]["script_registry"]["artifact_id"]
+        active_registry_id = "7" * 64
+        active_registry = registry_root / active_registry_id
+        stale_registry = registry_root / ("8" * 64)
+        for path in (
+            selected_core,
+            stale_core,
+            selected_registry,
+            active_registry,
+            stale_registry,
+        ):
+            path.mkdir(parents=True, exist_ok=True)
+        state_path = registry_root.parent / "state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "balance-history-script-registry-activation:v1",
+                    "state": "ready",
+                    "active": {
+                        "registry_artifact_id": active_registry_id,
+                        "manifest_file": "script_registry_1.manifest.json",
+                        "manifest_sha256": "6" * 64,
+                    },
+                    "last_error": None,
+                    "updated_at": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        dry_run = NODE.gc_snapshot_artifacts(layout, confirm=False)
+        self.assertEqual(len(dry_run["candidates"]), 2)
+        self.assertEqual(dry_run["removed"], [])
+        self.assertTrue(stale_core.exists())
+        self.assertTrue(stale_registry.exists())
+
+        applied = NODE.gc_snapshot_artifacts(layout, confirm=True)
+        self.assertEqual(len(applied["removed"]), 2)
+        self.assertTrue(selected_core.exists())
+        self.assertTrue(selected_registry.exists())
+        self.assertTrue(active_registry.exists())
+        self.assertFalse(stale_core.exists())
+        self.assertFalse(stale_registry.exists())
+
+    def test_optional_registry_install_uses_the_runtime_helper(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "registry-install")
+        NODE.select_snapshot_release(layout)
+
+        with mock.patch.object(NODE, "run_helper") as helper:
+            NODE.install_script_registry_release(layout)
+
+        helper.assert_called_once_with(
+            layout,
+            "run_testnet_runtime.sh",
+            ["install-registry"],
+            output_to_stderr=True,
+        )
+
+    def test_snapshot_gc_refuses_a_symlinked_active_pointer(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "snapshot-gc-symlink")
+        NODE.select_snapshot_release(layout)
+        env = NODE.read_env(layout.node_env)
+        state_path = (
+            Path(env["BH_DATA_HOST_DIR"]) / "auxiliary/script-registry/state.json"
+        )
+        state_path.parent.mkdir(parents=True)
+        state_path.symlink_to(state_path.parent / "missing-state.json")
+
+        with self.assertRaisesRegex(ValueError, "not a regular file"):
+            NODE.gc_snapshot_artifacts(layout, confirm=False)
+
+    def test_optional_registry_install_rejects_private_selection_drift(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "registry-selection-drift")
+        NODE.select_snapshot_release(layout)
+        original = layout.node_env.read_text(encoding="utf-8")
+        NODE._atomic_write_private(
+            layout.node_env,
+            NODE.render_env(original, {"BH_SCRIPT_REGISTRY_ARTIFACT_ID": "9" * 64}),
+        )
+
+        with mock.patch.object(NODE, "run_helper") as helper:
+            with self.assertRaisesRegex(ValueError, "differs from the release record"):
+                NODE.install_script_registry_release(layout)
+
+        helper.assert_not_called()
+
+    def test_ready_status_reports_retryable_registry_as_auxiliary_partial(self) -> None:
+        report = {
+            "checks": {
+                "script_registry": {
+                    "state": "pending",
+                    "summary": "not active",
+                    "action": "usdb-node snapshot install-registry",
+                }
+            }
+        }
+
+        NODE._finish_node_status(report, "READY")
+
+        self.assertEqual(report["overall_state"], "READY")
+        self.assertEqual(report["auxiliary_state"], "PARTIAL")
+        self.assertEqual(
+            report["next_actions"], ["usdb-node snapshot install-registry"]
+        )
 
     def test_terminal_progress_display_uses_alternate_screen(self) -> None:
         class TtyBuffer(io.StringIO):
@@ -1078,12 +1282,12 @@ class UsdbNodeTests(unittest.TestCase):
         ):
             report = NODE.collect_node_progress(layout)
 
-        self.assertEqual(report["schema_version"], "usdb-node-progress:v4")
+        self.assertEqual(report["schema_version"], NODE.NODE_PROGRESS_SCHEMA_VERSION)
         self.assertEqual(report["controller_state"], "uninstalled")
         self.assertEqual(report["overall_state"], "SYNCING")
         self.assertEqual(
             [component["state"] for component in report["components"]],
-            ["SKIPPED", "READY", "SYNCING", "READY", "READY"],
+            ["SKIPPED", "SKIPPED", "READY", "SYNCING", "READY", "READY"],
         )
         bitcoin_component = next(
             item for item in report["components"] if item["id"] == "bitcoin"
@@ -1475,11 +1679,14 @@ class UsdbNodeTests(unittest.TestCase):
         original = layout.node_env.read_text(encoding="utf-8")
         NODE._atomic_write_private(
             layout.node_env,
-            NODE.render_env(original, NODE._snapshot_env_updates(record)),
+            NODE.render_env(
+                original,
+                NODE._snapshot_env_updates(record, layout.snapshot["record"]["url"]),
+            ),
         )
         staging = (
             Path(NODE.read_env(layout.node_env)["BH_SNAPSHOT_HOST_DIR"])
-            / f".{record['snapshot_release_id']}.installing"
+            / f".{record['snapshot_release_id']}.core.installing"
         )
         staging.mkdir(parents=True)
 
@@ -1658,7 +1865,7 @@ class UsdbNodeTests(unittest.TestCase):
 
         report = json.loads(output.getvalue())
         self.assertEqual(result, 1)
-        self.assertEqual(report["schema_version"], "usdb-node-status:v2")
+        self.assertEqual(report["schema_version"], NODE.NODE_STATUS_SCHEMA_VERSION)
         self.assertEqual(report["overall_state"], "UNCONFIGURED")
         self.assertEqual(report["next_actions"], ["usdb-node setup"])
         self.assertEqual(report["up"]["mode"], "manual")
@@ -2602,35 +2809,41 @@ class UsdbNodeTests(unittest.TestCase):
     def _installed_snapshot_fixture(self, data_root: Path) -> mock.Mock:
         record = NODE._approved_snapshot_record(NODE.load_release_layout(self.root, self.node_env))
         release_id = record["snapshot_release_id"]
-        by_role = {item["role"]: item for item in record["files"]}
+        core = record["components"]["core"]
+        by_role = {item["role"]: item for item in core["files"]}
         release_dir = NODE.snapshot_artifact_dir(data_root) / release_id
         release_dir.mkdir(parents=True)
-        snapshot = release_dir / by_role["snapshot_db"]["path"]
+        snapshot = release_dir / Path(by_role["database"]["path"]).name
         snapshot.write_bytes(b"snapshot")
-        manifest = release_dir / by_role["snapshot_manifest"]["path"]
+        manifest = release_dir / Path(by_role["manifest"]["path"]).name
         manifest.write_text(
             json.dumps(
                 {
-                    "manifest_version": "balance-history-snapshot-manifest:v3",
+                    "manifest_version": "balance-history-core-snapshot-manifest:v1",
+                    "artifact_type": "balance_history_core",
+                    "snapshot_schema_version": "balance-history-core-snapshot:v1",
+                    "registry_included": False,
                     "file_name": snapshot.name,
                     "file_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
                     "state_ref": {
                         "block_height": 963800,
                         "stable_block_hash": record["btc_block_hash"],
-                        "snapshot_id": record["snapshot_id"],
+                        "snapshot_id": record["core_snapshot_id"],
                     },
                     "db_identity": {"btc_network": "bitcoin"},
                     "balance_query_floor": 963800,
                     "history_query_floor": 963801,
                     "signature_scheme": "ed25519",
-                    "signing_key_id": record["trusted_keys"]["signing_key_id"],
+                    "signing_key_id": core["signing_key_id"],
                 }
             ),
             encoding="utf-8",
         )
-        signature = release_dir / by_role["snapshot_signature"]["path"]
+        signature = release_dir / Path(by_role["signature"]["path"]).name
         signature.write_text("signature", encoding="utf-8")
         return mock.Mock(
+            component="core",
+            artifact_id=core["artifact_id"],
             release_id=release_id,
             release_dir=release_dir,
             snapshot_file=snapshot,

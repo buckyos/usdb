@@ -104,6 +104,21 @@ enum BalanceHistoryCommands {
         progress_file: Option<PathBuf>,
     },
 
+    /// Verify and atomically activate one immutable script-registry sidecar.
+    ActivateScriptRegistry {
+        /// Registry manifest inside the immutable artifact directory.
+        #[arg(long)]
+        manifest: PathBuf,
+
+        /// Core manifest referenced by the installed snapshot marker.
+        #[arg(long)]
+        core_manifest: PathBuf,
+
+        /// Trusted-key catalog used for both artifact signature domains.
+        #[arg(long)]
+        trusted_keys: PathBuf,
+    },
+
     /// Generate one snapshot signing key and matching public-key export files.
     SnapshotKeygen {
         #[clap(flatten)]
@@ -377,6 +392,39 @@ async fn main() {
             println!("Snapshot installed successfully.");
             log_handle.shutdown();
             return;
+        }
+        Some(BalanceHistoryCommands::ActivateScriptRegistry {
+            manifest,
+            core_manifest,
+            trusted_keys,
+        }) => {
+            let log_handle = init_command_logging(&root_dir, "balance_history_activate_registry");
+            let config = BalanceHistoryConfig::load(&root_dir).unwrap_or_else(|error| {
+                error!("Failed to load balance-history config: {}", error);
+                eprintln!("Failed to load balance-history config: {error}");
+                exit_command_failure();
+            });
+            match balance_history::activate_script_registry_sidecar(
+                &config,
+                &manifest,
+                &core_manifest,
+                &trusted_keys,
+            ) {
+                Ok(report) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report)
+                            .expect("activation report serialization must succeed")
+                    );
+                    log_handle.shutdown();
+                    return;
+                }
+                Err(error) => {
+                    error!("Failed to activate script-registry sidecar: {}", error);
+                    eprintln!("Failed to activate script-registry sidecar: {error}");
+                    exit_command_failure();
+                }
+            }
         }
         Some(BalanceHistoryCommands::SnapshotKeygen { args }) => {
             let file_name = format!(

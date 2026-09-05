@@ -28,6 +28,8 @@ Actions:
   wait-data      Wait for balance-history consensus readiness; timeout is the first argument.
   up-indexer [height]
                  Start usdb-indexer after balance-history commits the USDB origin.
+  install-registry
+                 Start or retry the release-approved optional registry installer.
   wait-indexer   Wait for usdb-indexer consensus readiness; timeout is the first argument.
   up-chain       Recheck all final readiness gates, then start the USDB chain.
   up             Complete all final gates and start indexer/chain for compatibility.
@@ -139,7 +141,7 @@ case "${action}" in
       "${bitcoin_runner}" wait-data \
         "${btc_minimum_tip_height}" "${btc_anchor_height}" "${btc_data_hash}"
     compose config --quiet
-    compose up -d snapshot-loader balance-history
+    compose up -d snapshot-loader balance-history script-registry-installer
     ;;
   data-status)
     require_node_env
@@ -186,6 +188,16 @@ case "${action}" in
       "balance-history" \
       --minimum-stable-height "${origin_height}"
     compose up -d usdb-indexer
+    ;;
+  install-registry)
+    require_node_env
+    command -v docker >/dev/null 2>&1 || {
+      echo "docker is required" >&2
+      exit 1
+    }
+    validate_bundle --node-env "${node_env}" --require-runtime --require-bitcoin-runtime
+    compose config --quiet
+    compose up -d --force-recreate script-registry-installer
     ;;
   wait-indexer)
     require_node_env
