@@ -4019,9 +4019,9 @@ dependencies = [
 
 [[package]]
 name = "rust-librocksdb-sys"
-version = "0.41.0+10.9.1"
+version = "0.48.0+11.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "706d611b4b6e4888f536085c4f13f720133a80910d68cb66efc82c810c977d2c"
+checksum = "5138c6860d69917eef6ab17a6090aba3d6c9bd0dc50357ebbe18fbb54a4e9397"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -4030,14 +4030,16 @@ dependencies = [
  "libc",
  "libz-sys",
  "lz4-sys",
+ "pkg-config",
+ "rustflags",
  "zstd-sys",
 ]
 
 [[package]]
 name = "rust-rocksdb"
-version = "0.45.0"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cedcc7d13785a99cf2b932cf0e23b72e0da260a8f7c62b33e14bea28a125545a"
+checksum = "8b44b668dfc691c475a01f26181e326ca85cbe8b8ae89418b39aba64af0da59b"
 dependencies = [
  "libc",
  "parking_lot 0.12.5",
@@ -4064,6 +4066,12 @@ checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
  "semver",
 ]
+
+[[package]]
+name = "rustflags"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a39e0e9135d7a7208ee80aa4e3e4b88f0f5ad7be92153ed70686c38a03db2e63"
 
 [[package]]
 name = "rusticata-macros"
@@ -6237,7 +6245,6 @@ version = "2.0.16+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
 dependencies = [
- "bindgen",
  "cc",
  "pkg-config",
 ]
