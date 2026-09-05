@@ -11,6 +11,7 @@
 相关文档：
 
 - [Balance-History Script Registry Plan](../balance-history-script-registry-plan.md)
+- [Core Snapshot 与 Script Registry Sidecar 设计](./balance-history-core-snapshot-and-script-registry-sidecar-design.md)
 - [Exact-Height Snapshot Tool Design](./balance-history-exact-height-snapshot-tool-design.md)
 - [Mainnet Exact-Height Snapshot Operations](./balance-history-mainnet-exact-height-snapshot-operations.md)
 
@@ -98,7 +99,7 @@ registry 的记录量远大于 live UTXO，已经明显影响 snapshot 导出、
 优点是 artifact 和恢复流程最简单，fresh joiner 安装后立即具备完整历史地址解析能力。
 缺点是所有共识节点都要承担辅助数据的生成、下载、校验和安装成本。
 
-### 5.2 核心快照与 registry sidecar 分离（建议优先评估）
+### 5.2 核心快照与 registry sidecar 分离（已选方向）
 
 将发布物拆分为：
 
@@ -115,11 +116,14 @@ optional script-registry artifact
 - core snapshot 独立完成共识安全校验和后续追块；
 - registry artifact 独立分片、校验、签名、下载和安装；
 - core-only 节点的 `consensus_ready` 不受 registry 缺失影响；
-- `resolve_script_hashes` 对缺失或未安装数据明确返回 `found=false`/partial 状态；
+- `resolve_script_hashes` 明确区分完整覆盖下的 `not_found` 与 sidecar 缺失时的
+  `unresolved`，不再用 `found=false` 混合两种语义；
 - explorer/archive 节点安装完整 registry，普通共识节点可以不安装。
 
-该方案保留完整审计能力，同时避免辅助索引阻塞核心 checkpoint 发布，是当前最值得进一步
-设计和压测的方向。
+该方案保留完整审计能力，同时避免辅助索引阻塞核心 checkpoint 发布。后续实现进一步确定：
+registry sidecar 保持为独立、不可变的只读 SQLite，snapshot 节点不再把历史 registry 导入
+RocksDB；RocksDB 只保留从高度 `0` 重建所得的完整 registry，或 snapshot height 之后的 live
+overlay。详细契约见 [Core Snapshot 与 Script Registry Sidecar 设计](./balance-history-core-snapshot-and-script-registry-sidecar-design.md)。
 
 ### 5.3 只保留活跃集合
 
@@ -146,4 +150,5 @@ Bitcoin Core 配置依赖、历史查询延迟和失败模式；对于已花费�
 
 - 当前高度 `963800` 的 snapshot 包含完整 registry，符合现有 full snapshot 契约，无需重建。
 - registry 当前只服务展示、解析和审计，不应成为 USDB 共识或经济状态的可用性前提。
-- 后续优化优先评估 core snapshot 与可选 registry sidecar 分离，不在本批改动中修改实现。
+- 已确定采用 core snapshot 与可选 registry sidecar 分离，本文仍作为问题和方案比较备忘；
+  实施边界和任务拆分以独立设计文档为准。
