@@ -23,19 +23,6 @@ export REGTEST_LOG_PREFIX="[exact-snapshot-failures]"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
-json_field() {
-  local file="$1"
-  local field="$2"
-  python3 - "$file" "$field" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    data = json.load(source)
-print(data[sys.argv[2]])
-PY
-}
-
 main() {
   trap regtest_cleanup EXIT
 
@@ -131,7 +118,7 @@ main() {
       --poll-interval-secs 1
   unset USDB_BH_SNAPSHOT_TEST_FAIL_AT_CHECKPOINT
 
-  final_dir="$SNAPSHOT_BUILDER_ROOT/snapshots/$(printf '%012d' "$next_height")/$next_hash"
+  final_dir="$SNAPSHOT_BUILDER_ROOT/snapshots/$(printf '%012d' "$next_height")/$next_hash/core"
   if [[ -e "$final_dir" ]]; then
     regtest_log "before_publish failure exposed a final artifact: ${final_dir}"
     exit 1
@@ -146,7 +133,7 @@ main() {
   regtest_log "Checking resumable verification state at height=${next_height}"
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" status \
     --height "$next_height" >"$publish_status"
-  regtest_assert_json_file "$publish_status" "data['job']['stage']" "verifying"
+  regtest_assert_json_file "$publish_status" "data['job']['core']['stage']" "verifying"
   regtest_assert_json_file "$publish_status" "data['state']['active_job_height']" "$next_height"
 
   publish_report="$WORK_DIR/publish-resume.json"
@@ -162,13 +149,13 @@ main() {
     exit 1
   fi
 
-  artifact_dir="$(json_field "$publish_report" artifact_dir)"
-  snapshot_file="$(json_field "$publish_report" snapshot_file)"
+  artifact_dir="$(regtest_json_file_field "$publish_report" core.artifact_dir)"
+  snapshot_file="$(regtest_json_file_field "$publish_report" core.file)"
   snapshot_path="$SNAPSHOT_BUILDER_ROOT/$artifact_dir/$snapshot_file"
   printf 'tampered-after-publication' >>"$snapshot_path"
   verify_failure_output="$WORK_DIR/tampered-verify.out"
   regtest_log "Checking published snapshot tamper detection at height=${next_height}"
-  regtest_expect_command_failure "$verify_failure_output" "Snapshot file hash mismatch" \
+  regtest_expect_command_failure "$verify_failure_output" "Core snapshot file hash mismatch" \
     regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" verify \
       --height "$next_height" \
       --block-hash "$next_hash"

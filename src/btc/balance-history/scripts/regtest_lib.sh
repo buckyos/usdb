@@ -559,6 +559,22 @@ regtest_run_snapshot_tool() {
   )
 }
 
+# Read a dotted field path from the snapshot tool's component-scoped JSON reports.
+regtest_json_file_field() {
+  local file="$1"
+  local field="$2"
+  python3 - "$file" "$field" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    value = json.load(source)
+for key in sys.argv[2].split("."):
+    value = value[key]
+print(value)
+PY
+}
+
 regtest_assert_json_file() {
   local file="$1"
   local expression="$2"
@@ -609,8 +625,10 @@ with open(sys.argv[1], encoding="utf-8") as source:
 with open(sys.argv[2], encoding="utf-8") as source:
     right = json.load(source)
 field = sys.argv[3]
-if left[field] != right[field]:
-    raise SystemExit(f"JSON field mismatch for {field}: {left[field]!r} != {right[field]!r}")
+for key in field.split("."):
+    left, right = left[key], right[key]
+if left != right:
+    raise SystemExit(f"JSON field mismatch for {field}: {left!r} != {right!r}")
 PY
 }
 
@@ -626,6 +644,7 @@ regtest_write_snapshot_manifest_variant() {
   local file_sha256="$4"
 
   python3 - "$source_manifest" "$destination_manifest" "$snapshot_file" "$file_sha256" <<'PY'
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -636,6 +655,17 @@ snapshot_file = Path(sys.argv[3])
 manifest = json.loads(source.read_text(encoding="utf-8"))
 manifest["file_name"] = snapshot_file.name
 manifest["file_sha256"] = sys.argv[4]
+# Keep the v1 identity valid so corruption tests reach the intended hash/SQLite check.
+identity = {key: manifest[key] for key in (
+    "manifest_version", "artifact_type", "snapshot_schema_version", "registry_included",
+    "file_sha256", "core_snapshot_id", "state_ref", "db_identity",
+    "balance_query_floor", "history_query_floor",
+)}
+domain = b"usdb.balance-history.core-snapshot-artifact-id:v1"
+payload = json.dumps(identity, separators=(",", ":"), ensure_ascii=False).encode()
+manifest["core_artifact_id"] = hashlib.sha256(
+    len(domain).to_bytes(4, "big") + domain + len(payload).to_bytes(8, "big") + payload
+).hexdigest()
 destination.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 PY
 }

@@ -721,6 +721,13 @@ registry 保持 append-like：
   `usdb-node snapshot install-registry`，但节点核心状态仍可保持 READY。
 - `doctor` 只读核对 release selection、active pointer、安装 record、文件大小和 manifest digest；完整签名、
   文件 hash、SQLite integrity 与 count 仍由 activation 命令承担。
+- snapshot regtest 已迁移到拆分后的输出：create 使用 `core.file`、`core.artifact_dir` 和
+  `core.utxo_count`，verify 使用 `core` / `script_registry`，恢复 checkpoint 使用 `job.core.stage`。
+  CLI 导出后的恢复脚本读取 `balance_history_core_<H>.db`。
+- `regtest_exact_height_snapshot_install_spend.sh` 只创建 core artifact，按 regtest activation registry
+  的 stable lag 确认区块；恢复后先确认 registry coverage 为 `post_snapshot_only`，再花费快照前的
+  UTXO 并检查旧输出消失、新输出出现。signed 安装成功用例使用实际 Docker 配置渲染器，验证
+  `[snapshot].trusted_keys_file` 能被 Rust 配置加载、签名安装及服务启动链路使用。
 - `usdb-node snapshot gc` 默认只报告候选；只有 `--confirm` 才删除未被 release、当前 core/registry 选择或
   active registry pointer 引用的 recognized immutable artifact 目录。未知目录和临时目录不会被删除；
   匹配 artifact 命名但不是安全真实目录，或 active pointer 不可读时失败关闭。

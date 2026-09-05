@@ -137,7 +137,7 @@ main() {
 
   regtest_run_balance_history_cli "$source_root" create-snapshot --block-height "$snapshot_height"
 
-  snapshot_file="$source_root/snapshots/snapshot_${snapshot_height}.db"
+  snapshot_file="$source_root/snapshots/balance_history_core_${snapshot_height}.db"
   if [[ ! -f "$snapshot_file" ]]; then
     regtest_log "Snapshot file was not created at ${snapshot_file}"
     exit 1

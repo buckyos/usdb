@@ -68,7 +68,8 @@ main() {
   regtest_assert_json_file "$report_h" "data['height']" "$target_h"
   regtest_assert_json_file "$report_h" "data['btc_block_hash']" "$hash_h"
   regtest_assert_json_file "$report_h" "data['already_complete']" "False"
-  regtest_assert_json_file "$report_h" "data['utxo_count'] > 0" "True"
+  regtest_assert_json_file "$report_h" "data['core']['utxo_count'] > 0" "True"
+  regtest_assert_json_file "$report_h" "data['script_registry']['entry_count'] > 0" "True"
 
   regtest_log "Replaying completed target height=${target_h}"
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" create \
@@ -76,11 +77,12 @@ main() {
     --expected-block-hash "$hash_h" \
     --poll-interval-secs 1 >"$report_h_repeat"
   regtest_assert_json_file "$report_h_repeat" "data['already_complete']" "True"
-  regtest_assert_json_files_equal "$report_h" "$report_h_repeat" "file_sha256"
+  regtest_assert_json_files_equal "$report_h" "$report_h_repeat" "core.file_sha256"
+  regtest_assert_json_files_equal "$report_h" "$report_h_repeat" "script_registry.file_sha256"
 
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" verify --height "$target_h" --block-hash "$hash_h" >"$verify_h"
-  regtest_assert_json_file "$verify_h" "data['height']" "$target_h"
-  regtest_assert_json_file "$verify_h" "data['utxo_count'] > 0" "True"
+  regtest_assert_json_file "$verify_h" "data['core']['height']" "$target_h"
+  regtest_assert_json_file "$verify_h" "data['core']['utxo_count'] > 0" "True"
 
   regtest_log "Incrementally creating next exact-height snapshot height=${target_h1}, hash=${hash_h1}"
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" create \
@@ -92,7 +94,7 @@ main() {
   regtest_assert_json_file "$report_h1" "data['already_complete']" "False"
 
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" verify --height "$target_h1" --block-hash "$hash_h1" >"$verify_h1"
-  regtest_assert_json_file "$verify_h1" "data['height']" "$target_h1"
+  regtest_assert_json_file "$verify_h1" "data['core']['height']" "$target_h1"
 
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" status >"$status_file"
   regtest_assert_json_file "$status_file" "data['state']['latest_completed']['height']" "$target_h1"

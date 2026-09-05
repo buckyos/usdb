@@ -17,6 +17,30 @@ GIB = 1024**3
 
 
 class BalanceHistoryMemoryProfileTests(unittest.TestCase):
+    def test_renderer_keeps_snapshot_keys_in_snapshot_table(self) -> None:
+        for trust_mode, signing, trusted in [
+            ("dev", "", ""),
+            ("signed", "signing-key.json", ""),
+            ("signed", "", "trusted-keys.json"),
+            ("signed", "signing-key.json", "trusted-keys.json"),
+        ]:
+            with self.subTest(signing=signing, trusted=trusted), tempfile.TemporaryDirectory() as temp_dir:
+                config_path = pathlib.Path(temp_dir) / "config.toml"
+                env = {
+                    **os.environ,
+                    "BH_ROOT_DIR": temp_dir,
+                    "BTC_AUTH_MODE": "none",
+                    "BH_SNAPSHOT_TRUST_MODE": trust_mode,
+                    "BH_SNAPSHOT_SIGNING_KEY_FILE": signing,
+                    "BH_SNAPSHOT_TRUSTED_KEYS_FILE": trusted,
+                }
+                subprocess.run([str(RENDERER), str(config_path)], env=env, check=True)
+                config = tomllib.loads(config_path.read_text())
+                self.assertEqual(config["snapshot"]["trust_mode"], trust_mode)
+                for field, value in [("signing_key_file", signing), ("trusted_keys_file", trusted)]:
+                    self.assertEqual(config["snapshot"].get(field), value or None)
+                    self.assertNotIn(field, config["script_registry"])
+
     def compose_default(self, content: str, variable: str) -> str:
         match = re.search(rf"\$\{{{re.escape(variable)}:-([^}}]+)\}}", content)
         self.assertIsNotNone(match, f"missing Compose default for {variable}")

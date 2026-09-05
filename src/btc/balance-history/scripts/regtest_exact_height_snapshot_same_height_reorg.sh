@@ -88,8 +88,8 @@ main() {
     --height "$target_height" --block-hash "$old_hash" >"$old_verify"
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" verify \
     --height "$target_height" --block-hash "$new_hash" >"$new_verify"
-  regtest_assert_json_file "$old_verify" "data['btc_block_hash']" "$old_hash"
-  regtest_assert_json_file "$new_verify" "data['btc_block_hash']" "$new_hash"
+  regtest_assert_json_file "$old_verify" "data['core']['btc_block_hash']" "$old_hash"
+  regtest_assert_json_file "$new_verify" "data['core']['btc_block_hash']" "$new_hash"
 
   artifact_count="$(find "$SNAPSHOT_BUILDER_ROOT/snapshots/$(printf '%012d' "$target_height")" \
     -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"

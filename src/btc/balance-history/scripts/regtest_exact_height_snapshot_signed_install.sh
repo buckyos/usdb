@@ -26,19 +26,6 @@ export REGTEST_LOG_PREFIX="[exact-snapshot-signed]"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
-json_field() {
-  local file="$1"
-  local field="$2"
-  python3 - "$file" "$field" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    data = json.load(source)
-print(data[sys.argv[2]])
-PY
-}
-
 assert_no_install_artifacts() {
   local root_dir="$1"
   local count
@@ -101,12 +88,12 @@ main() {
     --expected-block-hash "$snapshot_hash" \
     --config "$BALANCE_HISTORY_ROOT/config.toml" \
     --poll-interval-secs 1 >"$report"
-  regtest_assert_json_file "$report" "data['signature_file'] is not None" "True"
+  regtest_assert_json_file "$report" "data['core']['signature_file'] is not None" "True"
 
-  artifact_dir="$(json_field "$report" artifact_dir)"
-  snapshot_file="$(json_field "$report" snapshot_file)"
-  manifest_file="$(json_field "$report" manifest_file)"
-  signature_file="$(json_field "$report" signature_file)"
+  artifact_dir="$(regtest_json_file_field "$report" core.artifact_dir)"
+  snapshot_file="$(regtest_json_file_field "$report" core.file)"
+  manifest_file="$(regtest_json_file_field "$report" core.manifest_file)"
+  signature_file="$(regtest_json_file_field "$report" core.signature_file)"
   snapshot_path="$SNAPSHOT_BUILDER_ROOT/$artifact_dir/$snapshot_file"
   manifest_path="$SNAPSHOT_BUILDER_ROOT/$artifact_dir/$manifest_file"
   signature_path="$SNAPSHOT_BUILDER_ROOT/$artifact_dir/$signature_file"
@@ -168,10 +155,15 @@ PY
   BALANCE_HISTORY_ROOT="$SUCCESS_ROOT"
   BH_RPC_PORT=30413
   BALANCE_HISTORY_LOG_FILE="$WORK_DIR/success.log"
-  regtest_create_balance_history_config
-  regtest_config_set_max_sync_block_height "$SUCCESS_ROOT/config.toml" "$snapshot_height"
-  regtest_config_set_snapshot_policy \
-    "$SUCCESS_ROOT/config.toml" signed "" "$trusted_keys"
+  # Exercise the deployed renderer through signed install and actual service startup.
+  BH_ROOT_DIR="$SUCCESS_ROOT" BTC_NETWORK=regtest \
+    BTC_DATA_DIR="$BITCOIN_DIR/regtest" BTC_RPC_URL="http://127.0.0.1:$BTC_RPC_PORT" \
+    BTC_AUTH_MODE=cookie BTC_COOKIE_FILE="$BITCOIN_DIR/regtest/.cookie" \
+    BH_RPC_PORT="$BH_RPC_PORT" BH_SYNC_MAX_SYNC_BLOCK_HEIGHT="$snapshot_height" \
+    BH_SYNC_LOCAL_LOADER_THRESHOLD=100000000 \
+    BH_SNAPSHOT_TRUST_MODE=signed BH_SNAPSHOT_SIGNING_KEY_FILE="" \
+    BH_SNAPSHOT_TRUSTED_KEYS_FILE="$trusted_keys" \
+    bash "$REPO_ROOT/docker/scripts/helpers/render_balance_history_config.sh" "$SUCCESS_ROOT/config.toml"
   regtest_run_balance_history_cli "$SUCCESS_ROOT" install-snapshot \
     --file "$snapshot_path"
 
@@ -180,7 +172,7 @@ PY
   regtest_wait_until_synced_height "$snapshot_height"
   resp="$(regtest_rpc_call_balance_history "get_snapshot_provenance" "[]")"
   regtest_assert_json_expr "$resp" "data['result']['verification_state']" "signature_verified"
-  regtest_assert_json_expr "$resp" "data['result']['signature_present']" "True"
+  regtest_assert_json_expr "$resp" "data['result']['signature_scheme']" "ed25519"
   regtest_assert_json_expr "$resp" "data['result']['signature_verified']" "True"
   regtest_assert_json_expr "$resp" "data['result']['signing_key_id']" "exact-signer"
 

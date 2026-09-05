@@ -170,7 +170,7 @@ main() {
   regtest_stop_balance_history
   regtest_run_balance_history_cli "$BALANCE_HISTORY_ROOT" create-snapshot --block-height "$snapshot_height"
 
-  snapshot_file="$BALANCE_HISTORY_ROOT/snapshots/snapshot_${snapshot_height}.db"
+  snapshot_file="$BALANCE_HISTORY_ROOT/snapshots/balance_history_core_${snapshot_height}.db"
   BALANCE_HISTORY_ROOT="$RESTORE_BALANCE_HISTORY_ROOT"
   BALANCE_HISTORY_LOG_FILE="$RESTORE_BALANCE_HISTORY_LOG_FILE"
   BH_RPC_PORT="$RESTORE_BH_RPC_PORT"

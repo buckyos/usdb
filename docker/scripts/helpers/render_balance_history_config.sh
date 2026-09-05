@@ -76,13 +76,16 @@ port = ${BH_RPC_PORT:-28010}
 
 [snapshot]
 trust_mode = "${BH_SNAPSHOT_TRUST_MODE:-dev}"
+EOF
+
+if [[ -n "${snapshot_extra}" ]]; then
+  printf "%b" "${snapshot_extra}" >>"${output_path}"
+fi
+
+cat >>"${output_path}" <<EOF
 
 [script_registry]
 cache_size_kib = ${BH_SCRIPT_REGISTRY_CACHE_SIZE_KIB:-65536}
 query_batch_size = ${BH_SCRIPT_REGISTRY_QUERY_BATCH_SIZE:-256}
 slow_query_ms = ${BH_SCRIPT_REGISTRY_SLOW_QUERY_MS:-250}
 EOF
-
-if [[ -n "${snapshot_extra}" ]]; then
-  printf "%b" "${snapshot_extra}" >>"${output_path}"
-fi

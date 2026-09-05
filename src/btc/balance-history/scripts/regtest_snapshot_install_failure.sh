@@ -124,9 +124,9 @@ main() {
   regtest_stop_balance_history
   regtest_run_balance_history_cli "$source_root" create-snapshot --block-height "$snapshot_height"
 
-  snapshot_file="$source_root/snapshots/snapshot_${snapshot_height}.db"
+  snapshot_file="$source_root/snapshots/balance_history_core_${snapshot_height}.db"
   snapshot_hash="$(sha256sum "$snapshot_file" | awk '{print $1}')"
-  wrong_hash="0${snapshot_hash:1}"
+  wrong_hash="$(python3 -c 'import sys; value=sys.argv[1]; print(("1" if value[0] == "0" else "0") + value[1:])' "$snapshot_hash")"
   snapshot_manifest="$(regtest_snapshot_manifest_path "$snapshot_file")"
   wrong_manifest="$WORK_DIR/snapshot_wrong_hash.manifest.json"
   regtest_write_snapshot_manifest_variant \
@@ -163,7 +163,8 @@ main() {
 
   regtest_stop_balance_history
 
-  regtest_expect_cli_failure "$target_root" "$wrong_hash_output" \
+  regtest_expect_command_failure "$wrong_hash_output" "Core snapshot file hash mismatch" \
+    regtest_run_balance_history_cli "$target_root" \
     install-snapshot --file "$snapshot_file" --manifest "$wrong_manifest"
   regtest_assert_no_install_artifacts "$target_root"
 

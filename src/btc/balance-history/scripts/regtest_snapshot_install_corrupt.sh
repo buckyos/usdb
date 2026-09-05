@@ -122,8 +122,8 @@ main() {
   regtest_stop_balance_history
   regtest_run_balance_history_cli "$source_root" create-snapshot --block-height "$snapshot_height"
 
-  snapshot_file="$source_root/snapshots/snapshot_${snapshot_height}.db"
-  corrupt_snapshot_file="$source_root/snapshots/snapshot_${snapshot_height}_corrupt.db"
+  snapshot_file="$source_root/snapshots/balance_history_core_${snapshot_height}.db"
+  corrupt_snapshot_file="$source_root/snapshots/balance_history_core_${snapshot_height}_corrupt.db"
   cp "$snapshot_file" "$corrupt_snapshot_file"
   python3 - "$corrupt_snapshot_file" <<'PY'
 from pathlib import Path
@@ -170,7 +170,8 @@ PY
 
   regtest_stop_balance_history
 
-  regtest_expect_cli_failure "$target_root" "$corrupt_output" \
+  regtest_expect_command_failure "$corrupt_output" "Failed to open core snapshot database" \
+    regtest_run_balance_history_cli "$target_root" \
     install-snapshot --file "$corrupt_snapshot_file" --manifest "$corrupt_manifest"
   regtest_assert_no_install_artifacts "$target_root"
 

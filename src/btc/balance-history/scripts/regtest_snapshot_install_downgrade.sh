@@ -92,7 +92,7 @@ main() {
 
   regtest_stop_balance_history
   regtest_run_balance_history_cli "$BALANCE_HISTORY_ROOT" create-snapshot --block-height "$old_height"
-  old_snapshot_file="$BALANCE_HISTORY_ROOT/snapshots/snapshot_${old_height}.db"
+  old_snapshot_file="$BALANCE_HISTORY_ROOT/snapshots/balance_history_core_${old_height}.db"
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
   regtest_wait_until_synced_height "$old_height"

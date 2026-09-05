@@ -333,13 +333,13 @@ metrics = {
     "outputs_per_transaction": int(sys.argv[9]),
     "transaction_count": int(sys.argv[7]),
     "cache_mode": "cold_advisory" if sys.argv[10] == "1" else "warm",
-    "actual_utxo_count": create_report["utxo_count"],
-    "balance_history_count": create_report["balance_history_count"],
-    "block_commit_count": create_report["block_commit_count"],
-    "script_registry_count": create_report["script_registry_count"],
+    "actual_utxo_count": create_report["core"]["utxo_count"],
+    "balance_history_count": create_report["core"]["balance_history_count"],
+    "block_commit_count": create_report["core"]["block_commit_count"],
+    "script_registry_count": create_report["script_registry"]["entry_count"],
     "snapshot_bytes": snapshot_path.stat().st_size,
-    "file_sha256": create_report["file_sha256"],
-    "verified_file_sha256": verify_report["file_sha256"],
+    "file_sha256": create_report["core"]["file_sha256"],
+    "verified_file_sha256": verify_report["core"]["file_sha256"],
     "stages": {label: stage_metric(label) for label in stage_labels},
     "chain_load_shared_block_device_io": block_device_delta("chain-load"),
 }
@@ -411,10 +411,11 @@ main() {
   regtest_ensure_wallet
 
   local mining_address recipient_descriptor remaining batch_count transaction_count=0 output_index=0
-  local load_start_ns load_end_ns load_seconds target_height target_hash confirmation_blocks=6
+  local load_start_ns load_end_ns load_seconds target_height target_hash confirmation_blocks
   local sync_report create_report verify_report artifact_dir snapshot_file snapshot_path
 
   mining_address="$(regtest_get_new_address)"
+  confirmation_blocks="$(regtest_embedded_stable_lag regtest)"
   regtest_ensure_mature_funds "$mining_address"
   recipient_descriptor="$(create_unowned_recipient_descriptor)"
   remaining="$SNAPSHOT_CAPACITY_UTXOS"
@@ -461,7 +462,7 @@ main() {
       exit 1
     fi
     regtest_assert_json_file "$SNAPSHOT_BUILDER_ROOT/jobs/$(printf '%012d' "$target_height")/job.json" \
-      "data['stage']" "sealed"
+      "data['core']['stage']" "sealed"
 
     if [[ "$SNAPSHOT_CAPACITY_COLD_CACHE" == "1" ]]; then
       regtest_log "Advising the kernel to evict closed workspace files before export"
@@ -473,25 +474,15 @@ main() {
       --expected-block-hash "$target_hash" \
       --poll-interval-secs 1
   fi
-  regtest_assert_json_file "$create_report" "data['utxo_count'] >= ${SNAPSHOT_CAPACITY_UTXOS}" "True"
+  regtest_assert_json_file "$create_report" "data['core']['utxo_count'] >= ${SNAPSHOT_CAPACITY_UTXOS}" "True"
 
   verify_report="$WORK_DIR/verify.json"
   run_timed_snapshot_tool verify "$verify_report" verify \
     --height "$target_height" \
     --block-hash "$target_hash"
 
-  artifact_dir="$(python3 - "$create_report" <<'PY'
-import json
-import sys
-print(json.load(open(sys.argv[1], encoding="utf-8"))["artifact_dir"])
-PY
-)"
-  snapshot_file="$(python3 - "$create_report" <<'PY'
-import json
-import sys
-print(json.load(open(sys.argv[1], encoding="utf-8"))["snapshot_file"])
-PY
-)"
+  artifact_dir="$(regtest_json_file_field "$create_report" core.artifact_dir)"
+  snapshot_file="$(regtest_json_file_field "$create_report" core.file)"
   snapshot_path="$SNAPSHOT_BUILDER_ROOT/$artifact_dir/$snapshot_file"
 
   regtest_create_balance_history_config_at "$INSTALL_ROOT" 30911

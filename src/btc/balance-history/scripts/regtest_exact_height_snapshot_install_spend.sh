@@ -24,19 +24,6 @@ export REGTEST_LOG_PREFIX="[exact-snapshot-spend]"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
-json_field() {
-  local file="$1"
-  local field="$2"
-  python3 - "$file" "$field" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    data = json.load(source)
-print(data[sys.argv[2]])
-PY
-}
-
 main() {
   trap regtest_cleanup EXIT
 
@@ -50,8 +37,8 @@ main() {
   regtest_ensure_wallet
 
   local mining_address tracked_address receiver_address tracked_txid tracked_vout
-  local snapshot_height snapshot_hash snapshot_report artifact_dir snapshot_file snapshot_path
-  local spend_raw spend_signed spend_txid spend_vout spend_height
+  local snapshot_height snapshot_hash snapshot_report artifact_dir snapshot_file snapshot_path stable_lag
+  local spend_raw spend_signed spend_txid spend_vout spend_height readiness
 
   mining_address="$(regtest_get_new_address)"
   regtest_ensure_mature_funds "$mining_address"
@@ -65,21 +52,24 @@ main() {
   regtest_lock_wallet_outpoint "$tracked_txid" "$tracked_vout"
 
   # Move the tracked output's block into the stable range without changing its spend state.
-  regtest_mine_blocks 5 "$mining_address"
-  snapshot_height=$(( $($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount) - 5 ))
+  snapshot_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  stable_lag="$(regtest_embedded_stable_lag regtest)"
+  regtest_mine_blocks "$stable_lag" "$mining_address"
   snapshot_hash="$(regtest_get_block_hash_by_height "$snapshot_height")"
   snapshot_report="$WORK_DIR/create-snapshot.json"
 
   regtest_create_balance_history_config_at "$BALANCE_HISTORY_ROOT" "$BH_RPC_PORT"
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" create \
+    --component core \
     --height "$snapshot_height" \
     --expected-block-hash "$snapshot_hash" \
     --config "$BALANCE_HISTORY_ROOT/config.toml" \
     --poll-interval-secs 1 >"$snapshot_report"
-  regtest_assert_json_file "$snapshot_report" "data['utxo_count'] > 0" "True"
+  regtest_assert_json_file "$snapshot_report" "data['core']['utxo_count'] > 0" "True"
+  regtest_assert_json_file "$snapshot_report" "data['script_registry'] is None" "True"
 
-  artifact_dir="$(json_field "$snapshot_report" artifact_dir)"
-  snapshot_file="$(json_field "$snapshot_report" snapshot_file)"
+  artifact_dir="$(regtest_json_file_field "$snapshot_report" core.artifact_dir)"
+  snapshot_file="$(regtest_json_file_field "$snapshot_report" core.file)"
   snapshot_path="$SNAPSHOT_BUILDER_ROOT/$artifact_dir/$snapshot_file"
   if [[ ! -f "$snapshot_path" ]]; then
     regtest_log "Generated snapshot file is missing: ${snapshot_path}"
@@ -96,6 +86,9 @@ main() {
   regtest_wait_balance_history_rpc_ready
   regtest_wait_until_synced_height "$snapshot_height"
   regtest_assert_utxo_value_sat "$tracked_txid" "$tracked_vout" "100000000"
+  readiness="$(regtest_rpc_call_balance_history get_readiness '[]')"
+  regtest_assert_json_expr "$readiness" "data['result']['script_registry']['coverage_mode']" "post_snapshot_only"
+  regtest_assert_json_expr "$readiness" "data['result']['script_registry']['capabilities']['script_registry_complete_coverage']" "False"
 
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
     -rpcwallet="$WALLET_NAME" lockunspent true \
@@ -112,7 +105,7 @@ main() {
 
   regtest_mine_blocks 1 "$mining_address"
   spend_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_mine_blocks 5 "$mining_address"
+  regtest_mine_until_height_is_stable "$spend_height" "$mining_address"
   regtest_wait_until_synced_height "$spend_height"
 
   regtest_assert_utxo_missing "$tracked_txid" "$tracked_vout"

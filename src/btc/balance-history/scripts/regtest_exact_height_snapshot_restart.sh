@@ -99,7 +99,7 @@ main() {
 
     regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" status \
       --height "$target_height" >"$status_file"
-    regtest_assert_json_file "$status_file" "data['job']['stage']" "$expected_stage"
+    regtest_assert_json_file "$status_file" "data['job']['core']['stage']" "$expected_stage"
     regtest_assert_json_file "$status_file" "data['state']['active_job_height']" "$target_height"
 
     regtest_log "Resuming target=${target_height} after checkpoint=${checkpoint}"

@@ -90,6 +90,11 @@ bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_capacity.sh
 - `WORK_DIR` 所在块设备在 chain load 和各阶段前后的 I/O operation、sector 和 I/O time 差值；
 - 构造链上负载所需时间和 warm/cold-advisory 模式。
 
+拆分 snapshot 后，`actual_utxo_count`、`balance_history_count`、`block_commit_count`、
+`snapshot_bytes` 和两项 file SHA-256 均对应 core artifact；`script_registry_count` 读取独立
+registry artifact 的 `entry_count`。默认 create/export/verify 仍覆盖两个组件，install 只恢复 core。
+下文历史基线使用旧的聚合 artifact，比较文件大小或安装耗时时应区分这两种格式。
+
 `peak_rss_kib_sampled` 是采样值，不是内核提供的完整进程树 high-water mark。脚本直接运行
 预构建二进制，避免把 Cargo 编译开销计入阶段指标；它也不会统计 bitcoind 自身资源。
 
