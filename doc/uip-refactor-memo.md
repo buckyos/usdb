@@ -1535,7 +1535,7 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
 
 ## Balance-History Split Snapshot 发布与部署闭环
 
-状态：2026-09-05 批次 1 至 4 已提交；批次 5 已实现并完成定向测试，等待 review，尚未提交。
+状态：2026-09-05 批次 1 至 5 已提交；批次 5 提交为 `a531d2c`。
 
 - snapshot release record 直接升级为 v3，必选 core 与可选 script registry 使用独立 artifact ID、
   object prefix、文件清单、断点 staging 和 immutable 安装目录；旧 v2 单文件 record 不保留兼容入口。
@@ -1553,3 +1553,5 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
 - 主网 wrapper 已恢复 split `finalize/prepare-release/publish/validate-install/archive`，发布工具严格校验
   两类 completion marker 和 finalization identity。Python 工具测试、ShellCheck 与 Rust registry
   activation 定向测试已通过；真实 R2 和目标节点 E2E 留到批次 6。
+- 大规模 registry 精确 row count 改为 256 个 SHA-256 首字节有序范围，保持全量校验并提供范围、
+  行数、百分比和 ETA；TTY 使用单行刷新，非 TTY heartbeat 继续写入终端、日志和持久化 job state。

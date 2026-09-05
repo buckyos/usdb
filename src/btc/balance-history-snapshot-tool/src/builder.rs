@@ -1,4 +1,4 @@
-use crate::verify::{VerifiedScriptRegistry, VerifiedSnapshot};
+use crate::verify::{SnapshotVerificationEvent, VerifiedScriptRegistry, VerifiedSnapshot};
 use crate::{
     BuilderLock, BuilderPaths, CompletedSnapshotRef, ScriptRegistryCompleteMarker,
     SnapshotBuildJob, SnapshotBuildStage, SnapshotBuilderState, SnapshotCompleteMarker,
@@ -19,7 +19,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -117,6 +117,213 @@ fn print_verification_progress(
     );
 }
 
+struct VerificationProgressDisplay {
+    bar: ProgressBar,
+    interactive: bool,
+    scope: &'static str,
+    height: u32,
+    bounded: bool,
+}
+
+impl VerificationProgressDisplay {
+    fn new(scope: &'static str, height: u32) -> Self {
+        let interactive = std::io::stderr().is_terminal();
+        let bar = if interactive {
+            let bar = ProgressBar::new_spinner();
+            bar.set_draw_target(ProgressDrawTarget::stderr_with_hz(4));
+            bar.enable_steady_tick(Duration::from_millis(250));
+            bar
+        } else {
+            ProgressBar::hidden()
+        };
+        Self {
+            bar,
+            interactive,
+            scope,
+            height,
+            bounded: false,
+        }
+    }
+
+    fn phase_started(&mut self, phase: SnapshotVerificationPhase, verification_elapsed: Duration) {
+        self.bounded = false;
+        if self.interactive {
+            self.bar.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{prefix:.bold} {spinner:.green} [{elapsed_precise}] {msg}")
+                    .expect("Invalid snapshot verification spinner template"),
+            );
+            self.bar.set_prefix(format!("Verify {}", self.scope));
+            self.bar.reset_elapsed();
+            self.bar
+                .set_message(self.message(phase, Duration::ZERO, verification_elapsed, None));
+        } else {
+            print_verification_progress(
+                if self.scope == "registry" {
+                    "registry_phase_started"
+                } else {
+                    "phase_started"
+                },
+                self.height,
+                phase,
+                Duration::ZERO,
+                verification_elapsed,
+            );
+        }
+    }
+
+    fn update(
+        &mut self,
+        phase: SnapshotVerificationPhase,
+        completed_units: u64,
+        total_units: u64,
+        processed_items: Option<u64>,
+        phase_elapsed: Duration,
+        verification_elapsed: Duration,
+    ) {
+        if !self.interactive {
+            return;
+        }
+        if !self.bounded {
+            let template = if phase == SnapshotVerificationPhase::FileHash {
+                "{prefix:.bold} [{elapsed_precise}] [{bar:32.cyan/blue}] {bytes}/{total_bytes} {bytes_per_sec} {percent:>3}% ({eta_precise} remaining) {msg}"
+            } else {
+                "{prefix:.bold} [{elapsed_precise}] [{bar:32.cyan/blue}] {pos}/{len} ranges {percent:>3}% ({eta_precise} remaining) {msg}"
+            };
+            self.bar.set_style(
+                ProgressStyle::default_bar()
+                    .template(template)
+                    .expect("Invalid snapshot verification progress template")
+                    .progress_chars("#>-"),
+            );
+            self.bar.set_length(total_units);
+            self.bounded = true;
+        }
+        self.bar.set_position(completed_units);
+        self.bar.set_message(self.message(
+            phase,
+            phase_elapsed,
+            verification_elapsed,
+            processed_items,
+        ));
+    }
+
+    fn heartbeat(
+        &self,
+        phase: SnapshotVerificationPhase,
+        phase_elapsed: Duration,
+        verification_elapsed: Duration,
+        progress: Option<&SnapshotVerificationProgress>,
+    ) {
+        if self.interactive {
+            self.bar.set_message(self.message(
+                phase,
+                phase_elapsed,
+                verification_elapsed,
+                progress.and_then(|value| value.processed_items),
+            ));
+            return;
+        }
+        let event = if self.scope == "registry" {
+            "registry_heartbeat"
+        } else {
+            "heartbeat"
+        };
+        let mut line = format_verification_progress_line(
+            &Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+            event,
+            self.height,
+            phase,
+            phase_elapsed,
+            verification_elapsed,
+        );
+        if let Some(progress) = progress
+            && let (Some(completed), Some(total)) = (progress.completed_units, progress.total_units)
+        {
+            let percent = if total == 0 {
+                100.0
+            } else {
+                completed as f64 * 100.0 / total as f64
+            };
+            line.push_str(&format!(
+                ", progress={completed}/{total} ({percent:.2}%), processed_items={}",
+                progress.processed_items.unwrap_or(0)
+            ));
+        }
+        eprintln!("{line}");
+    }
+
+    fn finish(
+        &self,
+        phase: SnapshotVerificationPhase,
+        phase_elapsed: Duration,
+        verification_elapsed: Duration,
+        succeeded: bool,
+    ) {
+        if self.interactive {
+            self.bar.finish_and_clear();
+        }
+        print_verification_progress(
+            match (self.scope, succeeded) {
+                ("registry", true) => "registry_completed",
+                ("registry", false) => "registry_failed",
+                (_, true) => "completed",
+                (_, false) => "failed",
+            },
+            self.height,
+            phase,
+            phase_elapsed,
+            verification_elapsed,
+        );
+    }
+
+    fn message(
+        &self,
+        phase: SnapshotVerificationPhase,
+        phase_elapsed: Duration,
+        verification_elapsed: Duration,
+        processed_items: Option<u64>,
+    ) -> String {
+        let (position, total) = verification_phase_position(self.scope, phase);
+        let mut message = format!(
+            "phase={} ({position}/{total}), phase_elapsed={}, verify_elapsed={}",
+            verification_phase_name(phase),
+            format_elapsed(phase_elapsed),
+            format_elapsed(verification_elapsed)
+        );
+        if let Some(processed_items) = processed_items {
+            message.push_str(&format!(", rows={processed_items}"));
+        }
+        message
+    }
+}
+
+fn verification_phase_position(scope: &str, phase: SnapshotVerificationPhase) -> (u8, u8) {
+    if scope == "registry" {
+        let position = match phase {
+            SnapshotVerificationPhase::FileHash => 1,
+            SnapshotVerificationPhase::IntegrityCheck => 2,
+            SnapshotVerificationPhase::Schema => 3,
+            SnapshotVerificationPhase::RegistryCount => 4,
+            SnapshotVerificationPhase::CommitIdentity => 5,
+            _ => 0,
+        };
+        (position, 5)
+    } else {
+        let position = match phase {
+            SnapshotVerificationPhase::FileHash => 1,
+            SnapshotVerificationPhase::IntegrityCheck => 2,
+            SnapshotVerificationPhase::Schema => 3,
+            SnapshotVerificationPhase::BalanceHistoryCount => 4,
+            SnapshotVerificationPhase::UtxoCount => 5,
+            SnapshotVerificationPhase::BlockCommitCount => 6,
+            SnapshotVerificationPhase::CommitIdentity => 7,
+            _ => 0,
+        };
+        (position, 7)
+    }
+}
+
 /// Inputs controlling one exact-height create or resume operation.
 #[derive(Clone, Debug)]
 pub struct SnapshotCreateOptions {
@@ -144,12 +351,12 @@ pub struct SnapshotResumeVerifyOptions {
 }
 
 enum VerificationMessage {
-    Phase(SnapshotVerificationPhase),
+    Event(SnapshotVerificationEvent),
     Finished(Box<Result<VerifiedSnapshot, String>>),
 }
 
 enum RegistryVerificationMessage {
-    Phase(SnapshotVerificationPhase),
+    Event(SnapshotVerificationEvent),
     Finished(Box<Result<VerifiedScriptRegistry, String>>),
 }
 
@@ -1267,9 +1474,9 @@ impl ExactHeightSnapshotBuilder {
                     &expected_network,
                     expected_height,
                     expected_block_hash.as_deref(),
-                    move |phase| {
+                    move |event| {
                         progress_sender
-                            .send(VerificationMessage::Phase(phase))
+                            .send(VerificationMessage::Event(event))
                             .map_err(|_| {
                                 "Snapshot verification progress receiver disconnected".to_string()
                             })
@@ -1283,28 +1490,51 @@ impl ExactHeightSnapshotBuilder {
         let verification_started = Instant::now();
         let mut current_phase: Option<(SnapshotVerificationPhase, Instant)> = None;
         let mut persistence_error = None;
+        let mut display = VerificationProgressDisplay::new("core", expected_height);
         loop {
             match receiver.recv_timeout(VERIFICATION_HEARTBEAT_INTERVAL) {
-                Ok(VerificationMessage::Phase(phase)) => {
-                    if let Some((previous_phase, previous_started)) = current_phase.take() {
-                        print_verification_progress(
-                            "phase_completed",
-                            expected_height,
-                            previous_phase,
-                            previous_started.elapsed(),
-                            verification_started.elapsed(),
-                        );
-                    }
+                Ok(VerificationMessage::Event(SnapshotVerificationEvent::Phase(phase))) => {
                     current_phase = Some((phase, Instant::now()));
-                    if let Err(e) = self.persist_verification_progress(job, job_file, phase, true) {
+                    if let Err(e) =
+                        self.persist_verification_progress(job, job_file, phase, true, None)
+                    {
                         error!("{}", e);
                         persistence_error.get_or_insert(e);
                     }
-                    print_verification_progress(
-                        "phase_started",
-                        expected_height,
+                    display.phase_started(phase, verification_started.elapsed());
+                }
+                Ok(VerificationMessage::Event(SnapshotVerificationEvent::Progress {
+                    phase,
+                    completed_units,
+                    total_units,
+                    processed_items,
+                })) => {
+                    let Some((current, started)) = current_phase.as_ref() else {
+                        return Err(
+                            "Snapshot verification progress arrived before its phase".to_string()
+                        );
+                    };
+                    if *current != phase {
+                        return Err(format!(
+                            "Snapshot verification progress phase mismatch: active={current:?}, update={phase:?}"
+                        ));
+                    }
+                    if let Err(error) = self.persist_verification_progress(
+                        job,
+                        job_file,
                         phase,
-                        Duration::ZERO,
+                        false,
+                        Some((completed_units, total_units, processed_items)),
+                    ) {
+                        error!("{error}");
+                        persistence_error.get_or_insert(error);
+                    }
+                    display.update(
+                        phase,
+                        completed_units,
+                        total_units,
+                        processed_items,
+                        started.elapsed(),
                         verification_started.elapsed(),
                     );
                 }
@@ -1314,17 +1544,11 @@ impl ExactHeightSnapshotBuilder {
                             .to_string()
                     })?;
                     if let Some((phase, phase_started)) = current_phase.take() {
-                        let event = if result.is_ok() {
-                            "phase_completed"
-                        } else {
-                            "phase_failed"
-                        };
-                        print_verification_progress(
-                            event,
-                            expected_height,
+                        display.finish(
                             phase,
                             phase_started.elapsed(),
                             verification_started.elapsed(),
+                            result.is_ok(),
                         );
                     }
                     if let Some(error) = persistence_error {
@@ -1335,17 +1559,16 @@ impl ExactHeightSnapshotBuilder {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if let Some((phase, phase_started)) = current_phase.as_ref() {
                         if let Err(e) =
-                            self.persist_verification_progress(job, job_file, *phase, false)
+                            self.persist_verification_progress(job, job_file, *phase, false, None)
                         {
                             error!("{}", e);
                             persistence_error.get_or_insert(e);
                         }
-                        print_verification_progress(
-                            "heartbeat",
-                            expected_height,
+                        display.heartbeat(
                             *phase,
                             phase_started.elapsed(),
                             verification_started.elapsed(),
+                            job.core.verification.as_ref(),
                         );
                     }
                 }
@@ -1369,6 +1592,7 @@ impl ExactHeightSnapshotBuilder {
         job_file: &Path,
         phase: SnapshotVerificationPhase,
         phase_changed: bool,
+        bounded_progress: Option<(u64, u64, Option<u64>)>,
     ) -> Result<(), String> {
         let now = unix_timestamp();
         let phase_started_at = if phase_changed {
@@ -1381,10 +1605,31 @@ impl ExactHeightSnapshotBuilder {
                 .map(|progress| progress.phase_started_at)
                 .unwrap_or(now)
         };
+        let previous = job
+            .core
+            .verification
+            .as_ref()
+            .filter(|progress| progress.phase == phase);
+        let (completed_units, total_units, processed_items) = bounded_progress
+            .map(|(completed, total, processed)| (Some(completed), Some(total), processed))
+            .unwrap_or_else(|| {
+                previous
+                    .map(|progress| {
+                        (
+                            progress.completed_units,
+                            progress.total_units,
+                            progress.processed_items,
+                        )
+                    })
+                    .unwrap_or((None, None, None))
+            });
         let progress = SnapshotVerificationProgress {
             phase,
             phase_started_at,
             heartbeat_at: now,
+            completed_units,
+            total_units,
+            processed_items,
         };
         job.core.verification = Some(progress);
         job.updated_at = now;
@@ -1396,10 +1641,13 @@ impl ExactHeightSnapshotBuilder {
             );
         } else {
             info!(
-                "Snapshot verification heartbeat: height={}, phase={:?}, phase_elapsed_secs={}",
+                "Snapshot verification heartbeat: height={}, phase={:?}, phase_elapsed_secs={}, completed_units={:?}, total_units={:?}, processed_items={:?}",
                 job.target_height,
                 phase,
-                now.saturating_sub(phase_started_at)
+                now.saturating_sub(phase_started_at),
+                completed_units,
+                total_units,
+                processed_items
             );
         }
         Ok(())
@@ -1427,9 +1675,9 @@ impl ExactHeightSnapshotBuilder {
                     &db_path,
                     &manifest_path,
                     &core_manifest,
-                    move |phase| {
+                    move |event| {
                         progress_sender
-                            .send(RegistryVerificationMessage::Phase(phase))
+                            .send(RegistryVerificationMessage::Event(event))
                             .map_err(|_| {
                                 "Registry verification progress receiver disconnected".to_string()
                             })
@@ -1445,30 +1693,51 @@ impl ExactHeightSnapshotBuilder {
         let verification_started = Instant::now();
         let mut current_phase: Option<(SnapshotVerificationPhase, Instant)> = None;
         let mut persistence_error = None;
+        let mut display = VerificationProgressDisplay::new("registry", expected_height);
         loop {
             match receiver.recv_timeout(VERIFICATION_HEARTBEAT_INTERVAL) {
-                Ok(RegistryVerificationMessage::Phase(phase)) => {
-                    if let Some((previous_phase, previous_started)) = current_phase.take() {
-                        print_verification_progress(
-                            "registry_phase_completed",
-                            expected_height,
-                            previous_phase,
-                            previous_started.elapsed(),
-                            verification_started.elapsed(),
-                        );
-                    }
+                Ok(RegistryVerificationMessage::Event(SnapshotVerificationEvent::Phase(phase))) => {
                     current_phase = Some((phase, Instant::now()));
-                    if let Err(error) =
-                        self.persist_registry_verification_progress(job, job_file, phase, true)
+                    if let Err(error) = self
+                        .persist_registry_verification_progress(job, job_file, phase, true, None)
                     {
                         error!("{error}");
                         persistence_error.get_or_insert(error);
                     }
-                    print_verification_progress(
-                        "registry_phase_started",
-                        expected_height,
+                    display.phase_started(phase, verification_started.elapsed());
+                }
+                Ok(RegistryVerificationMessage::Event(SnapshotVerificationEvent::Progress {
+                    phase,
+                    completed_units,
+                    total_units,
+                    processed_items,
+                })) => {
+                    let Some((current, started)) = current_phase.as_ref() else {
+                        return Err(
+                            "Registry verification progress arrived before its phase".to_string()
+                        );
+                    };
+                    if *current != phase {
+                        return Err(format!(
+                            "Registry verification progress phase mismatch: active={current:?}, update={phase:?}"
+                        ));
+                    }
+                    if let Err(error) = self.persist_registry_verification_progress(
+                        job,
+                        job_file,
                         phase,
-                        Duration::ZERO,
+                        false,
+                        Some((completed_units, total_units, processed_items)),
+                    ) {
+                        error!("{error}");
+                        persistence_error.get_or_insert(error);
+                    }
+                    display.update(
+                        phase,
+                        completed_units,
+                        total_units,
+                        processed_items,
+                        started.elapsed(),
                         verification_started.elapsed(),
                     );
                 }
@@ -1478,16 +1747,11 @@ impl ExactHeightSnapshotBuilder {
                             .to_string()
                     })?;
                     if let Some((phase, phase_started)) = current_phase.take() {
-                        print_verification_progress(
-                            if result.is_ok() {
-                                "registry_phase_completed"
-                            } else {
-                                "registry_phase_failed"
-                            },
-                            expected_height,
+                        display.finish(
                             phase,
                             phase_started.elapsed(),
                             verification_started.elapsed(),
+                            result.is_ok(),
                         );
                     }
                     if let Some(error) = persistence_error {
@@ -1497,18 +1761,17 @@ impl ExactHeightSnapshotBuilder {
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if let Some((phase, phase_started)) = current_phase.as_ref() {
-                        if let Err(error) = self
-                            .persist_registry_verification_progress(job, job_file, *phase, false)
-                        {
+                        if let Err(error) = self.persist_registry_verification_progress(
+                            job, job_file, *phase, false, None,
+                        ) {
                             error!("{error}");
                             persistence_error.get_or_insert(error);
                         }
-                        print_verification_progress(
-                            "registry_heartbeat",
-                            expected_height,
+                        display.heartbeat(
                             *phase,
                             phase_started.elapsed(),
                             verification_started.elapsed(),
+                            job.script_registry.verification.as_ref(),
                         );
                     }
                 }
@@ -1532,6 +1795,7 @@ impl ExactHeightSnapshotBuilder {
         job_file: &Path,
         phase: SnapshotVerificationPhase,
         phase_changed: bool,
+        bounded_progress: Option<(u64, u64, Option<u64>)>,
     ) -> Result<(), String> {
         let now = unix_timestamp();
         let phase_started_at = if phase_changed {
@@ -1544,19 +1808,43 @@ impl ExactHeightSnapshotBuilder {
                 .map(|progress| progress.phase_started_at)
                 .unwrap_or(now)
         };
+        let previous = job
+            .script_registry
+            .verification
+            .as_ref()
+            .filter(|progress| progress.phase == phase);
+        let (completed_units, total_units, processed_items) = bounded_progress
+            .map(|(completed, total, processed)| (Some(completed), Some(total), processed))
+            .unwrap_or_else(|| {
+                previous
+                    .map(|progress| {
+                        (
+                            progress.completed_units,
+                            progress.total_units,
+                            progress.processed_items,
+                        )
+                    })
+                    .unwrap_or((None, None, None))
+            });
         job.script_registry.verification = Some(SnapshotVerificationProgress {
             phase,
             phase_started_at,
             heartbeat_at: now,
+            completed_units,
+            total_units,
+            processed_items,
         });
         job.updated_at = now;
         save_json_atomic(job_file, job)?;
         info!(
-            "Script-registry verification progress: height={}, phase={:?}, phase_changed={}, phase_elapsed_secs={}",
+            "Script-registry verification progress: height={}, phase={:?}, phase_changed={}, phase_elapsed_secs={}, completed_units={:?}, total_units={:?}, processed_items={:?}",
             job.target_height,
             phase,
             phase_changed,
-            now.saturating_sub(phase_started_at)
+            now.saturating_sub(phase_started_at),
+            completed_units,
+            total_units,
+            processed_items
         );
         Ok(())
     }
@@ -2306,6 +2594,29 @@ mod tests {
     }
 
     #[test]
+    fn verification_progress_display_accepts_bounded_registry_updates() {
+        let mut display = VerificationProgressDisplay::new("registry", 963_800);
+        display.interactive = true;
+        display.phase_started(
+            SnapshotVerificationPhase::RegistryCount,
+            Duration::from_secs(30),
+        );
+        display.update(
+            SnapshotVerificationPhase::RegistryCount,
+            64,
+            256,
+            Some(385_000_000),
+            Duration::from_secs(900),
+            Duration::from_secs(1_800),
+        );
+        assert!(display.bounded);
+        assert_eq!(
+            verification_phase_position("registry", SnapshotVerificationPhase::RegistryCount),
+            (4, 5)
+        );
+    }
+
+    #[test]
     fn new_incremental_job_requires_workspace_at_completed_base() {
         let builder = ExactHeightSnapshotBuilder::new(PathBuf::from("/unused"));
         let job = SnapshotBuildJob::new(11, Some(completed(10)), None);
@@ -2474,6 +2785,7 @@ mod tests {
                 &job_file,
                 SnapshotVerificationPhase::IntegrityCheck,
                 true,
+                None,
             )
             .unwrap();
         let first = job.core.verification.clone().unwrap();
@@ -2483,6 +2795,7 @@ mod tests {
                 &job_file,
                 SnapshotVerificationPhase::IntegrityCheck,
                 false,
+                Some((64, 256, Some(1_000))),
             )
             .unwrap();
 
@@ -2491,6 +2804,9 @@ mod tests {
         assert_eq!(progress.phase, SnapshotVerificationPhase::IntegrityCheck);
         assert_eq!(progress.phase_started_at, first.phase_started_at);
         assert!(progress.heartbeat_at >= first.heartbeat_at);
+        assert_eq!(progress.completed_units, Some(64));
+        assert_eq!(progress.total_units, Some(256));
+        assert_eq!(progress.processed_items, Some(1_000));
 
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -113,9 +113,14 @@ bash "$SCRIPT" publish --height "$H"
 bash "$SCRIPT" archive --height "$H" # optional offline archive only
 ```
 
-`create` 和 `resume-verify` 在验证期间每 30 秒向终端 `stderr` 输出一次带本地时间的进度，
-包括当前 phase、phase elapsed 和本轮 verify elapsed；phase 开始、完成或失败时也会立即输出。
-机器可读的最终 JSON 仍独占 `stdout`。终端断开或需要从另一个会话观察时，可运行：
+`create` 和 `resume-verify` 在交互式终端使用一条原地刷新的验证进度行，显示 component、phase
+序号、phase elapsed 和本轮 verify elapsed。十亿级 script registry 的精确 row count 按
+SHA-256 首字节拆成 256 个有序范围，额外显示范围百分比、已计数行数和 ETA；该分段只增加
+可观测性，不减少校验范围。file hash 阶段显示已读取字节、吞吐和 ETA；SQLite integrity
+阶段无法取得可信的内部页进度，保持 spinner 与 elapsed。重定向输出或非 TTY 环境仍每 30 秒向
+`stderr` 输出带本地时间的 heartbeat，并包含已有的范围/行进度。机器可读的最终 JSON 仍独占
+`stdout`。终端断开或需要从
+另一个会话观察时，可运行：
 
 ```bash
 bash "$SCRIPT" status --height "$H"

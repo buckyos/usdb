@@ -614,6 +614,59 @@ impl ScriptRegistrySnapshotDb {
         count_rows(&self.conn, "script_registry")
     }
 
+    /// Counts mappings exactly in ordered hash-prefix ranges and reports progress.
+    ///
+    /// Script hashes are SHA-256 values, so their first byte provides 256 stable,
+    /// approximately uniform ranges. Each range remains a normal indexed SQLite
+    /// `COUNT(*)` query; splitting the scan makes a multi-hour verification
+    /// observable without loading keys or values into process memory.
+    pub fn entry_count_with_progress<F>(&self, mut on_progress: F) -> Result<u64, String>
+    where
+        F: FnMut(u64, u64, u64) -> Result<(), String>,
+    {
+        const RANGE_COUNT: u64 = 256;
+
+        let mut bounded = self
+            .conn
+            .prepare(
+                "SELECT COUNT(*) FROM script_registry WHERE script_hash >= ?1 AND script_hash < ?2",
+            )
+            .map_err(|error| format!("Failed to prepare bounded script_registry count: {error}"))?;
+        let mut final_range = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM script_registry WHERE script_hash >= ?1")
+            .map_err(|error| {
+                format!("Failed to prepare final script_registry count range: {error}")
+            })?;
+        let mut total = 0_u64;
+        for prefix in 0_u16..=u8::MAX.into() {
+            let lower = [prefix as u8];
+            let count: i64 = if prefix < u8::MAX.into() {
+                let upper = [(prefix + 1) as u8];
+                bounded
+                    .query_row((lower.as_slice(), upper.as_slice()), |row| row.get(0))
+                    .map_err(|error| {
+                        format!(
+                            "Failed to count script_registry hash prefix {prefix:#04x}: {error}"
+                        )
+                    })?
+            } else {
+                final_range
+                    .query_row([lower.as_slice()], |row| row.get(0))
+                    .map_err(|error| {
+                        format!(
+                            "Failed to count script_registry hash prefix {prefix:#04x}: {error}"
+                        )
+                    })?
+            };
+            total = total
+                .checked_add(checked_u64("script_registry range row count", count)?)
+                .ok_or_else(|| "script_registry row count overflow".to_string())?;
+            on_progress(u64::from(prefix) + 1, RANGE_COUNT, total)?;
+        }
+        Ok(total)
+    }
+
     /// Verifies the frozen table set and `WITHOUT ROWID` storage contract.
     pub fn verify_schema(&self) -> Result<(), String> {
         verify_table_set(&self.conn, &["meta", "script_registry"], "script registry")?;
@@ -977,6 +1030,36 @@ mod tests {
             }])
             .unwrap_err();
         assert!(error.contains("Script registry hash mismatch"));
+    }
+
+    #[test]
+    fn registry_progress_count_covers_all_hash_prefix_ranges() {
+        let path = temp_file("registry-progress-count");
+        let db = ScriptRegistrySnapshotDb::create(&path).unwrap();
+        for prefix in [0_u8, 1, 127, 254, 255] {
+            let mut hash = vec![0_u8; 32];
+            hash[0] = prefix;
+            db.conn
+                .execute(
+                    "INSERT INTO script_registry (script_hash, script_pubkey) VALUES (?1, ?2)",
+                    (hash, vec![prefix]),
+                )
+                .unwrap();
+        }
+
+        let mut updates = Vec::new();
+        let count = db
+            .entry_count_with_progress(|completed, total, rows| {
+                updates.push((completed, total, rows));
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(count, 5);
+        assert_eq!(updates.len(), 256);
+        assert_eq!(updates.first(), Some(&(1, 256, 1)));
+        assert_eq!(updates.last(), Some(&(256, 256, 5)));
+        assert!(updates.windows(2).all(|pair| pair[0].2 <= pair[1].2));
     }
 
     #[test]

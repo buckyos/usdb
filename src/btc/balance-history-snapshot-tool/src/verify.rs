@@ -11,6 +11,18 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const SNAPSHOT_VERIFICATION_CACHE_SIZE_KIB: u32 = 512 * 1024;
+const FILE_HASH_PROGRESS_GRANULARITY_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SnapshotVerificationEvent {
+    Phase(SnapshotVerificationPhase),
+    Progress {
+        phase: SnapshotVerificationPhase,
+        completed_units: u64,
+        total_units: u64,
+        processed_items: Option<u64>,
+    },
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct VerifiedSnapshot {
@@ -58,7 +70,7 @@ pub(crate) fn verify_snapshot_files_with_progress<F>(
     mut on_phase: F,
 ) -> Result<VerifiedSnapshot, String>
 where
-    F: FnMut(SnapshotVerificationPhase) -> Result<(), String>,
+    F: FnMut(SnapshotVerificationEvent) -> Result<(), String>,
 {
     require_file(db_path, "Core snapshot DB")?;
     require_file(manifest_path, "Core snapshot manifest")?;
@@ -76,7 +88,12 @@ where
     )?;
 
     let started = begin_phase(SnapshotVerificationPhase::FileHash, db_path, &mut on_phase)?;
-    verify_file_hash(db_path, &manifest.file_sha256, "Core snapshot")?;
+    verify_file_hash_with_progress(
+        db_path,
+        &manifest.file_sha256,
+        "Core snapshot",
+        &mut on_phase,
+    )?;
     finish_phase(SnapshotVerificationPhase::FileHash, db_path, started);
 
     let db = CoreSnapshotDb::open_for_verification(db_path, SNAPSHOT_VERIFICATION_CACHE_SIZE_KIB)?;
@@ -190,7 +207,7 @@ pub(crate) fn verify_registry_files_with_progress<F>(
     mut on_phase: F,
 ) -> Result<VerifiedScriptRegistry, String>
 where
-    F: FnMut(SnapshotVerificationPhase) -> Result<(), String>,
+    F: FnMut(SnapshotVerificationEvent) -> Result<(), String>,
 {
     require_file(db_path, "Script-registry DB")?;
     require_file(manifest_path, "Script-registry manifest")?;
@@ -200,7 +217,12 @@ where
     verify_file_name(db_path, &manifest.file_name, "Script registry")?;
 
     let started = begin_phase(SnapshotVerificationPhase::FileHash, db_path, &mut on_phase)?;
-    verify_file_hash(db_path, &manifest.file_sha256, "Script registry")?;
+    verify_file_hash_with_progress(
+        db_path,
+        &manifest.file_sha256,
+        "Script registry",
+        &mut on_phase,
+    )?;
     finish_phase(SnapshotVerificationPhase::FileHash, db_path, started);
     let db = ScriptRegistrySnapshotDb::open_for_verification(
         db_path,
@@ -228,7 +250,15 @@ where
         db_path,
         &mut on_phase,
     )?;
-    let entry_count = db.entry_count()?;
+    let entry_count =
+        db.entry_count_with_progress(|completed_units, total_units, processed_items| {
+            on_phase(SnapshotVerificationEvent::Progress {
+                phase: SnapshotVerificationPhase::RegistryCount,
+                completed_units,
+                total_units,
+                processed_items: Some(processed_items),
+            })
+        })?;
     finish_phase(SnapshotVerificationPhase::RegistryCount, db_path, started);
     if entry_count != meta.entry_count || entry_count != manifest.entry_count {
         return Err(format!(
@@ -262,9 +292,9 @@ fn begin_phase<F>(
     on_phase: &mut F,
 ) -> Result<Instant, String>
 where
-    F: FnMut(SnapshotVerificationPhase) -> Result<(), String>,
+    F: FnMut(SnapshotVerificationEvent) -> Result<(), String>,
 {
-    on_phase(phase)?;
+    on_phase(SnapshotVerificationEvent::Phase(phase))?;
     info!(
         "Starting snapshot verification phase {:?} for {}",
         phase,
@@ -465,8 +495,36 @@ pub(crate) fn verify_published_registry_marker(
     Ok(marker)
 }
 
-fn verify_file_hash(path: &Path, expected: &str, label: &str) -> Result<(), String> {
-    let actual = SnapshotHash::calc_hash(path)?;
+fn verify_file_hash_with_progress<F>(
+    path: &Path,
+    expected: &str,
+    label: &str,
+    on_progress: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(SnapshotVerificationEvent) -> Result<(), String>,
+{
+    let mut last_reported = 0_u64;
+    let mut progress_error = None;
+    let actual = SnapshotHash::calc_hash_with_progress(path, |processed, total| {
+        let should_report = processed == 0
+            || processed == total
+            || processed.saturating_sub(last_reported) >= FILE_HASH_PROGRESS_GRANULARITY_BYTES;
+        if should_report && progress_error.is_none() {
+            if let Err(error) = on_progress(SnapshotVerificationEvent::Progress {
+                phase: SnapshotVerificationPhase::FileHash,
+                completed_units: processed,
+                total_units: total,
+                processed_items: None,
+            }) {
+                progress_error = Some(error);
+            }
+            last_reported = processed;
+        }
+    })?;
+    if let Some(error) = progress_error {
+        return Err(error);
+    }
     if actual != expected {
         return Err(format!(
             "{label} file hash mismatch: manifest={expected}, actual={actual}"

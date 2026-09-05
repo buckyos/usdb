@@ -1,6 +1,7 @@
 use crate::{
     BuilderPaths, CompletedSnapshotRef, SnapshotBuildJob, SnapshotBuildStage, SnapshotBuilderState,
-    load_json, save_json_atomic, unique_run_id,
+    SnapshotVerificationPhase, SnapshotVerificationProgress, load_json, save_json_atomic,
+    unique_run_id,
 };
 use std::path::PathBuf;
 
@@ -9,6 +10,23 @@ fn temp_root(name: &str) -> PathBuf {
         .join("usdb")
         .join("balance_history_snapshot_tool")
         .join(format!("{}-{}", name, unique_run_id()))
+}
+
+#[test]
+fn verification_progress_accepts_an_in_flight_state_without_bounded_units() {
+    let progress: SnapshotVerificationProgress = serde_json::from_str(
+        r#"{
+          "phase": "registry_count",
+          "phase_started_at": 10,
+          "heartbeat_at": 20
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(progress.phase, SnapshotVerificationPhase::RegistryCount);
+    assert_eq!(progress.completed_units, None);
+    assert_eq!(progress.total_units, None);
+    assert_eq!(progress.processed_items, None);
 }
 
 #[test]

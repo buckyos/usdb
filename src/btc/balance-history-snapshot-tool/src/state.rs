@@ -179,6 +179,15 @@ pub struct SnapshotVerificationProgress {
     pub phase_started_at: u64,
     /// Last heartbeat written while the phase was still running, as Unix seconds.
     pub heartbeat_at: u64,
+    /// Completed work units for phases that expose bounded progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_units: Option<u64>,
+    /// Total work units for phases that expose bounded progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_units: Option<u64>,
+    /// Exact rows observed so far when a count phase exposes progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processed_items: Option<u64>,
 }
 
 /// Identity and managed path of a completed immutable snapshot artifact.

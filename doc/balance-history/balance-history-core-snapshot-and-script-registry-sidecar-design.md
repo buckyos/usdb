@@ -231,6 +231,12 @@ sidecar 不可用时，余额和共识服务继续运行；只有 snapshot heigh
 pointer/manifest digest、路径约束、manifest 与 live core identity、SQLite schema/meta，并对实际
 返回的每条 `script_pubkey` 重新计算 canonical script hash。
 
+script registry 的精确 count 保持全量校验，但按 SHA-256 首字节拆分为 256 个有序、近似均匀的
+SQLite index range。交互式生成工具据此提供约 `0.39%` 粒度的原地刷新进度、已处理行数和 ETA；
+非 TTY heartbeat 将相同进度写入 job state 和日志，便于断开终端后通过 `status` 观察。file hash
+按字节显示吞吐、百分比和 ETA；integrity check 仍是 SQLite 内部不可拆分的完整扫描，以 spinner、
+phase 序号和 elapsed 展示。
+
 重复执行 activation 也必须完整验证实际文件；`already_active=true` 仅表示本次通过校验的
 artifact 原本已被选中，不允许据此跳过校验。每次验证成功均重新原子发布 `state.json`，
 `updated_at` 取当前 Unix 秒数与前次值加一的较大值，保证同秒重试及系统时钟回退时仍产生
