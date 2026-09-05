@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "automatic-node-resource-policy",
+  "type": "added",
+  "scopes": ["bitcoin", "balance-history", "deployment", "node-runtime"],
+  "summary": "Manage capped whole-node memory budgets across Bitcoin and balance-history bootstrap phases",
+  "details": [
+    "New setup and configure flows default to proportional automatic allocation with independently configurable Bitcoin and balance-history ceilings for 32 GB and larger hosts.",
+    "The controller releases old allocations before overlapping historical indexing, demotes Bitcoin after stable full readiness, and resumes interrupted transitions from verified container settings.",
+    "Snapshot import remains independent of resource polling, and completed imports are preserved across cache and memory changes.",
+    "Configuration checks reject incompatible balance-history cache budgets before snapshot import; resource phases and planned restarts are visible in node status."
+  ],
+  "operator_actions": [
+    "Use usdb-node resources --json to preview all phase budgets and setup/configure --bh-memory-cap to set a balance-history ceiling.",
+    "Existing configurations retain manual mode. Stop the node before using set-resource-policy --mode auto to opt into managed restarts and persist the new budget.",
+    "Inspect node.resources.json and controller logs if a resource transition is interrupted; retain the existing data directories."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": true, "restart_required": true},
+  "references": []
+}

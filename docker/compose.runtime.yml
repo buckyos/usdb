@@ -34,7 +34,7 @@ x-balance-history-environment: &balance-history-environment
   BH_SYNC_LOCAL_LOADER_THRESHOLD: ${BH_SYNC_LOCAL_LOADER_THRESHOLD:-4294967295}
   BH_SYNC_BATCH_SIZE: ${BH_SYNC_BATCH_SIZE:-128}
   BH_SYNC_UTXO_MAX_CACHE_BYTES: ${BH_SYNC_UTXO_MAX_CACHE_BYTES:-4294967296}
-  BH_SYNC_BALANCE_MAX_CACHE_BYTES: ${BH_SYNC_BALANCE_MAX_CACHE_BYTES:-10737418240}
+  BH_SYNC_BALANCE_MAX_CACHE_BYTES: ${BH_SYNC_BALANCE_MAX_CACHE_BYTES:-8589934592}
   BH_SYNC_MAX_MEMORY_PERCENT: ${BH_SYNC_MAX_MEMORY_PERCENT:-75}
   BH_SYNC_MAX_SYNC_BLOCK_HEIGHT: ${BH_SYNC_MAX_SYNC_BLOCK_HEIGHT:-4294967295}
   BH_SNAPSHOT_TRUST_MODE: ${BH_SNAPSHOT_TRUST_MODE:-signed}
@@ -65,6 +65,7 @@ services:
       - ${BH_SNAPSHOT_HOST_DIR:?BH_SNAPSHOT_HOST_DIR is required}:/snapshots:ro
       - ${BH_SNAPSHOT_TRUST_HOST_DIR:?BH_SNAPSHOT_TRUST_HOST_DIR is required}:/run/usdb/keys:ro
     mem_limit: ${BH_MEMORY_LIMIT:-20g}
+    memswap_limit: ${BH_MEMORY_SWAP_LIMIT:-${BH_MEMORY_LIMIT:-20g}}
 
   balance-history:
     <<: *usdb-service-defaults
@@ -84,6 +85,7 @@ services:
     ports:
       - "${BH_BIND_ADDRESS:-127.0.0.1}:${BH_BIND_PORT:-28010}:28010"
     mem_limit: ${BH_MEMORY_LIMIT:-20g}
+    memswap_limit: ${BH_MEMORY_SWAP_LIMIT:-${BH_MEMORY_LIMIT:-20g}}
     stop_grace_period: ${BH_STOP_GRACE_PERIOD:-2m}
     healthcheck:
       test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/28010'"]
@@ -144,6 +146,7 @@ services:
 
   usdb-chain-init:
     image: ${USDB_CHAIN_IMAGE:?USDB_CHAIN_IMAGE must reference a versioned release image}
+    mem_limit: ${USDB_CHAIN_MEMORY_LIMIT:-5g}
     restart: "no"
     entrypoint: ["/opt/usdb/scripts/usdb_runtime_init.sh"]
     security_opt:

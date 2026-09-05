@@ -22,6 +22,11 @@ Actions:
   up-data <minimum-tip-height> [anchor-height btc-block-hash]
                  Wait for the BTC data-start anchor, then start snapshot-loader
                  and balance-history without waiting for full Bitcoin readiness.
+  managed-start-snapshot <minimum-tip-height> [anchor-height btc-block-hash]
+  managed-start-data <minimum-tip-height> [anchor-height btc-block-hash]
+                 Start one managed stage without waiting for a snapshot import.
+  quiesce-data   Gracefully stop dependent services for a managed resource transition.
+  container-ids  Print this project's container IDs for resource inspection.
   data-status    Print the current balance-history readiness response.
   wait-data-origin [height] [timeout]
                  Wait for query-ready balance-history state at the USDB origin.
@@ -111,6 +116,48 @@ compose() {
     "$@"
 }
 
+restore_runtime_restart_policy() {
+  local service container_id
+  for service in "$@"; do
+    container_id="$(compose ps --all --quiet "${service}")"
+    if [[ -n "${container_id}" ]]; then
+      docker update --restart=unless-stopped "${container_id}" >/dev/null
+    fi
+  done
+}
+
+quiesce_runtime_services() {
+  local service container_id state elapsed
+  # Stop consumers first. A controller interruption leaves restart disabled so
+  # Docker cannot race the durable resource transition on its own.
+  for service in "$@"; do
+    container_id="$(compose ps --all --quiet "${service}")"
+    [[ -n "${container_id}" ]] || continue
+    state="$(docker inspect --format '{{.State.Status}}' "${container_id}")"
+    if [[ "${state}" == "paused" ]]; then
+      echo "Cannot quiesce paused service ${service}; operator intervention is required" >&2
+      return 1
+    fi
+    if [[ "${state}" == "running" || "${state}" == "restarting" ]]; then
+      docker update --restart=no "${container_id}" >/dev/null
+      state="$(docker inspect --format '{{.State.Status}}' "${container_id}")"
+      if [[ "${state}" == "running" ]]; then
+        docker kill --signal=SIGTERM "${container_id}" >/dev/null
+      fi
+      elapsed=0
+      while true; do
+        state="$(docker inspect --format '{{.State.Status}}' "${container_id}")"
+        [[ "${state}" == "running" || "${state}" == "restarting" ]] || break
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if ((elapsed % 15 == 0)); then
+          echo "Resource transition: waiting for ${service} to flush and stop (${elapsed}s)" >&2
+        fi
+      done
+    fi
+  done
+}
+
 case "${action}" in
   init-env)
     init_node_env
@@ -129,6 +176,10 @@ case "${action}" in
       exit 1
     }
     validate_bundle --node-env "${node_env}" --require-runtime --require-bitcoin-runtime
+    if [[ "$(node_env_value USDB_RESOURCE_MODE)" == "auto" ]]; then
+      echo "Automatic resources require usdb-node up to coordinate the data-start transition" >&2
+      exit 1
+    fi
     btc_minimum_tip_height="${1:-}"
     btc_anchor_height="${2:-}"
     btc_data_hash="${3:-}"
@@ -142,6 +193,31 @@ case "${action}" in
         "${btc_minimum_tip_height}" "${btc_anchor_height}" "${btc_data_hash}"
     compose config --quiet
     compose up -d snapshot-loader balance-history script-registry-installer
+    ;;
+  managed-start-snapshot|managed-start-data)
+    require_node_env
+    validate_bundle --node-env "${node_env}" --require-runtime --require-bitcoin-runtime
+    if [[ "$(node_env_value USDB_RESOURCE_MODE)" != "auto" || "$(node_env_value USDB_RESOURCE_PHASE)" == "bitcoin" ]]; then
+      echo "Managed data startup requires a committed overlap or steady resource plan" >&2
+      exit 1
+    fi
+    USDB_TESTNET_BUNDLE_DIR="${bundle_dir}" USDB_TESTNET_NODE_ENV="${node_env}" \
+      BTC_READY_WAIT_TIMEOUT_SECS=0 "${bitcoin_runner}" wait-data "$@"
+    if [[ "${action}" == "managed-start-snapshot" ]]; then
+      compose up -d --no-deps snapshot-loader
+    else
+      loader_id="$(compose ps --all --quiet snapshot-loader)"
+      if [[ -z "${loader_id}" || "$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "${loader_id}")" != "exited:0" ]]; then
+        echo "Snapshot loader must finish successfully before balance-history starts" >&2
+        exit 1
+      fi
+      compose up -d --no-deps balance-history script-registry-installer
+      restore_runtime_restart_policy balance-history
+    fi
+    ;;
+  quiesce-data)
+    require_node_env
+    quiesce_runtime_services usdb-control-plane usdb-chain usdb-indexer balance-history
     ;;
   data-status)
     require_node_env
@@ -187,7 +263,8 @@ case "${action}" in
       "$(host_rpc_url BH_BIND_PORT 28010)" \
       "balance-history" \
       --minimum-stable-height "${origin_height}"
-    compose up -d usdb-indexer
+    compose up -d --no-deps usdb-indexer
+    restore_runtime_restart_policy usdb-indexer
     ;;
   install-registry)
     require_node_env
@@ -226,7 +303,29 @@ case "${action}" in
       "$(host_rpc_url USDB_INDEXER_BIND_PORT 28020)" \
       "usdb-indexer" \
       --require-consensus-ready
-    compose up -d usdb-chain-init usdb-chain usdb-control-plane
+    if [[ "$(node_env_value USDB_RESOURCE_MODE)" == "auto" ]]; then
+      # A retry may find only one chain service running. Release the chain's
+      # allocation and database before chain-init reuses the same budget slot.
+      quiesce_runtime_services usdb-control-plane usdb-chain
+      # Explicitly run both existing gates without asking Compose to recreate
+      # a completed snapshot-loader whose old resource allocation has changed.
+      for job in usdb-chain-init paired-checkpoint-recovery; do
+        compose up -d --no-deps "${job}"
+        job_id="$(compose ps --all --quiet "${job}")"
+        if [[ -z "${job_id}" || "$(docker wait "${job_id}")" != "0" ]]; then
+          echo "Managed chain startup gate failed: ${job}" >&2
+          exit 1
+        fi
+      done
+      USDB_TESTNET_BUNDLE_DIR="${bundle_dir}" USDB_TESTNET_NODE_ENV="${node_env}" \
+        "${bitcoin_runner}" wait
+      check_readiness "$(host_rpc_url BH_BIND_PORT 28010)" balance-history --require-consensus-ready
+      check_readiness "$(host_rpc_url USDB_INDEXER_BIND_PORT 28020)" usdb-indexer --require-consensus-ready
+      compose up -d --no-deps usdb-chain usdb-control-plane
+    else
+      compose up -d usdb-chain-init usdb-chain usdb-control-plane
+    fi
+    restore_runtime_restart_policy usdb-chain usdb-control-plane
     ;;
   up)
     require_node_env
@@ -245,6 +344,10 @@ case "${action}" in
   ps)
     require_node_env
     compose ps "$@"
+    ;;
+  container-ids)
+    require_node_env
+    compose ps --all --quiet
     ;;
   logs)
     require_node_env

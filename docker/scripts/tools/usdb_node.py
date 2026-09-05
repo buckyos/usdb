@@ -62,6 +62,15 @@ from validate_network_bundle import (  # noqa: E402
     validate_network_bundle,
     validate_node_env,
 )
+from resource_policy import (  # noqa: E402
+    CAP_DEFAULTS,
+    PHASES as RESOURCE_PHASES,
+    SERVICE_MEMORY_KEYS,
+    build_resource_plan,
+    effective_memory_bytes,
+    resource_mode,
+    validate_resource_environment,
+)
 
 
 RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
@@ -768,6 +777,128 @@ def configured_firewall_mode(layout: ReleaseLayout) -> str:
     return _require_firewall_mode(env.get("USDB_FIREWALL_MODE", "managed"))
 
 
+def _resource_policy_updates(mode: str, caps: dict[str, str]) -> dict[str, str]:
+    """Resolve a new policy before creating credentials or touching service state."""
+    resource_mode({"USDB_RESOURCE_MODE": mode})
+    settings = {**CAP_DEFAULTS, **caps, "USDB_RESOURCE_MODE": mode}
+    if mode == "auto":
+        memory = effective_memory_bytes()
+        for phase in RESOURCE_PHASES:
+            build_resource_plan(memory, phase, settings)
+        settings.update(build_resource_plan(memory, "bitcoin", settings).environment())
+    return settings
+
+
+def _resource_state_path(layout: ReleaseLayout) -> Path:
+    return layout.node_env.with_suffix(".resources.json")
+
+
+def _read_resource_state(layout: ReleaseLayout) -> dict[str, Any]:
+    """Read the durable transition journal; malformed state never authorizes a restart."""
+    path = _resource_state_path(layout)
+    if path.is_symlink():
+        raise ValueError("resource transition state must not be a symlink")
+    if not path.exists():
+        return {}
+    state = _load_json(path)
+    if (state.get("schema_version") != "usdb-resource-state:v1"
+            or state.get("bundle_id") != layout.bundle_id
+            or state.get("phase") not in RESOURCE_PHASES
+            or not isinstance(state.get("recover_services"), list)
+            or any(service not in SERVICE_MEMORY_KEYS for service in state["recover_services"])
+            or not isinstance(state.get("pending"), bool)):
+        raise ValueError("invalid resource transition journal")
+    return state
+
+
+def _write_resource_state(layout: ReleaseLayout, state: dict[str, Any]) -> None:
+    path = _resource_state_path(layout)
+    _atomic_write_private(path, json.dumps(state, indent=2, sort_keys=True) + "\n")
+    # Make the journal rename durable before issuing any service stop request.
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _resource_service_started(layout: ReleaseLayout, *services: str) -> None:
+    """End planned-stop status once a restart was submitted; expose later failures."""
+    state = _read_resource_state(layout)
+    if state:
+        state["recover_services"] = [name for name in state["recover_services"] if name not in services]
+        _write_resource_state(layout, state)
+
+
+def _resource_prepare_restart(layout: ReleaseLayout, *services: str) -> None:
+    """Keep a partial chain startup resumable while its one-shot gates are rerun."""
+    state = _read_resource_state(layout)
+    if not state:
+        env = read_env(layout.node_env)
+        state = {"schema_version": "usdb-resource-state:v1", "bundle_id": layout.bundle_id,
+                 "phase": env["USDB_RESOURCE_PHASE"], "pending": False,
+                 "plan_id": _resource_plan_id(env, env["USDB_RESOURCE_PHASE"]),
+                 "recover_services": []}
+    state["recover_services"] = sorted(set(state["recover_services"]) | set(services))
+    _write_resource_state(layout, state)
+
+
+def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) -> None:
+    """Opt into automatic transitions, or return to manual tuning, while stopped."""
+    if not layout.node_env.is_file():
+        raise ValueError("node is not configured; run configure first")
+    if any(item.get("state") not in {"exited", "dead", "created"}
+           for item in _collect_compose_services(layout).values()):
+        raise ValueError("stop the node with usdb-node down before changing its resource policy")
+    original = layout.node_env.read_text(encoding="utf-8")
+    env = read_env(layout.node_env)
+    settings = {key: env.get(key, default) for key, default in CAP_DEFAULTS.items()}
+    updates = _resource_policy_updates(mode, {**settings, **caps})
+    if mode == "manual" and resource_mode(env) == "auto":
+        selected, resources = resolve_bitcoin_resource_profile(DEFAULT_BITCOIN_RESOURCE_PROFILE)
+        updates.update({"BTC_RESOURCE_PROFILE": selected,
+                        "BTC_MEMORY_LIMIT": resources["memory_limit"],
+                        "BTC_MEMORY_SWAP_LIMIT": resources["memory_swap_limit"],
+                        "BTC_DBCACHE_MB": resources["dbcache_mb"]})
+    try:
+        _atomic_write_private(layout.node_env, upsert_env(original, updates))
+        _validate_node_config(layout, require_runtime=False, require_bitcoin_runtime=True)
+        validate_resource_environment(read_env(layout.node_env), effective_memory_bytes())
+    except BaseException:
+        _atomic_write_private(layout.node_env, original)
+        raise
+    _resource_state_path(layout).unlink(missing_ok=True)
+
+
+def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
+    """Preview all phases without changing configured or running resources."""
+    env = read_env(layout.node_env) if layout.node_env.is_file() else {}
+    memory = effective_memory_bytes()
+    plans = []
+    for phase in RESOURCE_PHASES:
+        plan = build_resource_plan(memory, phase, env)
+        plans.append({"phase": phase, "limits": plan.limits,
+                      "system_reserve_bytes": plan.reserve_bytes,
+                      "budget_bytes": plan.total_bytes,
+                      "dbcache_mib": plan.dbcache_mib,
+                      "utxo_cache_bytes": plan.utxo_cache_bytes,
+                      "balance_cache_bytes": plan.balance_cache_bytes})
+    report = {"mode": resource_mode(env), "effective_host_memory_bytes": memory,
+              "configured_host_memory_bytes": env.get("USDB_RESOURCE_HOST_MEMORY_BYTES"),
+              "configured_phase": env.get("USDB_RESOURCE_PHASE"),
+              "caps": {key: env.get(key, value) for key, value in CAP_DEFAULTS.items()},
+              "phases": plans}
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(f"Resource policy: {report['mode']}; effective host memory: {_human_bytes(memory)}")
+        for item in plans:
+            limits = item["limits"]
+            print(f"{item['phase']:<10} Bitcoin={_human_bytes(limits['BTC_MEMORY_LIMIT'])}, "
+                  f"balance-history={_human_bytes(limits['BH_MEMORY_LIMIT'])}, "
+                  f"total including reserve={_human_bytes(item['budget_bytes'])}")
+
+
 def detect_ssh_server_port(environment: dict[str, str] | None = None) -> int:
     values = os.environ if environment is None else environment
     connection = values.get("SSH_CONNECTION", "").split()
@@ -883,6 +1014,8 @@ def configure_node(
     firewall_mode: str = "external",
     select_snapshot: bool = False,
     bitcoin_resource_profile: str = DEFAULT_BITCOIN_RESOURCE_PROFILE,
+    resource_management: str = "manual",
+    resource_caps: dict[str, str] | None = None,
 ) -> Path:
     if layout.node_env.exists():
         raise ValueError(
@@ -895,8 +1028,9 @@ def configure_node(
     _require_firewall_mode(firewall_mode)
     _require_port("operator SSH port", ssh_port)
     bitcoin_profile, bitcoin_resources = resolve_bitcoin_resource_profile(
-        bitcoin_resource_profile
+        bitcoin_resource_profile if resource_management == "manual" else DEFAULT_BITCOIN_RESOURCE_PROFILE
     )
+    resource_updates = _resource_policy_updates(resource_management, resource_caps or {})
     _validate_data_root_capacity(data_root)
     root = data_root.expanduser().resolve()
     secure_dir = network_secure_dir(root, layout.bundle_id)
@@ -937,6 +1071,7 @@ def configure_node(
             "BTC_MEMORY_LIMIT": bitcoin_resources["memory_limit"],
             "BTC_MEMORY_SWAP_LIMIT": bitcoin_resources["memory_swap_limit"],
             "BTC_DBCACHE_MB": bitcoin_resources["dbcache_mb"],
+            **resource_updates,
             "BH_SNAPSHOT_HOST_DIR": str(snapshot_dir),
             "USDB_NODE_ROLE": role,
             "USDB_BOOTNODES": bootnodes,
@@ -951,7 +1086,9 @@ def configure_node(
                     layout.snapshot["record"]["url"],
                 )
             )
-        content = render_env(template_path.read_text(encoding="utf-8"), updates)
+        content = render_env(template_path.read_text(encoding="utf-8"),
+                             {key: value for key, value in updates.items() if key not in resource_updates})
+        content = upsert_env(content, resource_updates)
         _atomic_write_private(layout.node_env, content)
         _validate_node_config(
             layout,
@@ -1059,6 +1196,8 @@ def setup_node(
     input_fn: Any = input,
     output: Any = sys.stdout,
     bitcoin_resource_profile: str = DEFAULT_BITCOIN_RESOURCE_PROFILE,
+    resource_management: str = "manual",
+    resource_caps: dict[str, str] | None = None,
 ) -> SetupResult:
     if layout.node_env.exists():
         raise ValueError(
@@ -1075,9 +1214,17 @@ def setup_node(
     capacity = _validate_data_root_capacity(data_root)
     host_memory_bytes = _host_memory_bytes()
     bitcoin_profile, bitcoin_resources = resolve_bitcoin_resource_profile(
-        bitcoin_resource_profile,
+        bitcoin_resource_profile if resource_management == "manual" else DEFAULT_BITCOIN_RESOURCE_PROFILE,
         host_memory_bytes=host_memory_bytes,
     )
+    if resource_management == "auto":
+        managed = _resource_policy_updates(resource_management, resource_caps or {})
+        bitcoin_profile = managed["BTC_RESOURCE_PROFILE"]
+        bitcoin_resources = {"memory_limit": managed["BTC_MEMORY_LIMIT"],
+                             "memory_swap_limit": managed["BTC_MEMORY_SWAP_LIMIT"],
+                             "dbcache_mb": managed["BTC_DBCACHE_MB"]}
+        print("Automatic whole-node resources: bitcoin -> overlap -> steady.", file=output)
+        print(f"Balance-history memory cap: {managed['USDB_BH_MEMORY_CAP']}", file=output)
     print("Data root filesystem:", file=output)
     print(f"  Resolved through: {capacity.filesystem_path}", file=output)
     print(f"  Total capacity: {_human_bytes(capacity.total_bytes)}", file=output)
@@ -1212,6 +1359,8 @@ def setup_node(
         firewall_mode=firewall_mode,
         select_snapshot=install_snapshot,
         bitcoin_resource_profile=bitcoin_profile,
+        resource_management=resource_management,
+        resource_caps=resource_caps,
     )
     return SetupResult(
         node_env=path,
@@ -1276,6 +1425,8 @@ def set_bitcoin_resource_profile(
     """Atomically update operator-owned Bitcoin memory settings for the next reconcile."""
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run configure first")
+    if resource_mode(read_env(layout.node_env)) == "auto":
+        raise ValueError("automatic resource policy owns Bitcoin tuning; use set-resource-policy --mode manual first")
     services = _collect_compose_services(layout)
     active_services = sorted(
         name
@@ -1774,6 +1925,7 @@ def run_firewall_action(
 def doctor(layout: ReleaseLayout, *, output_to_stderr: bool = False) -> None:
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run configure first")
+    validate_resource_environment(read_env(layout.node_env), effective_memory_bytes())
     run_host_action(
         layout,
         "check",
@@ -1805,6 +1957,254 @@ def doctor(layout: ReleaseLayout, *, output_to_stderr: bool = False) -> None:
             "Host firewall mode is external; skipped UFW inspection. "
             "Container bind-address validation still passed."
         )
+
+
+def _resource_containers(layout: ReleaseLayout) -> dict[str, dict[str, Any]]:
+    """Inspect only this node's containers and return non-secret resource fields."""
+    ids: list[str] = []
+    for helper in ("run_testnet_bitcoin.sh", "run_testnet_runtime.sh"):
+        result = run_helper(layout, helper, ["container-ids"], capture_output=True,
+                            command_timeout_secs=15)
+        for identifier in result.stdout.split():
+            if re.fullmatch(r"[0-9a-f]{12,64}", identifier) is None:
+                raise ValueError("invalid container ID returned during resource inspection")
+            ids.append(identifier)
+    if not ids:
+        return {}
+    result = subprocess.run(["docker", "inspect", *ids], check=True, capture_output=True,
+                            text=True, timeout=15)
+    containers = {}
+    for item in json.loads(result.stdout):
+        service = item["Config"].get("Labels", {}).get("com.docker.compose.service")
+        if service not in SERVICE_MEMORY_KEYS:
+            raise ValueError(f"unbudgeted service in node Compose project: {service}")
+        if service in containers:
+            raise ValueError(f"multiple containers for {service} are not covered by the resource plan")
+        values = dict(value.split("=", 1) for value in item["Config"].get("Env", []) if "=" in value)
+        containers[service] = {
+            "state": item["State"]["Status"],
+            "exit_code": item["State"]["ExitCode"],
+            "memory": item["HostConfig"]["Memory"],
+            "swap": item["HostConfig"].get("MemorySwap"),
+            "image": item["Config"]["Image"],
+            "environment": {key: value for key, value in values.items()
+                            if key in {"BTC_DBCACHE_MB", "BTC_RESOURCE_PROFILE",
+                                       "BH_SYNC_UTXO_MAX_CACHE_BYTES",
+                                       "BH_SYNC_BALANCE_MAX_CACHE_BYTES", "BH_SYNC_MAX_MEMORY_PERCENT"}},
+        }
+    return containers
+
+
+def _resource_container_matches(container: dict[str, Any] | None,
+                                env: dict[str, str], service: str) -> bool:
+    """A configuration file alone never proves a running process adopted a plan."""
+    if container is None or container["state"] != "running":
+        return False
+    if container["memory"] != int(env[SERVICE_MEMORY_KEYS[service]]):
+        return False
+    if service == "btc-node":
+        keys = ("BTC_DBCACHE_MB", "BTC_RESOURCE_PROFILE")
+        image_key, swap_key = "USDB_BITCOIN_IMAGE", "BTC_MEMORY_SWAP_LIMIT"
+    elif service == "balance-history":
+        keys = ("BH_SYNC_UTXO_MAX_CACHE_BYTES", "BH_SYNC_BALANCE_MAX_CACHE_BYTES", "BH_SYNC_MAX_MEMORY_PERCENT")
+        image_key, swap_key = "USDB_SERVICES_IMAGE", "BH_MEMORY_SWAP_LIMIT"
+    else:
+        return True
+    return (container["image"] == env[image_key]
+            and container["swap"] == int(env[swap_key])
+            and all(container["environment"].get(key) == env[key] for key in keys))
+
+
+def _check_running_resource_budget(env: dict[str, str], containers: dict[str, dict[str, Any]]) -> None:
+    """Account for actual concurrent containers, including unfinished one-shot jobs."""
+    plan = build_resource_plan(int(env["USDB_RESOURCE_HOST_MEMORY_BYTES"]), env["USDB_RESOURCE_PHASE"], env)
+    total = plan.reserve_bytes
+    for service, container in containers.items():
+        if container["state"] not in {"running", "restarting", "paused"}:
+            continue
+        limit = container["memory"]
+        if limit <= 0 or limit > plan.limits[SERVICE_MEMORY_KEYS[service]]:
+            raise ValueError(f"{service} has an unbounded or stale container memory limit; resource transition is incomplete")
+        total += limit
+    if total > plan.host_memory_bytes:
+        raise ValueError("actual concurrent container limits plus reserve exceed host memory")
+
+
+def _resource_plan_id(env: dict[str, str], target: str) -> str:
+    plan = build_resource_plan(int(env["USDB_RESOURCE_HOST_MEMORY_BYTES"]), target, env)
+    values = {**plan.environment(), "bitcoin_image": env["USDB_BITCOIN_IMAGE"],
+              "services_image": env["USDB_SERVICES_IMAGE"]}
+    return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
+
+
+def _transition_resources(layout: ReleaseLayout, target: str, *, output_to_stderr: bool) -> None:
+    """Release old allocations before applying new ones; resume from observed state."""
+    env = read_env(layout.node_env)
+    validate_resource_environment(env, effective_memory_bytes())
+    current = env["USDB_RESOURCE_PHASE"]
+    if RESOURCE_PHASES.index(target) < RESOURCE_PHASES.index(current):
+        raise ValueError("automatic resource phases cannot move backwards")
+    plan = build_resource_plan(int(env["USDB_RESOURCE_HOST_MEMORY_BYTES"]), target, env)
+    desired = {**env, **plan.environment()}
+    observed = _resource_containers(layout)
+    state = _read_resource_state(layout)
+    plan_id = _resource_plan_id(env, target)
+    if state.get("pending"):
+        if state["phase"] != target or state.get("plan_id") != plan_id:
+            raise ValueError("resource policy or release changed during a pending transition")
+    else:
+        state = {"schema_version": "usdb-resource-state:v1", "bundle_id": layout.bundle_id,
+                 "phase": target, "plan_id": plan_id, "pending": True,
+                 "recover_services": sorted(set(state.get("recover_services", [])) | {
+                     service for service in ("balance-history", "usdb-indexer", "usdb-chain", "usdb-control-plane")
+                     if observed.get(service, {}).get("state") in {"running", "restarting"}
+                 })}
+        # This intent must survive interruption before the first stop request.
+        _write_resource_state(layout, state)
+    _print_startup_phase("resources", f"applying {current} -> {target}; "
+                        f"Bitcoin={_human_bytes(plan.limits['BTC_MEMORY_LIMIT'])}, "
+                        f"balance-history={_human_bytes(plan.limits['BH_MEMORY_LIMIT'])}",
+                        output_to_stderr=output_to_stderr)
+    bitcoin_matches = _resource_container_matches(observed.get("btc-node"), desired, "btc-node")
+    bh = observed.get("balance-history")
+    bh_matches = bh is None or bh["state"] not in {"running", "restarting"} or _resource_container_matches(bh, desired, "balance-history")
+    if not bitcoin_matches or not bh_matches:
+        # Snapshot import is independent and is deliberately allowed to finish.
+        run_helper(layout, "run_testnet_runtime.sh", ["quiesce-data"], output_to_stderr=output_to_stderr)
+    if not bitcoin_matches and "btc-node" in observed:
+        run_helper(layout, "run_testnet_bitcoin.sh", ["down"], output_to_stderr=output_to_stderr)
+    if any(env.get(key) != value for key, value in plan.environment().items()):
+        _atomic_write_private(layout.node_env, upsert_env(layout.node_env.read_text(encoding="utf-8"), plan.environment()))
+    if not bitcoin_matches:
+        run_helper(layout, "run_testnet_bitcoin.sh", ["start"], output_to_stderr=output_to_stderr)
+    observed = _resource_containers(layout)
+    if not _resource_container_matches(observed.get("btc-node"), desired, "btc-node"):
+        raise ValueError("Bitcoin did not adopt the requested resource plan; downstream startup remains blocked")
+    _check_running_resource_budget(desired, observed)
+    state["pending"] = False
+    _write_resource_state(layout, state)
+
+
+def _managed_data_ready(layout: ReleaseLayout, anchor: BitcoinDataStartAnchor) -> bool:
+    arguments = ["data-progress", str(anchor.minimum_tip_height)]
+    if anchor.block_hash is not None:
+        arguments.extend([str(anchor.stable_height), anchor.block_hash])
+    try:
+        result = run_helper(layout, "run_testnet_bitcoin.sh", arguments, check=False,
+                            capture_output=True, command_timeout_secs=20)
+        report = json.loads(result.stdout) if result.returncode == 0 else {}
+        return (isinstance(report, dict)
+                and report.get("schema_version") == "usdb-bitcoin-data-start-readiness:v1"
+                and report.get("ready") is True)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+
+def _start_managed_node(layout: ReleaseLayout, *, sync_timeout_secs: int,
+                        output_to_stderr: bool, progress_monitor: NodeProgressMonitor) -> None:
+    """Poll bounded readiness observations so long imports cannot hide resource transitions."""
+    env = read_env(layout.node_env)
+    state = _read_resource_state(layout)
+    target = state["phase"] if state.get("pending") else env["USDB_RESOURCE_PHASE"]
+    observed = _resource_containers(layout)
+    if (state.get("pending") or not _resource_container_matches(observed.get("btc-node"), env, "btc-node")
+            or (observed.get("balance-history", {}).get("state") == "running"
+                and not _resource_container_matches(observed["balance-history"], env, "balance-history"))):
+        _transition_resources(layout, target, output_to_stderr=output_to_stderr)
+    deadline = time.monotonic() + sync_timeout_secs
+    next_heartbeat = 0.0
+    ready_observations = 0
+    started: set[str] = set()
+    origin = layout.network_identity["btc_index_origin_height"]
+    while time.monotonic() < deadline:
+        env = read_env(layout.node_env)
+        phase = env["USDB_RESOURCE_PHASE"]
+        progress_monitor.set_phase(f"resources-{phase}")
+        containers = _resource_containers(layout)
+        _check_running_resource_budget(env, containers)
+        try:
+            bitcoin = _bitcoin_startup_progress(layout, command_timeout_secs=20)
+        except (OSError, subprocess.TimeoutExpired):
+            bitcoin = None
+        bitcoin_ready = isinstance(bitcoin, dict) and bitcoin.get("ready") is True
+        ready_observations = ready_observations + 1 if bitcoin_ready else 0
+        anchor = _bitcoin_data_start_anchor(layout, env)
+        data_ready = _managed_data_ready(layout, anchor)
+        target = phase
+        if ready_observations >= 3:
+            target = "steady"
+        elif phase == "bitcoin" and data_ready and not bitcoin_ready:
+            target = "overlap"
+        if RESOURCE_PHASES.index(target) > RESOURCE_PHASES.index(phase):
+            _transition_resources(layout, target, output_to_stderr=output_to_stderr)
+            ready_observations = 0
+            started.clear()
+            continue
+        if data_ready and phase != "bitcoin":
+            if not _resource_container_matches(containers.get("btc-node"), env, "btc-node"):
+                raise ValueError("Bitcoin resource configuration drifted before downstream startup")
+            arguments = [str(anchor.minimum_tip_height)]
+            if anchor.block_hash is not None:
+                arguments.extend([str(anchor.stable_height), anchor.block_hash])
+            loader = containers.get("snapshot-loader")
+            if loader is None or loader["state"] == "created":
+                run_helper(layout, "run_testnet_runtime.sh", ["managed-start-snapshot", *arguments],
+                           output_to_stderr=output_to_stderr)
+                started.add("snapshot-loader")
+            elif loader["state"] == "exited" and loader["exit_code"] != 0:
+                raise ValueError("snapshot-loader failed; inspect its persistent installation log")
+            elif loader["state"] == "exited":
+                bh = containers.get("balance-history")
+                if bh is None or bh["state"] in {"created", "exited"}:
+                    if "balance-history" in started:
+                        raise ValueError("balance-history exited after managed startup; inspect its persistent log")
+                    run_helper(layout, "run_testnet_runtime.sh", ["managed-start-data", *arguments],
+                               output_to_stderr=output_to_stderr)
+                    _resource_service_started(layout, "balance-history")
+                    started.add("balance-history")
+                elif bh["state"] == "restarting":
+                    raise ValueError("balance-history is restarting; inspect its persistent log")
+                elif not _resource_container_matches(bh, env, "balance-history"):
+                    raise ValueError("balance-history did not adopt the managed cache and memory limits")
+                else:
+                    origin_check = run_helper(layout, "run_testnet_runtime.sh", ["wait-data-origin", str(origin), "0"],
+                                              check=False, capture_output=True, command_timeout_secs=15)
+                    indexer = containers.get("usdb-indexer")
+                    if origin_check.returncode == 0 and (indexer is None or indexer["state"] in {"created", "exited"}):
+                        if "usdb-indexer" in started:
+                            raise ValueError("usdb-indexer exited after managed startup")
+                        run_helper(layout, "run_testnet_runtime.sh", ["up-indexer", str(origin)],
+                                   sync_timeout_secs=0, output_to_stderr=output_to_stderr)
+                        _resource_service_started(layout, "usdb-indexer")
+                        started.add("usdb-indexer")
+        if phase == "steady" and bitcoin_ready:
+            bh_ready, _ = _read_service_readiness(layout, "run_testnet_runtime.sh", ["data-status"], "balance-history")
+            indexer_ready, _ = _read_service_readiness(layout, "run_testnet_runtime.sh", ["indexer-status"], "usdb-indexer")
+            if (bh_ready and bh_ready["consensus_ready"] and indexer_ready and indexer_ready["consensus_ready"]):
+                if any(containers.get(service, {}).get("state") != "running"
+                       for service in ("usdb-chain", "usdb-control-plane")):
+                    if "usdb-chain" in started:
+                        raise ValueError("USDB chain or control-plane exited after managed startup")
+                    _resource_prepare_restart(layout, "usdb-chain", "usdb-control-plane")
+                    run_helper(layout, "run_testnet_runtime.sh", ["up-chain"], sync_timeout_secs=0,
+                               output_to_stderr=output_to_stderr)
+                    _resource_service_started(layout, "usdb-chain", "usdb-control-plane")
+                    started.add("usdb-chain")
+                _check_running_resource_budget(env, _resource_containers(layout))
+                if _runtime_lifecycle_status(layout)["state"] == "ready":
+                    state = _read_resource_state(layout)
+                    if state:
+                        state["recover_services"] = []
+                        _write_resource_state(layout, state)
+                    return
+        if time.monotonic() >= next_heartbeat:
+            _print_startup_phase(f"resources-{phase}",
+                                f"Bitcoin ready={bitcoin_ready}, data anchor ready={data_ready}; "
+                                "waiting for the next managed bootstrap boundary",
+                                output_to_stderr=output_to_stderr)
+            next_heartbeat = time.monotonic() + 60
+        time.sleep(15)
+    raise ValueError("managed bootstrap timed out; completed resource transitions remain durable")
 
 
 def _print_startup_phase(
@@ -1880,6 +2280,11 @@ def _start_node(
             output_to_stderr=output_to_stderr,
             quiet_progress=progress_monitor.enabled,
         )
+    if resource_mode(read_env(layout.node_env)) == "auto":
+        _start_managed_node(layout, sync_timeout_secs=sync_timeout_secs,
+                            output_to_stderr=output_to_stderr,
+                            progress_monitor=progress_monitor)
+        return
     progress_monitor.set_phase("bitcoin-start")
     _print_startup_phase(
         "bitcoin-start",
@@ -3577,13 +3982,50 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         indexer_component,
         chain_component,
     ]
+    resources: dict[str, Any] = {}
+    resource_waiting = False
+    try:
+        resources["mode"] = resource_mode(env)
+        if resources["mode"] == "auto":
+            validate_resource_environment(env, effective_memory_bytes())
+            resources["phase"] = env["USDB_RESOURCE_PHASE"]
+            state = _read_resource_state(layout)
+            resources["transition_pending"] = bool(state.get("pending"))
+            resources["target_phase"] = state.get("phase")
+            resource_waiting = bool(env["USDB_RESOURCE_PHASE"] != "steady"
+                                    or state.get("pending") or state.get("recover_services"))
+            waiting = set(state.get("recover_services", []))
+            if state.get("pending"):
+                waiting.add("btc-node")
+            service_names = {"bitcoin": "btc-node", "balance_history": "balance-history",
+                             "usdb_indexer": "usdb-indexer", "usdb_chain": "usdb-chain"}
+            for component in components:
+                service = service_names.get(component["id"])
+                if service in waiting and services.get(service, {}).get("state") in {None, "exited", "created"}:
+                    component.update(state="STARTING", detail=f"planned resource transition to {state['phase']}; waiting for managed restart")
+            if not resource_waiting and _overall_progress_state(components) == "READY":
+                observed = _resource_containers(layout)
+                resources["runtime_adopted"] = all(
+                    _resource_container_matches(observed.get(service), env, service)
+                    for service in ("btc-node", "balance-history")
+                )
+                resource_waiting = not resources["runtime_adopted"]
+                if not resource_waiting:
+                    _check_running_resource_budget(env, observed)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        resources["error"] = str(error)
+    overall = _overall_progress_state(components)
+    # The watch client must not detach before the controller finishes the handoff.
+    if overall == "READY" and resource_waiting:
+        overall = "STARTING"
     return {
         "schema_version": NODE_PROGRESS_SCHEMA_VERSION,
         "release_id": layout.release_id,
         "network_bundle_id": layout.bundle_id,
         "observed_at": observed_at,
         "controller_state": controller_state,
-        "overall_state": _overall_progress_state(components),
+        "overall_state": "BLOCKED" if "error" in resources else overall,
+        "resources": resources,
         "auxiliary_state": (
             "READY"
             if registry_component["state"] in {"READY", "SKIPPED"}
@@ -3608,10 +4050,12 @@ def render_node_progress(
     phase: str = "observe",
     width: int = 120,
 ) -> str:
+    resource_phase = report.get("resources", {}).get("phase")
     lines = [
         f"USDB node progress | {report['release_id']} | phase={phase}",
         f"Observed {report['observed_at']} | overall={report['overall_state']} | "
-        f"controller={report.get('controller_state', 'unknown')}",
+        f"controller={report.get('controller_state', 'unknown')}"
+        + (f" | resources={resource_phase}" if resource_phase else ""),
     ]
     bar_width = 24
     for component in report["components"]:
@@ -4089,6 +4533,18 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
     if snapshot["state"] == "incomplete":
         return _finish_node_status(report, "SNAPSHOT_INCOMPLETE")
 
+    resource_pending = False
+    resource_state: dict[str, Any] = {}
+    if resource_mode(env) == "auto":
+        try:
+            validate_resource_environment(env, effective_memory_bytes())
+            resource_state = _read_resource_state(layout)
+            resource_pending = bool(resource_state.get("pending") or resource_state.get("recover_services"))
+            checks["resources"] = {"state": "transitioning" if resource_pending else env["USDB_RESOURCE_PHASE"],
+                                   "summary": f"automatic resource phase={env['USDB_RESOURCE_PHASE']}"}
+        except (OSError, ValueError) as error:
+            checks["resources"] = {"state": "invalid", "summary": str(error)}
+            return _finish_node_status(report, "BLOCKED")
     try:
         runtime = _runtime_lifecycle_status(layout)
     except (OSError, ValueError) as error:
@@ -4102,11 +4558,31 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
         )
     checks["runtime"] = runtime
     runtime_state = runtime["state"]
+    if resource_pending and not resource_state.get("pending") and runtime_state == "degraded":
+        unexpected_failures = [name for name, service in runtime.get("services", {}).items()
+                               if name in CORE_RUNTIME_SERVICES
+                               and service.get("state") in {"dead", "exited", "removing", "restarting"}
+                               and name not in resource_state["recover_services"]]
+        if unexpected_failures:
+            resource_pending = False
+    if resource_pending and runtime_state in {"stopped", "starting", "degraded", "ready"}:
+        return _finish_node_status(report, "STARTING")
     if runtime_state == "stopped":
         return _finish_node_status(report, "READY_TO_START")
     elif runtime_state == "starting":
         return _finish_node_status(report, "STARTING")
     elif runtime_state == "ready":
+        if resource_mode(env) == "auto":
+            try:
+                observed = _resource_containers(layout)
+                if (env["USDB_RESOURCE_PHASE"] != "steady"
+                        or not _resource_container_matches(observed.get("btc-node"), env, "btc-node")
+                        or not _resource_container_matches(observed.get("balance-history"), env, "balance-history")):
+                    return _finish_node_status(report, "STARTING")
+                _check_running_resource_budget(env, observed)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                checks["resources"] = {"state": "unavailable", "summary": str(error)}
+                return _finish_node_status(report, "BLOCKED")
         return _finish_node_status(report, "READY")
     elif runtime_state == "degraded":
         return _finish_node_status(report, "DEGRADED")
@@ -4137,6 +4613,7 @@ def _print_node_status_report(report: dict[str, Any]) -> None:
         "data": "Local data",
         "snapshot": "Snapshot",
         "script_registry": "Script registry",
+        "resources": "Resources",
         "runtime": "Runtime",
     }
     for key, label in labels.items():
@@ -4447,6 +4924,19 @@ def print_up_result(result: dict[str, Any], *, json_output: bool) -> None:
         print(f"  - {item}")
 
 
+def _add_resource_cap_arguments(parser: argparse.ArgumentParser) -> None:
+    for flag, key in (("bh-memory-cap", "USDB_BH_MEMORY_CAP"),
+                      ("bitcoin-ibd-memory-cap", "USDB_BTC_IBD_MEMORY_CAP"),
+                      ("bitcoin-overlap-memory-cap", "USDB_BTC_OVERLAP_MEMORY_CAP"),
+                      ("bitcoin-steady-memory-cap", "USDB_BTC_STEADY_MEMORY_CAP")):
+        parser.add_argument(f"--{flag}", dest=key, default=None, metavar="BYTES",
+                            help=f"automatic proportional allocation ceiling (default {CAP_DEFAULTS[key]})")
+
+
+def _resource_caps_from_args(args: argparse.Namespace) -> dict[str, str]:
+    return {key: getattr(args, key) for key in CAP_DEFAULTS if getattr(args, key, None) is not None}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kit-root", type=Path, default=KIT_ROOT, help=argparse.SUPPRESS)
@@ -4481,12 +4971,14 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--bitcoin-profile",
         choices=(AUTO_BITCOIN_RESOURCE_PROFILE, *BITCOIN_RESOURCE_PROFILES),
-        default=AUTO_BITCOIN_RESOURCE_PROFILE,
+        default=None,
         help=(
-            "select Bitcoin memory tuning; auto uses a steady-state profile from "
-            "host memory and never selects the temporary ibd-64g profile"
+            "manual resource mode only: select a fixed Bitcoin memory profile"
         ),
     )
+    setup.add_argument("--resource-mode", choices=("auto", "manual"), default="auto",
+                       help="controller-managed whole-node budgets (default) or fixed operator settings")
+    _add_resource_cap_arguments(setup)
 
     configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
     configure.add_argument("--data-root", type=Path, default=Path.home() / ".usdb")
@@ -4503,8 +4995,15 @@ def build_parser() -> argparse.ArgumentParser:
     configure.add_argument(
         "--bitcoin-profile",
         choices=tuple(BITCOIN_RESOURCE_PROFILES),
-        default=DEFAULT_BITCOIN_RESOURCE_PROFILE,
+        default=None,
     )
+    configure.add_argument("--resource-mode", choices=("auto", "manual"), default="auto")
+    _add_resource_cap_arguments(configure)
+    resource_policy = subparsers.add_parser("set-resource-policy", help="Recalculate resource policy while all node containers are stopped")
+    resource_policy.add_argument("--mode", choices=("auto", "manual"), required=True)
+    _add_resource_cap_arguments(resource_policy)
+    resource_preview = subparsers.add_parser("resources", help="Preview proportional resource budgets and caps for every phase")
+    resource_preview.add_argument("--json", action="store_true")
     configure.add_argument(
         "--firewall-mode",
         choices=FIREWALL_MODES,
@@ -4735,6 +5234,7 @@ def _operation_name(args: argparse.Namespace) -> str | None:
         "set-role",
         "set-firewall-mode",
         "set-bitcoin-profile",
+        "set-resource-policy",
         "activate-release",
         "snapshot",
         "firewall",
@@ -4744,6 +5244,8 @@ def _operation_name(args: argparse.Namespace) -> str | None:
 
 
 def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
+    if args.command in {"setup", "configure"} and args.resource_mode == "auto" and args.bitcoin_profile is not None:
+        raise ValueError("--bitcoin-profile requires --resource-mode manual; automatic mode manages all Bitcoin phases")
     if args.command == "prepare-host":
         prepare_host(layout, docker_user=args.docker_user)
         print("USDB host prerequisites are ready.")
@@ -4755,7 +5257,8 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             raise ValueError("setup requires an interactive terminal; use configure for automation")
         if not args.no_controller:
             _controller_install_context()
-        result = setup_node(layout, bitcoin_resource_profile=args.bitcoin_profile)
+        result = setup_node(layout, bitcoin_resource_profile=args.bitcoin_profile or AUTO_BITCOIN_RESOURCE_PROFILE,
+                            resource_management=args.resource_mode, resource_caps=_resource_caps_from_args(args))
         print(f"Configured {layout.release_id} node: {result.node_env}")
         if result.apply_firewall:
             print(
@@ -4808,7 +5311,9 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             bitcoin_p2p=args.bitcoin_p2p,
             ssh_port=args.ssh_port,
             firewall_mode=args.firewall_mode,
-            bitcoin_resource_profile=args.bitcoin_profile,
+            bitcoin_resource_profile=args.bitcoin_profile or DEFAULT_BITCOIN_RESOURCE_PROFILE,
+            resource_management=args.resource_mode,
+            resource_caps=_resource_caps_from_args(args),
         )
         print(f"Configured {layout.release_id} node: {path}")
         print("Bitcoin RPC credentials were generated locally and were not printed.")
@@ -4816,6 +5321,11 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             "Run usdb-node controller install before background up, "
             "or use usdb-node up --foreground for explicit foreground operation."
         )
+    elif args.command == "set-resource-policy":
+        set_resource_policy(layout, args.mode, _resource_caps_from_args(args))
+        print_resource_plan(layout, json_output=False)
+    elif args.command == "resources":
+        print_resource_plan(layout, json_output=args.json)
     elif args.command == "set-role":
         set_role(
             layout,

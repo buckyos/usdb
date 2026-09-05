@@ -26,6 +26,7 @@ from runtime_compatibility import (  # noqa: E402
     network_secure_dir,
     snapshot_artifact_dir,
 )
+from resource_policy import resource_mode, validate_resource_environment  # noqa: E402
 
 EXPECTED_BUNDLE_ID = "usdb-testnet-v0"
 EXPECTED_CHAIN_ID = 202608250
@@ -773,25 +774,18 @@ def validate_node_env(
         "BTC_RESOURCE_PROFILE",
         DEFAULT_BITCOIN_RESOURCE_PROFILE,
     )
-    require(
-        bitcoin_profile in BITCOIN_RESOURCE_PROFILES,
-        "BTC_RESOURCE_PROFILE must be one of: "
-        + ", ".join(BITCOIN_RESOURCE_PROFILES),
-    )
-    expected_bitcoin_resources = BITCOIN_RESOURCE_PROFILES[bitcoin_profile]
-    require(
-        env.get("BTC_MEMORY_LIMIT") == expected_bitcoin_resources["memory_limit"],
-        "BTC_MEMORY_LIMIT does not match BTC_RESOURCE_PROFILE",
-    )
-    require(
-        env.get("BTC_MEMORY_SWAP_LIMIT")
-        == expected_bitcoin_resources["memory_swap_limit"],
-        "BTC_MEMORY_SWAP_LIMIT does not match BTC_RESOURCE_PROFILE",
-    )
-    require(
-        env.get("BTC_DBCACHE_MB") == expected_bitcoin_resources["dbcache_mb"],
-        "BTC_DBCACHE_MB does not match BTC_RESOURCE_PROFILE",
-    )
+    validate_resource_environment(env)
+    if resource_mode(env) == "manual":
+        require(
+            bitcoin_profile in BITCOIN_RESOURCE_PROFILES,
+            "BTC_RESOURCE_PROFILE must be one of: " + ", ".join(BITCOIN_RESOURCE_PROFILES),
+        )
+        expected_bitcoin_resources = BITCOIN_RESOURCE_PROFILES[bitcoin_profile]
+        for key, field in (("BTC_MEMORY_LIMIT", "memory_limit"),
+                           ("BTC_MEMORY_SWAP_LIMIT", "memory_swap_limit"),
+                           ("BTC_DBCACHE_MB", "dbcache_mb")):
+            require(env.get(key) == expected_bitcoin_resources[field],
+                    f"{key} does not match BTC_RESOURCE_PROFILE")
     # Configurations created before this field existed had mandatory managed
     # UFW behavior, so absence retains that fail-closed meaning during upgrade.
     firewall_mode = env.get("USDB_FIREWALL_MODE", "managed")

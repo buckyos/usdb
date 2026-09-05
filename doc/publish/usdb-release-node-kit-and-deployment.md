@@ -259,24 +259,27 @@ usdb-node status
 
 首次部署路径是 `prepare-host -> setup -> doctor -> up -> status`。无论 external
 还是 managed，均可省略单独的 `doctor`，因为 controller 会重新执行对应模式的 preflight；同一 bundle 的
-release 升级路径是 `install new release -> activate-release -> controller install -> doctor -> up -> status`。
-`setup --bitcoin-profile auto` 会根据主机可见物理内存在 `balanced-32g` 与 `performance-64g` 之间选择；
-自动化 `configure` 应显式指定 profile。`ibd-64g` 是 64 GiB 主机首次 Bitcoin IBD/txindex 的临时档，
-不会被 `auto` 选择，完成后必须切回 `performance-64g`。每个 profile 同时冻结 memory、memory+swap 和
-`dbcache`。运行中调整先执行 `down` 停止 controller 和所有容器，然后使用 `set-bitcoin-profile`，最后重新执行 `up`；数据目录不会
-因此重建，profile 修改也会拒绝仍有运行中容器的状态。
+release 升级路径是 `down -> install new release -> activate-release -> controller install -> doctor -> up -> status`。
+`setup` 和 `configure` 默认使用整机自动资源策略：根据有效主机内存同比分配并封顶，controller
+自动处理 Bitcoin 独立同步、与 BH 交叠追赶和 Bitcoin 稳态三个阶段。通过 `usdb-node resources`
+预览所有阶段；使用 `--bh-memory-cap` 等参数覆盖封顶值。最低主机内存和精确预算见
+[整机内存预算与自动资源切换](./usdb-node-resource-policy.md)。
 
-`set-bitcoin-profile --profile auto` 可在停机状态下重新按当前主机物理内存选择稳态 profile，并将解析后的
-具体 profile 写入 `node.env`。命令仍要求显式提供 `--profile`，避免运维人员误把省略参数理解为“不做修改”。
+旧配置保留 manual 模式，显式迁移使用 `down -> set-resource-policy --mode auto -> doctor -> up`。
+若同时升级 release，旧缓存配置不满足新校验时，应在停机并安装新 node kit 后先启用资源策略，
+再执行 `activate-release`。拆分前整体 snapshot 的已导入节点还有独立的续跑兼容边界，详见资源策略文档。
+需要固定 Bitcoin 档位时选择 `--resource-mode manual --bitcoin-profile ...`；旧
+`set-bitcoin-profile --profile auto` 仍仅用于停机状态下选择固定稳态档位。manual 模式不会自动从
+`ibd-64g` 降档，管理员负责切换。两种模式均在耗时导入前校验 BH 缓存预算。
 
 默认的 `up` 不把数天的初始化生命周期绑定到当前终端。它向 bundle-scoped systemd unit 提交任务，
 然后在交互式终端附加只读进度面板；Ctrl+C、SSH 断开或本地界面退出只会脱离观察，不会停止 controller。
-systemd unit 内部顺序固定为：
+systemd unit 保持以下数据和 readiness 顺序；自动资源模式在等待期间持续处理资源阶段切换：
 
 1. 运行 release、network、node 和 Docker preflight；
 2. 拉取三张 digest-pinned image；
-3. 启动 Bitcoin Core；达到 snapshot 高度（无 snapshot 时为 BTC index origin）并通过可选 block-hash
-   锚点校验后，启动 snapshot-loader 和 balance-history；
+3. 启动 Bitcoin Core；达到 snapshot 高度（无 snapshot 时为 BTC index origin）加 stable lag 并通过可选
+   block-hash 锚点校验后，自动模式先完成交叠预算交接，再启动 snapshot-loader 和 balance-history；
 4. balance-history 达到 USDB origin、进入 query-ready 且存在 block hash/commit 后启动 usdb-indexer；
 5. Bitcoin Core、balance-history 和 usdb-indexer 继续流水线追块；
 6. 重新要求 Bitcoin mainnet IBD、txindex、peer、tip readiness，以及两个索引服务的 consensus

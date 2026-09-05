@@ -24,6 +24,10 @@ Actions:
             block-hash must match Bitcoin's active chain at anchor-height.
   wait      Wait for mainnet, full sync and txindex readiness.
   progress  Print one machine-readable Bitcoin sync/readiness observation.
+  data-progress <minimum-tip-height> [anchor-height block-hash]
+            Observe the data-start boundary once without waiting.
+  container-ids
+            Print this project's container IDs for resource inspection.
   status    Show service state and perform a single readiness check.
   ps        Show service state.
   logs      Follow Bitcoin Core logs.
@@ -286,6 +290,9 @@ wait_data_start() {
   if [[ -n "${expected_hash}" ]]; then
     args+=(--anchor-height "${anchor_height}" --expected-block-hash "${expected_hash}")
   fi
+  if [[ "${action}" == "data-progress" ]]; then
+    args+=(--status-json)
+  fi
   compose exec -T btc-node \
     python3 /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py "${args[@]}"
 }
@@ -317,7 +324,7 @@ case "${action}" in
     start_bitcoin "$@"
     wait_ready
     ;;
-  wait-data)
+  wait-data|data-progress)
     require_node_env
     validate_bitcoin_runtime
     wait_data_start "${1:-}" "${2:-}" "${3:-}"
@@ -342,6 +349,10 @@ case "${action}" in
   ps)
     require_node_env
     compose ps "$@"
+    ;;
+  container-ids)
+    require_node_env
+    compose ps --all --quiet
     ;;
   logs)
     require_node_env

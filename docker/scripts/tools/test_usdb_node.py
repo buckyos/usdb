@@ -43,6 +43,8 @@ class UsdbNodeTests(unittest.TestCase):
             ),
         )
         self.capacity_patcher.start()
+        self.memory_patcher = mock.patch.object(NODE, "effective_memory_bytes", return_value=64 * 1024**3)
+        self.memory_patcher.start()
         self.root = Path(self.temporary.name) / "usdb-node-kit"
         self.bundle = self.root / "docker/networks/usdb-testnet-v0"
         self.bundle.parent.mkdir(parents=True)
@@ -75,6 +77,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.node_env = self.root / "private/node.env"
 
     def tearDown(self) -> None:
+        self.memory_patcher.stop()
         self.capacity_patcher.stop()
         self.temporary.cleanup()
 
@@ -1688,7 +1691,10 @@ class UsdbNodeTests(unittest.TestCase):
         progress = NODE.build_parser().parse_args(["status", "--progress-json"])
         self.assertTrue(progress.progress_json)
         setup = NODE.build_parser().parse_args(["setup"])
-        self.assertEqual(setup.bitcoin_profile, "auto")
+        self.assertIsNone(setup.bitcoin_profile)
+        self.assertEqual(setup.resource_mode, "auto")
+        policy = NODE.build_parser().parse_args(["set-resource-policy", "--mode", "auto", "--bh-memory-cap", "96g"])
+        self.assertEqual(NODE._resource_caps_from_args(policy), {"USDB_BH_MEMORY_CAP": "96g"})
         profile = NODE.build_parser().parse_args(
             ["set-bitcoin-profile", "--profile", "performance-64g"]
         )
@@ -1701,6 +1707,44 @@ class UsdbNodeTests(unittest.TestCase):
             ["set-bitcoin-profile", "--profile", "ibd-64g"]
         )
         self.assertEqual(ibd_profile.profile, "ibd-64g")
+
+    def test_configure_auto_writes_complete_proportional_plan_and_custom_cap(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        with mock.patch.object(NODE, "effective_memory_bytes", return_value=256 * 1024**3):
+            NODE.configure_node(layout, data_root=Path(self.temporary.name) / "auto-data", role="full",
+                                miner_address="", miner_threads=1, bootnodes="", nat="",
+                                bitcoin_rpc_user="node-a", bitcoin_p2p="private",
+                                resource_management="auto", resource_caps={"USDB_BH_MEMORY_CAP": "96g"})
+        env = NODE.read_env(self.node_env)
+        self.assertEqual(env["USDB_RESOURCE_MODE"], "auto")
+        self.assertEqual(env["USDB_RESOURCE_PHASE"], "bitcoin")
+        self.assertEqual(env["BH_MEMORY_LIMIT"], str(96 * 1024**3))
+        self.assertEqual(env["BH_MEMORY_SWAP_LIMIT"], str(98 * 1024**3))
+        NODE.validate_resource_environment(env, 256 * 1024**3)
+
+    def test_existing_node_can_explicitly_enable_auto_only_while_stopped(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "manual-node")
+        self.assertEqual(NODE.read_env(self.node_env)["USDB_RESOURCE_MODE"], "manual")
+        with mock.patch.object(NODE, "_collect_compose_services", return_value={}), \
+             mock.patch.object(NODE, "effective_memory_bytes", return_value=64 * 1024**3):
+            NODE.set_resource_policy(layout, "auto", {})
+        before = self.node_env.read_bytes()
+        with mock.patch.object(NODE, "_collect_compose_services", return_value={"btc-node": {"state": "running"}}), \
+             self.assertRaisesRegex(ValueError, "stop the node"):
+            NODE.set_resource_policy(layout, "auto", {"USDB_BH_MEMORY_CAP": "96g"})
+        self.assertEqual(self.node_env.read_bytes(), before)
+
+    def test_auto_rejects_small_host_before_creating_data_or_credentials(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data = Path(self.temporary.name) / "small-node"
+        with mock.patch.object(NODE, "effective_memory_bytes", return_value=16 * 1024**3), \
+             self.assertRaisesRegex(ValueError, "at least 32 GB"):
+            NODE.configure_node(layout, data_root=data, role="full", miner_address="", miner_threads=1,
+                                bootnodes="", nat="", bitcoin_rpc_user="node-a", bitcoin_p2p="private",
+                                resource_management="auto")
+        self.assertFalse(data.exists())
+        self.assertFalse(self.node_env.exists())
 
     def test_set_bitcoin_profile_help_describes_each_profile(self) -> None:
         output = io.StringIO()
@@ -1955,6 +1999,20 @@ class UsdbNodeTests(unittest.TestCase):
                 ("run_testnet_runtime.sh", ("indexer-status",)),
             ],
         )
+
+    def test_resource_recovery_does_not_mask_an_unexpected_service_failure(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "resource-status-data")
+        plan = NODE.build_resource_plan(64 * 1024**3, "steady", {}).environment()
+        self.node_env.write_text(NODE.upsert_env(self.node_env.read_text(), plan))
+        NODE._resource_prepare_restart(layout, "usdb-chain")
+        services = {name: {"state": "running"} for name in NODE.CORE_RUNTIME_SERVICES}
+        services["usdb-chain"] = {"state": "exited"}
+        runtime = {"state": "degraded", "services": services}
+        with mock.patch.object(NODE, "_runtime_lifecycle_status", return_value=runtime):
+            self.assertEqual(NODE.collect_node_status(layout)["overall_state"], "STARTING")
+            services["btc-node"] = {"state": "restarting"}
+            self.assertEqual(NODE.collect_node_status(layout)["overall_state"], "DEGRADED")
 
     def test_status_json_is_machine_readable(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

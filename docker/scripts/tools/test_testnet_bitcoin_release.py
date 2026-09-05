@@ -9,6 +9,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from resource_policy import GIB, memory_bytes, validate_resource_environment
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -172,17 +174,20 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         self.assertEqual(env["SNAPSHOT_MODE"], "none")
         self.assertEqual(env["BH_SNAPSHOT_FILE"], "")
         self.assertEqual(env["BH_SYNC_LOCAL_LOADER_THRESHOLD"], "500")
-        limits_gib = sum(
-            int(env[name].removesuffix("g"))
+        limits_bytes = sum(
+            memory_bytes(env[name], name)
             for name in (
                 "BTC_MEMORY_LIMIT",
                 "BH_MEMORY_LIMIT",
                 "USDB_INDEXER_MEMORY_LIMIT",
                 "USDB_CHAIN_MEMORY_LIMIT",
                 "CONTROL_PLANE_MEMORY_LIMIT",
+                "BH_SCRIPT_REGISTRY_MEMORY_LIMIT",
+                "USDB_CHECKPOINT_VERIFY_MEMORY_LIMIT",
             )
         )
-        self.assertLessEqual(limits_gib, 27)
+        self.assertLessEqual(limits_bytes, 27 * GIB)
+        validate_resource_environment(env, 32_000_000_000)
 
     def test_runtime_and_bitcoin_share_an_external_network(self) -> None:
         for relative in ("docker/compose.bitcoin.yml", "docker/compose.runtime.yml"):
