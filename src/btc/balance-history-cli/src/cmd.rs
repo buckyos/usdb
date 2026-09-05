@@ -32,6 +32,16 @@ pub enum Commands {
     /// Stop the balance history service
     Stop,
 
+    /// Resolve script hashes through the layered auxiliary registry
+    Resolve {
+        #[arg(value_name = "SCRIPT_HASH", num_args = 1..)]
+        script_hashes: Vec<BtcScriptHash>,
+
+        /// Include raw scriptPubKey hex for found mappings
+        #[arg(long, default_value_t = false)]
+        include_script_pubkey: bool,
+    },
+
     /// Get balance history for one script_hash
     Balance {
         #[arg(value_name = "USER_ID")]
@@ -127,4 +137,31 @@ fn parse_range(s: &str) -> Result<Range<u32>, String> {
         .map_err(|e| format!("Invalid end of range: {}", e))?;
 
     Ok(start..end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_layered_registry_lookup_command() {
+        let hash = "11".repeat(32);
+        let cli = Cli::try_parse_from([
+            "balance-history-cli",
+            "resolve",
+            hash.as_str(),
+            "--include-script-pubkey",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Resolve {
+                script_hashes,
+                include_script_pubkey,
+            } => {
+                assert_eq!(script_hashes.len(), 1);
+                assert!(include_script_pubkey);
+            }
+            _ => panic!("expected resolve command"),
+        }
+    }
 }

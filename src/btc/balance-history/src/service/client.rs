@@ -444,4 +444,55 @@ mod tests {
             .expect_err("a missing result field must remain invalid");
         assert!(err.contains("missing both result and error"));
     }
+
+    #[test]
+    fn test_decode_layered_script_registry_response() {
+        let envelope: RpcEnvelope = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "network": "regtest",
+                "registry": {
+                    "state": "absent",
+                    "coverage_mode": "post_snapshot_only",
+                    "capabilities": {
+                        "script_registry_lookup": true,
+                        "script_registry_complete_coverage": false
+                    },
+                    "overlay_estimated_count": 2,
+                    "base_height": 10,
+                    "base_block_hash": "11".repeat(32),
+                    "core_snapshot_id": "22".repeat(32),
+                    "registry_artifact_id": null,
+                    "expected_count": null,
+                    "policy": "auxiliary_seen_scripts_non_consensus_v1",
+                    "last_error": null
+                },
+                "items": [{
+                    "script_hash": "33".repeat(32),
+                    "status": "unresolved",
+                    "source": null,
+                    "script_pubkey": null,
+                    "address": null,
+                    "address_type": null,
+                    "standard": false
+                }]
+            },
+            "id": 1
+        }))
+        .unwrap();
+
+        let response = RpcClient::decode_rpc_envelope::<ScriptHashResolutionResponse>(
+            "resolve_script_hashes",
+            envelope,
+        )
+        .unwrap();
+        assert_eq!(
+            response.items[0].status,
+            crate::ScriptHashResolutionStatus::Unresolved
+        );
+        assert_eq!(
+            response.registry.coverage_mode,
+            crate::ScriptRegistryCoverageMode::PostSnapshotOnly
+        );
+    }
 }

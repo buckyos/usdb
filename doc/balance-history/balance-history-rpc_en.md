@@ -92,16 +92,30 @@ The response also includes `script_registry`, a display-only diagnostic summary:
 ```json
 {
   "script_registry": {
-    "available": true,
-    "estimated_count": 123456,
-    "policy": "auxiliary_seen_scripts_non_consensus_v1"
+    "state": "ready",
+    "coverage_mode": "snapshot_plus_sidecar",
+    "capabilities": {
+      "script_registry_lookup": true,
+      "script_registry_complete_coverage": true
+    },
+    "overlay_estimated_count": 123456,
+    "base_height": 963800,
+    "base_block_hash": "....",
+    "core_snapshot_id": "....",
+    "registry_artifact_id": "....",
+    "expected_count": 1541365559,
+    "policy": "auxiliary_seen_scripts_non_consensus_v1",
+    "last_error": null
   }
 }
 ```
 
-- `available`: whether this node can query the auxiliary registry.
-- `estimated_count`: RocksDB's estimated number of known `script_hash -> scriptPubKey`
-  mappings. It is display/progress metadata, not an exact row count.
+- `state`: lifecycle of the optional sidecar. Failed/conflict states only reduce
+  historical reverse-lookup coverage and never block core readiness.
+- `coverage_mode`: `full_replay`, `snapshot_plus_sidecar`, or `post_snapshot_only`.
+- `capabilities.script_registry_complete_coverage`: whether a miss is definitive.
+- `overlay_estimated_count`: estimated RocksDB overlay rows, not an exact count.
+- base, core snapshot, artifact, and expected-count fields identify the active immutable sidecar.
 - `policy`: machine-readable semantics. The current policy means the registry is a non-consensus seen-script cache populated by indexing and snapshot import.
 
 ### 5) `get_snapshot_info`
@@ -203,10 +217,27 @@ Example result:
 ```json
 {
   "network": "regtest",
+  "registry": {
+    "state": "ready",
+    "coverage_mode": "snapshot_plus_sidecar",
+    "capabilities": {
+      "script_registry_lookup": true,
+      "script_registry_complete_coverage": true
+    },
+    "overlay_estimated_count": 42,
+    "base_height": 963800,
+    "base_block_hash": "....",
+    "core_snapshot_id": "....",
+    "registry_artifact_id": "....",
+    "expected_count": 1541365559,
+    "policy": "auxiliary_seen_scripts_non_consensus_v1",
+    "last_error": null
+  },
   "items": [
     {
       "script_hash": "<BtcScriptHash>",
-      "found": true,
+      "status": "found_overlay",
+      "source": "overlay",
       "script_pubkey": null,
       "address": "bcrt1p...",
       "address_type": "p2tr",
@@ -214,7 +245,8 @@ Example result:
     },
     {
       "script_hash": "<missing-BtcScriptHash>",
-      "found": false,
+      "status": "not_found",
+      "source": null,
       "script_pubkey": null,
       "address": null,
       "address_type": null,
@@ -226,7 +258,11 @@ Example result:
 
 Notes:
 
-- `found=false` means this node's auxiliary `script_registry` has not seen the script hash.
+- Lookup order is RocksDB overlay first, then immutable SQLite base for misses.
+- `found_overlay` and `found_base` identify the source of a valid mapping.
+- `not_found` is only returned with complete coverage. `unresolved` means the node lacks
+  historical sidecar coverage and cannot decide whether an old mapping exists.
+- `conflict` means the stored value failed hash validation; it never changes balance or consensus readiness.
 - `address=null` means a scriptPubKey exists but cannot be encoded as a standard address on the current BTC network.
 - `address_type` is a display classification such as `p2tr`, `p2wpkh`, `p2wsh`, `p2sh`, `p2pkh`, `op_return`, or `non_standard`.
 

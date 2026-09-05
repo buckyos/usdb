@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   fetchBalanceHistoryBatchBalances,
+  fetchBalanceHistoryScriptHashes,
   fetchBalanceHistorySingleBalance,
   fetchBalanceHistorySyncStatus,
 } from '../lib/api'
-import { displayBoolean, displayNumber, displayText } from '../lib/format'
-import type { AddressBalanceRow, BalanceHistorySummary, BalanceHistorySyncStatus, OverviewResponse } from '../lib/types'
+import { displayNumber, displayText } from '../lib/format'
+import type {
+  AddressBalanceRow,
+  BalanceHistorySummary,
+  BalanceHistorySyncStatus,
+  OverviewResponse,
+  ScriptHashResolutionResponse,
+} from '../lib/types'
 import { FieldValueList } from '../components/FieldValueList'
 
 interface BalanceHistoryExplorerPageProps {
@@ -111,6 +118,11 @@ export function BalanceHistoryExplorerPage({
   const [queryHeight, setQueryHeight] = useState('')
   const [queryRangeStart, setQueryRangeStart] = useState('')
   const [queryRangeEnd, setQueryRangeEnd] = useState('')
+  const [registryHashes, setRegistryHashes] = useState('')
+  const [registryIncludeScript, setRegistryIncludeScript] = useState(false)
+  const [registryResponse, setRegistryResponse] = useState<ScriptHashResolutionResponse | null>(null)
+  const [registryError, setRegistryError] = useState<string | null>(null)
+  const [registryLoading, setRegistryLoading] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -196,6 +208,27 @@ export function BalanceHistoryExplorerPage({
     }
   }
 
+  async function handleRegistryQuery(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setRegistryLoading(true)
+    setRegistryError(null)
+    try {
+      const hashes = registryHashes
+        .split('\n')
+        .map((item) => item.trim())
+        .filter(Boolean)
+      if (hashes.length === 0) {
+        throw new Error(t('services.balanceHistory.registryHashesRequired'))
+      }
+      setRegistryResponse(await fetchBalanceHistoryScriptHashes(hashes, registryIncludeScript))
+    } catch (error) {
+      setRegistryResponse(null)
+      setRegistryError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRegistryLoading(false)
+    }
+  }
+
   return (
     <div className="grid gap-5">
       {!embedded ? (
@@ -245,19 +278,38 @@ export function BalanceHistoryExplorerPage({
                 helpText: t('help.fields.statusMessage'),
               },
               {
-                label: t('fields.scriptRegistryAvailable'),
-                value: displayBoolean(summary?.script_registry?.available, t),
-                helpText: t('help.fields.scriptRegistryAvailable'),
+                label: t('fields.scriptRegistryState'),
+                value: displayText(summary?.script_registry?.state, t),
+                helpText: t('help.fields.scriptRegistryState'),
               },
               {
-                label: t('fields.scriptRegistryCount'),
-                value: displayNumber(locale, summary?.script_registry?.count ?? null, t),
-                helpText: t('help.fields.scriptRegistryCount'),
+                label: t('fields.scriptRegistryCoverage'),
+                value: displayText(summary?.script_registry?.coverage_mode, t),
+                helpText: t('help.fields.scriptRegistryCoverage'),
+              },
+              {
+                label: t('fields.scriptRegistryOverlayCount'),
+                value: displayNumber(
+                  locale,
+                  summary?.script_registry?.overlay_estimated_count ?? null,
+                  t,
+                ),
+                helpText: t('help.fields.scriptRegistryOverlayCount'),
+              },
+              {
+                label: t('fields.scriptRegistryBaseCount'),
+                value: displayNumber(locale, summary?.script_registry?.expected_count ?? null, t),
+                helpText: t('help.fields.scriptRegistryBaseCount'),
               },
               {
                 label: t('fields.scriptRegistryPolicy'),
                 value: displayText(summary?.script_registry?.policy, t),
                 helpText: t('help.fields.scriptRegistryPolicy'),
+              },
+              {
+                label: t('fields.scriptRegistryError'),
+                value: displayText(summary?.script_registry?.last_error, t),
+                helpText: t('help.fields.scriptRegistryError'),
               },
             ]}
           />
@@ -265,6 +317,79 @@ export function BalanceHistoryExplorerPage({
         {syncError ? (
           <p className="mt-4 text-sm text-[color:var(--cp-danger)]">{syncError}</p>
         ) : null}
+      </article>
+
+      <article className="console-card">
+        <div className="mb-5">
+          <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+            {t('services.balanceHistory.registryLookupTitle')}
+          </h3>
+          <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+            {t('services.balanceHistory.registryLookupBody')}
+          </p>
+        </div>
+        <div className="grid gap-5 xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
+          <form className="grid content-start gap-4" onSubmit={handleRegistryQuery}>
+            <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+              <span>{t('services.balanceHistory.registryScriptHashes')}</span>
+              <textarea
+                className="console-textarea"
+                value={registryHashes}
+                onChange={(event) => setRegistryHashes(event.target.value)}
+                placeholder={t('services.balanceHistory.registryHashesPlaceholder')}
+                rows={6}
+              />
+            </label>
+            <label className="flex items-center gap-3 text-sm text-[color:var(--cp-text)]">
+              <input
+                type="checkbox"
+                checked={registryIncludeScript}
+                onChange={(event) => setRegistryIncludeScript(event.target.checked)}
+              />
+              <span>{t('services.balanceHistory.includeScriptPubkey')}</span>
+            </label>
+            <div className="flex flex-wrap items-center gap-3">
+              <button type="submit" className="console-action-button" disabled={registryLoading}>
+                {registryLoading
+                  ? t('actions.reloading')
+                  : t('services.balanceHistory.runRegistryLookup')}
+              </button>
+              {registryError ? (
+                <span className="text-sm text-[color:var(--cp-danger)]">{registryError}</span>
+              ) : null}
+            </div>
+          </form>
+          <div className="min-w-0 overflow-x-auto">
+            <table className="console-table">
+              <thead>
+                <tr>
+                  <th>{t('services.balanceHistory.scriptHash')}</th>
+                  <th>{t('fields.status')}</th>
+                  <th>{t('fields.source')}</th>
+                  <th>{t('fields.address')}</th>
+                  <th>{t('services.balanceHistory.scriptPubkey')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {!registryResponse || registryResponse.items.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>{t('services.balanceHistory.noRows')}</td>
+                  </tr>
+                ) : (
+                  registryResponse.items.map((item, index) => (
+                    <tr key={`${item.script_hash}:${index}`}>
+                      <td className="break-all">{item.script_hash}</td>
+                      <td>{item.status}</td>
+                      <td>{displayText(item.source, t)}</td>
+                      <td className="break-all">{displayText(item.address, t)}</td>
+                      <td className="break-all">{displayText(item.script_pubkey, t)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </article>
 
       <article className="console-card">

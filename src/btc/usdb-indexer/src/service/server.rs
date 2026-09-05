@@ -3893,10 +3893,21 @@ mod tests {
             snapshot_origin: None,
             snapshot_verification_state: None,
             snapshot_signing_key_id: None,
-            script_registry: balance_history::ScriptRegistryStatus {
-                available: true,
-                estimated_count: Some(0),
+            script_registry: balance_history::ScriptRegistryReadiness {
+                state: balance_history::ScriptRegistryState::Disabled,
+                coverage_mode: balance_history::ScriptRegistryCoverageMode::FullReplay,
+                capabilities: balance_history::ScriptRegistryCapabilities {
+                    script_registry_lookup: true,
+                    script_registry_complete_coverage: true,
+                },
+                overlay_estimated_count: Some(0),
+                base_height: None,
+                base_block_hash: None,
+                core_snapshot_id: None,
+                registry_artifact_id: None,
+                expected_count: None,
                 policy: "auxiliary_seen_scripts_non_consensus_v1".to_string(),
+                last_error: None,
             },
             blockers: Vec::new(),
         }

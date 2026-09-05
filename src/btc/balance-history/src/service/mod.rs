@@ -1,6 +1,7 @@
 mod client;
 mod rpc;
 mod script_registry_contract;
+mod script_registry_resolver;
 mod server;
 mod state_ref;
 

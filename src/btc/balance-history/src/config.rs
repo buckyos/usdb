@@ -102,6 +102,18 @@ fn default_undo_cleanup_interval_blocks() -> u32 {
     16
 }
 
+fn default_script_registry_cache_size_kib() -> u32 {
+    64 * 1024
+}
+
+fn default_script_registry_query_batch_size() -> usize {
+    256
+}
+
+fn default_script_registry_slow_query_ms() -> u64 {
+    250
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexConfig {
     /// Threshold of blocks behind to switch to LocalLoader client
@@ -335,6 +347,47 @@ impl SnapshotConfig {
     }
 }
 
+/// Resource limits for the optional immutable script-registry sidecar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptRegistryConfig {
+    /// Maximum SQLite page cache assigned to the active sidecar connection.
+    #[serde(default = "default_script_registry_cache_size_kib")]
+    pub cache_size_kib: u32,
+    /// Maximum number of unresolved hashes in one SQLite `IN` query.
+    #[serde(default = "default_script_registry_query_batch_size")]
+    pub query_batch_size: usize,
+    /// Emit a warning when one sidecar batch lookup reaches this duration.
+    #[serde(default = "default_script_registry_slow_query_ms")]
+    pub slow_query_ms: u64,
+}
+
+impl Default for ScriptRegistryConfig {
+    fn default() -> Self {
+        Self {
+            cache_size_kib: default_script_registry_cache_size_kib(),
+            query_batch_size: default_script_registry_query_batch_size(),
+            slow_query_ms: default_script_registry_slow_query_ms(),
+        }
+    }
+}
+
+impl ScriptRegistryConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.cache_size_kib == 0 {
+            return Err("script_registry.cache_size_kib must be greater than 0".to_string());
+        }
+        if !(1..=1_000).contains(&self.query_batch_size) {
+            return Err(
+                "script_registry.query_batch_size must be in the range 1..=1000".to_string(),
+            );
+        }
+        if self.slow_query_ms == 0 {
+            return Err("script_registry.slow_query_ms must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+}
+
 fn get_default_root_dir() -> PathBuf {
     usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
 }
@@ -352,6 +405,8 @@ pub struct BalanceHistoryConfig {
     pub rpc_server: RpcServer,
     #[serde(default)]
     pub snapshot: SnapshotConfig,
+    #[serde(default)]
+    pub script_registry: ScriptRegistryConfig,
 }
 
 impl Default for BalanceHistoryConfig {
@@ -364,6 +419,7 @@ impl Default for BalanceHistoryConfig {
             sync: IndexConfig::default(),
             rpc_server: RpcServer::default(),
             snapshot: SnapshotConfig::default(),
+            script_registry: ScriptRegistryConfig::default(),
         }
     }
 }
@@ -432,6 +488,7 @@ impl BalanceHistoryConfig {
         self.sync.validate()?;
         self.rpc_server.validate()?;
         self.snapshot.validate()?;
+        self.script_registry.validate()?;
         Ok(())
     }
 
@@ -446,6 +503,11 @@ impl BalanceHistoryConfig {
 
     pub fn snapshot_dir(&self) -> PathBuf {
         self.root_dir.join("snapshots")
+    }
+
+    /// Returns the service-local root for optional script-registry sidecars.
+    pub fn script_registry_sidecar_dir(&self) -> PathBuf {
+        self.root_dir.join("auxiliary").join("script-registry")
     }
 
     /// Resolves a service-local path against `root_dir` when the input is relative.
@@ -481,7 +543,7 @@ impl BalanceHistoryConfig {
             Some(BTCAuth::CookieFile(_)) => "cookie_file",
         };
         info!(
-            "Loaded balance-history {} config: root_dir={}, btc_network={}, btc_auth_mode={}, batch_size={}, undo_retention_blocks={}, undo_cleanup_interval_blocks={}, rpc_addr={}:{}, snapshot_trust_mode={:?}",
+            "Loaded balance-history {} config: root_dir={}, btc_network={}, btc_auth_mode={}, batch_size={}, undo_retention_blocks={}, undo_cleanup_interval_blocks={}, rpc_addr={}:{}, snapshot_trust_mode={:?}, script_registry_cache_size_kib={}, script_registry_query_batch_size={}, script_registry_slow_query_ms={}",
             source,
             self.root_dir.display(),
             self.btc.network(),
@@ -491,7 +553,10 @@ impl BalanceHistoryConfig {
             self.sync.undo_cleanup_interval_blocks,
             self.rpc_server.host,
             self.rpc_server.port,
-            self.snapshot.trust_mode
+            self.snapshot.trust_mode,
+            self.script_registry.cache_size_kib,
+            self.script_registry.query_batch_size,
+            self.script_registry.slow_query_ms
         );
     }
 }
@@ -642,6 +707,36 @@ mod tests {
         config.snapshot.signing_key_file = None;
         config.snapshot.trusted_keys_file = Some(PathBuf::from("trusted-keys.json"));
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn test_rejects_unbounded_script_registry_resources() {
+        let mut config = BalanceHistoryConfig::default();
+        config.script_registry.cache_size_kib = 0;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("script_registry.cache_size_kib")
+        );
+
+        config.script_registry.cache_size_kib = default_script_registry_cache_size_kib();
+        config.script_registry.query_batch_size = 1_001;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("script_registry.query_batch_size")
+        );
+
+        config.script_registry.query_batch_size = default_script_registry_query_batch_size();
+        config.script_registry.slow_query_ms = 0;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("script_registry.slow_query_ms")
+        );
     }
 
     #[test]

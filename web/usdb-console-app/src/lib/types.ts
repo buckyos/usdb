@@ -50,9 +50,36 @@ export interface BalanceHistorySummary {
 }
 
 export interface BalanceHistoryScriptRegistryStatus {
-  available: boolean
-  count?: number | null
+  state: 'absent' | 'disabled' | 'downloading' | 'verifying' | 'ready' | 'failed' | 'conflict'
+  coverage_mode: 'full_replay' | 'snapshot_plus_sidecar' | 'post_snapshot_only'
+  capabilities: {
+    script_registry_lookup: boolean
+    script_registry_complete_coverage: boolean
+  }
+  overlay_estimated_count?: number | null
+  base_height?: number | null
+  base_block_hash?: string | null
+  core_snapshot_id?: string | null
+  registry_artifact_id?: string | null
+  expected_count?: number | null
   policy: string
+  last_error?: string | null
+}
+
+export interface ScriptHashResolutionItem {
+  script_hash: string
+  status: 'found_overlay' | 'found_base' | 'not_found' | 'unresolved' | 'conflict'
+  source?: 'overlay' | 'base_sidecar' | null
+  script_pubkey?: string | null
+  address?: string | null
+  address_type?: string | null
+  standard: boolean
+}
+
+export interface ScriptHashResolutionResponse {
+  network: string
+  registry: BalanceHistoryScriptRegistryStatus
+  items: ScriptHashResolutionItem[]
 }
 
 export interface UsdbIndexerSummary {

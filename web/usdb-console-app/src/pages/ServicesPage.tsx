@@ -166,19 +166,34 @@ function renderBalanceHistoryDetails(
           helpText: t('help.fields.snapshotSigningKey'),
         },
         {
-          label: t('fields.scriptRegistryAvailable'),
-          value: displayBoolean(data?.script_registry?.available, t),
-          helpText: t('help.fields.scriptRegistryAvailable'),
+          label: t('fields.scriptRegistryState'),
+          value: displayText(data?.script_registry?.state, t),
+          helpText: t('help.fields.scriptRegistryState'),
         },
         {
-          label: t('fields.scriptRegistryCount'),
-          value: displayNumber(locale, data?.script_registry?.count, t),
-          helpText: t('help.fields.scriptRegistryCount'),
+          label: t('fields.scriptRegistryCoverage'),
+          value: displayText(data?.script_registry?.coverage_mode, t),
+          helpText: t('help.fields.scriptRegistryCoverage'),
+        },
+        {
+          label: t('fields.scriptRegistryOverlayCount'),
+          value: displayNumber(locale, data?.script_registry?.overlay_estimated_count, t),
+          helpText: t('help.fields.scriptRegistryOverlayCount'),
+        },
+        {
+          label: t('fields.scriptRegistryBaseCount'),
+          value: displayNumber(locale, data?.script_registry?.expected_count, t),
+          helpText: t('help.fields.scriptRegistryBaseCount'),
         },
         {
           label: t('fields.scriptRegistryPolicy'),
           value: displayText(data?.script_registry?.policy, t),
           helpText: t('help.fields.scriptRegistryPolicy'),
+        },
+        {
+          label: t('fields.scriptRegistryError'),
+          value: displayText(data?.script_registry?.last_error, t),
+          helpText: t('help.fields.scriptRegistryError'),
         },
         {
           label: t('fields.statusMessage'),

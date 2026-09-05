@@ -48,6 +48,21 @@ impl BalanceHistoryService {
                 log::info!("Sending stop command to balance-history");
                 self.client.stop().await?;
             }
+            Commands::Resolve {
+                script_hashes,
+                include_script_pubkey,
+            } => {
+                let response = self
+                    .client
+                    .resolve_script_hashes(script_hashes, include_script_pubkey)
+                    .await?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response).map_err(|error| {
+                        format!("Failed to serialize script-registry response: {error}")
+                    })?
+                );
+            }
             Commands::Balance { user, mut position } => {
                 // Handle Balance command
                 let user_id = match UserId::from_str(&user) {

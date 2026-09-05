@@ -4,8 +4,9 @@ use crate::snapshot_contract::{
     SCRIPT_REGISTRY_SCHEMA_VERSION, SCRIPT_REGISTRY_SQL_SCHEMA_V1, ScriptRegistryBaseIdentity,
 };
 use bitcoincore_rpc::bitcoin::hashes::Hash;
-use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint};
-use rusqlite::{Connection, OpenFlags};
+use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, ScriptBuf};
+use rusqlite::{Connection, OpenFlags, params_from_iter};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use usdb_util::{BtcScriptHash, OutPointCodec, ToBtcScriptHash, UTXOEntry, parse_json_strict};
@@ -448,6 +449,56 @@ impl ScriptRegistrySnapshotDb {
     pub fn open_for_verification(path: &Path, cache_size_kib: u32) -> Result<Self, String> {
         open_database_for_verification(path, cache_size_kib, "script registry")
             .map(|(path, conn)| Self { path, conn })
+    }
+
+    /// Opens one activated sidecar for bounded immutable point lookups.
+    pub fn open_for_lookup(path: &Path, cache_size_kib: u32) -> Result<Self, String> {
+        open_database_for_verification(path, cache_size_kib, "script registry sidecar")
+            .map(|(path, conn)| Self { path, conn })
+    }
+
+    /// Resolves hashes in bounded SQLite batches while preserving request order.
+    pub fn get_entries(
+        &self,
+        script_hashes: &[BtcScriptHash],
+        batch_size: usize,
+    ) -> Result<Vec<Option<ScriptBuf>>, String> {
+        if batch_size == 0 {
+            return Err("Script-registry lookup batch size must be greater than zero".to_string());
+        }
+        let mut found = HashMap::with_capacity(script_hashes.len());
+        for chunk in script_hashes.chunks(batch_size) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT script_hash, script_pubkey FROM script_registry WHERE script_hash IN ({placeholders})"
+            );
+            let mut statement = self.conn.prepare(&sql).map_err(|error| {
+                format!("Failed to prepare script-registry sidecar lookup: {error}")
+            })?;
+            let values = chunk
+                .iter()
+                .map(|script_hash| script_hash.as_ref() as &[u8]);
+            let rows = statement
+                .query_map(params_from_iter(values), |row| {
+                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .map_err(|error| format!("Failed to query script-registry sidecar: {error}"))?;
+            for row in rows {
+                let (key, value) = row.map_err(|error| {
+                    format!("Failed to decode script-registry sidecar row: {error}")
+                })?;
+                let script_hash = BtcScriptHash::from_slice(&key).map_err(|error| {
+                    format!("Invalid script hash in script-registry sidecar: {error}")
+                })?;
+                found.insert(script_hash, ScriptBuf::from(value));
+            }
+        }
+        Ok(script_hashes
+            .iter()
+            .map(|script_hash| found.get(script_hash).cloned())
+            .collect())
     }
 
     /// Inserts or confirms one batch of canonical registry mappings.

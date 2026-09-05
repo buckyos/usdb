@@ -165,9 +165,20 @@ block commit、snapshot/state-ref 和 script registry 查询返回结构化
   "balance_query_floor": 0,
   "history_query_floor": 0,
   "script_registry": {
-    "available": true,
-    "estimated_count": 123456,
-    "policy": "auxiliary_seen_scripts_non_consensus_v1"
+    "state": "ready",
+    "coverage_mode": "snapshot_plus_sidecar",
+    "capabilities": {
+      "script_registry_lookup": true,
+      "script_registry_complete_coverage": true
+    },
+    "overlay_estimated_count": 123456,
+    "base_height": 963800,
+    "base_block_hash": "....",
+    "core_snapshot_id": "....",
+    "registry_artifact_id": "....",
+    "expected_count": 1541365559,
+    "policy": "auxiliary_seen_scripts_non_consensus_v1",
+    "last_error": null
   },
   "blockers": ["CatchingUp"]
 }
@@ -178,12 +189,17 @@ block commit、snapshot/state-ref 和 script registry 查询返回结构化
 1. 不应再用 `get_network_type` 代替 readiness 判断；
 2. `rpc_alive=true` 只说明服务活着，不说明快照适合共识消费；
 3. 下游若要做严格 gating，应使用 `consensus_ready=true`；
-4. `script_registry` 是展示和诊断信息，不参与 balance-history block commit 或共识 state_ref。
+4. `script_registry` 是展示和诊断信息，不参与 balance-history block commit、共识 state_ref、
+   `query_ready` 或 `consensus_ready`。
 
 `script_registry` 字段说明：
 
-- `available`：当前节点是否能查询辅助 registry；
-- `estimated_count`：RocksDB 对当前 registry 映射数量的估算值，仅用于展示和进度诊断，不是精确行数；
+- `state`：可选 sidecar 的生命周期；`failed/conflict` 只降低历史反向解析覆盖，不阻塞核心服务；
+- `coverage_mode`：`full_replay`、`snapshot_plus_sidecar` 或 `post_snapshot_only`；
+- `capabilities.script_registry_complete_coverage`：只有为 `true` 时，查询 miss 才能解释为确定不存在；
+- `overlay_estimated_count`：RocksDB overlay 的估算数量，不是精确行数；
+- `base_*`、`core_snapshot_id`、`registry_artifact_id` 和 `expected_count`：当前历史 base 的
+  checkpoint、artifact 和精确 manifest 数量；
 - `policy`：机器可读语义策略。当前策略表示 registry 是由索引和 snapshot 导入填充的非共识 seen-script cache。
 
 ### 5) `get_snapshot_info`
@@ -409,10 +425,27 @@ block commit、snapshot/state-ref 和 script registry 查询返回结构化
 ```json
 {
   "network": "regtest",
+  "registry": {
+    "state": "ready",
+    "coverage_mode": "snapshot_plus_sidecar",
+    "capabilities": {
+      "script_registry_lookup": true,
+      "script_registry_complete_coverage": true
+    },
+    "overlay_estimated_count": 42,
+    "base_height": 963800,
+    "base_block_hash": "....",
+    "core_snapshot_id": "....",
+    "registry_artifact_id": "....",
+    "expected_count": 1541365559,
+    "policy": "auxiliary_seen_scripts_non_consensus_v1",
+    "last_error": null
+  },
   "items": [
     {
       "script_hash": "<BtcScriptHash>",
-      "found": true,
+      "status": "found_overlay",
+      "source": "overlay",
       "script_pubkey": null,
       "address": "bcrt1p...",
       "address_type": "p2tr",
@@ -420,7 +453,8 @@ block commit、snapshot/state-ref 和 script registry 查询返回结构化
     },
     {
       "script_hash": "<missing-BtcScriptHash>",
-      "found": false,
+      "status": "not_found",
+      "source": null,
       "script_pubkey": null,
       "address": null,
       "address_type": null,
@@ -432,7 +466,10 @@ block commit、snapshot/state-ref 和 script registry 查询返回结构化
 
 说明：
 
-- `found=false` 表示当前节点的辅助 `script_registry` 没有见过这个 script hash。
+- 查询顺序固定为 RocksDB overlay，再对 miss 查询 immutable SQLite base sidecar，并保持输入顺序。
+- `found_overlay` / `found_base` 分别表示来自实时 overlay / 历史 sidecar。
+- `not_found` 只在完整覆盖下返回；`unresolved` 表示节点缺少历史 sidecar，不能判断旧映射是否存在。
+- `conflict` 表示值无法通过请求 hash 的自校验；该故障不会改变余额或共识 readiness。
 - `address=null` 表示有 scriptPubKey，但它不能编码成当前 BTC 网络的标准 address。
 - `address_type` 是展示用分类，例如 `p2tr`、`p2wpkh`、`p2wsh`、`p2sh`、`p2pkh`、`op_return`、`non_standard`。
 

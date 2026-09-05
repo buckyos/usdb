@@ -43,6 +43,9 @@ class BalanceHistoryMemoryProfileTests(unittest.TestCase):
             self.assertEqual(config["sync"]["utxo_max_cache_bytes"], 4 * GIB)
             self.assertEqual(config["sync"]["balance_max_cache_bytes"], 12 * GIB)
             self.assertEqual(config["sync"]["max_memory_percent"], 85)
+            self.assertEqual(config["script_registry"]["cache_size_kib"], 65536)
+            self.assertEqual(config["script_registry"]["query_batch_size"], 256)
+            self.assertEqual(config["script_registry"]["slow_query_ms"], 250)
 
     def test_base_compose_uses_conservative_explicit_cache_defaults(self) -> None:
         content = BASE_COMPOSE.read_text(encoding="utf-8")

@@ -2,7 +2,7 @@
 
 ## 1. 文档状态
 
-- 状态：Draft；批次 1、2 已提交，批次 3 已实现并等待评审。
+- 状态：Draft；批次 1 至 3 已提交，批次 4 已实现并等待评审。
 - 适用阶段：USDB 开发期，不保留旧 snapshot schema 或安装流程的兼容双栈。
 - 已确认方向：将 `script_registry` 从 core snapshot 剥离为独立、只读的 SQLite
   sidecar；snapshot 安装节点不再把历史 registry 导入 RocksDB。
@@ -10,9 +10,12 @@
   readiness/resolution 类型已提交。
 - 批次 2（`5577526`）：生成器和 `balance-history-snapshot-tool` 已切换为独立
   core/registry artifact。
-- 批次 3：core installer 只接受 split v1 core manifest，只导入 balance、live UTXO 和
-  block commit；结构化 provenance、完成 marker 和七阶段进度已同步切换。运行时 resolver、
-  network bundle 与远端对象存储发布仍属于后续批次。
+- 批次 3（`b60b130`）：core installer 只接受 split v1 core manifest，只导入 balance、live UTXO 和
+  block commit；结构化 provenance、完成 marker 和七阶段进度已同步切换。network bundle 与
+  远端对象存储发布仍属于后续批次。
+- 批次 4：运行时通过固定 `state.json` active pointer 热加载 immutable SQLite base，按
+  RocksDB overlay 优先的顺序派生 coverage-aware 结果；RPC、client、CLI、control-plane 和
+  explorer 已切换到分层状态。远端下载、签名安装、pointer 写入、GC 和 doctor 属于批次 5。
 - 本文冻结目标语义、存储边界和实施顺序；每个批次通过评审后再提交。
 
 相关文档：
@@ -204,6 +207,27 @@ sidecar 不可用时，余额和共识服务继续运行；只有 snapshot heigh
     |-- snapshot-loader.done.json        # 只表示 core snapshot 安装完成
     `-- snapshot-loader.progress.json    # 只记录 core import
 ```
+
+`state.json` 使用严格 schema，不接受未知字段。`ready` 状态示例：
+
+```json
+{
+  "schema_version": "balance-history-script-registry-activation:v1",
+  "state": "ready",
+  "active": {
+    "registry_artifact_id": "...",
+    "manifest_file": "script_registry_963800.manifest.json",
+    "manifest_sha256": "..."
+  },
+  "last_error": null,
+  "updated_at": 1725000002
+}
+```
+
+`ready` pointer 只能由安装器在完成 artifact file hash、manifest signature、SQLite integrity、
+精确 count、core identity 和 overlap audit 后原子写入。运行时不会重复扫描十亿级文件；它校验
+pointer/manifest digest、路径约束、manifest 与 live core identity、SQLite schema/meta，并对实际
+返回的每条 `script_pubkey` 重新计算 canonical script hash。
 
 约束：
 
@@ -650,10 +674,16 @@ registry 保持 append-like：
 
 ### 批次 4：分层 Registry Resolver
 
-- 增加 immutable sidecar reader。
-- 组合 RocksDB overlay 与 SQLite base。
-- 增加 coverage、冲突、慢查询和失败隔离。
-- 重构 RPC、Rust client、CLI、control-plane 和 explorer。
+- 已实现，等待评审。
+- immutable reader 使用 `immutable=1`、`query_only=true`、bounded page cache 和 bounded
+  `IN` batch；运行时打开只校验 active pointer、manifest digest、core identity、schema 和
+  SQLite metadata，不重复执行发布安装阶段的全文件 hash/integrity/count 扫描。
+- resolver 每次先批量读取 RocksDB overlay，仅把 miss 交给 SQLite base，并对 overlay/base
+  返回值重新计算 canonical script hash；sidecar 读错或冲突降级为 `post_snapshot_only`。
+- `resolve_script_hashes` 已直接替换旧 `found` 二态，readiness 和 response 同步输出 coverage、
+  capability 与 provenance；Rust client/CLI、control-plane 和 explorer 已切换新契约。
+- `state.json` 采用严格 v1 schema，active pointer 绑定 immutable artifact directory、manifest
+  basename 和 manifest SHA-256；状态文件变化后无需重启即可启用或撤销 sidecar。
 
 ### 批次 5：部署和发布闭环
 

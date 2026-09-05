@@ -278,10 +278,26 @@ pub struct BalanceHistoryServiceSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BalanceHistoryScriptRegistryStatus {
-    pub available: bool,
-    pub estimated_count: Option<u64>,
+    pub state: String,
+    pub coverage_mode: String,
+    pub capabilities: BalanceHistoryScriptRegistryCapabilities,
+    pub overlay_estimated_count: Option<u64>,
+    pub base_height: Option<u32>,
+    pub base_block_hash: Option<String>,
+    pub core_snapshot_id: Option<String>,
+    pub registry_artifact_id: Option<String>,
+    pub expected_count: Option<u64>,
     pub policy: String,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BalanceHistoryScriptRegistryCapabilities {
+    pub script_registry_lookup: bool,
+    pub script_registry_complete_coverage: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

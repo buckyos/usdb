@@ -20,6 +20,7 @@ import type {
   MinerEconomicAggregateView,
   UsdbIndexerSyncStatus,
   UsdbRpcInfo,
+  ScriptHashResolutionResponse,
 } from './types'
 
 export async function fetchOverview(): Promise<OverviewResponse> {
@@ -81,6 +82,18 @@ export function fetchBalanceHistoryBatchBalances(
   request: Record<string, unknown>,
 ): Promise<AddressBalanceRow[][]> {
   return callBalanceHistoryRpc('get_addresses_balances', [request])
+}
+
+export function fetchBalanceHistoryScriptHashes(
+  scriptHashes: string[],
+  includeScriptPubkey = false,
+): Promise<ScriptHashResolutionResponse> {
+  return callBalanceHistoryRpc('resolve_script_hashes', [
+    {
+      script_hashes: scriptHashes,
+      include_script_pubkey: includeScriptPubkey,
+    },
+  ])
 }
 
 export function fetchUsdbRpcInfo(): Promise<UsdbRpcInfo> {

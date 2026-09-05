@@ -1,4 +1,6 @@
 use super::rpc::*;
+use super::script_registry_contract::ScriptRegistryReadiness;
+use super::script_registry_resolver::ScriptRegistryResolver;
 use super::{
     COMMIT_HASH_ALGO, COMMIT_PROTOCOL_VERSION,
     build_consensus_snapshot_identity as shared_build_consensus_snapshot_identity,
@@ -8,7 +10,6 @@ use super::{
 };
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::BalanceHistoryDBRef;
-use crate::snapshot_contract::SCRIPT_REGISTRY_POLICY;
 use crate::snapshot_provenance::SnapshotInstallProvenance;
 use crate::status::{SyncStatus, SyncStatusManagerRef};
 use bitcoincore_rpc::bitcoin::{Address, OutPoint, Script};
@@ -34,6 +35,7 @@ pub struct BalanceHistoryRpcServer {
     addr: std::net::SocketAddr,
     status: SyncStatusManagerRef,
     db: BalanceHistoryDBRef,
+    script_registry: Arc<ScriptRegistryResolver>,
     shutdown_tx: watch::Sender<()>,
     server_handle: Arc<Mutex<Option<jsonrpc_http_server::CloseHandle>>>,
 }
@@ -46,11 +48,13 @@ impl BalanceHistoryRpcServer {
         db: BalanceHistoryDBRef,
         shutdown_tx: watch::Sender<()>,
     ) -> Self {
+        let script_registry = Arc::new(ScriptRegistryResolver::new(config.clone(), db.clone()));
         Self {
             config,
             addr,
             status,
             db,
+            script_registry,
             shutdown_tx,
             server_handle: Arc::new(Mutex::new(None)),
         }
@@ -855,22 +859,8 @@ impl BalanceHistoryRpcServer {
         })
     }
 
-    fn script_registry_status(&self) -> ScriptRegistryStatus {
-        match self.db.get_estimated_script_registry_count() {
-            Ok(estimated_count) => ScriptRegistryStatus {
-                available: true,
-                estimated_count: Some(estimated_count),
-                policy: SCRIPT_REGISTRY_POLICY.to_string(),
-            },
-            Err(e) => {
-                log::warn!("Failed to read script registry status: {}", e);
-                ScriptRegistryStatus {
-                    available: false,
-                    estimated_count: None,
-                    policy: SCRIPT_REGISTRY_POLICY.to_string(),
-                }
-            }
-        }
+    fn script_registry_status(&self) -> ScriptRegistryReadiness {
+        self.script_registry.readiness()
     }
 
     fn snapshot_provenance(&self) -> Result<Option<SnapshotInstallProvenance>, String> {
@@ -1292,9 +1282,9 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         self.validate_script_resolution_params(&params)?;
         let include_script_pubkey = params.include_script_pubkey.unwrap_or(false);
         let network = self.config.btc.network();
-        let entries = self
-            .db
-            .get_script_registry_entries(&params.script_hashes)
+        let (entries, registry) = self
+            .script_registry
+            .resolve(&params.script_hashes)
             .map_err(|e| {
                 Self::to_internal_error(format!("Failed to resolve script hashes: {}", e))
             })?;
@@ -1303,11 +1293,12 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
             .script_hashes
             .iter()
             .zip(entries)
-            .map(|(script_hash, script_pubkey)| {
-                let Some(script_pubkey) = script_pubkey else {
+            .map(|(script_hash, entry)| {
+                let Some(script_pubkey) = entry.script_pubkey else {
                     return ScriptHashResolution {
                         script_hash: script_hash.to_string(),
-                        found: false,
+                        status: entry.status,
+                        source: entry.source,
                         script_pubkey: None,
                         address: None,
                         address_type: None,
@@ -1322,7 +1313,8 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
                 ScriptHashResolution {
                     script_hash: script_hash.to_string(),
-                    found: true,
+                    status: entry.status,
+                    source: entry.source,
                     script_pubkey: include_script_pubkey
                         .then(|| encode_hex(script_pubkey.as_bytes())),
                     standard: address.is_some(),
@@ -1334,6 +1326,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
         Ok(ScriptHashResolutionResponse {
             network: network.to_string(),
+            registry,
             items,
         })
     }
@@ -1347,10 +1340,15 @@ mod tests {
         BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryEntry, BlockCommitEntry,
         ScriptRegistryEntry,
     };
+    use crate::snapshot_contract::SCRIPT_REGISTRY_POLICY;
     use crate::snapshot_provenance::{
         SnapshotInstallOrigin, SnapshotInstallProvenance, SnapshotVerificationState,
     };
     use crate::status::SyncStatusManager;
+    use crate::{
+        ScriptHashResolutionStatus, ScriptRegistryCoverageMode, ScriptRegistrySource,
+        ScriptRegistryState,
+    };
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::{BlockHash, ScriptBuf};
     use jsonrpc_core::ErrorCode as JsonErrorCode;
@@ -1931,8 +1929,17 @@ mod tests {
                 .blockers
                 .contains(&ReadinessBlocker::LatestBlockCommitMissing)
         );
-        assert!(readiness.script_registry.available);
-        assert!(readiness.script_registry.estimated_count.is_some());
+        assert_eq!(
+            readiness.script_registry.coverage_mode,
+            ScriptRegistryCoverageMode::FullReplay
+        );
+        assert!(
+            readiness
+                .script_registry
+                .capabilities
+                .script_registry_complete_coverage
+        );
+        assert!(readiness.script_registry.overlay_estimated_count.is_some());
         assert_eq!(readiness.script_registry.policy, SCRIPT_REGISTRY_POLICY);
     }
 
@@ -1985,11 +1992,14 @@ mod tests {
             readiness.latest_block_commit,
             Some(encode_hex(&commit.block_commit))
         );
-        assert!(readiness.script_registry.available);
+        assert_eq!(
+            readiness.script_registry.coverage_mode,
+            ScriptRegistryCoverageMode::FullReplay
+        );
         assert!(
             readiness
                 .script_registry
-                .estimated_count
+                .overlay_estimated_count
                 .unwrap_or_default()
                 >= 1
         );
@@ -2053,6 +2063,18 @@ mod tests {
             readiness.snapshot_signing_key_id,
             Some("trusted-signer".to_string())
         );
+        assert_eq!(
+            readiness.script_registry.coverage_mode,
+            ScriptRegistryCoverageMode::PostSnapshotOnly
+        );
+        assert_eq!(readiness.script_registry.state, ScriptRegistryState::Absent);
+        assert!(
+            !readiness
+                .script_registry
+                .capabilities
+                .script_registry_complete_coverage
+        );
+        assert!(readiness.blockers.is_empty());
 
         let provenance = server.get_snapshot_provenance().unwrap().unwrap();
         assert_eq!(
@@ -2670,7 +2692,14 @@ mod tests {
         assert_eq!(response.network, "bitcoin");
         assert_eq!(response.items.len(), 2);
         assert_eq!(response.items[0].script_hash, script_hash.to_string());
-        assert!(response.items[0].found);
+        assert_eq!(
+            response.items[0].status,
+            ScriptHashResolutionStatus::FoundOverlay
+        );
+        assert_eq!(
+            response.items[0].source,
+            Some(ScriptRegistrySource::Overlay)
+        );
         assert_eq!(response.items[0].address_type.as_deref(), Some("p2tr"));
         assert!(response.items[0].standard);
         assert!(
@@ -2686,7 +2715,11 @@ mod tests {
             Some(expected_script_hex.as_str())
         );
         assert_eq!(response.items[1].script_hash, missing_hash.to_string());
-        assert!(!response.items[1].found);
+        assert_eq!(
+            response.items[1].status,
+            ScriptHashResolutionStatus::NotFound
+        );
+        assert!(response.items[1].source.is_none());
         assert!(response.items[1].address.is_none());
         assert!(response.items[1].address_type.is_none());
     }
@@ -2711,7 +2744,10 @@ mod tests {
             })
             .unwrap();
 
-        assert!(response.items[0].found);
+        assert_eq!(
+            response.items[0].status,
+            ScriptHashResolutionStatus::FoundOverlay
+        );
         assert_eq!(response.items[0].address_type.as_deref(), Some("op_return"));
         assert!(!response.items[0].standard);
         assert!(response.items[0].address.is_none());

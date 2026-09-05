@@ -1,3 +1,6 @@
+use super::script_registry_contract::{
+    ScriptHashResolutionStatus, ScriptRegistryReadiness, ScriptRegistrySource,
+};
 use crate::snapshot_provenance::{
     SnapshotInstallOrigin, SnapshotInstallProvenance, SnapshotVerificationState,
 };
@@ -11,10 +14,11 @@ use usdb_util::{
     BtcScriptHash, ConsensusQueryContext, ConsensusSnapshotIdentity, ConsensusStateReference,
 };
 
-/// Public RPC/API version of balance-history.
+/// Consensus-facing core snapshot/query API version of balance-history.
 ///
-/// Bump this when the externally visible JSON-RPC contract changes in an
-/// incompatible way, such as response-shape changes or renamed fields.
+/// This value is committed into core snapshot identities, so it only changes
+/// with consensus-relevant balance query semantics. Optional registry RPCs use
+/// their own policy and state-schema versions and must not perturb core state.
 pub const BALANCE_HISTORY_API_VERSION: &str = "1.0.0";
 /// Version tag of the balance-history query semantics contract.
 ///
@@ -184,9 +188,10 @@ pub struct SnapshotInfo {
     /// Downstream services must treat this as part of the stable-view identity,
     /// not as a local tuning parameter.
     pub stable_lag: u32,
-    /// Public API version of balance-history snapshot/query RPCs.
+    /// Consensus-facing API version of core balance-history snapshot/query RPCs.
     ///
-    /// This tracks response-contract compatibility, not commit-hash rules.
+    /// This value is part of the snapshot identity. Optional non-consensus
+    /// extensions such as the script registry use independent policy/schema versions.
     pub balance_history_api_version: String,
     /// Version of the balance-history query semantics contract.
     ///
@@ -397,26 +402,9 @@ pub struct ReadinessInfo {
     /// Signer identifier for trusted snapshot installs, when present.
     pub snapshot_signing_key_id: Option<String>,
     /// Display-only status for the auxiliary script registry.
-    pub script_registry: ScriptRegistryStatus,
+    pub script_registry: ScriptRegistryReadiness,
     /// Machine-readable reasons keeping the service from a stricter ready state.
     pub blockers: Vec<ReadinessBlocker>,
-}
-
-/// Display and diagnostic status for the auxiliary script registry.
-///
-/// The registry is a best-effort cache of scripts observed during indexing or
-/// snapshot installation. It helps callers resolve script hashes back to BTC
-/// addresses, but it is not part of balance-history consensus commits.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ScriptRegistryStatus {
-    /// True when the local DB can query the registry column family.
-    pub available: bool,
-    /// RocksDB estimate of known script hash mappings, when available.
-    ///
-    /// This is diagnostic progress metadata and must not be interpreted as an exact row count.
-    pub estimated_count: Option<u64>,
-    /// Machine-readable policy describing registry semantics.
-    pub policy: String,
 }
 
 /// Logical block-commit metadata recorded for one exact BTC block height.
@@ -451,6 +439,7 @@ pub struct UtxoInfo {
 
 /// Parameters for resolving stored script hashes into display-oriented BTC script metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolveScriptHashesParams {
     /// Ordered list of target script hashes.
     pub script_hashes: Vec<BtcScriptHash>,
@@ -460,11 +449,14 @@ pub struct ResolveScriptHashesParams {
 
 /// One script hash resolution result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScriptHashResolution {
     /// Target script hash in balance-history's canonical internal format.
     pub script_hash: String,
-    /// True when the auxiliary script registry has a scriptPubKey for this hash.
-    pub found: bool,
+    /// Layered lookup result; unresolved is distinct from definitive not-found.
+    pub status: ScriptHashResolutionStatus,
+    /// Storage layer that produced the mapping, present only for found results.
+    pub source: Option<ScriptRegistrySource>,
     /// Raw scriptPubKey hex. Only populated when explicitly requested.
     pub script_pubkey: Option<String>,
     /// BTC address derived for the service network when the script is address-encodable.
@@ -477,9 +469,12 @@ pub struct ScriptHashResolution {
 
 /// Batch script hash resolution response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScriptHashResolutionResponse {
     /// BTC network used when deriving address strings.
     pub network: String,
+    /// Coverage and provenance used to interpret misses in this response.
+    pub registry: ScriptRegistryReadiness,
     /// Resolution results in the same order as the request.
     pub items: Vec<ScriptHashResolution>,
 }
@@ -651,7 +646,8 @@ pub trait BalanceHistoryRpc {
     /// This endpoint is for display and diagnostics only. It does not alter
     /// canonical balance-history query semantics and does not participate in
     /// consensus commits. Results preserve request order and return
-    /// `found=false` when a hash is absent from the local registry.
+    /// `unresolved` when historical sidecar coverage is unavailable. A
+    /// `not_found` result is only returned under complete declared coverage.
     #[rpc(name = "resolve_script_hashes")]
     fn resolve_script_hashes(
         &self,
