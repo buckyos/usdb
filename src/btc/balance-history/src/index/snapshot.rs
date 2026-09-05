@@ -2,10 +2,14 @@ use crate::config::{BalanceHistoryConfigRef, SnapshotTrustMode};
 use crate::db::{
     BALANCE_HISTORY_DATA_MODEL_VERSION, BalanceHistoryDB, BalanceHistoryDBIdentity,
     BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry,
-    ScriptRegistryEntry, SnapshotCallback, SnapshotDB, SnapshotHash, SnapshotMeta,
+    CoreSnapshotDb, CoreSnapshotMeta, ScriptRegistryEntry, ScriptRegistrySnapshotDb,
+    ScriptRegistrySnapshotMeta, SnapshotCallback, SnapshotDB, SnapshotHash, SnapshotMeta,
 };
 use crate::output::IndexOutputRef;
 use crate::service::{HistoricalSnapshotStateRef, build_historical_state_ref_at_height};
+use crate::snapshot_contract::{
+    CoreSnapshotManifest, ScriptRegistryBaseIdentity, ScriptRegistryManifest,
+};
 use crate::snapshot_provenance::{
     SnapshotInstallOrigin, SnapshotInstallProvenance, SnapshotVerificationState,
 };
@@ -33,9 +37,9 @@ pub struct SnapshotIndexer {
     output: IndexOutputRef,
 }
 
-/// Files and verified metadata produced by one snapshot creation run.
+/// Transitional full-snapshot result retained only until the core-only installer lands.
 #[derive(Clone, Debug)]
-pub struct SnapshotCreationResult {
+struct SnapshotCreationResult {
     /// Finalized SQLite snapshot file.
     pub db_path: PathBuf,
     /// Canonical manifest sidecar for `db_path`.
@@ -48,6 +52,36 @@ pub struct SnapshotCreationResult {
     pub manifest: SnapshotManifest,
 }
 
+/// Files and verified metadata produced for one registry-free core artifact.
+#[derive(Clone, Debug)]
+pub struct CoreSnapshotCreationResult {
+    /// Finalized core SQLite file.
+    pub db_path: PathBuf,
+    /// Core artifact manifest.
+    pub manifest_path: PathBuf,
+    /// Optional detached manifest signature.
+    pub signature_path: Option<PathBuf>,
+    /// Counts and checkpoint identity stored inside the core database.
+    pub meta: CoreSnapshotMeta,
+    /// Manifest data written beside the core database.
+    pub manifest: CoreSnapshotManifest,
+}
+
+/// Files and verified metadata produced for one standalone registry artifact.
+#[derive(Clone, Debug)]
+pub struct ScriptRegistryCreationResult {
+    /// Finalized registry SQLite file.
+    pub db_path: PathBuf,
+    /// Registry artifact manifest.
+    pub manifest_path: PathBuf,
+    /// Optional detached manifest signature.
+    pub signature_path: Option<PathBuf>,
+    /// Count and paired core identity stored inside the registry database.
+    pub meta: ScriptRegistrySnapshotMeta,
+    /// Manifest data written beside the registry database.
+    pub manifest: ScriptRegistryManifest,
+}
+
 impl SnapshotIndexer {
     pub fn new(
         config: BalanceHistoryConfigRef,
@@ -57,20 +91,323 @@ impl SnapshotIndexer {
         Self { config, db, output }
     }
 
-    pub fn run(&self, target_block_height: u32, with_utxo: bool) -> Result<(), String> {
-        let db_path = self
-            .config
-            .snapshot_dir()
-            .join(format!("snapshot_{}.db", target_block_height));
-        self.run_to_path(target_block_height, with_utxo, &db_path)
-            .map(|_| ())
+    pub fn run(&self, target_block_height: u32) -> Result<(), String> {
+        let snapshot_dir = self.config.snapshot_dir();
+        let core_path =
+            snapshot_dir.join(format!("balance_history_core_{}.db", target_block_height));
+        let registry_path =
+            snapshot_dir.join(format!("script_registry_{}.db", target_block_height));
+        let core = self.run_core_to_path(target_block_height, &core_path)?;
+        self.run_registry_to_path(&core.manifest, &registry_path)?;
+        Ok(())
+    }
+
+    /// Exports and signs a registry-free core artifact for one exact BTC checkpoint.
+    pub fn run_core_to_path(
+        &self,
+        target_block_height: u32,
+        db_path: &Path,
+    ) -> Result<CoreSnapshotCreationResult, String> {
+        let started = Instant::now();
+        self.validate_export_target(target_block_height)?;
+        let db_identity = self.source_db_identity()?;
+        let state_ref = self.historical_state_ref(target_block_height)?;
+        let generated_at = unix_timestamp();
+
+        self.output.println(&format!(
+            "Creating core snapshot database at {} for height {}",
+            db_path.display(),
+            target_block_height
+        ));
+        let snapshot_db = CoreSnapshotDb::create(db_path).map_err(|error| {
+            let message = format!("Failed to create core snapshot database: {error}");
+            self.output.eprintln(&message);
+            message
+        })?;
+        let snapshot_db = Arc::new(Mutex::new(snapshot_db));
+
+        let balance_history_count = {
+            let stage_started = Instant::now();
+            let estimated = self.db.get_history_balance_count()?;
+            self.output.println(&format!(
+                "Will generate core balance snapshot with approximately {} source entries at block height {}",
+                estimated, target_block_height
+            ));
+            self.output
+                .start_estimated_load_stage("Core snapshot balance history", estimated);
+            let generator = CoreSnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
+            self.db.generate_balance_history_snapshot_parallel(
+                target_block_height,
+                Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>),
+            )?;
+            let count = generator.balance_history_count.load(Ordering::SeqCst);
+            self.output.finish_load_stage(&format!(
+                "Core balance snapshot complete: {} rows written",
+                count
+            ));
+            info!(
+                "Split snapshot creation stage completed: component=core, stage=balance_history, block_height={}, row_count={}, elapsed_ms={}",
+                target_block_height,
+                count,
+                stage_started.elapsed().as_millis()
+            );
+            count
+        };
+
+        let utxo_count = {
+            let stage_started = Instant::now();
+            let estimated = self.db.get_utxo_count()?;
+            self.output.println(&format!(
+                "Will generate core UTXO snapshot with approximately {} entries",
+                estimated
+            ));
+            self.output
+                .start_estimated_load_stage("Core snapshot UTXOs", estimated);
+            let generator = CoreSnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
+            self.db.generate_utxo_snapshot_parallel(Arc::new(
+                Box::new(generator.clone()) as Box<dyn SnapshotCallback>
+            ))?;
+            let count = generator.utxo_count.load(Ordering::SeqCst);
+            self.output.finish_load_stage(&format!(
+                "Core UTXO snapshot complete: {} rows written",
+                count
+            ));
+            info!(
+                "Split snapshot creation stage completed: component=core, stage=utxo, block_height={}, row_count={}, elapsed_ms={}",
+                target_block_height,
+                count,
+                stage_started.elapsed().as_millis()
+            );
+            count
+        };
+
+        let block_commit_count = {
+            let stage_started = Instant::now();
+            let estimated = self
+                .db
+                .get_block_commit_count()?
+                .min(u64::from(target_block_height) + 1);
+            self.output.println(&format!(
+                "Will generate core block commitments up to height {} with approximately {} entries",
+                target_block_height, estimated
+            ));
+            self.output
+                .start_estimated_load_stage("Core snapshot block commits", estimated);
+            let generator = CoreSnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
+            self.db.generate_block_commit_snapshot(
+                target_block_height,
+                Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>),
+            )?;
+            let count = generator.block_commit_count.load(Ordering::SeqCst);
+            self.output.finish_load_stage(&format!(
+                "Core block-commit snapshot complete: {} rows written",
+                count
+            ));
+            info!(
+                "Split snapshot creation stage completed: component=core, stage=block_commit, block_height={}, row_count={}, elapsed_ms={}",
+                target_block_height,
+                count,
+                stage_started.elapsed().as_millis()
+            );
+            count
+        };
+
+        let meta = CoreSnapshotMeta {
+            block_height: target_block_height,
+            balance_history_count,
+            utxo_count,
+            block_commit_count,
+            generated_at,
+            db_identity: db_identity.clone(),
+            core_snapshot_id: state_ref.snapshot_id.clone(),
+        };
+        snapshot_db.lock().unwrap().write_meta(&meta)?;
+        let snapshot_db = Arc::try_unwrap(snapshot_db)
+            .map_err(|_| {
+                "Core snapshot DB still has active writers before finalization".to_string()
+            })?
+            .into_inner()
+            .map_err(|_| "Core snapshot DB mutex was poisoned".to_string())?;
+        let db_path = snapshot_db.finalize_for_distribution()?;
+        let file_sha256 = SnapshotHash::calc_hash(&db_path)?;
+        let signing_key = self.load_signing_key()?;
+        let manifest = CoreSnapshotManifest::build(
+            file_basename(&db_path)?,
+            file_sha256,
+            state_ref,
+            db_identity,
+            signing_key.as_ref().map(|key| key.key_id.clone()),
+            generated_at,
+        )?;
+        let manifest_path = manifest_path_for_snapshot_file(&db_path);
+        manifest.save(&manifest_path)?;
+        let signature_path = signing_key
+            .as_ref()
+            .map(|key| {
+                sign_snapshot_artifact_manifest(key, &manifest_path, &manifest.signature_payload()?)
+            })
+            .transpose()?;
+        info!(
+            "Split snapshot artifact completed: component=core, block_height={}, artifact_id={}, file_sha256={}, balance_history_count={}, utxo_count={}, block_commit_count={}, elapsed_ms={}",
+            target_block_height,
+            manifest.core_artifact_id,
+            manifest.file_sha256,
+            balance_history_count,
+            utxo_count,
+            block_commit_count,
+            started.elapsed().as_millis()
+        );
+        Ok(CoreSnapshotCreationResult {
+            db_path,
+            manifest_path,
+            signature_path,
+            meta,
+            manifest,
+        })
+    }
+
+    /// Exports and signs a standalone registry paired to an already-built core artifact.
+    pub fn run_registry_to_path(
+        &self,
+        core_manifest: &CoreSnapshotManifest,
+        db_path: &Path,
+    ) -> Result<ScriptRegistryCreationResult, String> {
+        let started = Instant::now();
+        core_manifest.validate()?;
+        self.validate_export_target(core_manifest.state_ref.block_height)?;
+        let current_identity = self.source_db_identity()?;
+        if current_identity != core_manifest.db_identity {
+            return Err("Source DB identity changed after core snapshot generation".to_string());
+        }
+        let current_state_ref = self.historical_state_ref(core_manifest.state_ref.block_height)?;
+        if current_state_ref != core_manifest.state_ref {
+            return Err("Source state-ref changed after core snapshot generation".to_string());
+        }
+        let generated_at = unix_timestamp();
+        self.output.println(&format!(
+            "Creating standalone script registry at {} for core snapshot {}",
+            db_path.display(),
+            core_manifest.core_snapshot_id
+        ));
+        let registry_db = Arc::new(Mutex::new(ScriptRegistrySnapshotDb::create(db_path)?));
+        let estimated = self.db.get_estimated_script_registry_count()?;
+        self.output.println(&format!(
+            "Will generate standalone script registry with approximately {} entries",
+            estimated
+        ));
+        self.output
+            .start_estimated_load_stage("Standalone script registry", estimated);
+        let generator = ScriptRegistryGenerator::new(registry_db.clone(), self.output.clone());
+        self.db
+            .generate_script_registry_snapshot_parallel(Arc::new(
+                Box::new(generator.clone()) as Box<dyn SnapshotCallback>
+            ))?;
+        let entry_count = generator.entry_count.load(Ordering::SeqCst);
+        drop(generator);
+        self.output.finish_load_stage(&format!(
+            "Standalone script registry complete: {} rows written",
+            entry_count
+        ));
+
+        let base = ScriptRegistryBaseIdentity {
+            btc_network: core_manifest.db_identity.btc_network.clone(),
+            btc_genesis_hash: core_manifest.db_identity.btc_genesis_hash.clone(),
+            base_height: core_manifest.state_ref.block_height,
+            base_block_hash: core_manifest.state_ref.stable_block_hash.clone(),
+            core_snapshot_id: core_manifest.core_snapshot_id.clone(),
+        };
+        let meta = ScriptRegistrySnapshotMeta {
+            base: base.clone(),
+            entry_count,
+            generated_at,
+        };
+        registry_db.lock().unwrap().write_meta(&meta)?;
+        let registry_db = Arc::try_unwrap(registry_db)
+            .map_err(|_| {
+                "Script-registry DB still has active writers before finalization".to_string()
+            })?
+            .into_inner()
+            .map_err(|_| "Script-registry DB mutex was poisoned".to_string())?;
+        let db_path = registry_db.finalize_for_distribution()?;
+        let file_sha256 = SnapshotHash::calc_hash(&db_path)?;
+        let signing_key = self.load_signing_key()?;
+        let manifest = ScriptRegistryManifest::build(
+            file_basename(&db_path)?,
+            file_sha256,
+            base,
+            entry_count,
+            signing_key.as_ref().map(|key| key.key_id.clone()),
+            generated_at,
+        )?;
+        manifest.validate_against_core(core_manifest)?;
+        let manifest_path = manifest_path_for_snapshot_file(&db_path);
+        manifest.save(&manifest_path)?;
+        let signature_path = signing_key
+            .as_ref()
+            .map(|key| {
+                sign_snapshot_artifact_manifest(key, &manifest_path, &manifest.signature_payload()?)
+            })
+            .transpose()?;
+        info!(
+            "Split snapshot artifact completed: component=script_registry, block_height={}, artifact_id={}, file_sha256={}, entry_count={}, elapsed_ms={}",
+            core_manifest.state_ref.block_height,
+            manifest.registry_artifact_id,
+            manifest.file_sha256,
+            entry_count,
+            started.elapsed().as_millis()
+        );
+        Ok(ScriptRegistryCreationResult {
+            db_path,
+            manifest_path,
+            signature_path,
+            meta,
+            manifest,
+        })
+    }
+
+    fn validate_export_target(&self, target_block_height: u32) -> Result<(), String> {
+        let last_synced_height = self.db.get_btc_block_height()?;
+        if target_block_height != last_synced_height {
+            return Err(format!(
+                "Split snapshot export requires exact current state: target block height {} must equal last synced BTC block height {}",
+                target_block_height, last_synced_height
+            ));
+        }
+        Ok(())
+    }
+
+    fn source_db_identity(&self) -> Result<BalanceHistoryDBIdentity, String> {
+        self.db
+            .get_db_identity()?
+            .ok_or_else(|| "Source balance-history DB has no identity".to_string())
+    }
+
+    fn historical_state_ref(
+        &self,
+        target_block_height: u32,
+    ) -> Result<HistoricalSnapshotStateRef, String> {
+        build_historical_state_ref_at_height(&self.config, self.db.as_ref(), target_block_height)?
+            .ok_or_else(|| {
+                format!(
+                    "Failed to build historical state ref for snapshot height {}",
+                    target_block_height
+                )
+            })
+    }
+
+    fn load_signing_key(&self) -> Result<Option<SnapshotSigningKeyFile>, String> {
+        self.config
+            .snapshot_signing_key_path()
+            .map(|path| SnapshotSigningKeyFile::load(&path))
+            .transpose()
     }
 
     /// Creates one snapshot at an explicit output path and returns its distributable artifacts.
     ///
     /// Callers must use a new path. This lets an orchestrator build inside a temporary directory,
     /// verify the complete artifact set, and atomically publish that directory afterwards.
-    pub fn run_to_path(
+    #[allow(dead_code)]
+    fn run_legacy_to_path(
         &self,
         target_block_height: u32,
         with_utxo: bool,
@@ -423,6 +760,180 @@ impl SnapshotIndexer {
             manifest,
         })
     }
+}
+
+#[derive(Clone)]
+struct CoreSnapshotGenerator {
+    db: Arc<Mutex<CoreSnapshotDb>>,
+    count: Arc<AtomicU64>,
+    balance_history_count: Arc<AtomicU64>,
+    utxo_count: Arc<AtomicU64>,
+    block_commit_count: Arc<AtomicU64>,
+    output: IndexOutputRef,
+}
+
+impl CoreSnapshotGenerator {
+    fn new(db: Arc<Mutex<CoreSnapshotDb>>, output: IndexOutputRef) -> Self {
+        Self {
+            db,
+            count: Arc::new(AtomicU64::new(0)),
+            balance_history_count: Arc::new(AtomicU64::new(0)),
+            utxo_count: Arc::new(AtomicU64::new(0)),
+            block_commit_count: Arc::new(AtomicU64::new(0)),
+            output,
+        }
+    }
+}
+
+impl SnapshotCallback for CoreSnapshotGenerator {
+    fn on_balance_history_entries(
+        &self,
+        entries: &[BalanceHistoryEntry],
+        entries_processed: u64,
+    ) -> Result<(), String> {
+        self.db
+            .lock()
+            .unwrap()
+            .put_balance_history_entries(entries)?;
+        self.balance_history_count
+            .fetch_add(entries.len() as u64, Ordering::SeqCst);
+        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
+        self.output.update_load_current_count(count);
+        if let Some(last_entry) = entries.last() {
+            self.output.set_load_message(&format!(
+                "{}: {} sat @ {}",
+                last_entry.script_hash, last_entry.balance, last_entry.block_height
+            ));
+        }
+        Ok(())
+    }
+
+    fn on_utxo_entries(&self, entries: &[UTXOEntry], entries_processed: u64) -> Result<(), String> {
+        self.db.lock().unwrap().put_utxo_entries(entries)?;
+        self.utxo_count
+            .fetch_add(entries.len() as u64, Ordering::SeqCst);
+        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
+        self.output.update_load_current_count(count);
+        if let Some(last_entry) = entries.last() {
+            self.output
+                .set_load_message(&last_entry.outpoint.to_string());
+        }
+        Ok(())
+    }
+
+    fn on_block_commit_entries(
+        &self,
+        entries: &[BlockCommitEntry],
+        entries_processed: u64,
+    ) -> Result<(), String> {
+        self.db.lock().unwrap().put_block_commit_entries(entries)?;
+        self.block_commit_count
+            .fetch_add(entries.len() as u64, Ordering::SeqCst);
+        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
+        self.output.update_load_current_count(count);
+        if let Some(last_entry) = entries.last() {
+            self.output.set_load_message(&format!(
+                "block_commit@{} {:x}",
+                last_entry.block_height, last_entry.btc_block_hash
+            ));
+        }
+        Ok(())
+    }
+
+    fn on_script_registry_entries(
+        &self,
+        _entries: &[ScriptRegistryEntry],
+        _entries_processed: u64,
+    ) -> Result<(), String> {
+        Err("Core snapshot exporter cannot receive script-registry rows".to_string())
+    }
+}
+
+#[derive(Clone)]
+struct ScriptRegistryGenerator {
+    db: Arc<Mutex<ScriptRegistrySnapshotDb>>,
+    count: Arc<AtomicU64>,
+    entry_count: Arc<AtomicU64>,
+    output: IndexOutputRef,
+}
+
+impl ScriptRegistryGenerator {
+    fn new(db: Arc<Mutex<ScriptRegistrySnapshotDb>>, output: IndexOutputRef) -> Self {
+        Self {
+            db,
+            count: Arc::new(AtomicU64::new(0)),
+            entry_count: Arc::new(AtomicU64::new(0)),
+            output,
+        }
+    }
+
+    fn unsupported(component: &str) -> Result<(), String> {
+        Err(format!(
+            "Script-registry exporter cannot receive {component} rows"
+        ))
+    }
+}
+
+impl SnapshotCallback for ScriptRegistryGenerator {
+    fn on_balance_history_entries(
+        &self,
+        _entries: &[BalanceHistoryEntry],
+        _entries_processed: u64,
+    ) -> Result<(), String> {
+        Self::unsupported("balance-history")
+    }
+
+    fn on_utxo_entries(
+        &self,
+        _entries: &[UTXOEntry],
+        _entries_processed: u64,
+    ) -> Result<(), String> {
+        Self::unsupported("UTXO")
+    }
+
+    fn on_block_commit_entries(
+        &self,
+        _entries: &[BlockCommitEntry],
+        _entries_processed: u64,
+    ) -> Result<(), String> {
+        Self::unsupported("block-commit")
+    }
+
+    fn on_script_registry_entries(
+        &self,
+        entries: &[ScriptRegistryEntry],
+        entries_processed: u64,
+    ) -> Result<(), String> {
+        self.db.lock().unwrap().put_entries(entries)?;
+        self.entry_count
+            .fetch_add(entries.len() as u64, Ordering::SeqCst);
+        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
+        self.output.update_load_current_count(count);
+        if let Some(last_entry) = entries.last() {
+            self.output
+                .set_load_message(&format!("script_registry: {}", last_entry.script_hash));
+        }
+        Ok(())
+    }
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn file_basename(path: &Path) -> Result<String, String> {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!(
+                "Failed to derive artifact file name from {}",
+                path.display()
+            )
+        })
 }
 
 #[derive(Clone)]
@@ -1039,6 +1550,74 @@ fn load_signature_file(path: &Path) -> Result<Signature, String> {
         msg
     })?;
     Ok(Signature::from_bytes(&signature_bytes))
+}
+
+fn sign_snapshot_artifact_manifest(
+    signing_key: &SnapshotSigningKeyFile,
+    manifest_path: &Path,
+    payload: &[u8],
+) -> Result<PathBuf, String> {
+    let signature_path = signature_path_for_manifest_file(manifest_path);
+    let signature = signing_key.to_signing_key()?.sign(payload);
+    save_signature_file(&signature_path, &signature)?;
+    Ok(signature_path)
+}
+
+/// Verifies one domain-separated split-artifact manifest payload against a trusted-key catalog.
+pub fn verify_snapshot_artifact_manifest_signature(
+    signature_scheme: Option<&str>,
+    signing_key_id: Option<&str>,
+    manifest_path: &Path,
+    payload: &[u8],
+    trusted_keys_path: &Path,
+) -> Result<String, String> {
+    let signature_scheme = signature_scheme.ok_or_else(|| {
+        format!(
+            "Signed snapshot manifest {} is missing signature_scheme",
+            manifest_path.display()
+        )
+    })?;
+    if signature_scheme != SNAPSHOT_SIGNATURE_SCHEME_ED25519 {
+        return Err(format!(
+            "Unsupported snapshot signature scheme {} for {} (expected {})",
+            signature_scheme,
+            manifest_path.display(),
+            SNAPSHOT_SIGNATURE_SCHEME_ED25519
+        ));
+    }
+    let signing_key_id = signing_key_id.ok_or_else(|| {
+        format!(
+            "Signed snapshot manifest {} is missing signing_key_id",
+            manifest_path.display()
+        )
+    })?;
+    let signature_path = signature_path_for_manifest_file(manifest_path);
+    if !signature_path.is_file() {
+        return Err(format!(
+            "Signed snapshot manifest requires signature sidecar {}, but it does not exist",
+            signature_path.display()
+        ));
+    }
+    let trusted_keys = SnapshotTrustedKeySet::load(trusted_keys_path)?;
+    let verifying_key = trusted_keys
+        .find_verifying_key(signing_key_id)?
+        .ok_or_else(|| {
+            format!(
+                "Snapshot signer {} is not trusted by {}",
+                signing_key_id,
+                trusted_keys_path.display()
+            )
+        })?;
+    let signature = load_signature_file(&signature_path)?;
+    verifying_key.verify(payload, &signature).map_err(|error| {
+        format!(
+            "Snapshot signature verification failed for manifest {} signed by {}: {}",
+            manifest_path.display(),
+            signing_key_id,
+            error
+        )
+    })?;
+    Ok(signing_key_id.to_string())
 }
 
 /// Verifies a manifest's detached Ed25519 signature against one trusted-key catalog.
@@ -3083,8 +3662,8 @@ mod tests {
     }
 
     #[test]
-    fn test_create_snapshot_rejects_historical_utxo_export() {
-        let root_dir = temp_root("snapshot_historical_utxo_rejected");
+    fn test_create_snapshot_rejects_non_current_export_height() {
+        let root_dir = temp_root("snapshot_non_current_height_rejected");
         let config = Arc::new(test_config_with_root(&root_dir));
 
         let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
@@ -3102,8 +3681,37 @@ mod tests {
         let status = Arc::new(SyncStatusManager::new());
         let output = Arc::new(IndexOutput::new(status));
         let snapshot_indexer = SnapshotIndexer::new(config.clone(), live_db, output);
-        let err = snapshot_indexer.run(9, true).unwrap_err();
-        assert!(err.contains("Historical UTXO snapshots are not supported"));
+        let err = snapshot_indexer.run(9).unwrap_err();
+        assert!(err.contains("Split snapshot export requires exact current state"));
+    }
+
+    #[test]
+    fn test_registry_export_rejects_source_advanced_past_core_height() {
+        let root_dir = temp_root("registry_source_advanced_past_core");
+        let config = Arc::new(test_config_with_root(&root_dir));
+        let live_db =
+            Arc::new(BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap());
+        live_db.put_btc_block_height(10).unwrap();
+        live_db
+            .put_block_commits_async(&[BlockCommitEntry {
+                block_height: 10,
+                btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
+                balance_delta_root: [11u8; 32],
+                block_commit: [12u8; 32],
+            }])
+            .unwrap();
+
+        let status = Arc::new(SyncStatusManager::new());
+        let output = Arc::new(IndexOutput::new(status));
+        let snapshot_indexer = SnapshotIndexer::new(config, live_db.clone(), output);
+        let core_path = root_dir.join("core.db");
+        let core = snapshot_indexer.run_core_to_path(10, &core_path).unwrap();
+
+        live_db.put_btc_block_height(11).unwrap();
+        let error = snapshot_indexer
+            .run_registry_to_path(&core.manifest, &root_dir.join("registry.db"))
+            .unwrap_err();
+        assert!(error.contains("Split snapshot export requires exact current state"));
     }
 
     #[test]
@@ -3134,13 +3742,19 @@ mod tests {
         let status = Arc::new(SyncStatusManager::new());
         let output = Arc::new(IndexOutput::new(status));
         let snapshot_indexer = SnapshotIndexer::new(config.clone(), live_db, output);
-        snapshot_indexer.run(10, false).unwrap();
+        snapshot_indexer.run(10).unwrap();
 
-        let snapshot_path = root_dir.join("snapshots").join("snapshot_10.db");
+        let snapshot_path = root_dir
+            .join("snapshots")
+            .join("balance_history_core_10.db");
         let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
-        let manifest = SnapshotManifest::load(&manifest_path).unwrap();
+        let manifest = CoreSnapshotManifest::load(&manifest_path).unwrap();
         let actual_hash = SnapshotHash::calc_hash(&snapshot_path).unwrap();
         assert_eq!(manifest.file_sha256, actual_hash);
+        let registry_path = root_dir.join("snapshots").join("script_registry_10.db");
+        let registry_manifest =
+            ScriptRegistryManifest::load(&manifest_path_for_snapshot_file(&registry_path)).unwrap();
+        registry_manifest.validate_against_core(&manifest).unwrap();
         assert!(
             !snapshot_path.with_extension("db-wal").exists(),
             "finalized snapshot should not leave sqlite wal sidecar behind"

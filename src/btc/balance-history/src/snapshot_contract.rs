@@ -217,6 +217,19 @@ impl CoreSnapshotManifest {
         domain_separated_json(CORE_SNAPSHOT_SIGNATURE_DOMAIN, self)
     }
 
+    /// Loads a strict v1 core manifest from disk.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let manifest: Self = load_manifest(path, "core snapshot")?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    /// Writes this validated manifest as formatted JSON.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        self.validate()?;
+        save_manifest(path, self, "core snapshot")
+    }
+
     /// Validates all fixed fields and cross-field identities.
     pub fn validate(&self) -> Result<(), String> {
         require_equal(
@@ -352,6 +365,19 @@ impl ScriptRegistryManifest {
         domain_separated_json(SCRIPT_REGISTRY_SIGNATURE_DOMAIN, self)
     }
 
+    /// Loads a strict v1 script-registry manifest from disk.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let manifest: Self = load_manifest(path, "script-registry")?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    /// Writes this validated manifest as formatted JSON.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        self.validate()?;
+        save_manifest(path, self, "script-registry")
+    }
+
     /// Validates all fixed fields and cross-field identities.
     pub fn validate(&self) -> Result<(), String> {
         require_equal(
@@ -420,6 +446,35 @@ impl ScriptRegistryManifest {
 fn hash_domain_separated_json<T: Serialize>(domain: &str, value: &T) -> Result<String, String> {
     let payload = domain_separated_json(domain, value)?;
     Ok(format!("{:x}", Sha256::digest(payload)))
+}
+
+fn load_manifest<T>(path: &Path, label: &str) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let data = std::fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Failed to read {label} manifest {}: {error}",
+            path.display()
+        )
+    })?;
+    usdb_util::parse_json_strict(&data).map_err(|error| {
+        format!(
+            "Failed to parse {label} manifest {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn save_manifest<T: Serialize>(path: &Path, manifest: &T, label: &str) -> Result<(), String> {
+    let data = serde_json::to_vec_pretty(manifest)
+        .map_err(|error| format!("Failed to serialize {label} manifest: {error}"))?;
+    std::fs::write(path, data).map_err(|error| {
+        format!(
+            "Failed to write {label} manifest {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn domain_separated_json<T: Serialize>(domain: &str, value: &T) -> Result<Vec<u8>, String> {
@@ -564,6 +619,14 @@ mod tests {
 
     #[test]
     fn split_snapshot_schemas_have_disjoint_tables() {
+        assert_eq!(
+            format!("{:x}", Sha256::digest(CORE_SNAPSHOT_SQL_SCHEMA_V1)),
+            "a0dfb24ad67b4958d04264760595e5b3ebf64426d5d31ab240e497f3ada0939d"
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(SCRIPT_REGISTRY_SQL_SCHEMA_V1)),
+            "7665afcdc6ad3d2996cac451880f96cd349b498a5846fd2e2d639d671f2dbb1f"
+        );
         let core = Connection::open_in_memory().unwrap();
         core.execute_batch(CORE_SNAPSHOT_SQL_SCHEMA_V1).unwrap();
         let core_registry_count: u32 = core

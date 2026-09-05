@@ -7,9 +7,9 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const BUILDER_STATE_VERSION: u32 = 1;
-pub(crate) const JOB_STATE_VERSION: u32 = 1;
-pub(crate) const COMPLETE_MARKER_VERSION: u32 = 1;
+pub(crate) const BUILDER_STATE_VERSION: u32 = 2;
+pub(crate) const JOB_STATE_VERSION: u32 = 2;
+pub(crate) const COMPLETE_MARKER_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub(crate) struct BuilderPaths {
@@ -67,6 +67,27 @@ impl BuilderPaths {
     pub(crate) fn snapshot_artifact_dir(&self, height: u32, block_hash: &str) -> PathBuf {
         self.snapshot_height_dir(height).join(block_hash)
     }
+
+    pub(crate) fn core_artifact_dir(&self, height: u32, block_hash: &str) -> PathBuf {
+        self.snapshot_artifact_dir(height, block_hash).join("core")
+    }
+
+    pub(crate) fn registry_artifact_dir(&self, height: u32, block_hash: &str) -> PathBuf {
+        self.snapshot_artifact_dir(height, block_hash)
+            .join("script-registry")
+    }
+}
+
+/// Split snapshot component selected by an operator command.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotComponent {
+    /// Registry-free consensus-state artifact.
+    Core,
+    /// Optional standalone script-registry artifact.
+    ScriptRegistry,
+    /// Both artifacts, with core processed first.
+    All,
 }
 
 /// Durable phase of one exact-height snapshot build.
@@ -87,7 +108,7 @@ pub enum SnapshotBuildStage {
     Complete,
 }
 
-/// Durable sub-phase of full snapshot artifact verification.
+/// Durable sub-phase of one snapshot component verification.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SnapshotVerificationPhase {
@@ -95,20 +116,62 @@ pub enum SnapshotVerificationPhase {
     FileHash,
     /// Run SQLite's full integrity check.
     IntegrityCheck,
+    /// Validate the frozen table and storage schema.
+    Schema,
     /// Count balance-history rows.
     BalanceHistoryCount,
     /// Count live UTXO rows.
     UtxoCount,
     /// Count block commitment rows.
     BlockCommitCount,
-    /// Count script registry rows.
-    ScriptRegistryCount,
+    /// Count standalone script registry rows.
+    RegistryCount,
     /// Verify the latest block commitment and signature-file layout.
     CommitIdentity,
 }
 
-/// Persisted progress for an active full verification pass.
+/// Independent lifecycle of one component in a shared exact-height build job.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotComponentBuildState {
+    /// Current durable stage of this component.
+    pub stage: SnapshotBuildStage,
+    /// Interrupted temporary directory relative to the builder root.
+    pub temp_dir: Option<String>,
+    /// Published component directory relative to the builder root.
+    pub artifact_dir: Option<String>,
+    /// Active verification sub-phase and heartbeat.
+    pub verification: Option<SnapshotVerificationProgress>,
+    /// Number of export attempts for this component.
+    pub attempt: u32,
+    /// Publication time as Unix seconds, once complete.
+    pub completed_at: Option<u64>,
+    /// Last component-local failure, if the core or optional registry failed.
+    pub last_error: Option<String>,
+}
+
+impl SnapshotComponentBuildState {
+    pub(crate) fn new() -> Self {
+        Self {
+            stage: SnapshotBuildStage::Prepare,
+            temp_dir: None,
+            artifact_dir: None,
+            verification: None,
+            attempt: 0,
+            completed_at: None,
+            last_error: None,
+        }
+    }
+
+    pub(crate) fn set_stage(&mut self, stage: SnapshotBuildStage) {
+        self.stage = stage;
+        self.last_error = None;
+    }
+}
+
+/// Persisted progress for an active component verification pass.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotVerificationProgress {
     /// Current verification sub-phase.
     pub phase: SnapshotVerificationPhase,
@@ -120,6 +183,7 @@ pub struct SnapshotVerificationProgress {
 
 /// Identity and managed path of a completed immutable snapshot artifact.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CompletedSnapshotRef {
     /// Exact BTC height represented by the artifact.
     pub height: u32,
@@ -133,6 +197,7 @@ pub struct CompletedSnapshotRef {
 
 /// Root-level state coordinating the single mutable workspace.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotBuilderState {
     /// Persistent builder state format version.
     pub version: u32,
@@ -160,6 +225,7 @@ impl SnapshotBuilderState {
 
 /// Recoverable state for one target height.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotBuildJob {
     /// Persistent job format version.
     pub version: u32,
@@ -167,29 +233,20 @@ pub struct SnapshotBuildJob {
     pub target_height: u32,
     /// Completed checkpoint from which this job incrementally starts.
     pub base_checkpoint: Option<CompletedSnapshotRef>,
-    /// Current durable phase of the build.
-    pub stage: SnapshotBuildStage,
     /// Optional operator-pinned canonical BTC block hash.
     pub expected_block_hash: Option<String>,
     /// BTC block hash sealed from the synchronized workspace.
     pub btc_block_hash: Option<String>,
     /// Consensus snapshot identity sealed at the target.
     pub snapshot_id: Option<String>,
-    /// Interrupted temporary directory relative to the builder root.
-    pub temp_dir: Option<String>,
-    /// Published artifact directory relative to the builder root.
-    pub artifact_dir: Option<String>,
-    /// Active full-verification sub-phase and heartbeat.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verification: Option<SnapshotVerificationProgress>,
-    /// Number of snapshot export attempts for this job.
-    pub attempt: u32,
     /// Job creation time as Unix seconds.
     pub started_at: u64,
     /// Last job update as Unix seconds.
     pub updated_at: u64,
-    /// Publication time as Unix seconds, once complete.
-    pub completed_at: Option<u64>,
+    /// Independent registry-free core artifact state.
+    pub core: SnapshotComponentBuildState,
+    /// Independent optional script-registry artifact state.
+    pub script_registry: SnapshotComponentBuildState,
 }
 
 impl SnapshotBuildJob {
@@ -203,28 +260,30 @@ impl SnapshotBuildJob {
             version: JOB_STATE_VERSION,
             target_height,
             base_checkpoint,
-            stage: SnapshotBuildStage::Prepare,
             expected_block_hash,
             btc_block_hash: None,
             snapshot_id: None,
-            temp_dir: None,
-            artifact_dir: None,
-            verification: None,
-            attempt: 0,
             started_at: now,
             updated_at: now,
-            completed_at: None,
+            core: SnapshotComponentBuildState::new(),
+            script_registry: SnapshotComponentBuildState::new(),
         }
     }
 
-    pub(crate) fn set_stage(&mut self, stage: SnapshotBuildStage) {
-        self.stage = stage;
+    pub(crate) fn set_core_stage(&mut self, stage: SnapshotBuildStage) {
+        self.core.set_stage(stage);
+        self.updated_at = unix_timestamp();
+    }
+
+    pub(crate) fn set_registry_stage(&mut self, stage: SnapshotBuildStage) {
+        self.script_registry.set_stage(stage);
         self.updated_at = unix_timestamp();
     }
 }
 
 /// Final commit marker stored beside one verified immutable artifact.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotCompleteMarker {
     /// Completion marker format version.
     pub version: u32,
@@ -236,6 +295,8 @@ pub struct SnapshotCompleteMarker {
     pub btc_block_hash: String,
     /// Consensus snapshot identity from the manifest.
     pub snapshot_id: String,
+    /// File-specific core artifact identity from the manifest.
+    pub core_artifact_id: String,
     /// Snapshot DB file name relative to the artifact directory.
     pub snapshot_file: String,
     /// Manifest file name relative to the artifact directory.
@@ -250,8 +311,36 @@ pub struct SnapshotCompleteMarker {
     pub utxo_count: u64,
     /// Verified number of block commitment rows.
     pub block_commit_count: u64,
-    /// Verified number of script registry rows.
-    pub script_registry_count: u64,
+    /// Completion time as Unix seconds.
+    pub completed_at: u64,
+}
+
+/// Final commit marker stored beside one verified registry sidecar.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptRegistryCompleteMarker {
+    /// Completion marker format version.
+    pub version: u32,
+    /// Exact BTC height represented by the sidecar.
+    pub height: u32,
+    /// BTC network bound to the sidecar.
+    pub network: String,
+    /// Canonical BTC block hash represented by the sidecar.
+    pub btc_block_hash: String,
+    /// Consensus core snapshot identity paired with this sidecar.
+    pub core_snapshot_id: String,
+    /// File-specific registry artifact identity from the manifest.
+    pub registry_artifact_id: String,
+    /// Registry DB file name relative to the artifact directory.
+    pub registry_file: String,
+    /// Manifest file name relative to the artifact directory.
+    pub manifest_file: String,
+    /// Optional detached signature file name relative to the artifact directory.
+    pub signature_file: Option<String>,
+    /// SHA-256 digest of the finalized registry DB.
+    pub file_sha256: String,
+    /// Verified number of registry mappings.
+    pub entry_count: u64,
     /// Completion time as Unix seconds.
     pub completed_at: u64,
 }

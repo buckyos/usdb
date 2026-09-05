@@ -2,13 +2,15 @@
 
 ## 1. 文档状态
 
-- 状态：Draft，等待实现评审。
+- 状态：Draft；批次 1 已提交，批次 2 已实现并等待评审。
 - 适用阶段：USDB 开发期，不保留旧 snapshot schema 或安装流程的兼容双栈。
 - 已确认方向：将 `script_registry` 从 core snapshot 剥离为独立、只读的 SQLite
   sidecar；snapshot 安装节点不再把历史 registry 导入 RocksDB。
-- 批次 1 进度：core/registry v1 schema、manifest、artifact ID、签名域以及 registry
-  readiness/resolution 类型已实现，等待代码评审；现有生成器、安装器和 RPC 尚未切换。
-- 本文冻结目标语义、存储边界和实施顺序；批次 1 只增加可复用契约，不切换现有运行路径。
+- 批次 1：core/registry v1 schema、manifest、artifact ID、签名域以及 registry
+  readiness/resolution 类型已提交。
+- 批次 2：生成器和 `balance-history-snapshot-tool` 已切换为独立 core/registry artifact；
+  core installer、运行时 resolver、Docker 和远端对象存储发布仍属于后续批次。
+- 本文冻结目标语义、存储边界和实施顺序；每个批次通过评审后再提交。
 
 相关文档：
 
@@ -473,7 +475,7 @@ USDB chain         SYNCING / READY
 
 - `create`：同一 sealed workspace 可生成 core 和 registry 两个独立 job/artifact。
 - `status/list`：分别报告 core 与 registry 的状态、大小、hash 和完成时间。
-- `verify`：支持 `--component core|registry|all`。
+- `verify`：支持 `--component core|script-registry|all`。
 - `finalize`：core 和 registry 独立 finalize，不互相触发重复 verify。
 - `publish`：允许 core 先发布；registry 后发布或省略。
 - job state 不允许 registry 失败撤销已完成的 core artifact。
@@ -596,18 +598,37 @@ registry 保持 append-like：
 
 ## 16. 实施批次
 
-### 批次 1：冻结类型和 artifact 契约（已实现，待评审）
+### 批次 1：冻结类型和 artifact 契约（已提交）
 
 - 冻结 core/registry schema、manifest、ID 和签名域。
 - 冻结 coverage、RPC result 和 readiness 状态机。
 - 更新 snapshot、RPC、readiness 和发布文档。
 
-### 批次 2：Snapshot 生成与校验工具
+### 批次 2：Snapshot 生成与校验工具（已实现，待评审）
 
 - 生成独立 core 和 registry SQLite。
 - registry 使用 `WITHOUT ROWID`。
 - `create/status/list/verify/finalize/publish` 支持双 artifact 独立状态。
 - 增加 schema/golden/integrity 和容量测试。
+
+当前实现说明：
+
+- builder state/job/complete marker 直接升级到 v2，不读取 v1 job；
+- v2 job 只保留 `core` 与 `script_registry` 两份组件状态，不保留旧聚合
+  `stage/temp_dir/verification/attempt` 字段；JSON 中出现旧字段时直接拒绝；
+- artifact 布局为 `<height>/<btc-hash>/core/` 与
+  `<height>/<btc-hash>/script-registry/`，各自持有 `complete.json`；
+- `create`、`resume-verify`、`verify`、`finalize-artifact` 支持
+  `--component core|script-registry|all`，默认 `all`；
+- `core` 成功后立即更新 `latest_completed`，registry 失败只记录在
+  `job.script_registry.last_error`；`all` 模式保持 workspace 锁定在高度 `H`，直到 registry
+  完成，避免 append-like registry 混入 `H` 之后观察到的脚本；
+- core 固定包含完整 live UTXO，不再暴露 `with_utxo=false`；core 和 registry 导出都要求
+  RocksDB durable height 严格等于 `H`；
+- 本批次中的“publish”指 builder 临时 component 目录到 immutable component 目录的原子本地
+  发布；对象存储 record、上传和 node bundle 仍在批次 5 统一切换。
+- 主网包装脚本在批次 5 完成前对 finalize/install/archive/remote publish 明确 fail closed，避免
+  把 split artifact 送入旧单文件发布流程。
 
 ### 批次 3：Core-only 安装
 

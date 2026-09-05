@@ -6,9 +6,11 @@ This document defines the first implementation of a restartable tool that builds
 balance-history checkpoint at one exact BTC height. The tool reuses the `balance-history`
 library and does not orchestrate a long-running balance-history service subprocess.
 
-The produced checkpoint is intended for installation by another balance-history node and must
+The produced checkpoint is split into a required core artifact and an optional script-registry
+sidecar. The core artifact is intended for installation by another balance-history node and must
 allow that node to continue indexing correctly. It is therefore not a historical balance-only
-export.
+export. The registry sidecar is independently verifiable auxiliary lookup data and is not part of
+the checkpoint's consensus identity.
 
 ## 2. Checkpoint invariant
 
@@ -50,12 +52,19 @@ One builder root owns one mutable balance-history workspace and serializes all b
 |-- snapshots/
 |   `-- <height>/
 |       `-- <btc-block-hash>/
-|           |-- snapshot_<height>.db
-|           |-- snapshot_<height>.manifest.json
-|           |-- snapshot_<height>.manifest.sig   # optional
-|           `-- complete.json
+|           |-- core/
+|           |   |-- balance_history_core_<height>.db
+|           |   |-- balance_history_core_<height>.manifest.json
+|           |   |-- balance_history_core_<height>.manifest.sig   # optional
+|           |   `-- complete.json
+|           `-- script-registry/
+|               |-- script_registry_<height>.db
+|               |-- script_registry_<height>.manifest.json
+|               |-- script_registry_<height>.manifest.sig        # optional
+|               `-- complete.json
 `-- tmp/
-    `-- <height>-<job-id>/
+    |-- <height>-<core-job-id>/
+    `-- <height>-registry-<job-id>/
 ```
 
 The mutable RocksDB workspace is shared by monotonically increasing targets. Per-height job and
@@ -70,7 +79,8 @@ does not copy a complete RocksDB directory for every height.
 - latest completed checkpoint identity;
 - active target height, if any.
 
-`jobs/<height>/job.json` records one target's recoverable phase:
+`jobs/<height>/job.json` records the shared seal plus independent `core` and `script_registry`
+component states. Each component follows:
 
 ```text
 Prepare -> Syncing -> Sealed -> Building -> Verifying -> Complete
@@ -79,10 +89,10 @@ Prepare -> Syncing -> Sealed -> Building -> Verifying -> Complete
 The RocksDB durable height remains the source of truth for sync progress. JSON state is always
 cross-checked against RocksDB and the published manifest after restart.
 
-`complete.json` is the final commit marker for one artifact directory. It is written only after
-the snapshot DB, manifest, optional signature, counts, state reference, file hash, and canonical
-BTC block hash have all been verified. Only a job with a valid `complete.json` may advance the
-builder's latest-completed pointer.
+Each component directory owns its own `complete.json`. A marker is written only after that
+component's DB, manifest, optional signature, counts, file hash, and paired BTC/core identity have
+all been verified. Only core completion advances `latest_completed`; registry completion is
+independent and cannot revoke an already completed core artifact.
 
 State files are written through a temporary file followed by an atomic rename. Snapshot files
 are built in a temporary directory on the same filesystem and the whole directory is renamed to
@@ -97,16 +107,18 @@ For `create --height H` the tool:
 3. opens the workspace with `max_sync_block_height = H`;
 4. resumes indexing until the durable height is exactly `H`;
 5. flushes RocksDB and seals the block hash, block commit, and state reference at `H`;
-6. builds a full snapshot including all live UTXOs in a temporary artifact directory;
+6. builds the registry-free core SQLite including all live UTXOs;
 7. explicitly releases the snapshot exporter and RocksDB/indexer handles;
-8. reopens and verifies the generated SQLite DB, metadata counts, manifest hash, state reference,
-   and optional signature metadata exactly once;
-9. writes `complete.json`, atomically publishes the artifact directory, and performs a lightweight
-   marker/manifest/path check without repeating the full database scan;
-10. updates the builder state and clears the active job.
+8. verifies and atomically publishes the core component, then advances `latest_completed`;
+9. for `--component all`, reopens the still-sealed workspace read-only and builds the standalone
+   `WITHOUT ROWID` registry SQLite;
+10. verifies and atomically publishes the registry component independently;
+11. clears the active job after the requested components complete.
 
-The tool never advances the workspace beyond `H` before the checkpoint for `H` is complete.
-After completion, a later target can incrementally continue from the same workspace.
+The tool never advances the workspace beyond `H` before the requested artifacts for `H` complete.
+Core-only mode may intentionally omit the registry and release the workspace immediately. A later
+registry-only request is valid only while the workspace is still exactly at `H`; once a newer
+target advances it, the old append-like registry cannot be reconstructed as an exact `H` sidecar.
 
 ## 6. Restart and idempotency
 
@@ -116,9 +128,10 @@ operation:
 - workspace height below `H`: continue indexing;
 - workspace height equal to `H`: skip completed sync work and continue export;
 - workspace height above `H`: fail closed;
-- interrupted `Building` artifact: remove it and rebuild from the sealed workspace;
-- interrupted `Verifying` artifact: preserve it and require `resume-verify --height H`, which does
-  not open the mutable RocksDB workspace;
+- interrupted component `Building`: remove only that component's temporary directory and rebuild
+  it from the sealed workspace;
+- interrupted component `Verifying`: preserve and reverify the existing SQLite without regenerating
+  it;
 - valid completed artifact for the same height and block hash: return it idempotently;
 - unfinished job for a different height: reject the new request.
 
@@ -148,11 +161,12 @@ may require a larger explicit confirmation depth and a pinned expected block has
 ## 8. First-version CLI
 
 ```text
-balance-history-snapshot-tool create --height <H> [--expected-block-hash <HASH>]
-balance-history-snapshot-tool resume-verify --height <H> [--expected-block-hash <HASH>]
+balance-history-snapshot-tool create --height <H> [--expected-block-hash <HASH>] [--component core|script-registry|all]
+balance-history-snapshot-tool resume-verify --height <H> [--expected-block-hash <HASH>] [--component core|script-registry|all]
 balance-history-snapshot-tool status [--height <H>]
 balance-history-snapshot-tool list
-balance-history-snapshot-tool verify --height <H> [--block-hash <HASH>]
+balance-history-snapshot-tool verify --height <H> [--block-hash <HASH>] [--component core|script-registry|all]
+balance-history-snapshot-tool finalize-artifact --height <H> --trusted-keys <FILE> [--component core|script-registry|all]
 ```
 
 For example, initialize a dedicated builder and then incrementally create the next height:
@@ -171,6 +185,11 @@ cargo run --manifest-path src/btc/Cargo.toml -p balance-history-snapshot-tool --
 Common options select the builder root and may request JSON output. The builder root contains the
 balance-history configuration used by the workspace. There is one active job per builder root;
 parallel targets require separate roots.
+
+All component-aware commands default to `all`. `status` and `list` expose the two component states,
+attempt counts, verification heartbeat, completion time, and component-local `last_error`.
+Builder state v2 intentionally rejects old single-file v1 jobs; development deployments should use
+a new builder root instead of migrating old state.
 
 The first `create` for a new builder root must pass `--config <balance-history-config.toml>`.
 Later create/resume operations reuse the atomically copied workspace config and reject changes to
@@ -199,7 +218,10 @@ The first implementation must cover:
 - rejection of a conflicting active target;
 - expected block hash mismatch;
 - same-height reorg before publication;
-- generated DB integrity and exact metadata counts;
+- generated core and registry DB integrity, frozen schema hashes, and exact metadata counts;
+- core completion surviving a later registry failure;
+- registry manifest binding to the exact core snapshot ID/network/height/block hash;
+- `WITHOUT ROWID` capacity comparison against the equivalent rowid table;
 - install followed by spending a UTXO created before the snapshot height;
 - manifest/signature and atomic-publication failure paths.
 

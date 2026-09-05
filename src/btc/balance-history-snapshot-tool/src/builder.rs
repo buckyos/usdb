@@ -1,15 +1,18 @@
-use crate::verify::VerifiedSnapshot;
+use crate::verify::{VerifiedScriptRegistry, VerifiedSnapshot};
 use crate::{
-    BuilderLock, BuilderPaths, CompletedSnapshotRef, SnapshotBuildJob, SnapshotBuildStage,
-    SnapshotBuilderState, SnapshotCompleteMarker, SnapshotVerificationPhase,
-    SnapshotVerificationProgress, build_complete_marker, load_json, save_json_atomic,
-    unique_run_id, unix_timestamp, verify_published_artifact, verify_published_artifact_marker,
+    BuilderLock, BuilderPaths, CompletedSnapshotRef, ScriptRegistryCompleteMarker,
+    SnapshotBuildJob, SnapshotBuildStage, SnapshotBuilderState, SnapshotCompleteMarker,
+    SnapshotVerificationPhase, SnapshotVerificationProgress, build_complete_marker,
+    build_registry_complete_marker, load_json, save_json_atomic, unique_run_id, unix_timestamp,
+    verify_published_artifact, verify_published_artifact_marker, verify_published_registry,
+    verify_published_registry_marker, verify_registry_files_with_progress,
     verify_snapshot_files_with_progress,
 };
 use balance_history::{
-    BalanceHistoryConfig, BalanceHistoryIndexer, IndexOutput, SnapshotHash, SnapshotIndexer,
-    SnapshotManifest, SyncStatusManager, build_historical_state_ref_at_height,
-    manifest_path_for_snapshot_file, verify_snapshot_manifest_signature,
+    BalanceHistoryConfig, BalanceHistoryDB, BalanceHistoryIndexer, CoreSnapshotManifest,
+    IndexOutput, SnapshotHash, SnapshotIndexer, SyncStatusManager,
+    build_historical_state_ref_at_height, manifest_path_for_snapshot_file,
+    verify_snapshot_artifact_manifest_signature,
 };
 use chrono::Local;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -60,10 +63,11 @@ fn verification_phase_name(phase: SnapshotVerificationPhase) -> &'static str {
     match phase {
         SnapshotVerificationPhase::FileHash => "file_hash",
         SnapshotVerificationPhase::IntegrityCheck => "integrity_check",
+        SnapshotVerificationPhase::Schema => "schema",
         SnapshotVerificationPhase::BalanceHistoryCount => "balance_history_count",
         SnapshotVerificationPhase::UtxoCount => "utxo_count",
         SnapshotVerificationPhase::BlockCommitCount => "block_commit_count",
-        SnapshotVerificationPhase::ScriptRegistryCount => "script_registry_count",
+        SnapshotVerificationPhase::RegistryCount => "registry_count",
         SnapshotVerificationPhase::CommitIdentity => "commit_identity",
     }
 }
@@ -124,6 +128,8 @@ pub struct SnapshotCreateOptions {
     pub poll_interval: Duration,
     /// Balance-history config copied into an unused workspace on first use.
     pub config_file: Option<PathBuf>,
+    /// Artifact component to build from the sealed workspace.
+    pub component: crate::SnapshotComponent,
 }
 
 /// Inputs for resuming verification of an already-generated temporary artifact.
@@ -133,11 +139,18 @@ pub struct SnapshotResumeVerifyOptions {
     pub target_height: u32,
     /// Optional operator-pinned canonical block hash for the target.
     pub expected_block_hash: Option<String>,
+    /// Component whose interrupted verification should be resumed.
+    pub component: crate::SnapshotComponent,
 }
 
 enum VerificationMessage {
     Phase(SnapshotVerificationPhase),
     Finished(Box<Result<VerifiedSnapshot, String>>),
+}
+
+enum RegistryVerificationMessage {
+    Phase(SnapshotVerificationPhase),
+    Finished(Box<Result<VerifiedScriptRegistry, String>>),
 }
 
 /// Machine-readable result of a successful create or idempotent replay.
@@ -155,41 +168,73 @@ pub struct SnapshotCreateReport {
     pub btc_block_hash: String,
     /// Consensus snapshot identity from balance-history.
     pub snapshot_id: String,
+    /// Required registry-free core artifact.
+    pub core: SnapshotCoreArtifactReport,
+    /// Optional standalone script-registry artifact when it completed.
+    pub script_registry: Option<SnapshotRegistryArtifactReport>,
+}
+
+/// Machine-readable identity and counts of one completed core artifact.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotCoreArtifactReport {
     /// Artifact directory relative to the builder root.
     pub artifact_dir: String,
-    /// Snapshot DB file name relative to the artifact directory.
-    pub snapshot_file: String,
-    /// Manifest file name relative to the artifact directory.
+    /// File-specific artifact ID.
+    pub artifact_id: String,
+    /// Core SQLite file name.
+    pub file: String,
+    /// Manifest file name.
     pub manifest_file: String,
     /// Optional detached signature file name.
     pub signature_file: Option<String>,
-    /// SHA-256 digest of the finalized snapshot DB.
+    /// SHA-256 digest of the finalized SQLite file.
     pub file_sha256: String,
-    /// Verified number of balance-history rows.
+    /// Verified number of current balance rows.
     pub balance_history_count: u64,
     /// Verified number of live UTXOs.
     pub utxo_count: u64,
-    /// Verified number of block commitment rows.
+    /// Verified number of block commitments.
     pub block_commit_count: u64,
-    /// Verified number of script registry rows.
-    pub script_registry_count: u64,
+}
+
+/// Machine-readable identity and count of one completed registry artifact.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotRegistryArtifactReport {
+    /// Artifact directory relative to the builder root.
+    pub artifact_dir: String,
+    /// File-specific artifact ID.
+    pub artifact_id: String,
+    /// Registry SQLite file name.
+    pub file: String,
+    /// Manifest file name.
+    pub manifest_file: String,
+    /// Optional detached signature file name.
+    pub signature_file: Option<String>,
+    /// SHA-256 digest of the finalized SQLite file.
+    pub file_sha256: String,
+    /// Verified number of script-registry mappings.
+    pub entry_count: u64,
 }
 
 /// Lightweight release-finalization result for one immutable snapshot artifact.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SnapshotArtifactFinalizationReport {
+    /// Artifact component finalized by this entry.
+    pub component: crate::SnapshotComponent,
     /// Exact BTC height represented by the artifact.
     pub height: u32,
     /// BTC network bound to the artifact.
     pub network: String,
     /// Canonical BTC block hash represented by the artifact.
     pub btc_block_hash: String,
-    /// Consensus snapshot identity from the signed manifest.
-    pub snapshot_id: String,
+    /// Consensus core snapshot identity paired with the artifact.
+    pub core_snapshot_id: String,
+    /// File-specific core or registry artifact identity.
+    pub artifact_id: String,
     /// Artifact directory relative to the builder root.
     pub artifact_dir: String,
-    /// Snapshot DB file name relative to the artifact directory.
-    pub snapshot_file: String,
+    /// SQLite file name relative to the artifact directory.
+    pub file: String,
     /// Manifest file name relative to the artifact directory.
     pub manifest_file: String,
     /// Detached signature file name relative to the artifact directory.
@@ -202,6 +247,24 @@ pub struct SnapshotArtifactFinalizationReport {
     pub trusted_keys_sha256: String,
 }
 
+/// Verification result for one selected set of split snapshot components.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotVerifyReport {
+    /// Required core result when core or all was selected.
+    pub core: Option<SnapshotCompleteMarker>,
+    /// Registry result when script-registry or all was selected.
+    pub script_registry: Option<ScriptRegistryCompleteMarker>,
+}
+
+/// Release-finalization result for one selected set of split snapshot components.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotFinalizationReport {
+    /// Required core result when core or all was selected.
+    pub core: Option<SnapshotArtifactFinalizationReport>,
+    /// Registry result when script-registry or all was selected.
+    pub script_registry: Option<SnapshotArtifactFinalizationReport>,
+}
+
 /// Persisted builder state together with the selected per-height job, if one exists.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SnapshotStatusReport {
@@ -212,29 +275,41 @@ pub struct SnapshotStatusReport {
 }
 
 impl SnapshotCreateReport {
-    fn from_marker(
+    fn from_markers(
         root: &Path,
-        artifact_dir: &Path,
-        marker: &SnapshotCompleteMarker,
+        core_dir: &Path,
+        core: &SnapshotCompleteMarker,
+        registry: Option<(&Path, &ScriptRegistryCompleteMarker)>,
         resumed: bool,
         already_complete: bool,
     ) -> Self {
         Self {
             resumed,
             already_complete,
-            height: marker.height,
-            network: marker.network.clone(),
-            btc_block_hash: marker.btc_block_hash.clone(),
-            snapshot_id: marker.snapshot_id.clone(),
-            artifact_dir: display_relative(root, artifact_dir),
-            snapshot_file: marker.snapshot_file.clone(),
-            manifest_file: marker.manifest_file.clone(),
-            signature_file: marker.signature_file.clone(),
-            file_sha256: marker.file_sha256.clone(),
-            balance_history_count: marker.balance_history_count,
-            utxo_count: marker.utxo_count,
-            block_commit_count: marker.block_commit_count,
-            script_registry_count: marker.script_registry_count,
+            height: core.height,
+            network: core.network.clone(),
+            btc_block_hash: core.btc_block_hash.clone(),
+            snapshot_id: core.snapshot_id.clone(),
+            core: SnapshotCoreArtifactReport {
+                artifact_dir: display_relative(root, core_dir),
+                artifact_id: core.core_artifact_id.clone(),
+                file: core.snapshot_file.clone(),
+                manifest_file: core.manifest_file.clone(),
+                signature_file: core.signature_file.clone(),
+                file_sha256: core.file_sha256.clone(),
+                balance_history_count: core.balance_history_count,
+                utxo_count: core.utxo_count,
+                block_commit_count: core.block_commit_count,
+            },
+            script_registry: registry.map(|(dir, marker)| SnapshotRegistryArtifactReport {
+                artifact_dir: display_relative(root, dir),
+                artifact_id: marker.registry_artifact_id.clone(),
+                file: marker.registry_file.clone(),
+                manifest_file: marker.manifest_file.clone(),
+                signature_file: marker.signature_file.clone(),
+                file_sha256: marker.file_sha256.clone(),
+                entry_count: marker.entry_count,
+            }),
         }
     }
 }
@@ -308,9 +383,20 @@ impl ExactHeightSnapshotBuilder {
 
         let job_file = self.paths.job_file(options.target_height);
         let existing_job: Option<SnapshotBuildJob> = load_json(&job_file)?;
+        if options.component == crate::SnapshotComponent::ScriptRegistry
+            && existing_job
+                .as_ref()
+                .map(|job| job.core.stage != SnapshotBuildStage::Complete)
+                .unwrap_or(true)
+        {
+            return Err(format!(
+                "Registry-only creation requires a completed core job at height {}",
+                options.target_height
+            ));
+        }
         let resumed = existing_job.is_some();
         let mut job = match existing_job {
-            Some(job) if job.stage == SnapshotBuildStage::Complete => {
+            Some(job) if job.core.stage == SnapshotBuildStage::Complete => {
                 let canonical_hash =
                     format!("{:x}", rpc_client.get_block_hash(options.target_height)?);
                 if job
@@ -321,6 +407,11 @@ impl ExactHeightSnapshotBuilder {
                 {
                     self.validate_job(&job, options.target_height, expected_block_hash.as_deref())?;
                     job
+                } else if options.component == crate::SnapshotComponent::ScriptRegistry {
+                    return Err(format!(
+                        "Registry-only creation cannot reuse the completed core at height {} because its BTC block hash is no longer canonical",
+                        options.target_height
+                    ));
                 } else {
                     SnapshotBuildJob::new(
                         options.target_height,
@@ -340,8 +431,8 @@ impl ExactHeightSnapshotBuilder {
             ),
         };
 
-        if job.stage == SnapshotBuildStage::Complete
-            && let Some(artifact_dir) = job.artifact_dir.as_deref()
+        if job.core.stage == SnapshotBuildStage::Complete
+            && let Some(artifact_dir) = job.core.artifact_dir.as_deref()
         {
             let artifact_dir = self.resolve_managed_path(artifact_dir)?;
             let canonical_hash = format!("{:x}", rpc_client.get_block_hash(options.target_height)?);
@@ -364,10 +455,21 @@ impl ExactHeightSnapshotBuilder {
                     &artifact_dir,
                     &marker,
                 )?;
-                return Ok(SnapshotCreateReport::from_marker(
+                let registry = self.complete_requested_components(
+                    &mut state,
+                    &mut job,
+                    &job_file,
+                    &artifact_dir,
+                    &marker,
+                    options.component,
+                )?;
+                return Ok(SnapshotCreateReport::from_markers(
                     &self.paths.root,
                     &artifact_dir,
                     &marker,
+                    registry
+                        .as_ref()
+                        .map(|(directory, marker)| (directory.as_path(), marker)),
                     resumed,
                     true,
                 ));
@@ -379,14 +481,14 @@ impl ExactHeightSnapshotBuilder {
             ));
         }
 
-        if job.stage == SnapshotBuildStage::Verifying {
+        if job.core.stage == SnapshotBuildStage::Verifying {
             return Err(format!(
                 "Snapshot job {} already has a resumable verification artifact; run resume-verify --height {} instead of rebuilding it",
                 options.target_height, options.target_height
             ));
         }
 
-        job.set_stage(SnapshotBuildStage::Syncing);
+        job.set_core_stage(SnapshotBuildStage::Syncing);
         save_json_atomic(&job_file, &job)?;
         state.active_job_height = Some(options.target_height);
         state.updated_at = unix_timestamp();
@@ -437,13 +539,13 @@ impl ExactHeightSnapshotBuilder {
 
         job.btc_block_hash = Some(canonical_hash.clone());
         job.snapshot_id = Some(sealed_state_ref.snapshot_id.clone());
-        job.set_stage(SnapshotBuildStage::Sealed);
+        job.set_core_stage(SnapshotBuildStage::Sealed);
         save_json_atomic(&job_file, &job)?;
         crate::abort_after_checkpoint("sealed");
 
         let final_dir = self
             .paths
-            .snapshot_artifact_dir(options.target_height, &canonical_hash);
+            .core_artifact_dir(options.target_height, &canonical_hash);
         if final_dir.exists() {
             let marker = verify_published_artifact(
                 &final_dir,
@@ -452,10 +554,21 @@ impl ExactHeightSnapshotBuilder {
                 Some(&canonical_hash),
             )?;
             self.finalize_state_from_marker(&mut state, &mut job, &job_file, &final_dir, &marker)?;
-            return Ok(SnapshotCreateReport::from_marker(
+            let registry = self.complete_requested_components(
+                &mut state,
+                &mut job,
+                &job_file,
+                &final_dir,
+                &marker,
+                options.component,
+            )?;
+            return Ok(SnapshotCreateReport::from_markers(
                 &self.paths.root,
                 &final_dir,
                 &marker,
+                registry
+                    .as_ref()
+                    .map(|(directory, marker)| (directory.as_path(), marker)),
                 true,
                 true,
             ));
@@ -473,17 +586,17 @@ impl ExactHeightSnapshotBuilder {
                 e
             )
         })?;
-        job.attempt = job.attempt.saturating_add(1);
-        job.temp_dir = Some(display_relative(&self.paths.root, &temp_dir));
-        job.set_stage(SnapshotBuildStage::Building);
+        job.core.attempt = job.core.attempt.saturating_add(1);
+        job.core.temp_dir = Some(display_relative(&self.paths.root, &temp_dir));
+        job.set_core_stage(SnapshotBuildStage::Building);
         save_json_atomic(&job_file, &job)?;
         crate::abort_after_checkpoint("building");
 
-        let snapshot_file_name = format!("snapshot_{}.db", options.target_height);
+        let snapshot_file_name = format!("balance_history_core_{}.db", options.target_height);
         let snapshot_path = temp_dir.join(&snapshot_file_name);
         let snapshot_indexer =
             SnapshotIndexer::new(config.clone(), indexer.db().clone(), output.clone());
-        let creation = snapshot_indexer.run_to_path(options.target_height, true, &snapshot_path)?;
+        let creation = snapshot_indexer.run_core_to_path(options.target_height, &snapshot_path)?;
 
         info!(
             "Explicitly releasing snapshot export and RocksDB/indexer resources before verification"
@@ -494,7 +607,7 @@ impl ExactHeightSnapshotBuilder {
         drop(config);
         info!("Snapshot export and RocksDB/indexer resources released");
 
-        job.set_stage(SnapshotBuildStage::Verifying);
+        job.set_core_stage(SnapshotBuildStage::Verifying);
         save_json_atomic(&job_file, &job)?;
         crate::abort_after_checkpoint("verifying");
         let verified = self.verify_snapshot_files_with_job_progress(
@@ -571,17 +684,31 @@ impl ExactHeightSnapshotBuilder {
         }
         self.remove_stale_sqlite_sidecars(&final_dir, &marker)?;
         self.finalize_state_from_marker(&mut state, &mut job, &job_file, &final_dir, &marker)?;
+        let registry = self.complete_requested_components(
+            &mut state,
+            &mut job,
+            &job_file,
+            &final_dir,
+            &marker,
+            options.component,
+        )?;
 
-        Ok(SnapshotCreateReport::from_marker(
+        Ok(SnapshotCreateReport::from_markers(
             &self.paths.root,
             &final_dir,
             &marker,
+            registry
+                .as_ref()
+                .map(|(directory, marker)| (directory.as_path(), marker)),
             resumed,
             false,
         ))
     }
 
-    /// Resumes full verification and publication without opening the mutable RocksDB workspace.
+    /// Resumes selected component verification and local publication.
+    ///
+    /// Core resume does not open RocksDB. Registry resume reopens the sealed workspace read-only
+    /// when export must be rebuilt, and rejects any workspace height other than the paired core.
     pub fn resume_verify(
         &self,
         options: SnapshotResumeVerifyOptions,
@@ -617,8 +744,8 @@ impl ExactHeightSnapshotBuilder {
         })?;
         self.validate_job(&job, options.target_height, expected_block_hash.as_deref())?;
 
-        if job.stage == SnapshotBuildStage::Complete {
-            let artifact_dir = job.artifact_dir.as_deref().ok_or_else(|| {
+        if job.core.stage == SnapshotBuildStage::Complete {
+            let artifact_dir = job.core.artifact_dir.as_deref().ok_or_else(|| {
                 format!(
                     "Completed snapshot job {} is missing artifact_dir",
                     options.target_height
@@ -632,18 +759,29 @@ impl ExactHeightSnapshotBuilder {
                 expected_block_hash.as_deref(),
             )?;
             self.validate_marker_for_job(&job, &marker)?;
-            return Ok(SnapshotCreateReport::from_marker(
+            let registry = self.complete_requested_components(
+                &mut state,
+                &mut job,
+                &job_file,
+                &artifact_dir,
+                &marker,
+                options.component,
+            )?;
+            return Ok(SnapshotCreateReport::from_markers(
                 &self.paths.root,
                 &artifact_dir,
                 &marker,
+                registry
+                    .as_ref()
+                    .map(|(directory, marker)| (directory.as_path(), marker)),
                 true,
                 true,
             ));
         }
-        if job.stage != SnapshotBuildStage::Verifying {
+        if job.core.stage != SnapshotBuildStage::Verifying {
             return Err(format!(
                 "Snapshot job {} is in stage {:?}; resume-verify requires stage Verifying",
-                options.target_height, job.stage
+                options.target_height, job.core.stage
             ));
         }
         if state.active_job_height != Some(options.target_height) {
@@ -678,7 +816,7 @@ impl ExactHeightSnapshotBuilder {
 
         let final_dir = self
             .paths
-            .snapshot_artifact_dir(options.target_height, &canonical_hash);
+            .core_artifact_dir(options.target_height, &canonical_hash);
         if final_dir.exists() {
             let marker = verify_published_artifact_marker(
                 &final_dir,
@@ -689,16 +827,27 @@ impl ExactHeightSnapshotBuilder {
             self.validate_marker_for_job(&job, &marker)?;
             self.remove_stale_sqlite_sidecars(&final_dir, &marker)?;
             self.finalize_state_from_marker(&mut state, &mut job, &job_file, &final_dir, &marker)?;
-            return Ok(SnapshotCreateReport::from_marker(
+            let registry = self.complete_requested_components(
+                &mut state,
+                &mut job,
+                &job_file,
+                &final_dir,
+                &marker,
+                options.component,
+            )?;
+            return Ok(SnapshotCreateReport::from_markers(
                 &self.paths.root,
                 &final_dir,
                 &marker,
+                registry
+                    .as_ref()
+                    .map(|(directory, marker)| (directory.as_path(), marker)),
                 true,
                 false,
             ));
         }
 
-        let temp_dir = job.temp_dir.as_deref().ok_or_else(|| {
+        let temp_dir = job.core.temp_dir.as_deref().ok_or_else(|| {
             format!(
                 "Verifying snapshot job {} is missing temp_dir",
                 options.target_height
@@ -725,7 +874,8 @@ impl ExactHeightSnapshotBuilder {
             self.remove_stale_sqlite_sidecars(&temp_dir, &marker)?;
             marker
         } else {
-            let db_path = temp_dir.join(format!("snapshot_{}.db", options.target_height));
+            let db_path =
+                temp_dir.join(format!("balance_history_core_{}.db", options.target_height));
             let manifest_path = manifest_path_for_snapshot_file(&db_path);
             let verified = self.verify_snapshot_files_with_job_progress(
                 &mut job,
@@ -809,11 +959,22 @@ impl ExactHeightSnapshotBuilder {
         }
         self.remove_stale_sqlite_sidecars(&final_dir, &marker)?;
         self.finalize_state_from_marker(&mut state, &mut job, &job_file, &final_dir, &marker)?;
+        let registry = self.complete_requested_components(
+            &mut state,
+            &mut job,
+            &job_file,
+            &final_dir,
+            &marker,
+            options.component,
+        )?;
 
-        Ok(SnapshotCreateReport::from_marker(
+        Ok(SnapshotCreateReport::from_markers(
             &self.paths.root,
             &final_dir,
             &marker,
+            registry
+                .as_ref()
+                .map(|(directory, marker)| (directory.as_path(), marker)),
             true,
             false,
         ))
@@ -821,16 +982,22 @@ impl ExactHeightSnapshotBuilder {
 
     /// Returns root state and an optional requested or active per-height job.
     pub fn status(&self, height: Option<u32>) -> Result<SnapshotStatusReport, String> {
-        let state = load_json(&self.paths.state_file)?;
+        let state: Option<SnapshotBuilderState> = load_json(&self.paths.state_file)?;
+        if let Some(state) = state.as_ref() {
+            self.validate_state(state, &state.network)?;
+        }
         let job_height = height.or_else(|| {
             state
                 .as_ref()
                 .and_then(|value: &SnapshotBuilderState| value.active_job_height)
         });
-        let job = match job_height {
+        let job: Option<SnapshotBuildJob> = match job_height {
             Some(height) => load_json(&self.paths.job_file(height))?,
             None => None,
         };
+        if let Some(job) = job.as_ref() {
+            self.validate_job(job, job.target_height, job.expected_block_hash.as_deref())?;
+        }
         Ok(SnapshotStatusReport { state, job })
     }
 
@@ -850,6 +1017,7 @@ impl ExactHeightSnapshotBuilder {
             let entry = entry.map_err(|e| format!("Failed to read snapshot job entry: {}", e))?;
             let job_file = entry.path().join("job.json");
             if let Some(job) = load_json(&job_file)? {
+                self.validate_job(&job, job.target_height, job.expected_block_hash.as_deref())?;
                 jobs.push(job);
             }
         }
@@ -857,55 +1025,182 @@ impl ExactHeightSnapshotBuilder {
         Ok(jobs)
     }
 
-    /// Reopens and verifies one completed artifact without modifying builder state.
+    /// Reopens and verifies selected completed artifacts without modifying builder state.
     pub fn verify(
         &self,
         height: u32,
         block_hash: Option<&str>,
-    ) -> Result<SnapshotCompleteMarker, String> {
+        component: crate::SnapshotComponent,
+    ) -> Result<SnapshotVerifyReport, String> {
         let state: SnapshotBuilderState = load_json(&self.paths.state_file)?.ok_or_else(|| {
             format!(
                 "Snapshot builder state does not exist at {}",
                 self.paths.state_file.display()
             )
         })?;
-        let artifact_dir = if let Some(block_hash) = block_hash {
-            self.paths.snapshot_artifact_dir(height, block_hash)
+        let branch_dir = self.resolve_branch_dir(height, block_hash)?;
+        let core_dir = branch_dir.join("core");
+        let core = if component == crate::SnapshotComponent::ScriptRegistry {
+            verify_published_artifact_marker(&core_dir, &state.network, height, block_hash)?
         } else {
-            self.find_single_artifact_dir(height)?
+            verify_published_artifact(&core_dir, &state.network, height, block_hash)?
         };
-        verify_published_artifact(&artifact_dir, &state.network, height, block_hash)
+        let core_manifest = CoreSnapshotManifest::load(&core_dir.join(&core.manifest_file))?;
+        let registry = if component != crate::SnapshotComponent::Core {
+            Some(verify_published_registry(
+                &branch_dir.join("script-registry"),
+                &core_manifest,
+            )?)
+        } else {
+            None
+        };
+        Ok(SnapshotVerifyReport {
+            core: (component != crate::SnapshotComponent::ScriptRegistry).then_some(core),
+            script_registry: registry,
+        })
     }
 
-    /// Rechecks artifact identity, DB hash, and detached signature without opening SQLite.
+    /// Rechecks selected artifact identities, hashes, and detached signatures.
     pub fn finalize_artifact(
         &self,
         height: u32,
         block_hash: Option<&str>,
         trusted_keys_path: &Path,
-    ) -> Result<SnapshotArtifactFinalizationReport, String> {
+        component: crate::SnapshotComponent,
+    ) -> Result<SnapshotFinalizationReport, String> {
         let state: SnapshotBuilderState = load_json(&self.paths.state_file)?.ok_or_else(|| {
             format!(
                 "Snapshot builder state does not exist at {}",
                 self.paths.state_file.display()
             )
         })?;
-        let artifact_dir = if let Some(block_hash) = block_hash {
-            self.paths.snapshot_artifact_dir(height, block_hash)
+        let branch_dir = self.resolve_branch_dir(height, block_hash)?;
+        let core_dir = branch_dir.join("core");
+        let core_marker =
+            verify_published_artifact_marker(&core_dir, &state.network, height, block_hash)?;
+        let core_manifest = CoreSnapshotManifest::load(&core_dir.join(&core_marker.manifest_file))?;
+        let trusted_keys_sha256 = SnapshotHash::calc_hash(trusted_keys_path)?;
+        let core = if component != crate::SnapshotComponent::ScriptRegistry {
+            Some(self.finalize_core_component(
+                &core_dir,
+                core_marker,
+                &core_manifest,
+                trusted_keys_path,
+                &trusted_keys_sha256,
+            )?)
         } else {
-            self.find_single_artifact_dir(height)?
+            None
         };
-        let marker =
-            verify_published_artifact_marker(&artifact_dir, &state.network, height, block_hash)?;
-        let snapshot_path = artifact_dir.join(&marker.snapshot_file);
-        let manifest_path = artifact_dir.join(&marker.manifest_file);
-        let manifest = SnapshotManifest::load(&manifest_path)?;
-        let signing_key_id =
-            verify_snapshot_manifest_signature(&manifest, &manifest_path, trusted_keys_path)?;
+        let script_registry = if component != crate::SnapshotComponent::Core {
+            let registry_dir = branch_dir.join("script-registry");
+            let marker = verify_published_registry_marker(&registry_dir, &core_manifest)?;
+            let manifest = balance_history::ScriptRegistryManifest::load(
+                &registry_dir.join(&marker.manifest_file),
+            )?;
+            Some(self.finalize_registry_component(
+                &registry_dir,
+                marker,
+                &manifest,
+                trusted_keys_path,
+                &trusted_keys_sha256,
+            )?)
+        } else {
+            None
+        };
+        Ok(SnapshotFinalizationReport {
+            core,
+            script_registry,
+        })
+    }
 
-        let hash_progress = snapshot_hash_progress_bar(&snapshot_path)?;
+    fn finalize_core_component(
+        &self,
+        artifact_dir: &Path,
+        marker: SnapshotCompleteMarker,
+        manifest: &CoreSnapshotManifest,
+        trusted_keys_path: &Path,
+        trusted_keys_sha256: &str,
+    ) -> Result<SnapshotArtifactFinalizationReport, String> {
+        self.finalize_component(
+            crate::SnapshotComponent::Core,
+            artifact_dir,
+            marker.height,
+            marker.network,
+            marker.btc_block_hash,
+            marker.snapshot_id,
+            marker.core_artifact_id,
+            marker.snapshot_file,
+            marker.manifest_file,
+            marker.signature_file,
+            marker.file_sha256,
+            manifest.signature_scheme.as_deref(),
+            manifest.signing_key_id.as_deref(),
+            &manifest.signature_payload()?,
+            trusted_keys_path,
+            trusted_keys_sha256,
+        )
+    }
+
+    fn finalize_registry_component(
+        &self,
+        artifact_dir: &Path,
+        marker: ScriptRegistryCompleteMarker,
+        manifest: &balance_history::ScriptRegistryManifest,
+        trusted_keys_path: &Path,
+        trusted_keys_sha256: &str,
+    ) -> Result<SnapshotArtifactFinalizationReport, String> {
+        self.finalize_component(
+            crate::SnapshotComponent::ScriptRegistry,
+            artifact_dir,
+            marker.height,
+            marker.network,
+            marker.btc_block_hash,
+            marker.core_snapshot_id,
+            marker.registry_artifact_id,
+            marker.registry_file,
+            marker.manifest_file,
+            marker.signature_file,
+            marker.file_sha256,
+            manifest.signature_scheme.as_deref(),
+            manifest.signing_key_id.as_deref(),
+            &manifest.signature_payload()?,
+            trusted_keys_path,
+            trusted_keys_sha256,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finalize_component(
+        &self,
+        component: crate::SnapshotComponent,
+        artifact_dir: &Path,
+        height: u32,
+        network: String,
+        btc_block_hash: String,
+        core_snapshot_id: String,
+        artifact_id: String,
+        file: String,
+        manifest_file: String,
+        signature_file: Option<String>,
+        expected_file_sha256: String,
+        signature_scheme: Option<&str>,
+        signing_key_id: Option<&str>,
+        signature_payload: &[u8],
+        trusted_keys_path: &Path,
+        trusted_keys_sha256: &str,
+    ) -> Result<SnapshotArtifactFinalizationReport, String> {
+        let manifest_path = artifact_dir.join(&manifest_file);
+        let signing_key_id = verify_snapshot_artifact_manifest_signature(
+            signature_scheme,
+            signing_key_id,
+            &manifest_path,
+            signature_payload,
+            trusted_keys_path,
+        )?;
+        let file_path = artifact_dir.join(&file);
+        let hash_progress = snapshot_hash_progress_bar(&file_path)?;
         let actual_file_sha256 =
-            match SnapshotHash::calc_hash_with_progress(&snapshot_path, |processed, _| {
+            match SnapshotHash::calc_hash_with_progress(&file_path, |processed, _| {
                 hash_progress.set_position(processed);
             }) {
                 Ok(hash) => {
@@ -917,32 +1212,31 @@ impl ExactHeightSnapshotBuilder {
                     return Err(error);
                 }
             };
-        if !actual_file_sha256.eq_ignore_ascii_case(&marker.file_sha256) {
+        if actual_file_sha256 != expected_file_sha256 {
             return Err(format!(
-                "Snapshot file hash mismatch during release finalization: marker={}, actual={}",
-                marker.file_sha256, actual_file_sha256
+                "Snapshot component file hash mismatch during finalization: marker={}, actual={}",
+                expected_file_sha256, actual_file_sha256
             ));
         }
-        let trusted_keys_sha256 = SnapshotHash::calc_hash(trusted_keys_path)?;
-        let signature_file = marker.signature_file.ok_or_else(|| {
-            format!(
-                "Signed snapshot artifact {} has no detached signature in complete.json",
-                artifact_dir.display()
-            )
-        })?;
-
         Ok(SnapshotArtifactFinalizationReport {
-            height: marker.height,
-            network: marker.network,
-            btc_block_hash: marker.btc_block_hash,
-            snapshot_id: marker.snapshot_id,
-            artifact_dir: display_relative(&self.paths.root, &artifact_dir),
-            snapshot_file: marker.snapshot_file,
-            manifest_file: marker.manifest_file,
-            signature_file,
+            component,
+            height,
+            network,
+            btc_block_hash,
+            core_snapshot_id,
+            artifact_id,
+            artifact_dir: display_relative(&self.paths.root, artifact_dir),
+            file,
+            manifest_file,
+            signature_file: signature_file.ok_or_else(|| {
+                format!(
+                    "Signed snapshot component {} has no detached signature in complete.json",
+                    artifact_dir.display()
+                )
+            })?,
             file_sha256: actual_file_sha256,
             signing_key_id,
-            trusted_keys_sha256,
+            trusted_keys_sha256: trusted_keys_sha256.to_string(),
         })
     }
 
@@ -1080,17 +1374,19 @@ impl ExactHeightSnapshotBuilder {
         let phase_started_at = if phase_changed {
             now
         } else {
-            job.verification
+            job.core
+                .verification
                 .as_ref()
                 .filter(|progress| progress.phase == phase)
                 .map(|progress| progress.phase_started_at)
                 .unwrap_or(now)
         };
-        job.verification = Some(SnapshotVerificationProgress {
+        let progress = SnapshotVerificationProgress {
             phase,
             phase_started_at,
             heartbeat_at: now,
-        });
+        };
+        job.core.verification = Some(progress);
         job.updated_at = now;
         save_json_atomic(job_file, job)?;
         if phase_changed {
@@ -1107,6 +1403,427 @@ impl ExactHeightSnapshotBuilder {
             );
         }
         Ok(())
+    }
+
+    fn verify_registry_files_with_job_progress(
+        &self,
+        job: &mut SnapshotBuildJob,
+        job_file: &Path,
+        db_path: &Path,
+        manifest_path: &Path,
+        core_manifest: &CoreSnapshotManifest,
+    ) -> Result<VerifiedScriptRegistry, String> {
+        let db_path = db_path.to_path_buf();
+        let manifest_path = manifest_path.to_path_buf();
+        let core_manifest = core_manifest.clone();
+        let expected_height = core_manifest.state_ref.block_height;
+        let (sender, receiver) = mpsc::channel();
+        let worker_sender = sender.clone();
+        let worker = thread::Builder::new()
+            .name(format!("registry-verify-{expected_height}"))
+            .spawn(move || {
+                let progress_sender = worker_sender.clone();
+                let result = verify_registry_files_with_progress(
+                    &db_path,
+                    &manifest_path,
+                    &core_manifest,
+                    move |phase| {
+                        progress_sender
+                            .send(RegistryVerificationMessage::Phase(phase))
+                            .map_err(|_| {
+                                "Registry verification progress receiver disconnected".to_string()
+                            })
+                    },
+                );
+                let _ = worker_sender.send(RegistryVerificationMessage::Finished(Box::new(result)));
+            })
+            .map_err(|error| {
+                format!("Failed to start script-registry verification worker: {error}")
+            })?;
+        drop(sender);
+
+        let verification_started = Instant::now();
+        let mut current_phase: Option<(SnapshotVerificationPhase, Instant)> = None;
+        let mut persistence_error = None;
+        loop {
+            match receiver.recv_timeout(VERIFICATION_HEARTBEAT_INTERVAL) {
+                Ok(RegistryVerificationMessage::Phase(phase)) => {
+                    if let Some((previous_phase, previous_started)) = current_phase.take() {
+                        print_verification_progress(
+                            "registry_phase_completed",
+                            expected_height,
+                            previous_phase,
+                            previous_started.elapsed(),
+                            verification_started.elapsed(),
+                        );
+                    }
+                    current_phase = Some((phase, Instant::now()));
+                    if let Err(error) =
+                        self.persist_registry_verification_progress(job, job_file, phase, true)
+                    {
+                        error!("{error}");
+                        persistence_error.get_or_insert(error);
+                    }
+                    print_verification_progress(
+                        "registry_phase_started",
+                        expected_height,
+                        phase,
+                        Duration::ZERO,
+                        verification_started.elapsed(),
+                    );
+                }
+                Ok(RegistryVerificationMessage::Finished(result)) => {
+                    worker.join().map_err(|_| {
+                        "Registry verification worker panicked after reporting completion"
+                            .to_string()
+                    })?;
+                    if let Some((phase, phase_started)) = current_phase.take() {
+                        print_verification_progress(
+                            if result.is_ok() {
+                                "registry_phase_completed"
+                            } else {
+                                "registry_phase_failed"
+                            },
+                            expected_height,
+                            phase,
+                            phase_started.elapsed(),
+                            verification_started.elapsed(),
+                        );
+                    }
+                    if let Some(error) = persistence_error {
+                        return Err(error);
+                    }
+                    return *result;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some((phase, phase_started)) = current_phase.as_ref() {
+                        if let Err(error) = self
+                            .persist_registry_verification_progress(job, job_file, *phase, false)
+                        {
+                            error!("{error}");
+                            persistence_error.get_or_insert(error);
+                        }
+                        print_verification_progress(
+                            "registry_heartbeat",
+                            expected_height,
+                            *phase,
+                            phase_started.elapsed(),
+                            verification_started.elapsed(),
+                        );
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    worker.join().map_err(|_| {
+                        "Registry verification worker panicked before reporting completion"
+                            .to_string()
+                    })?;
+                    return Err(
+                        "Registry verification worker exited without reporting completion"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    fn persist_registry_verification_progress(
+        &self,
+        job: &mut SnapshotBuildJob,
+        job_file: &Path,
+        phase: SnapshotVerificationPhase,
+        phase_changed: bool,
+    ) -> Result<(), String> {
+        let now = unix_timestamp();
+        let phase_started_at = if phase_changed {
+            now
+        } else {
+            job.script_registry
+                .verification
+                .as_ref()
+                .filter(|progress| progress.phase == phase)
+                .map(|progress| progress.phase_started_at)
+                .unwrap_or(now)
+        };
+        job.script_registry.verification = Some(SnapshotVerificationProgress {
+            phase,
+            phase_started_at,
+            heartbeat_at: now,
+        });
+        job.updated_at = now;
+        save_json_atomic(job_file, job)?;
+        info!(
+            "Script-registry verification progress: height={}, phase={:?}, phase_changed={}, phase_elapsed_secs={}",
+            job.target_height,
+            phase,
+            phase_changed,
+            now.saturating_sub(phase_started_at)
+        );
+        Ok(())
+    }
+
+    fn complete_registry_component(
+        &self,
+        state: &mut SnapshotBuilderState,
+        job: &mut SnapshotBuildJob,
+        job_file: &Path,
+        core_dir: &Path,
+        core_marker: &SnapshotCompleteMarker,
+    ) -> Result<ScriptRegistryCompleteMarker, String> {
+        let result =
+            self.complete_registry_component_inner(state, job, job_file, core_dir, core_marker);
+        if let Err(error) = &result {
+            job.script_registry.last_error = Some(error.clone());
+            job.updated_at = unix_timestamp();
+            if let Err(persist_error) = save_json_atomic(job_file, job) {
+                error!(
+                    "Failed to persist script-registry error after {}: {}",
+                    error, persist_error
+                );
+            }
+        }
+        result
+    }
+
+    fn complete_requested_components(
+        &self,
+        state: &mut SnapshotBuilderState,
+        job: &mut SnapshotBuildJob,
+        job_file: &Path,
+        core_dir: &Path,
+        core_marker: &SnapshotCompleteMarker,
+        component: crate::SnapshotComponent,
+    ) -> Result<Option<(PathBuf, ScriptRegistryCompleteMarker)>, String> {
+        if component == crate::SnapshotComponent::Core {
+            state.active_job_height = None;
+            state.updated_at = unix_timestamp();
+            save_json_atomic(&self.paths.state_file, state)?;
+            return Ok(None);
+        }
+        let marker =
+            self.complete_registry_component(state, job, job_file, core_dir, core_marker)?;
+        let artifact_dir =
+            self.resolve_managed_path(job.script_registry.artifact_dir.as_deref().ok_or_else(
+                || "Completed registry is missing its artifact directory".to_string(),
+            )?)?;
+        Ok(Some((artifact_dir, marker)))
+    }
+
+    fn complete_registry_component_inner(
+        &self,
+        state: &mut SnapshotBuilderState,
+        job: &mut SnapshotBuildJob,
+        job_file: &Path,
+        core_dir: &Path,
+        core_marker: &SnapshotCompleteMarker,
+    ) -> Result<ScriptRegistryCompleteMarker, String> {
+        let core_manifest = CoreSnapshotManifest::load(&core_dir.join(&core_marker.manifest_file))?;
+        let final_dir = self
+            .paths
+            .registry_artifact_dir(core_marker.height, &core_marker.btc_block_hash);
+        if final_dir.exists() {
+            let marker = verify_published_registry(&final_dir, &core_manifest)?;
+            self.finalize_registry_state(state, job, job_file, &final_dir, &marker)?;
+            return Ok(marker);
+        }
+
+        let mut config = BalanceHistoryConfig::load(&self.paths.workspace)?;
+        config.root_dir = self.paths.workspace.clone();
+        let config = Arc::new(config);
+        let rpc_client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth())?;
+        let canonical_hash = format!("{:x}", rpc_client.get_block_hash(core_marker.height)?);
+        if canonical_hash != core_marker.btc_block_hash {
+            return Err(format!(
+                "BTC block hash changed before registry export at height {}: core={}, current={}",
+                core_marker.height, core_marker.btc_block_hash, canonical_hash
+            ));
+        }
+        if job.script_registry.stage == SnapshotBuildStage::Verifying {
+            let temp_dir = self.resolve_managed_path(
+                job.script_registry.temp_dir.as_deref().ok_or_else(|| {
+                    "Verifying registry component is missing its temporary directory".to_string()
+                })?,
+            )?;
+            if !temp_dir.starts_with(&self.paths.temp) || !temp_dir.is_dir() {
+                return Err(format!(
+                    "Verifying registry component references unavailable directory {}",
+                    temp_dir.display()
+                ));
+            }
+            let db_path = temp_dir.join(format!("script_registry_{}.db", core_marker.height));
+            let manifest_path = manifest_path_for_snapshot_file(&db_path);
+            let verified = self.verify_registry_files_with_job_progress(
+                job,
+                job_file,
+                &db_path,
+                &manifest_path,
+                &core_manifest,
+            )?;
+            let marker = build_registry_complete_marker(&verified)?;
+            save_json_atomic(&temp_dir.join("complete.json"), &marker)?;
+            return self.publish_registry_temp(
+                state,
+                job,
+                job_file,
+                &temp_dir,
+                &final_dir,
+                &core_manifest,
+                &marker,
+                &rpc_client,
+            );
+        }
+        if let Some(temp_dir) = job.script_registry.temp_dir.as_deref() {
+            let temp_dir = self.resolve_managed_path(temp_dir)?;
+            if !temp_dir.starts_with(&self.paths.temp) {
+                return Err(format!(
+                    "Refusing to remove unmanaged registry temporary directory {}",
+                    temp_dir.display()
+                ));
+            }
+            if temp_dir.exists() {
+                std::fs::remove_dir_all(&temp_dir).map_err(|error| {
+                    format!(
+                        "Failed to remove interrupted registry directory {}: {}",
+                        temp_dir.display(),
+                        error
+                    )
+                })?;
+            }
+        }
+        let db = Arc::new(BalanceHistoryDB::open_read_only(config.clone())?);
+        let workspace_height = db.get_btc_block_height()?;
+        if workspace_height != core_marker.height {
+            return Err(format!(
+                "Registry export requires the sealed workspace at height {}, got {}",
+                core_marker.height, workspace_height
+            ));
+        }
+        let status = Arc::new(SyncStatusManager::new());
+        let output = Arc::new(IndexOutput::new(status));
+
+        let temp_dir = self.paths.temp.join(format!(
+            "{:012}-registry-{}",
+            core_marker.height,
+            unique_run_id()
+        ));
+        std::fs::create_dir_all(&temp_dir).map_err(|error| {
+            format!(
+                "Failed to create registry temporary directory {}: {}",
+                temp_dir.display(),
+                error
+            )
+        })?;
+        job.script_registry.attempt = job.script_registry.attempt.saturating_add(1);
+        job.script_registry.temp_dir = Some(display_relative(&self.paths.root, &temp_dir));
+        job.set_registry_stage(SnapshotBuildStage::Building);
+        save_json_atomic(job_file, job)?;
+        crate::abort_after_checkpoint("registry_building");
+
+        let registry_path = temp_dir.join(format!("script_registry_{}.db", core_marker.height));
+        let indexer = SnapshotIndexer::new(config.clone(), db, output);
+        let creation = indexer.run_registry_to_path(&core_manifest, &registry_path)?;
+        drop(indexer);
+        drop(config);
+
+        job.set_registry_stage(SnapshotBuildStage::Verifying);
+        save_json_atomic(job_file, job)?;
+        crate::abort_after_checkpoint("registry_verifying");
+        let verified = self.verify_registry_files_with_job_progress(
+            job,
+            job_file,
+            &creation.db_path,
+            &creation.manifest_path,
+            &core_manifest,
+        )?;
+        let marker = build_registry_complete_marker(&verified)?;
+        save_json_atomic(&temp_dir.join("complete.json"), &marker)?;
+        self.publish_registry_temp(
+            state,
+            job,
+            job_file,
+            &temp_dir,
+            &final_dir,
+            &core_manifest,
+            &marker,
+            &rpc_client,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_registry_temp(
+        &self,
+        state: &mut SnapshotBuilderState,
+        job: &mut SnapshotBuildJob,
+        job_file: &Path,
+        temp_dir: &Path,
+        final_dir: &Path,
+        core_manifest: &CoreSnapshotManifest,
+        marker: &ScriptRegistryCompleteMarker,
+        rpc_client: &BTCRpcClient,
+    ) -> Result<ScriptRegistryCompleteMarker, String> {
+        let canonical_hash_after = format!("{:x}", rpc_client.get_block_hash(marker.height)?);
+        if canonical_hash_after != marker.btc_block_hash {
+            return Err(format!(
+                "BTC block hash changed while building registry at height {}: core={}, current={}",
+                marker.height, marker.btc_block_hash, canonical_hash_after
+            ));
+        }
+        let final_parent = final_dir.parent().ok_or_else(|| {
+            format!(
+                "Registry artifact path {} has no parent",
+                final_dir.display()
+            )
+        })?;
+        std::fs::create_dir_all(final_parent).map_err(|error| {
+            format!(
+                "Failed to create registry artifact parent {}: {}",
+                final_parent.display(),
+                error
+            )
+        })?;
+        std::fs::rename(temp_dir, final_dir).map_err(|error| {
+            format!(
+                "Failed to atomically publish registry directory {} as {}: {}",
+                temp_dir.display(),
+                final_dir.display(),
+                error
+            )
+        })?;
+        File::open(final_parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                format!(
+                    "Failed to sync registry artifact parent {}: {}",
+                    final_parent.display(),
+                    error
+                )
+            })?;
+        let published = verify_published_registry_marker(final_dir, core_manifest)?;
+        if published != *marker {
+            return Err("Published registry marker changed during atomic publication".to_string());
+        }
+        self.finalize_registry_state(state, job, job_file, final_dir, marker)?;
+        Ok(marker.clone())
+    }
+
+    fn finalize_registry_state(
+        &self,
+        state: &mut SnapshotBuilderState,
+        job: &mut SnapshotBuildJob,
+        job_file: &Path,
+        artifact_dir: &Path,
+        marker: &ScriptRegistryCompleteMarker,
+    ) -> Result<(), String> {
+        job.script_registry.stage = SnapshotBuildStage::Complete;
+        job.script_registry.temp_dir = None;
+        job.script_registry.artifact_dir = Some(display_relative(&self.paths.root, artifact_dir));
+        job.script_registry.verification = None;
+        job.script_registry.completed_at = Some(marker.completed_at);
+        job.script_registry.last_error = None;
+        job.updated_at = unix_timestamp();
+        save_json_atomic(job_file, job)?;
+        state.active_job_height = None;
+        state.updated_at = unix_timestamp();
+        save_json_atomic(&self.paths.state_file, state)
     }
 
     fn validate_marker_for_job(
@@ -1402,7 +2119,7 @@ impl ExactHeightSnapshotBuilder {
     }
 
     fn remove_previous_temp_dir(&self, job: &SnapshotBuildJob) -> Result<(), String> {
-        let Some(temp_dir) = job.temp_dir.as_deref() else {
+        let Some(temp_dir) = job.core.temp_dir.as_deref() else {
             return Ok(());
         };
         let temp_dir = self.resolve_managed_path(temp_dir)?;
@@ -1438,19 +2155,20 @@ impl ExactHeightSnapshotBuilder {
             snapshot_id: marker.snapshot_id.clone(),
             artifact_dir: display_relative(&self.paths.root, artifact_dir),
         };
-        job.stage = SnapshotBuildStage::Complete;
+        job.core.stage = SnapshotBuildStage::Complete;
+        job.core.temp_dir = None;
+        job.core.artifact_dir = Some(completed.artifact_dir.clone());
+        job.core.verification = None;
+        job.core.completed_at = Some(marker.completed_at);
+        job.core.last_error = None;
         job.btc_block_hash = Some(marker.btc_block_hash.clone());
         job.snapshot_id = Some(marker.snapshot_id.clone());
-        job.temp_dir = None;
-        job.artifact_dir = Some(completed.artifact_dir.clone());
-        job.verification = None;
-        job.completed_at = Some(marker.completed_at);
         job.updated_at = unix_timestamp();
         save_json_atomic(job_file, job)?;
         crate::abort_after_checkpoint("job_complete");
 
         state.latest_completed = Some(completed);
-        state.active_job_height = None;
+        state.active_job_height = Some(marker.height);
         state.updated_at = unix_timestamp();
         save_json_atomic(&self.paths.state_file, state)
     }
@@ -1470,7 +2188,14 @@ impl ExactHeightSnapshotBuilder {
         Ok(self.paths.root.join(path))
     }
 
-    fn find_single_artifact_dir(&self, height: u32) -> Result<PathBuf, String> {
+    fn resolve_branch_dir(&self, height: u32, block_hash: Option<&str>) -> Result<PathBuf, String> {
+        match block_hash {
+            Some(block_hash) => Ok(self.paths.snapshot_artifact_dir(height, block_hash)),
+            None => self.find_single_branch_dir(height),
+        }
+    }
+
+    fn find_single_branch_dir(&self, height: u32) -> Result<PathBuf, String> {
         let height_dir = self.paths.snapshot_height_dir(height);
         let mut artifacts = Vec::new();
         for entry in std::fs::read_dir(&height_dir).map_err(|e| {
@@ -1484,7 +2209,8 @@ impl ExactHeightSnapshotBuilder {
             let path = entry
                 .map_err(|e| format!("Failed to read snapshot artifact entry: {}", e))?
                 .path();
-            if path.is_dir() && path.join("complete.json").is_file() {
+            let core_path = path.join("core");
+            if path.is_dir() && core_path.join("complete.json").is_file() {
                 artifacts.push(path);
             }
         }
@@ -1612,6 +2338,7 @@ mod tests {
                 expected_block_hash: None,
                 poll_interval: Duration::from_secs(1),
                 config_file: None,
+                component: crate::SnapshotComponent::All,
             })
             .unwrap_err();
 
@@ -1739,7 +2466,7 @@ mod tests {
         builder.paths.create_dirs().unwrap();
         let job_file = builder.paths.job_file(10);
         let mut job = SnapshotBuildJob::new(10, None, None);
-        job.set_stage(SnapshotBuildStage::Verifying);
+        job.set_core_stage(SnapshotBuildStage::Verifying);
 
         builder
             .persist_verification_progress(
@@ -1749,7 +2476,7 @@ mod tests {
                 true,
             )
             .unwrap();
-        let first = job.verification.clone().unwrap();
+        let first = job.core.verification.clone().unwrap();
         builder
             .persist_verification_progress(
                 &mut job,
@@ -1760,7 +2487,7 @@ mod tests {
             .unwrap();
 
         let persisted: SnapshotBuildJob = load_json(&job_file).unwrap().unwrap();
-        let progress = persisted.verification.unwrap();
+        let progress = persisted.core.verification.unwrap();
         assert_eq!(progress.phase, SnapshotVerificationPhase::IntegrityCheck);
         assert_eq!(progress.phase_started_at, first.phase_started_at);
         assert!(progress.heartbeat_at >= first.heartbeat_at);
@@ -1778,7 +2505,8 @@ mod tests {
             height: 10,
             network: "regtest".to_string(),
             btc_block_hash: "11".repeat(32),
-            snapshot_id: "snapshot-10".to_string(),
+            snapshot_id: "33".repeat(32),
+            core_artifact_id: "44".repeat(32),
             snapshot_file: "snapshot_10.db".to_string(),
             manifest_file: "snapshot_10.manifest.json".to_string(),
             signature_file: None,
@@ -1786,7 +2514,6 @@ mod tests {
             balance_history_count: 0,
             utxo_count: 0,
             block_commit_count: 1,
-            script_registry_count: 0,
             completed_at: 1,
         };
         let wal_path = root.join("snapshot_10.db-wal");
@@ -1806,6 +2533,84 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("non-empty WAL sidecar"));
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn core_completion_does_not_complete_or_clear_registry_state() {
+        let root = std::env::temp_dir().join(format!("snapshot-core-state-{}", unique_run_id()));
+        let builder = ExactHeightSnapshotBuilder::new(root.clone());
+        builder.paths.create_dirs().unwrap();
+        let job_file = builder.paths.job_file(10);
+        let mut state = SnapshotBuilderState::new("regtest".to_string());
+        state.active_job_height = Some(10);
+        let mut job = SnapshotBuildJob::new(10, None, None);
+        let marker = SnapshotCompleteMarker {
+            version: crate::COMPLETE_MARKER_VERSION,
+            height: 10,
+            network: "regtest".to_string(),
+            btc_block_hash: "11".repeat(32),
+            snapshot_id: "22".repeat(32),
+            core_artifact_id: "33".repeat(32),
+            snapshot_file: "balance_history_core_10.db".to_string(),
+            manifest_file: "balance_history_core_10.manifest.json".to_string(),
+            signature_file: None,
+            file_sha256: "44".repeat(32),
+            balance_history_count: 1,
+            utxo_count: 2,
+            block_commit_count: 10,
+            completed_at: 5,
+        };
+        let core_dir = builder.paths.core_artifact_dir(10, &marker.btc_block_hash);
+        builder
+            .finalize_state_from_marker(&mut state, &mut job, &job_file, &core_dir, &marker)
+            .unwrap();
+
+        assert_eq!(job.core.stage, SnapshotBuildStage::Complete);
+        assert_eq!(job.script_registry.stage, SnapshotBuildStage::Prepare);
+        assert_eq!(state.active_job_height, Some(10));
+        assert_eq!(
+            state.latest_completed.unwrap().snapshot_id,
+            marker.snapshot_id
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_completion_clears_only_after_both_artifacts_are_complete() {
+        let root =
+            std::env::temp_dir().join(format!("snapshot-registry-state-{}", unique_run_id()));
+        let builder = ExactHeightSnapshotBuilder::new(root.clone());
+        builder.paths.create_dirs().unwrap();
+        let job_file = builder.paths.job_file(10);
+        let mut state = SnapshotBuilderState::new("regtest".to_string());
+        state.active_job_height = Some(10);
+        let mut job = SnapshotBuildJob::new(10, None, None);
+        job.core.stage = SnapshotBuildStage::Complete;
+        let marker = ScriptRegistryCompleteMarker {
+            version: crate::COMPLETE_MARKER_VERSION,
+            height: 10,
+            network: "regtest".to_string(),
+            btc_block_hash: "11".repeat(32),
+            core_snapshot_id: "22".repeat(32),
+            registry_artifact_id: "33".repeat(32),
+            registry_file: "script_registry_10.db".to_string(),
+            manifest_file: "script_registry_10.manifest.json".to_string(),
+            signature_file: None,
+            file_sha256: "44".repeat(32),
+            entry_count: 100,
+            completed_at: 6,
+        };
+        let registry_dir = builder
+            .paths
+            .registry_artifact_dir(10, &marker.btc_block_hash);
+        builder
+            .finalize_registry_state(&mut state, &mut job, &job_file, &registry_dir, &marker)
+            .unwrap();
+
+        assert_eq!(job.core.stage, SnapshotBuildStage::Complete);
+        assert_eq!(job.script_registry.stage, SnapshotBuildStage::Complete);
+        assert_eq!(state.active_job_height, None);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

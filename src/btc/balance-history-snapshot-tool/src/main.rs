@@ -4,7 +4,8 @@ use balance_history::{
     derive_cache_limits,
 };
 use balance_history_snapshot_tool::{
-    ExactHeightSnapshotBuilder, SnapshotCreateOptions, SnapshotResumeVerifyOptions,
+    ExactHeightSnapshotBuilder, SnapshotComponent, SnapshotCreateOptions,
+    SnapshotResumeVerifyOptions,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -19,7 +20,7 @@ const DEFAULT_SNAPSHOT_MAX_MEMORY_PERCENT: usize = 80;
 
 #[derive(Parser, Debug)]
 #[command(name = TOOL_NAME)]
-#[command(about = "Build restartable full-UTXO balance-history snapshots at exact BTC heights")]
+#[command(about = "Build restartable core and script-registry artifacts at exact BTC heights")]
 struct Cli {
     /// Builder root containing the shared workspace, jobs, and immutable snapshots.
     #[arg(long)]
@@ -46,7 +47,7 @@ enum Command {
         max_memory_percent: usize,
     },
 
-    /// Synchronize the shared workspace to one exact height and publish a full checkpoint.
+    /// Synchronize the shared workspace and publish selected split artifacts.
     Create {
         #[arg(long)]
         height: u32,
@@ -62,6 +63,10 @@ enum Command {
         /// Seconds between stable-range polls and retryable BTC RPC failures.
         #[arg(long, default_value_t = 5)]
         poll_interval_secs: u64,
+
+        /// Artifact component to build; `all` builds core first, then the optional registry.
+        #[arg(long, value_enum, default_value_t = SnapshotComponentArg::All)]
+        component: SnapshotComponentArg,
     },
 
     /// Resume verification and publication of an already-generated temporary artifact.
@@ -72,6 +77,10 @@ enum Command {
         /// Optional canonical BTC block hash that must match the sealed job.
         #[arg(long)]
         expected_block_hash: Option<String>,
+
+        /// Component to resume or complete.
+        #[arg(long, value_enum, default_value_t = SnapshotComponentArg::All)]
+        component: SnapshotComponentArg,
     },
 
     /// Show builder state and an optional per-height job.
@@ -91,6 +100,10 @@ enum Command {
         /// Required when more than one same-height branch artifact exists.
         #[arg(long)]
         block_hash: Option<String>,
+
+        /// Artifact component to verify.
+        #[arg(long, value_enum, default_value_t = SnapshotComponentArg::All)]
+        component: SnapshotComponentArg,
     },
 
     /// Verify artifact identity, DB hash, and signature without opening SQLite.
@@ -105,6 +118,10 @@ enum Command {
         /// Trusted-key catalog used to verify the detached manifest signature.
         #[arg(long)]
         trusted_keys: PathBuf,
+
+        /// Artifact component to finalize.
+        #[arg(long, value_enum, default_value_t = SnapshotComponentArg::All)]
+        component: SnapshotComponentArg,
     },
 
     /// Compare a legacy v2 SQLite snapshot with a rebuilt RocksDB at the same exact height.
@@ -148,6 +165,23 @@ enum IntegrityCheckArg {
     Off,
     Quick,
     Full,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SnapshotComponentArg {
+    Core,
+    ScriptRegistry,
+    All,
+}
+
+impl From<SnapshotComponentArg> for SnapshotComponent {
+    fn from(value: SnapshotComponentArg) -> Self {
+        match value {
+            SnapshotComponentArg::Core => Self::Core,
+            SnapshotComponentArg::ScriptRegistry => Self::ScriptRegistry,
+            SnapshotComponentArg::All => Self::All,
+        }
+    }
 }
 
 impl From<IntegrityCheckArg> for LegacySnapshotIntegrityCheck {
@@ -200,21 +234,25 @@ fn main() -> ExitCode {
             expected_block_hash,
             config,
             poll_interval_secs,
+            component,
         } => builder
             .create(SnapshotCreateOptions {
                 target_height: height,
                 expected_block_hash,
                 poll_interval: Duration::from_secs(poll_interval_secs.max(1)),
                 config_file: config,
+                component: component.into(),
             })
             .and_then(|report| print_value(&report, cli.json)),
         Command::ResumeVerify {
             height,
             expected_block_hash,
+            component,
         } => builder
             .resume_verify(SnapshotResumeVerifyOptions {
                 target_height: height,
                 expected_block_hash,
+                component: component.into(),
             })
             .and_then(|report| print_value(&report, cli.json)),
         Command::Status { height } => builder
@@ -223,15 +261,25 @@ fn main() -> ExitCode {
         Command::List => builder
             .list_jobs()
             .and_then(|jobs| print_value(&jobs, cli.json)),
-        Command::Verify { height, block_hash } => builder
-            .verify(height, block_hash.as_deref())
+        Command::Verify {
+            height,
+            block_hash,
+            component,
+        } => builder
+            .verify(height, block_hash.as_deref(), component.into())
             .and_then(|marker| print_value(&marker, cli.json)),
         Command::FinalizeArtifact {
             height,
             block_hash,
             trusted_keys,
+            component,
         } => builder
-            .finalize_artifact(height, block_hash.as_deref(), &trusted_keys)
+            .finalize_artifact(
+                height,
+                block_hash.as_deref(),
+                &trusted_keys,
+                component.into(),
+            )
             .and_then(|report| print_value(&report, cli.json)),
         Command::CompareLegacy {
             balance_history_root,

@@ -78,17 +78,17 @@ Commands:
   preflight  Check the mainnet node, target height/hash, confirmations, paths, and filesystem.
   create     Pin H/hash on first use, then create or resume the exact-height snapshot.
   resume-verify
-             Resume verification/publication of an existing temporary artifact without RocksDB.
+             Resume selected artifact verification; registry rebuild may reopen sealed RocksDB read-only.
   status     Show the persisted builder/job state.
   list       List all persisted snapshot jobs.
   verify     Reopen the completed artifact and recheck the current canonical hash.
-  finalize   Recheck artifact identity, DB hash, and signature without opening SQLite or RocksDB.
+  finalize   Disabled until the split-artifact release pipeline lands in deployment batch 5.
   validate-install
-             Independently restore one finalized artifact into a dedicated RocksDB validation root.
-  archive    Optionally create and checksum an offline tar from one finalized artifact.
+             Disabled until the core-only installer lands in deployment batch 3/5.
+  archive    Disabled until split-artifact packaging lands in deployment batch 5.
   prepare-release
-             Infer finalized artifact inputs and create a content-addressed release record.
-  publish    Prepare the release record and idempotently upload it and its files to object storage.
+             Disabled until split-artifact release records land in deployment batch 5.
+  publish    Disabled until split-artifact object-storage upload lands in deployment batch 5.
   paths      Print all resolved operational paths without modifying them.
 
 Primary overrides:
@@ -125,6 +125,10 @@ warn() {
 die() {
   printf '[balance-history-mainnet-snapshot] ERROR: %s\n' "$*" >&2
   exit 2
+}
+
+split_release_pipeline_unavailable() {
+  die "$1"
 }
 
 parse_target_args() {
@@ -969,23 +973,23 @@ case "$COMMAND" in
     ;;
   finalize)
     parse_target_args "$@"
-    run_finalize
+    split_release_pipeline_unavailable "Split core/registry artifact finalization is not wired into this mainnet wrapper yet; use the snapshot tool for local component verification and wait for deployment batch 5 before public release"
     ;;
   validate-install)
     parse_target_args "$@"
-    run_validate_install
+    split_release_pipeline_unavailable "Split core/registry artifact installation is not wired into this mainnet wrapper yet; complete deployment batch 5 before using this command"
     ;;
   archive)
     parse_target_args "$@"
-    run_archive
+    split_release_pipeline_unavailable "Split core/registry artifact archiving is not wired into this mainnet wrapper yet; complete deployment batch 5 before using this command"
     ;;
   prepare-release)
     parse_target_args "$@"
-    run_prepare_release
+    split_release_pipeline_unavailable "Split core/registry release records are not wired into this mainnet wrapper yet; complete deployment batch 5 before using this command"
     ;;
   publish)
     parse_target_args "$@"
-    run_publish
+    split_release_pipeline_unavailable "Split core/registry remote publication is not wired into this mainnet wrapper yet; complete deployment batch 5 before using this command"
     ;;
   paths)
     (($# == 0)) || die "paths does not accept arguments"

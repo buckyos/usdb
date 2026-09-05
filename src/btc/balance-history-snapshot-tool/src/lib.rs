@@ -1,4 +1,4 @@
-//! Restartable exact-height full-UTXO snapshot builder for balance-history.
+//! Restartable exact-height core and script-registry artifact builder for balance-history.
 
 #![warn(missing_docs)]
 
@@ -13,16 +13,18 @@ pub(crate) use state::{
     load_json, save_json_atomic, unique_run_id, unix_timestamp,
 };
 pub use state::{
-    CompletedSnapshotRef, SnapshotBuildJob, SnapshotBuildStage, SnapshotBuilderState,
-    SnapshotCompleteMarker, SnapshotVerificationPhase, SnapshotVerificationProgress,
+    CompletedSnapshotRef, ScriptRegistryCompleteMarker, SnapshotBuildJob, SnapshotBuildStage,
+    SnapshotBuilderState, SnapshotCompleteMarker, SnapshotComponent, SnapshotComponentBuildState,
+    SnapshotVerificationPhase, SnapshotVerificationProgress,
 };
 pub(crate) use test_hook::{abort_after_checkpoint, fail_at_checkpoint};
-#[cfg(test)]
-pub(crate) use verify::verify_snapshot_files;
 pub(crate) use verify::{
-    build_complete_marker, verify_published_artifact, verify_published_artifact_marker,
-    verify_snapshot_files_with_progress,
+    build_complete_marker, build_registry_complete_marker, verify_published_artifact,
+    verify_published_artifact_marker, verify_published_registry, verify_published_registry_marker,
+    verify_registry_files_with_progress, verify_snapshot_files_with_progress,
 };
+#[cfg(test)]
+pub(crate) use verify::{verify_registry_files, verify_snapshot_files};
 
 #[cfg(test)]
 mod test;

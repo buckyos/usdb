@@ -85,10 +85,6 @@ enum BalanceHistoryCommands {
         /// Specify the target block height for the snapshot
         #[arg(short, long)]
         block_height: u32,
-
-        /// Include UTXO data in the snapshot, default is true
-        #[arg(short, long, default_value_t = true)]
-        with_utxo: bool,
     },
 
     VerifySnapshot {},
@@ -222,10 +218,7 @@ async fn main() {
             log_handle.shutdown();
             return;
         }
-        Some(BalanceHistoryCommands::CreateSnapshot {
-            block_height,
-            with_utxo,
-        }) => {
+        Some(BalanceHistoryCommands::CreateSnapshot { block_height }) => {
             let file_name = format!("{}_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let log_handle = init_command_logging(&root_dir, &file_name);
 
@@ -259,7 +252,7 @@ async fn main() {
 
             let snapshot_indexer =
                 index::SnapshotIndexer::new(config.clone(), db.clone(), output.clone());
-            if let Err(e) = snapshot_indexer.run(block_height, with_utxo) {
+            if let Err(e) = snapshot_indexer.run(block_height) {
                 error!("Failed to generate snapshot: {}", e);
                 output.println(&format!("Failed to generate snapshot: {}", e));
                 exit_command_failure();

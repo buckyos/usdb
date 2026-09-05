@@ -41,7 +41,7 @@
 1. 启动 bitcoind，并预热成熟 coinbase 资金。
 2. 在源 root 启动 balance-history，构造一段包含“收入、精确花费、再次收入”的地址历史。
 3. 记录 snapshot 高度对应的 `stable_block_hash` 和 `block_commit`。
-4. 停掉源服务，并通过 `create-snapshot --block-height <stable_height> --with-utxo true` 生成 snapshot。
+4. 停掉源服务，并通过 `create-snapshot --block-height <stable_height>` 生成包含完整 UTXO 的 split snapshot。
 5. 计算 snapshot 文件的 SHA-256，并在恢复 root 上通过 `install-snapshot --file ... --hash ...` 安装。
 6. 启动恢复后的服务，校验：
    - `get_snapshot_info` 一致

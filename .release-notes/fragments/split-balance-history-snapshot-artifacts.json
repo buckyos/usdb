@@ -1,0 +1,27 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "split-balance-history-snapshot-artifacts",
+  "type": "changed",
+  "scopes": [
+    "balance-history",
+    "deployment"
+  ],
+  "summary": "Split balance-history checkpoints into a required core artifact and an optional script-registry sidecar",
+  "details": [
+    "The snapshot builder now emits independently hashed, signed, verified, and finalized core and script-registry SQLite artifacts from one sealed BTC checkpoint; the core database contains balances, live UTXOs, and block commitments but no script-registry table.",
+    "The standalone registry uses a frozen WITHOUT ROWID schema and has independent job, verification, completion, and failure state, so registry failure does not revoke an already completed core artifact.",
+    "Core artifacts always contain the complete live UTXO set, and both core and registry export reject a RocksDB workspace whose durable height differs from the sealed target.",
+    "Snapshot builder state and artifact manifests use the new split v1 contracts directly; legacy single-file builder jobs and artifacts are not accepted by the new tool.",
+    "The mainnet wrapper fails closed for finalization, installation, packaging, and remote publication until the split-artifact deployment pipeline is completed."
+  ],
+  "operator_actions": [
+    "Use a new snapshot-builder root and regenerate split artifacts before publishing a release that contains this change; do not reuse legacy single-file builder state."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": true,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

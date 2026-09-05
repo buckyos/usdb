@@ -3,8 +3,15 @@
 ## 1. 目标与边界
 
 本文说明如何在正式硬件上制作一个 BTC 主网 `balance-history` exact-height snapshot，供其他
-节点安装后从目标高度继续同步。产物不是余额导出，而是一个可恢复 checkpoint，包含目标高度
-的完整 balance history、全部 live UTXO、block commit 和 script registry。
+节点安装后从目标高度继续同步。新格式把产物拆成：包含完整 balance history、全部 live UTXO
+和 block commit 的必选 core checkpoint，以及独立、可选的 script-registry SQLite sidecar。
+registry 不进入 core snapshot ID，也不再作为 core 安装和服务 readiness 的前置条件。
+
+> 当前切换状态：split artifact 的生成、校验和本地 finalize 已在 snapshot tool 中实现；
+> core-only installer、对象存储 record、release bundle 和节点安装流程仍在后续批次切换。在这些
+> 批次完成前，不要使用仓库最新源码执行本章的主网 `finalize/publish/validate-install` 生产流程；
+> 脚本会对 `finalize/validate-install/archive/prepare-release/publish` 明确 fail closed。已发布旧
+> release 和其单文件 snapshot 不受影响。
 
 本文只使用独立的 `balance-history-snapshot-tool`。不要把普通 `balance-history
 create-snapshot` 命令替换进生产流程；后者不会负责从独立持久化 workspace 精确同步到目标

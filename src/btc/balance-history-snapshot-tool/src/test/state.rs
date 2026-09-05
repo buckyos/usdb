@@ -25,6 +25,20 @@ fn builder_paths_keep_workspace_shared_and_artifacts_per_height_hash() {
         paths.snapshot_artifact_dir(42, "abc"),
         root.join("snapshots").join("000000000042").join("abc")
     );
+    assert_eq!(
+        paths.core_artifact_dir(42, "abc"),
+        root.join("snapshots")
+            .join("000000000042")
+            .join("abc")
+            .join("core")
+    );
+    assert_eq!(
+        paths.registry_artifact_dir(42, "abc"),
+        root.join("snapshots")
+            .join("000000000042")
+            .join("abc")
+            .join("script-registry")
+    );
 }
 
 #[test]
@@ -48,7 +62,7 @@ fn atomic_state_round_trip_preserves_active_and_completed_identity() {
     assert_eq!(loaded, state);
 
     let mut job = SnapshotBuildJob::new(101, Some(completed), None);
-    job.set_stage(SnapshotBuildStage::Syncing);
+    job.set_core_stage(SnapshotBuildStage::Syncing);
     save_json_atomic(&paths.job_file(101), &job).unwrap();
     let loaded_job: SnapshotBuildJob = load_json(&paths.job_file(101)).unwrap().unwrap();
     assert_eq!(loaded_job, job);
