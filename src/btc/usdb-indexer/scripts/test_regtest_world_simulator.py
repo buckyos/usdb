@@ -4,6 +4,7 @@ import json
 import random
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -391,10 +392,43 @@ class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
         ):
             self.simulator.mine_replacement_blocks(2)
 
+    def test_ord_reorg_trigger_advances_one_stable_height(self) -> None:
+        self.simulator.args = SimpleNamespace(stable_lag_blocks=10)
+        self.simulator.mine_one_empty_block = lambda: 274
+
+        self.assertEqual(self.simulator.mine_ord_reorg_trigger_block(263), 264)
+
+    def test_ord_reorg_trigger_rejects_unexpected_raw_tip(self) -> None:
+        self.simulator.args = SimpleNamespace(stable_lag_blocks=10)
+        self.simulator.mine_one_empty_block = lambda: 275
+
+        with self.assertRaisesRegex(WorldSimError, "unexpected raw tip"):
+            self.simulator.mine_ord_reorg_trigger_block(263)
+
     def test_stable_height_saturates_and_subtracts_configured_lag(self) -> None:
         stable_height = RegtestWorldSimulator.stable_height_for_tip
         self.assertEqual(stable_height(142, 10), 132)
         self.assertEqual(stable_height(9, 10), 0)
+
+    def test_ord_tip_identity_requires_block_count_and_canonical_hash(self) -> None:
+        matches = RegtestWorldSimulator.ord_tip_matches_bitcoin
+
+        self.assertTrue(matches(100, "canonical", 101, "canonical"))
+        self.assertFalse(matches(100, "canonical", 100, "canonical"))
+        self.assertFalse(matches(100, "canonical", 101, "orphan"))
+
+    def test_wait_ord_server_synced_rejects_same_height_orphan(self) -> None:
+        self.simulator.args = SimpleNamespace(sync_timeout_sec=1)
+        ord_hashes = iter(["orphan", "canonical"])
+        self.simulator.get_bitcoin_block_height = lambda: 100
+        self.simulator.get_block_hash = lambda _height: "canonical"
+        self.simulator.get_ord_server_block_count = lambda: 101
+        self.simulator.get_ord_server_block_hash = lambda _height: next(ord_hashes)
+
+        with mock.patch("regtest_world_simulator.time.sleep") as sleep:
+            self.simulator.wait_ord_server_synced()
+
+        sleep.assert_called_once_with(0.8)
 
     def test_mine_one_block_advances_action_to_stable_frontier(self) -> None:
         self.simulator.args = SimpleNamespace(
@@ -472,6 +506,18 @@ class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
         docker_driver = (
             REPO_ROOT / "docker/scripts/entrypoints/start_world_sim.sh"
         ).read_text(encoding="utf-8")
+        ord_entrypoint = (
+            REPO_ROOT / "docker/scripts/entrypoints/start_ord_server.sh"
+        ).read_text(encoding="utf-8")
+        world_sim_compose = (
+            REPO_ROOT / "docker/compose.world-sim.yml"
+        ).read_text(encoding="utf-8")
+        shared_reorg_driver = (
+            REPO_ROOT / "src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh"
+        ).read_text(encoding="utf-8")
+        live_ord_driver = (
+            REPO_ROOT / "src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh"
+        ).read_text(encoding="utf-8")
         dockerfile = (REPO_ROOT / "docker/Dockerfile.world-sim-tools").read_text(
             encoding="utf-8"
         )
@@ -488,6 +534,19 @@ class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
             "btc-regtest.json /opt/usdb/world-sim/btc-regtest-activation-registry.json",
             dockerfile,
         )
+        self.assertIn("resolve_ord_reorg_capacity", local_driver)
+        self.assertIn('--savepoint-interval "$ORD_SAVEPOINT_INTERVAL"', local_driver)
+        self.assertIn('--max-savepoints "$ORD_MAX_SAVEPOINTS"', local_driver)
+        self.assertIn('--savepoint-interval "${ord_savepoint_interval}"', ord_entrypoint)
+        self.assertIn("WORLD_SIM_ORD_MAX_SAVEPOINTS", world_sim_compose)
+        for driver in (
+            local_driver,
+            docker_driver,
+            shared_reorg_driver,
+            live_ord_driver,
+        ):
+            self.assertIn("/blockhash/", driver)
+            self.assertIn("expected_ord_block_count", driver)
 
     def test_recovery_json_write_is_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

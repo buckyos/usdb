@@ -18,6 +18,8 @@ BTC_P2P_PORT="${BTC_P2P_PORT:-28133}"
 BH_RPC_PORT="${BH_RPC_PORT:-28110}"
 USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-28120}"
 ORD_SERVER_PORT="${ORD_SERVER_PORT:-28130}"
+ORD_SAVEPOINT_INTERVAL="${ORD_SAVEPOINT_INTERVAL:-10}"
+ORD_MAX_SAVEPOINTS="${ORD_MAX_SAVEPOINTS:-}"
 
 MINER_WALLET_NAME="${MINER_WALLET_NAME:-usdb-world-miner}"
 ORD_WALLET_PREFIX="${ORD_WALLET_PREFIX:-usdb-world-agent}"
@@ -181,6 +183,42 @@ PY
     exit 1
   fi
   BTC_STABLE_LAG_BLOCKS="$embedded_stable_lag"
+}
+
+resolve_ord_reorg_capacity() {
+  local required_reorg_depth=0
+  local minimum_max_savepoints
+
+  if [[ ! "$ORD_SAVEPOINT_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+    log "ORD_SAVEPOINT_INTERVAL must be a positive integer: ${ORD_SAVEPOINT_INTERVAL}"
+    exit 1
+  fi
+  if [[ ! "$SIM_REORG_INTERVAL_BLOCKS" =~ ^[0-9]+$ ]]; then
+    log "SIM_REORG_INTERVAL_BLOCKS must be a non-negative integer: ${SIM_REORG_INTERVAL_BLOCKS}"
+    exit 1
+  fi
+  if [[ ! "$SIM_REORG_DEPTH" =~ ^[0-9]+$ ]]; then
+    log "SIM_REORG_DEPTH must be a non-negative integer: ${SIM_REORG_DEPTH}"
+    exit 1
+  fi
+
+  if ((SIM_REORG_INTERVAL_BLOCKS > 0 && SIM_REORG_DEPTH > 0)); then
+    required_reorg_depth=$((BTC_STABLE_LAG_BLOCKS + SIM_REORG_DEPTH))
+  fi
+  # ord checks depths strictly below its recovery bound. Add two savepoints so
+  # the configured logical reorg is recoverable even at interval boundaries.
+  minimum_max_savepoints=$((required_reorg_depth / ORD_SAVEPOINT_INTERVAL + 2))
+  if [[ -z "$ORD_MAX_SAVEPOINTS" ]]; then
+    ORD_MAX_SAVEPOINTS="$minimum_max_savepoints"
+  elif [[ ! "$ORD_MAX_SAVEPOINTS" =~ ^[1-9][0-9]*$ ]]; then
+    log "ORD_MAX_SAVEPOINTS must be a positive integer: ${ORD_MAX_SAVEPOINTS}"
+    exit 1
+  elif ((ORD_MAX_SAVEPOINTS < minimum_max_savepoints)); then
+    log "ORD_MAX_SAVEPOINTS cannot recover the configured world-sim reorg: configured=${ORD_MAX_SAVEPOINTS}, minimum=${minimum_max_savepoints}, savepoint_interval=${ORD_SAVEPOINT_INTERVAL}, required_raw_depth=${required_reorg_depth}"
+    exit 1
+  fi
+
+  log "ord reorg capacity: savepoint_interval=${ORD_SAVEPOINT_INTERVAL}, max_savepoints=${ORD_MAX_SAVEPOINTS}, required_raw_depth=${required_reorg_depth}"
 }
 
 resolve_bitcoin_binaries() {
@@ -572,23 +610,38 @@ print(int(res) if res is not None else 0)
   done
 }
 
-get_ord_server_block_height() {
+get_ord_server_block_count() {
   curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
     "http://127.0.0.1:${ORD_SERVER_PORT}/blockcount" | tr -d '\n\r '
 }
 
+get_ord_server_block_hash() {
+  local height="$1"
+  curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
+    "http://127.0.0.1:${ORD_SERVER_PORT}/blockhash/${height}" | tr -d '\n\r '
+}
+
 wait_until_ord_server_synced_to_bitcoind() {
-  local start_ts now ord_height btc_height
+  local start_ts now ord_block_count ord_block_hash btc_height btc_block_hash expected_ord_block_count
   start_ts="$(date +%s)"
   while true; do
     btc_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount 2>/dev/null || echo 0)"
-    ord_height="$(get_ord_server_block_height 2>/dev/null || echo 0)"
-    if [[ "$ord_height" =~ ^[0-9]+$ ]] && [[ "$btc_height" =~ ^[0-9]+$ ]] && [[ "$ord_height" -ge "$btc_height" ]]; then
-      return
+    ord_block_count="$(get_ord_server_block_count 2>/dev/null || echo 0)"
+    ord_block_hash=""
+    btc_block_hash=""
+    if [[ "$ord_block_count" =~ ^[0-9]+$ ]] && [[ "$btc_height" =~ ^[0-9]+$ ]]; then
+      expected_ord_block_count=$((btc_height + 1))
+      if ((ord_block_count == expected_ord_block_count)); then
+        btc_block_hash="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockhash "$btc_height" 2>/dev/null || true)"
+        ord_block_hash="$(get_ord_server_block_hash "$btc_height" 2>/dev/null || true)"
+        if [[ -n "$btc_block_hash" && "$ord_block_hash" == "$btc_block_hash" ]]; then
+          return
+        fi
+      fi
     fi
     now="$(date +%s)"
     if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
-      log "ord server sync timeout: ord_height=${ord_height:-unknown}, btc_height=${btc_height:-unknown}"
+      log "ord server sync timeout: ord_block_count=${ord_block_count:-unknown}, expected_ord_block_count=${expected_ord_block_count:-unknown}, btc_height=${btc_height:-unknown}, ord_block_hash=${ord_block_hash:-unknown}, btc_block_hash=${btc_block_hash:-unknown}"
       exit 1
     fi
     sleep 1
@@ -671,6 +724,7 @@ main() {
   require_cmd curl
   require_cmd python3
   resolve_btc_stable_lag_blocks
+  resolve_ord_reorg_capacity
   assert_ord_server_port_available
 
   if [[ ! -f "$WORLD_SIMULATOR" ]]; then
@@ -713,7 +767,8 @@ main() {
   fi
 
   log "Starting ord server: port=${ORD_SERVER_PORT}"
-  run_ord --index-addresses --index-transactions server --address 127.0.0.1 --http --http-port "$ORD_SERVER_PORT" \
+  run_ord --savepoint-interval "$ORD_SAVEPOINT_INTERVAL" --max-savepoints "$ORD_MAX_SAVEPOINTS" \
+    --index-addresses --index-transactions server --address 127.0.0.1 --http --http-port "$ORD_SERVER_PORT" \
     >"${WORK_DIR}/ord-server.log" 2>&1 &
   ORD_SERVER_PID=$!
   wait_until_ord_server_synced_to_bitcoind

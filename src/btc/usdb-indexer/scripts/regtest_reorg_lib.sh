@@ -1980,23 +1980,35 @@ regtest_get_ord_server_block_count() {
     "http://127.0.0.1:${ORD_RPC_PORT}/blockcount" | tr -d '\n\r '
 }
 
+regtest_get_ord_server_block_hash() {
+  local block_height="$1"
+  curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
+    "http://127.0.0.1:${ORD_RPC_PORT}/blockhash/${block_height}" | tr -d '\n\r '
+}
+
 regtest_wait_until_ord_server_synced_to_bitcoind() {
-  local start_ts now ord_block_count btc_height expected_ord_block_count
+  local start_ts now ord_block_count ord_block_hash btc_height btc_block_hash expected_ord_block_count
   regtest_log "Waiting until ord server catches up to bitcoind"
   start_ts="$(date +%s)"
   while true; do
     btc_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount 2>/dev/null || echo 0)"
     ord_block_count="$(regtest_get_ord_server_block_count 2>/dev/null || echo 0)"
+    ord_block_hash=""
+    btc_block_hash=""
     if [[ "$ord_block_count" =~ ^[0-9]+$ ]] && [[ "$btc_height" =~ ^[0-9]+$ ]]; then
       expected_ord_block_count=$((btc_height + 1))
-      if (( ord_block_count >= expected_ord_block_count )); then
-        return 0
+      if ((ord_block_count == expected_ord_block_count)); then
+        btc_block_hash="$(regtest_get_bitcoin_block_hash "$btc_height" 2>/dev/null || true)"
+        ord_block_hash="$(regtest_get_ord_server_block_hash "$btc_height" 2>/dev/null || true)"
+        if [[ -n "$btc_block_hash" && "$ord_block_hash" == "$btc_block_hash" ]]; then
+          return 0
+        fi
       fi
     fi
 
     now="$(date +%s)"
     if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
-      regtest_log "ord server sync timeout: ord_block_count=${ord_block_count:-unknown}, btc_height=${btc_height:-unknown}"
+      regtest_log "ord server sync timeout: ord_block_count=${ord_block_count:-unknown}, expected_ord_block_count=${expected_ord_block_count:-unknown}, btc_height=${btc_height:-unknown}, ord_block_hash=${ord_block_hash:-unknown}, btc_block_hash=${btc_block_hash:-unknown}"
       exit 1
     fi
     sleep 1

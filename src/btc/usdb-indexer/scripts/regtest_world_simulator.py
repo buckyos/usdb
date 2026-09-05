@@ -1788,33 +1788,43 @@ class RegtestWorldSimulator:
             self.get_bitcoin_block_height(), self.args.stable_lag_blocks
         )
 
-    def get_ord_server_block_height(self) -> int:
+    def get_ord_server_block_count(self) -> int:
         with request.urlopen(  # noqa: S310
             f"{self.args.ord_server_url}/blockcount",
             timeout=self.args.rpc_timeout_sec,
         ) as response:
             return int(response.read().decode("utf-8").strip() or "0")
 
+    def get_ord_server_block_hash(self, block_height: int) -> str:
+        with request.urlopen(  # noqa: S310
+            f"{self.args.ord_server_url}/blockhash/{block_height}",
+            timeout=self.args.rpc_timeout_sec,
+        ) as response:
+            return response.read().decode("utf-8").strip()
+
+    @staticmethod
+    def ord_tip_matches_bitcoin(
+        btc_height: int,
+        btc_block_hash: str,
+        ord_block_count: int,
+        ord_block_hash: str,
+    ) -> bool:
+        # ord's /blockcount includes genesis, so it is one greater than the
+        # Bitcoin Core tip height. The hash check rejects a stale fork at the
+        # same height after a replacement-chain reorg.
+        return (
+            ord_block_count == btc_height + 1
+            and bool(btc_block_hash)
+            and ord_block_hash == btc_block_hash
+        )
+
     def wait_for_ord_wallet_recovery(self, wallet_name: str) -> None:
+        self.wait_ord_server_synced()
         deadline = time.time() + max(5, self.args.sync_timeout_sec)
         target_height = self.get_bitcoin_block_height()
         last_error = ""
 
         while time.time() < deadline:
-            try:
-                ord_height = self.get_ord_server_block_height()
-            except Exception as e:  # noqa: BLE001
-                last_error = f"ord_blockcount_error={e}"
-                time.sleep(0.5)
-                continue
-
-            if ord_height < target_height:
-                last_error = (
-                    f"ord_height={ord_height} behind target_height={target_height}"
-                )
-                time.sleep(0.5)
-                continue
-
             balance_cmd = [
                 self.args.ord_bin,
                 "--regtest",
@@ -3139,12 +3149,17 @@ class RegtestWorldSimulator:
 
     def wait_ord_server_synced(self) -> None:
         start = time.time()
-        status_url = self.args.ord_server_url.rstrip("/") + "/blockcount"
+        last_ord_block_count: int | None = None
+        last_ord_block_hash = ""
+        last_btc_block_hash = ""
         while True:
-            btc_height = int(self.run_btc_cli(None, ["getblockcount"]))
+            btc_height = self.get_bitcoin_block_height()
             try:
-                with request.urlopen(status_url, timeout=self.args.rpc_timeout_sec) as resp:
-                    ord_height = int(resp.read().decode("utf-8").strip())
+                last_btc_block_hash = self.get_block_hash(btc_height)
+                last_ord_block_count = self.get_ord_server_block_count()
+                last_ord_block_hash = ""
+                if last_ord_block_count == btc_height + 1:
+                    last_ord_block_hash = self.get_ord_server_block_hash(btc_height)
             except Exception as e:  # noqa: BLE001
                 if time.time() - start > self.args.sync_timeout_sec:
                     raise WorldSimError(
@@ -3153,13 +3168,21 @@ class RegtestWorldSimulator:
                 time.sleep(0.8)
                 continue
 
-            if ord_height >= btc_height:
+            if self.ord_tip_matches_bitcoin(
+                btc_height,
+                last_btc_block_hash,
+                last_ord_block_count,
+                last_ord_block_hash,
+            ):
                 return
 
             if time.time() - start > self.args.sync_timeout_sec:
                 raise WorldSimError(
                     "ord sync timeout: "
-                    f"target_height={btc_height}, ord_height={ord_height}"
+                    f"btc_height={btc_height}, btc_block_hash={last_btc_block_hash}, "
+                    f"expected_ord_block_count={btc_height + 1}, "
+                    f"ord_block_count={last_ord_block_count}, "
+                    f"ord_block_hash={last_ord_block_hash or 'unknown'}"
                 )
             time.sleep(0.8)
 
@@ -4747,6 +4770,21 @@ class RegtestWorldSimulator:
             "replacement_remaining_mempool_tx_count": 0,
         }
 
+    def mine_ord_reorg_trigger_block(self, replaced_height: int) -> int:
+        # ord detects a reorg while indexing the first block above its previous
+        # raw tip. Merely rebuilding to the same tip does not invoke its reorg
+        # detector, so add one empty block before waiting for canonical sync.
+        raw_tip_height = self.mine_one_empty_block()
+        expected_raw_tip_height = replaced_height + self.args.stable_lag_blocks + 1
+        if raw_tip_height != expected_raw_tip_height:
+            raise WorldSimError(
+                "unexpected raw tip after ord reorg trigger block: "
+                f"expected={expected_raw_tip_height}, got={raw_tip_height}"
+            )
+        return self.stable_height_for_tip(
+            raw_tip_height, self.args.stable_lag_blocks
+        )
+
     def should_trigger_reorg(self, tick: int, block_height: int) -> bool:
         if self.args.reorg_interval_blocks <= 0:
             return False
@@ -4772,7 +4810,6 @@ class RegtestWorldSimulator:
         )
 
         self.run_btc_cli(None, ["invalidateblock", rollback_start_hash])
-        self.wait_ord_server_synced()
         # On regtest, balance-history rolls back immediately after invalidateblock,
         # while usdb-indexer may only converge after replacement blocks appear.
         # Waiting for both services to hit the rollback target can hang here even
@@ -4785,33 +4822,36 @@ class RegtestWorldSimulator:
         self.wait_balance_history_height_exact(upstream_rollback_stable_height)
 
         replacement_mempool_info = self.mine_replacement_blocks(depth)
+        replacement_hash_at_replaced_height = self.get_block_hash(block_height)
+        if replacement_hash_at_replaced_height == original_tip_hash:
+            raise WorldSimError(
+                "deterministic reorg failed to change replaced-height hash: "
+                f"tick={tick}, block_height={block_height}, "
+                f"block_hash={replacement_hash_at_replaced_height}"
+            )
+        convergence_height = self.mine_ord_reorg_trigger_block(block_height)
 
         self.wait_ord_server_synced()
-        self.wait_service_synced(block_height)
+        self.wait_service_synced(convergence_height)
 
-        replacement_tip_hash = self.get_block_hash(block_height)
-        if replacement_tip_hash == original_tip_hash:
-            raise WorldSimError(
-                "deterministic reorg failed to change tip hash: "
-                f"tick={tick}, block_height={block_height}, tip_hash={replacement_tip_hash}"
-            )
+        convergence_tip_hash = self.get_block_hash(convergence_height)
 
         bh_stable_hash, usdb_stable_hash = self.wait_snapshot_hashes(
-            block_height, replacement_tip_hash
+            convergence_height, convergence_tip_hash
         )
-        if bh_stable_hash != replacement_tip_hash:
+        if bh_stable_hash != convergence_tip_hash:
             raise WorldSimError(
                 "balance-history stable hash mismatch after reorg: "
-                f"expected={replacement_tip_hash}, got={bh_stable_hash}"
+                f"expected={convergence_tip_hash}, got={bh_stable_hash}"
             )
-        if usdb_stable_hash != replacement_tip_hash:
+        if usdb_stable_hash != convergence_tip_hash:
             raise WorldSimError(
                 "usdb stable hash mismatch after reorg: "
-                f"expected={replacement_tip_hash}, got={usdb_stable_hash}"
+                f"expected={convergence_tip_hash}, got={usdb_stable_hash}"
             )
 
-        rebuild_info = self.rebuild_local_chain_view_from_height(block_height)
-        cross_check_info = self.run_global_cross_check(block_height, tick)
+        rebuild_info = self.rebuild_local_chain_view_from_height(convergence_height)
+        cross_check_info = self.run_global_cross_check(convergence_height, tick)
         invalidated_sample_ids: list[str] = []
         for sample in self.validator_samples:
             if sample.validated:
@@ -4829,9 +4869,12 @@ class RegtestWorldSimulator:
             "rollback_start_height": rollback_start_height,
             "rollback_target_height": rollback_target_height,
             "upstream_rollback_stable_height": upstream_rollback_stable_height,
-            "tip_height": block_height,
+            "replaced_height": block_height,
+            "tip_height": convergence_height,
             "original_tip_hash": original_tip_hash,
-            "replacement_tip_hash": replacement_tip_hash,
+            "replacement_tip_hash": replacement_hash_at_replaced_height,
+            "ord_reorg_trigger_block_count": 1,
+            "convergence_tip_hash": convergence_tip_hash,
             "balance_history_stable_hash": bh_stable_hash,
             "usdb_stable_hash": usdb_stable_hash,
         }
@@ -5986,6 +6029,7 @@ class RegtestWorldSimulator:
             if self.should_trigger_reorg(tick, block_height):
                 try:
                     reorg_info = self.perform_reorg(tick, block_height)
+                    block_height = int(reorg_info["tip_height"])
                     reorg_applied = 1
                 except Exception:
                     self.metrics["reorg_fail"] += 1

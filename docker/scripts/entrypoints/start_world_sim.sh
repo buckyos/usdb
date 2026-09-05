@@ -233,17 +233,26 @@ wait_for_bitcoin_rpc() {
 }
 
 wait_until_ord_server_synced_to_bitcoind() {
-  local start_ts now ord_height btc_height
+  local start_ts now ord_block_count ord_block_hash btc_height btc_block_hash expected_ord_block_count
   start_ts="$(date +%s)"
   while true; do
     btc_height="$(btc_cli getblockcount 2>/dev/null || echo 0)"
-    ord_height="$(curl -fsS "${ord_server_url}/blockcount" 2>/dev/null | tr -d '\n\r ' || echo 0)"
-    if [[ "${ord_height}" =~ ^[0-9]+$ ]] && [[ "${btc_height}" =~ ^[0-9]+$ ]] && [[ "${ord_height}" -ge "${btc_height}" ]]; then
-      return
+    ord_block_count="$(curl -fsS "${ord_server_url}/blockcount" 2>/dev/null | tr -d '\n\r ' || echo 0)"
+    ord_block_hash=""
+    btc_block_hash=""
+    if [[ "${ord_block_count}" =~ ^[0-9]+$ ]] && [[ "${btc_height}" =~ ^[0-9]+$ ]]; then
+      expected_ord_block_count=$((btc_height + 1))
+      if ((ord_block_count == expected_ord_block_count)); then
+        btc_block_hash="$(btc_cli getblockhash "${btc_height}" 2>/dev/null || true)"
+        ord_block_hash="$(curl -fsS "${ord_server_url}/blockhash/${btc_height}" 2>/dev/null | tr -d '\n\r ' || true)"
+        if [[ -n "${btc_block_hash}" && "${ord_block_hash}" == "${btc_block_hash}" ]]; then
+          return
+        fi
+      fi
     fi
     now="$(date +%s)"
     if (( now - start_ts > sync_timeout_sec )); then
-      echo "ord server sync timeout: ord_height=${ord_height:-unknown}, btc_height=${btc_height:-unknown}" >&2
+      echo "ord server sync timeout: ord_block_count=${ord_block_count:-unknown}, expected_ord_block_count=${expected_ord_block_count:-unknown}, btc_height=${btc_height:-unknown}, ord_block_hash=${ord_block_hash:-unknown}, btc_block_hash=${btc_block_hash:-unknown}" >&2
       exit 1
     fi
     sleep 1

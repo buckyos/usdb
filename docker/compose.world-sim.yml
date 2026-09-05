@@ -1,4 +1,11 @@
 services:
+  ord-server:
+    environment:
+      # The default world-sim fork disconnects stable_lag(10) + depth(3)
+      # raw blocks. Dense savepoints leave headroom for deeper test variants.
+      ORD_SAVEPOINT_INTERVAL: ${WORLD_SIM_ORD_SAVEPOINT_INTERVAL:-1}
+      ORD_MAX_SAVEPOINTS: ${WORLD_SIM_ORD_MAX_SAVEPOINTS:-64}
+
   btc-node:
     image: ${WORLD_SIM_BITCOIN_IMAGE:-usdb-bitcoin28-regtest:local}
     entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_world_sim_bitcoind.sh"]

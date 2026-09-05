@@ -16,6 +16,8 @@ btc_rpc_password="${BTC_RPC_PASSWORD:-}"
 cookie_file="${BTC_COOKIE_FILE:-${btc_data_dir}/regtest/.cookie}"
 ord_data_dir="${ORD_DATA_DIR:-/data/ord}"
 ord_server_port="${ORD_SERVER_PORT:-28130}"
+ord_savepoint_interval="${ORD_SAVEPOINT_INTERVAL:-10}"
+ord_max_savepoints="${ORD_MAX_SAVEPOINTS:-2}"
 
 require_file() {
   local path="${1:?path is required}"
@@ -31,6 +33,15 @@ require_executable() {
   local label="${2:?label is required}"
   [[ -x "${path}" ]] || {
     echo "Missing executable ${label}: ${path}" >&2
+    exit 1
+  }
+}
+
+require_positive_integer() {
+  local value="${1:?value is required}"
+  local label="${2:?label is required}"
+  [[ "${value}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "${label} must be a positive integer: ${value}" >&2
     exit 1
   }
 }
@@ -79,6 +90,8 @@ btc_cli() {
 
 require_executable "${ord_bin}" "ord binary"
 require_executable "${bitcoin_cli}" "bitcoin-cli"
+require_positive_integer "${ord_savepoint_interval}" "ORD_SAVEPOINT_INTERVAL"
+require_positive_integer "${ord_max_savepoints}" "ORD_MAX_SAVEPOINTS"
 if [[ "${btc_auth_mode}" == "cookie" ]]; then
   require_file "${cookie_file}" "Bitcoin cookie file"
 fi
@@ -103,6 +116,8 @@ exec "${ord_bin}" \
   "${ord_auth_args[@]}" \
   --bitcoin-data-dir "${btc_data_dir}" \
   --data-dir "${ord_data_dir}" \
+  --savepoint-interval "${ord_savepoint_interval}" \
+  --max-savepoints "${ord_max_savepoints}" \
   --index-addresses \
   --index-transactions \
   server \

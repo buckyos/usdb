@@ -143,6 +143,22 @@ reorg 的 `depth` 同样以 stable block 计数。脚本会从 stable frontier �
 出的 BTC block 数约为 `tick * (1 + stable_lag_blocks)`，长跑耗时与旧的 raw-tip 模式不
 可直接比较。
 
+ord 必须能够回滚的原始链深度是 `stable_lag_blocks + reorg_depth`，不是单独的
+`reorg_depth`。本地 driver 会据此计算 `ORD_MAX_SAVEPOINTS` 的最小值，并拒绝容量不足的
+显式配置；Docker world-sim 默认使用 `savepoint_interval=1 / max_savepoints=64`。ord 的
+`/blockcount` 是包含 genesis 的 block count，因此同步门禁要求它等于
+`Bitcoin height + 1`，并进一步比较 `/blockhash/<height>`，避免把停留在同高度旧分叉的
+ord index 误判为已同步。
+
+ord 0.23.3 只有在索引旧 raw tip 之上的第一个区块时才执行 reorg detection。replacement
+恢复到原 raw tip 后，world-sim 会再挖一个空的 trigger block，再等待 ord、balance-history
+和 usdb-indexer 收敛。因此发生 reorg 的 tick 最终 stable height 会额外前进 1；该区块不
+携带模拟业务交易，只用于解除 ord 的同高度检测边界。
+
+若自定义测试超过 62 个原始回滚块，需要同步提高 `WORLD_SIM_ORD_MAX_SAVEPOINTS`。
+seed 失败时矩阵会把 driver 和 simulator 的最后 120 行直接输出到 Actions 日志；完整
+workspace、report 和服务日志仍保留在对应 artifact 中。
+
 Recovery schema v4 会记录 `stable_lag_blocks`；lag 不一致的旧状态不会继续重放，避免将
 旧 raw-tip 高度解释为新的 stable height。
 

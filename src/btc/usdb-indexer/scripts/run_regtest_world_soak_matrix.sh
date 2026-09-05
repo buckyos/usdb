@@ -11,6 +11,7 @@ BASE_PORT="${WORLD_SOAK_BASE_PORT:-29100}"
 PORT_STRIDE="${WORLD_SOAK_PORT_STRIDE:-20}"
 ORDINAL_OFFSET="${WORLD_SOAK_ORDINAL_OFFSET:-0}"
 KEEP_WORKSPACES="${WORLD_SOAK_KEEP_WORKSPACES:-0}"
+FAILURE_TAIL_LINES="${WORLD_SOAK_FAILURE_TAIL_LINES:-120}"
 
 read -r -a SEEDS <<<"${WORLD_SOAK_SEEDS:-41 42 43}"
 
@@ -51,6 +52,7 @@ require_positive_integer WORLD_SOAK_PARALLELISM "$PARALLELISM"
 require_positive_integer WORLD_SOAK_PORT_STRIDE "$PORT_STRIDE"
 require_nonnegative_integer WORLD_SOAK_ORDINAL_OFFSET "$ORDINAL_OFFSET"
 require_boolean WORLD_SOAK_KEEP_WORKSPACES "$KEEP_WORKSPACES"
+require_positive_integer WORLD_SOAK_FAILURE_TAIL_LINES "$FAILURE_TAIL_LINES"
 if ((${#SEEDS[@]} == 0)); then
   echo "WORLD_SOAK_SEEDS must contain at least one seed" >&2
   exit 2
@@ -72,6 +74,16 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", port))
 PY
+}
+
+print_failure_tail() {
+  local label="$1"
+  local file_path="$2"
+  if [[ -f "$file_path" ]]; then
+    echo "[world-soak-matrix] ---- ${label} (tail -n ${FAILURE_TAIL_LINES}) ----" >&2
+    tail -n "$FAILURE_TAIL_LINES" "$file_path" >&2 || true
+    echo "[world-soak-matrix] ---- end ${label} ----" >&2
+  fi
 }
 
 run_seed() {
@@ -143,6 +155,8 @@ run_seed() {
       SIM_REORG_MAX_EVENTS=4 \
       "$SCRIPT_DIR/regtest_world_sim.sh" >"$driver_log" 2>&1; then
     echo "[world-soak-matrix] seed ${seed} failed; preserving ${work_dir}" >&2
+    print_failure_tail "seed-${seed} driver" "$driver_log"
+    print_failure_tail "seed-${seed} simulator" "$simulator_log"
     return 1
   fi
 
