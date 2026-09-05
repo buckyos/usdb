@@ -167,7 +167,9 @@ run_seed() {
   python3 - "$seed" "$BLOCKS" "$duration_sec" "$workspace_bytes" \
     "$resumed_from_recovery" "$report_file" "$summary_file" <<'PY'
 import json
+import math
 import pathlib
+import statistics
 import sys
 
 seed = int(sys.argv[1])
@@ -179,10 +181,21 @@ report_path = pathlib.Path(sys.argv[6])
 summary_path = pathlib.Path(sys.argv[7])
 
 session_end = None
-for line in report_path.read_text(encoding="utf-8").splitlines():
-    payload = json.loads(line)
-    if payload.get("event") == "session_end":
-        session_end = payload
+tick_times = []
+phase_totals = {}
+with report_path.open(encoding="utf-8") as report:
+    for line in report:
+        payload = json.loads(line)
+        if payload.get("event") == "session_start":
+            session_end = None
+            tick_times = []
+            phase_totals = {}
+        elif payload.get("event") == "tick" and "tick_elapsed_ms" in payload:
+            tick_times.append(payload["tick_elapsed_ms"])
+            for phase, elapsed in payload["phase_elapsed_ms"].items():
+                phase_totals[phase] = phase_totals.get(phase, 0) + elapsed
+        elif payload.get("event") == "session_end":
+            session_end = payload
 if session_end is None:
     raise SystemExit(f"missing session_end in {report_path}")
 
@@ -201,6 +214,15 @@ summary = {
     "workspace_bytes_before_cleanup": workspace_bytes,
     "resumed_from_recovery": resumed_from_recovery,
     "final_metrics": metrics,
+    "tick_timing": {
+        "scope": "last_session_excluding_end_of_tick_report_checkpoint_and_sleep",
+        "count": len(tick_times),
+        "mean_ms": round(statistics.mean(tick_times), 2) if tick_times else None,
+        "p95_ms": sorted(tick_times)[math.ceil(len(tick_times) * 0.95) - 1] if tick_times else None,
+        "last_100_mean_ms": round(statistics.mean(tick_times[-100:]), 2) if tick_times else None,
+        "max_ms": max(tick_times) if tick_times else None,
+        "phase_total_ms": phase_totals,
+    },
 }
 summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY

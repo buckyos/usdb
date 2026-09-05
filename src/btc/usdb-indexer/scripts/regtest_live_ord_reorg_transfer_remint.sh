@@ -231,6 +231,8 @@ EOF
   regtest_wait_until_balance_history_synced_eq "$((target_height + 1))"
   regtest_wait_until_usdb_synced_eq "$((target_height + 1))"
 
+  regtest_finish_ord_reorg
+
   regtest_log "USDB indexer live ord height-regression reorg transfer/remint test succeeded."
   regtest_log "Mint height=${height_mint}, transfer height=${height_transfer}, reorged remint height=${target_height}"
   regtest_log "Logs: ${ORD_SERVER_LOG_FILE}, ${BALANCE_HISTORY_LOG_FILE}, ${USDB_INDEXER_LOG_FILE}"

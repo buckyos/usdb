@@ -4732,41 +4732,71 @@ class RegtestWorldSimulator:
             raise WorldSimError(f"getrawmempool returned invalid payload: {payload}")
         return payload
 
-    def mine_one_mempool_block(self) -> int:
-        self.run_btc_cli(
-            None,
-            [
-                "generatetoaddress",
-                "1",
-                self.args.mining_address,
-            ],
-        )
-        return int(self.run_btc_cli(None, ["getblockcount"]))
+    def capture_reorg_blocks(self, first_height: int, tip_height: int) -> list[dict[str, Any]]:
+        """Pin disconnected transactions before invalidateblock can evict them.
 
-    def mine_replacement_blocks(self, depth: int) -> dict[str, int]:
-        disconnected_txids = self.get_mempool_txids()
+        Core 28.1 only resurrects transactions from the first ten disconnected
+        blocks. Keeping original block order also preserves commit/reveal
+        dependencies and height-based transaction lock times during replay.
+        """
+        blocks = []
+        for height in range(first_height, tip_height + 1):
+            block_hash = self.get_block_hash(height)
+            block = json.loads(self.run_btc_cli(None, ["getblock", block_hash, "2"]))
+            if block.get("height") != height or not block.get("tx"):
+                raise WorldSimError(f"invalid reorg source block: height={height}, block={block}")
+            transactions = block["tx"][1:]
+            if any(not tx.get("txid") or not tx.get("hex") for tx in transactions):
+                raise WorldSimError(f"missing raw transaction in reorg source block: height={height}")
+            blocks.append({"height": height, "hash": block_hash, "transactions": transactions})
+        return blocks
+
+    def mine_replacement_blocks(
+        self, depth: int, disconnected_blocks: list[dict[str, Any]]
+    ) -> dict[str, int]:
         total_blocks = depth + self.args.stable_lag_blocks
-        for replacement_index in range(total_blocks):
-            if replacement_index == 0 and disconnected_txids:
-                # Re-include disconnected transactions before rebuilding the
-                # simulator view. Otherwise they leak into the next normal
-                # block and mutate state outside that tick's expectations.
-                self.mine_one_mempool_block()
-            else:
-                self.mine_one_empty_block()
+        first_height = self.get_bitcoin_block_height() + 1
+        if [block["height"] for block in disconnected_blocks] != list(
+            range(first_height, first_height + total_blocks)
+        ):
+            raise WorldSimError("reorg replay blocks do not match the replacement height range")
+        # A new coinbase address prevents fast regtest runs from reproducing an
+        # invalidated block byte-for-byte when timestamps have not advanced.
+        address = self.run_btc_cli(self.args.miner_wallet, ["getnewaddress"])
+        replayed_tx_count = 0
+        for block in disconnected_blocks:
+            transactions = block["transactions"]
+            mined = json.loads(
+                self.run_btc_cli(
+                    None,
+                    ["generateblock", address, json.dumps([tx["hex"] for tx in transactions])],
+                )
+            )
+            replacement = json.loads(self.run_btc_cli(None, ["getblock", mined["hash"], "1"]))
+            expected_txids = [tx["txid"] for tx in transactions]
+            if (
+                replacement.get("height") != block["height"]
+                or replacement.get("tx", [])[1:] != expected_txids
+                or mined["hash"] == block["hash"]
+            ):
+                raise WorldSimError(
+                    f"replacement block replay mismatch: height={block['height']}, "
+                    f"expected_txids={expected_txids}, block={replacement}"
+                )
+            replayed_tx_count += len(transactions)
 
         remaining_txids = self.get_mempool_txids()
         if remaining_txids:
             raise WorldSimError(
                 "replacement chain left disconnected transactions in mempool: "
-                f"depth={depth}, disconnected_count={len(disconnected_txids)}, "
+                f"depth={depth}, disconnected_count={replayed_tx_count}, "
                 f"remaining_count={len(remaining_txids)}, "
                 f"remaining_txids={remaining_txids[:5]}"
             )
         return {
             "replacement_block_count": depth,
             "replacement_confirmation_block_count": self.args.stable_lag_blocks,
-            "replacement_replayed_tx_count": len(disconnected_txids),
+            "replacement_replayed_tx_count": replayed_tx_count,
             "replacement_remaining_mempool_tx_count": 0,
         }
 
@@ -4802,6 +4832,9 @@ class RegtestWorldSimulator:
         rollback_target_height = rollback_start_height - 1
         original_tip_hash = self.get_block_hash(block_height)
         rollback_start_hash = self.get_block_hash(rollback_start_height)
+        disconnected_blocks = self.capture_reorg_blocks(
+            rollback_start_height, self.get_bitcoin_block_height()
+        )
 
         self.log(
             "Applying deterministic reorg: "
@@ -4821,7 +4854,7 @@ class RegtestWorldSimulator:
         )
         self.wait_balance_history_height_exact(upstream_rollback_stable_height)
 
-        replacement_mempool_info = self.mine_replacement_blocks(depth)
+        replacement_mempool_info = self.mine_replacement_blocks(depth, disconnected_blocks)
         replacement_hash_at_replaced_height = self.get_block_hash(block_height)
         if replacement_hash_at_replaced_height == original_tip_hash:
             raise WorldSimError(
@@ -5460,6 +5493,16 @@ class RegtestWorldSimulator:
             if self.args.blocks > 0 and tick >= self.args.blocks:
                 break
 
+            tick_started = time.perf_counter()
+            phase_started = tick_started
+            phase_elapsed_ms: dict[str, int] = {}
+
+            def finish_phase(name: str) -> None:
+                nonlocal phase_started
+                now = time.perf_counter()
+                phase_elapsed_ms[name] = round((now - phase_started) * 1000)
+                phase_started = now
+
             if resume_tick_state is not None:
                 tick = int(resume_tick_state.get("tick", tick + 1))
                 pre_height = int(resume_tick_state.get("pre_height", 0))
@@ -5955,8 +5998,11 @@ class RegtestWorldSimulator:
                     if self.args.fail_fast:
                         raise
 
+            finish_phase("actions")
             block_height = self.mine_one_block()
+            finish_phase("mining")
             self.wait_service_synced(block_height)
+            finish_phase("sync")
 
             for expectation in expectations:
                 try:
@@ -5975,6 +6021,7 @@ class RegtestWorldSimulator:
                     if self.args.fail_fast:
                         raise
 
+            finish_phase("verification")
             # Refresh views only for active agent pool to keep per-block cost bounded.
             for agent_id in active_agent_ids:
                 try:
@@ -5987,6 +6034,7 @@ class RegtestWorldSimulator:
                     if self.args.fail_fast:
                         raise
 
+            finish_phase("refresh")
             for agent_id in self.select_agents_for_self_check(active_agent_ids, tick):
                 if agent_id in refresh_failed_agent_ids:
                     continue
@@ -6008,6 +6056,7 @@ class RegtestWorldSimulator:
                     if self.args.fail_fast:
                         raise
 
+            finish_phase("self_check")
             if self.should_run_global_cross_check(tick):
                 global_cross_checked = 1
                 try:
@@ -6026,6 +6075,7 @@ class RegtestWorldSimulator:
                     if self.args.fail_fast:
                         raise
 
+            finish_phase("global_cross_check")
             if self.should_trigger_reorg(tick, block_height):
                 try:
                     reorg_info = self.perform_reorg(tick, block_height)
@@ -6035,6 +6085,7 @@ class RegtestWorldSimulator:
                     self.metrics["reorg_fail"] += 1
                     raise
 
+            finish_phase("reorg")
             if self.should_capture_validator_sample(tick):
                 try:
                     validator_sample_capture_ids = self.capture_validator_samples(
@@ -6060,7 +6111,9 @@ class RegtestWorldSimulator:
             validator_sample_failed += validator_sample_failed_runtime
             validator_sample_fail_samples.extend(validator_sample_fail_runtime_samples)
 
+            finish_phase("validator")
             summary = self.collect_summary(block_height)
+            finish_phase("summary")
             pass_stats = summary["pass_stats"] or {}
             latest_aggregate_view = summary["latest_miner_aggregate"] or {}
             latest_aggregate = latest_aggregate_view.get("miner_aggregate") or {}
@@ -6076,6 +6129,8 @@ class RegtestWorldSimulator:
 
             self.log(
                 "tick_summary: "
+                f"tick_elapsed_ms={round((time.perf_counter() - tick_started) * 1000)}, "
+                f"phase_elapsed_ms={phase_elapsed_ms}, "
                 f"tick={tick}, block_height={block_height}, synced_height={synced_height}, "
                 f"active_agent_count={self.active_agent_count}, actions={action_slots}, action_failed={action_failed}, "
                 f"agent_self_checked={self_checked_count}, agent_self_check_failed={self_check_failed}, "
@@ -6099,6 +6154,8 @@ class RegtestWorldSimulator:
             self.emit_report(
                 "tick",
                 {
+                    "tick_elapsed_ms": round((time.perf_counter() - tick_started) * 1000),
+                    "phase_elapsed_ms": phase_elapsed_ms,
                     "tick": tick,
                     "block_height": block_height,
                     "synced_height": synced_height,

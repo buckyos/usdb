@@ -144,6 +144,10 @@ src/btc/usdb-indexer/scripts/regtest_world_sim_economic_views.sh
 - `BH_RPC_PORT`
 - `USDB_INDEXER_RPC_PORT`
 - `ORD_SERVER_PORT`
+- `ORD_POLLING_INTERVAL`：隔离 regtest Ord 的新区块轮询间隔，默认 `200ms`；对照旧配置可设为 `5s`。
+- `USDB_UPSTREAM_POLL_INTERVAL_MS`：隔离 regtest indexer 的上游轮询间隔，默认 `200`，范围 `100..60000`。
+
+wrapper 将后者写入 `config.json` 的 `usdb.upstream_poll_interval_ms`。普通节点未配置该字段时，保持 indexer 空闲轮询 `5000ms`、状态监控 `1000ms`；状态监控实际使用 `min(upstream_poll_interval_ms, 1000)`。此配置只控制调度频率，不改变稳定确认深度、链身份或 readiness 判定。
 
 ### 钱包与链参数
 
@@ -154,7 +158,7 @@ src/btc/usdb-indexer/scripts/regtest_world_sim_economic_views.sh
 
 ### 仿真参数
 
-- `SIM_BLOCKS`：仿真区块数（默认 `300`；设置 `0` 可无限运行）
+- `SIM_BLOCKS`：仿真 tick 数（默认 `300`；设置 `0` 可无限运行）。当前 regtest 每轮还挖 10 个稳定确认块，因此 2500 tick 通常产生约 27500 个 BTC 块，另加初始化和重组触发块。
 - `SIM_SEED`：随机种子（默认 `42`）
 - `SIM_FEE_RATE`：铭文与转移费率（默认 `1`）
 - `SIM_MAX_ACTIONS_PER_BLOCK`：每块最大动作数（默认 `2`）

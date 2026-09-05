@@ -50,6 +50,7 @@ pub struct StatusManager {
     btc_client: BTCRpcClientRef,
     balance_history_client: BalanceHistoryClientRef,
     output: IndexOutputRef,
+    poll_interval: std::time::Duration,
 
     usdb_status: Arc<Mutex<USDBInscriptionIndexStatus>>,
     latest_balance_history_snapshot: Arc<Mutex<Option<BalanceHistorySnapshotInfo>>>,
@@ -85,6 +86,9 @@ impl StatusManager {
             btc_client: Arc::new(btc_client),
             balance_history_client: Arc::new(balance_history_client),
             output,
+            poll_interval: std::time::Duration::from_millis(
+                config.config().usdb.upstream_poll_interval_ms.min(1_000),
+            ),
             latest_balance_history_snapshot: Arc::new(Mutex::new(None)),
             latest_balance_history_readiness: Arc::new(Mutex::new(None)),
             runtime_readiness: Arc::new(Mutex::new(RuntimeReadinessStatus::default())),
@@ -209,23 +213,25 @@ impl StatusManager {
                             if failure.should_log {
                                 if failure.attempt == 1 {
                                     error!(
-                                        "USDB status monitor failed: attempt={}, outage_elapsed_ms={}, retry_delay_secs=1, error={}",
+                                        "USDB status monitor failed: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
                                         failure.attempt,
                                         failure.elapsed.as_millis(),
+                                        status_manager.poll_interval.as_millis(),
                                         error
                                     );
                                 } else {
                                     warn!(
-                                        "USDB status monitor still failing: attempt={}, outage_elapsed_ms={}, retry_delay_secs=1, error={}",
+                                        "USDB status monitor still failing: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
                                         failure.attempt,
                                         failure.elapsed.as_millis(),
+                                        status_manager.poll_interval.as_millis(),
                                         error
                                     );
                                 }
                             }
                         }
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    tokio::time::sleep(status_manager.poll_interval).await;
                 }
             }
         });

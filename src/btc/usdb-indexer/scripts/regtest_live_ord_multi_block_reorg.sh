@@ -390,6 +390,8 @@ EOF
   regtest_wait_until_balance_history_synced_eq "$((target_height + 1))"
   regtest_wait_until_usdb_synced_eq "$((target_height + 1))"
 
+  regtest_finish_ord_reorg
+
   regtest_log "USDB indexer live ord multi-block reorg test succeeded."
   regtest_log "Rollback ancestor height=${rollback_height}, replacement tip height=${target_height}"
   regtest_log "Logs: ${ORD_SERVER_LOG_FILE}, ${BALANCE_HISTORY_LOG_FILE}, ${USDB_INDEXER_LOG_FILE}"

@@ -20,6 +20,8 @@ USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-28120}"
 ORD_SERVER_PORT="${ORD_SERVER_PORT:-28130}"
 ORD_SAVEPOINT_INTERVAL="${ORD_SAVEPOINT_INTERVAL:-10}"
 ORD_MAX_SAVEPOINTS="${ORD_MAX_SAVEPOINTS:-}"
+ORD_POLLING_INTERVAL="${ORD_POLLING_INTERVAL:-200ms}"
+USDB_UPSTREAM_POLL_INTERVAL_MS="${USDB_UPSTREAM_POLL_INTERVAL_MS:-200}"
 
 MINER_WALLET_NAME="${MINER_WALLET_NAME:-usdb-world-miner}"
 ORD_WALLET_PREFIX="${ORD_WALLET_PREFIX:-usdb-world-agent}"
@@ -153,6 +155,15 @@ require_cmd() {
     echo "Please install it or add it to PATH." >&2
     exit 1
   fi
+}
+
+validate_poll_intervals() {
+  if [[ ! "$USDB_UPSTREAM_POLL_INTERVAL_MS" =~ ^[1-9][0-9]{2,4}$ ]] ||
+    ((USDB_UPSTREAM_POLL_INTERVAL_MS > 60000)); then
+    log "USDB_UPSTREAM_POLL_INTERVAL_MS must be between 100 and 60000"
+    exit 1
+  fi
+  log "Regtest polling: ord=${ORD_POLLING_INTERVAL}, usdb_upstream_ms=${USDB_UPSTREAM_POLL_INTERVAL_MS}"
 }
 
 resolve_btc_stable_lag_blocks() {
@@ -697,6 +708,7 @@ create_usdb_indexer_config() {
     "balance_query_concurrency": 4,
     "balance_query_timeout_ms": 10000,
     "balance_query_max_retries": 2,
+    "upstream_poll_interval_ms": ${USDB_UPSTREAM_POLL_INTERVAL_MS},
     "inscription_source": "bitcoind",
     "inscription_fixture_file": null,
     "inscription_source_shadow_compare": false,
@@ -723,6 +735,7 @@ main() {
   require_cmd cargo
   require_cmd curl
   require_cmd python3
+  validate_poll_intervals
   resolve_btc_stable_lag_blocks
   resolve_ord_reorg_capacity
   assert_ord_server_port_available
@@ -769,6 +782,7 @@ main() {
   log "Starting ord server: port=${ORD_SERVER_PORT}"
   run_ord --savepoint-interval "$ORD_SAVEPOINT_INTERVAL" --max-savepoints "$ORD_MAX_SAVEPOINTS" \
     --index-addresses --index-transactions server --address 127.0.0.1 --http --http-port "$ORD_SERVER_PORT" \
+    --polling-interval "$ORD_POLLING_INTERVAL" \
     >"${WORK_DIR}/ord-server.log" 2>&1 &
   ORD_SERVER_PID=$!
   wait_until_ord_server_synced_to_bitcoind

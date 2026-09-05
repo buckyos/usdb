@@ -1652,9 +1652,37 @@ regtest_ensure_stable_height_reachable() {
   mining_address="$(regtest_get_new_address)"
   regtest_log "Mining ${block_count} stabilization block(s) so target height ${target_height} reaches the stable frontier"
   regtest_mine_blocks "$block_count" "$mining_address"
-  if [[ -n "$ORD_SERVER_PID" ]] && kill -0 "$ORD_SERVER_PID" 2>/dev/null; then
-    regtest_wait_until_ord_server_synced_to_bitcoind
+  # This only makes the requested stable height reachable. Ord 0.23.3 cannot
+  # follow a replacement at/below its old raw tip until a later block arrives.
+  # Keep its convergence separate from exact-height bitcoind-backend assertions.
+}
+
+# Finish the Ord recovery phase after exact-height replacement/rollback checks.
+# Advance only when Ord needs a block above its old raw tip, then verify every
+# service at the resulting frontier without weakening the earlier assertions.
+regtest_finish_ord_reorg() {
+  local btc_height ord_count btc_hash ord_hash trigger_height stable_height address
+  btc_height="$(regtest_get_bitcoin_tip_height)"
+  ord_count="$(regtest_get_ord_server_block_count)"
+  if [[ ! "$btc_height" =~ ^[0-9]+$ || ! "$ord_count" =~ ^[1-9][0-9]*$ ]]; then
+    regtest_log "Invalid heights before Ord reorg recovery: btc_height=${btc_height}, ord_block_count=${ord_count}"
+    return 1
   fi
+  btc_hash="$(regtest_get_bitcoin_block_hash "$btc_height")"
+  ord_hash="$(regtest_get_ord_server_block_hash "$btc_height" 2>/dev/null || true)"
+  if ((ord_count != btc_height + 1)) || [[ "$ord_hash" != "$btc_hash" ]]; then
+    trigger_height="$ord_count"
+    regtest_log "Finishing Ord reorg recovery: btc_raw_height=${btc_height}, ord_block_count=${ord_count}, trigger_height=${trigger_height}"
+    while ((btc_height < trigger_height)); do
+      address="$(regtest_get_new_address)"
+      regtest_mine_empty_block "$address"
+      btc_height="$(regtest_get_bitcoin_tip_height)"
+    done
+  fi
+  regtest_wait_until_ord_server_synced_to_bitcoind
+  stable_height=$((btc_height > BTC_STABLE_LAG_BLOCKS ? btc_height - BTC_STABLE_LAG_BLOCKS : 0))
+  regtest_wait_until_balance_history_synced_eq "$stable_height"
+  regtest_wait_until_usdb_synced_eq "$stable_height"
 }
 
 regtest_mine_blocks() {

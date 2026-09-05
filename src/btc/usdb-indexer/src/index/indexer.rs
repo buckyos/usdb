@@ -1156,8 +1156,12 @@ impl InscriptionIndexer {
                 }
             }
 
-            // Sleep for a while before checking again
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            // Keep the default cadence while allowing regtest to avoid paying
+            // five seconds of idle latency for every simulated block batch.
+            tokio::time::sleep(std::time::Duration::from_millis(
+                self.config.config().usdb.upstream_poll_interval_ms,
+            ))
+            .await;
 
             // Check for shutdown signal while waiting
             if self.check_shutdown() {

@@ -15,11 +15,19 @@
 
 1. 先跑一段带真实 agent 行为的 world-sim。
 2. 每隔 `SIM_REORG_INTERVAL_BLOCKS` 个 tick，对最近 `SIM_REORG_DEPTH` 个 canonical blocks 做一次 deterministic replacement：
+   - 回滚前从原链区块保存非 coinbase 交易原文及高度，实际断开深度为 `stable_lag_blocks + SIM_REORG_DEPTH`
    - invalidate rollback start block
-   - 挖同高度 empty replacement chain
-3. 等待 `ord`、`balance-history`、`usdb-indexer` 一起收敛到 replacement tip。
+   - 按原高度和块内顺序重放交易，保留 commit/reveal 依赖及交易锁定高度；逐块检查交易列表、高度与新块哈希，最后要求 mempool 为空
+   - 在原 raw tip 之上挖一个空触发块，使 Ord 0.23.3 开始检查新链的父块
+3. 等待 `ord`、`balance-history`、`usdb-indexer` 一起收敛；Ord 必须同时满足 `blockcount == BTC raw tip + 1` 和 tip hash 相等。
 4. reorg 后重建模拟器内部 `owned_passes / active_pass_id / invalid_passes / pass_owner_by_id` 视图，避免后续动作沿用旧链本地缓存。
 5. 在 replacement tip 上立即跑一次 global cross-check，再继续后续随机业务。
+
+Bitcoin Core 28.1 的 `invalidateblock` 只尝试将最先断开的 10 个块中的交易放回 mempool；深度 3 加稳定滞后 10 会断开 13 个块。因此不能用回滚后的 mempool 代替断链交易清单，否则钱包可能保留未确认交易占用的输入，导致后续 Ord 报 `wallet contains no cardinal utxos`。
+
+`tests/test_regtest_world_reorg.py` 使用真实 Bitcoin Core 与 Ord 覆盖 10、11、13 个断开块边界，确认原 commit/reveal 被重放后，再从同一钱包完成新一次铭刻。可设置 `BITCOIN_BIN_DIR` 和 `ORD_BIN` 后直接执行；weekly world-soak 在长跑前执行此测试。
+
+独立的精确高度重组用例使用 `bitcoind` 铭文后端，先在原目标高度验证 balance-history/indexer 的回滚、替换和历史拒绝，再调用 `regtest_finish_ord_reorg` 推进到 Ord 所需触发高度并验证最终收敛。这保留了等高替换断言，也避免在 Ord 无法检测重组的高度等待它。
 
 ## 运行示例
 

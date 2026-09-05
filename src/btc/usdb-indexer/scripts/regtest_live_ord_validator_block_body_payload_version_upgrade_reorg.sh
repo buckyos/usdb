@@ -160,6 +160,8 @@ EOF
   regtest_log "The newer v1.1 payload must mismatch after its historical height is replaced"
   regtest_validate_validator_payload_versioned_consensus_error "$payload_v11" "-32042" "SNAPSHOT_ID_MISMATCH"
 
+  regtest_finish_ord_reorg
+
   regtest_log "USDB validator block-body payload-version upgrade reorg test succeeded."
   regtest_log "pass1=${pass1}, pass2=${pass2}, height_v1=${height_v1}, height_v11=${height_v11}, winner_id=${winner_id}"
 }

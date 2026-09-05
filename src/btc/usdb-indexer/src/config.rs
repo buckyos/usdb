@@ -27,6 +27,23 @@ fn default_balance_query_max_retries() -> u32 {
     2
 }
 
+fn default_upstream_poll_interval_ms() -> u64 {
+    5_000
+}
+
+fn deserialize_upstream_poll_interval_ms<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u64::deserialize(deserializer)?;
+    if !(100..=60_000).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "upstream_poll_interval_ms must be between 100 and 60000",
+        ));
+    }
+    Ok(value)
+}
+
 fn default_inscription_source() -> String {
     "ord".to_string()
 }
@@ -89,6 +106,14 @@ pub struct USDBConfig {
     #[serde(default = "default_balance_query_max_retries")]
     pub balance_query_max_retries: u32,
 
+    /// Idle upstream polling interval; smaller values reduce regtest latency.
+    /// This affects scheduling only, never stable lag or consensus readiness.
+    #[serde(
+        default = "default_upstream_poll_interval_ms",
+        deserialize_with = "deserialize_upstream_poll_interval_ms"
+    )]
+    pub upstream_poll_interval_ms: u64,
+
     // Primary inscription source backend: supported values are "ord" and "bitcoind".
     #[serde(default = "default_inscription_source")]
     pub inscription_source: String,
@@ -136,6 +161,7 @@ impl Default for USDBConfig {
             balance_query_concurrency: default_balance_query_concurrency(),
             balance_query_timeout_ms: default_balance_query_timeout_ms(),
             balance_query_max_retries: default_balance_query_max_retries(),
+            upstream_poll_interval_ms: default_upstream_poll_interval_ms(),
             inscription_source: default_inscription_source(),
             inscription_fixture_file: default_inscription_fixture_file(),
             inscription_source_shadow_compare: default_inscription_source_shadow_compare(),
@@ -232,6 +258,12 @@ impl ConfigManager {
             msg
         })?;
 
+        info!(
+            "Loaded upstream polling configuration: root_dir={}, upstream_poll_interval_ms={}, status_poll_interval_ms={}",
+            root_dir.display(),
+            config.usdb.upstream_poll_interval_ms,
+            config.usdb.upstream_poll_interval_ms.min(1_000)
+        );
         Ok(Self { root_dir, config })
     }
 
@@ -258,3 +290,33 @@ impl ConfigManager {
 }
 
 pub type ConfigManagerRef = Arc<ConfigManager>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upstream_poll_interval_preserves_legacy_defaults() {
+        let legacy: USDBConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.upstream_poll_interval_ms, 5_000);
+        assert_eq!(legacy, USDBConfig::default());
+    }
+
+    #[test]
+    fn upstream_poll_interval_accepts_bounded_tuning() {
+        for value in [100, 200, 5_000, 60_000] {
+            let config: USDBConfig =
+                serde_json::from_value(serde_json::json!({"upstream_poll_interval_ms": value}))
+                    .unwrap();
+            assert_eq!(config.upstream_poll_interval_ms, value);
+        }
+        for value in [0, 99, 60_001] {
+            assert!(
+                serde_json::from_value::<USDBConfig>(
+                    serde_json::json!({"upstream_poll_interval_ms": value})
+                )
+                .is_err()
+            );
+        }
+    }
+}

@@ -362,35 +362,80 @@ class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
                 {"result": 120}, "get_snapshot_info"
             )
 
-    def test_replacement_blocks_replay_disconnected_mempool_before_empty_blocks(
-        self,
-    ) -> None:
-        self.simulator.args = SimpleNamespace(stable_lag_blocks=2)
-        mempool_results = iter([["tx-a", "tx-b"], []])
-        mined: list[str] = []
-        self.simulator.get_mempool_txids = lambda: next(mempool_results)
-        self.simulator.mine_one_mempool_block = lambda: mined.append("mempool") or 1
-        self.simulator.mine_one_empty_block = lambda: mined.append("empty") or 1
+    def test_replacement_blocks_restore_transactions_missing_from_mempool(self) -> None:
+        self.simulator.args = SimpleNamespace(stable_lag_blocks=10, miner_wallet="miner")
+        blocks = [
+            {"height": height, "hash": f"old-{height}", "transactions": []}
+            for height in range(101, 114)
+        ]
+        # The action block is the eleventh disconnected block. Core does not
+        # resurrect these dependent transactions after invalidateblock.
+        blocks[2]["transactions"] = [
+            {"txid": "commit", "hex": "raw-commit"},
+            {"txid": "reveal", "hex": "raw-reveal"},
+        ]
+        self.simulator.get_bitcoin_block_height = lambda: 100
+        self.simulator.get_mempool_txids = lambda: []
+        generated = []
 
-        result = self.simulator.mine_replacement_blocks(3)
+        def btc_cli(_wallet, args):
+            if args[0] == "getnewaddress":
+                return "replacement-address"
+            if args[0] == "generateblock":
+                generated.append(json.loads(args[2]))
+                return json.dumps({"hash": f"new-{100 + len(generated)}"})
+            height = int(args[1].split("-")[1])
+            return json.dumps({"height": height, "tx": ["coinbase"] + [
+                tx["txid"] for tx in blocks[height - 101]["transactions"]
+            ]})
 
-        self.assertEqual(mined, ["mempool", "empty", "empty", "empty", "empty"])
-        self.assertEqual(result["replacement_block_count"], 3)
-        self.assertEqual(result["replacement_confirmation_block_count"], 2)
+        self.simulator.run_btc_cli = btc_cli
+        result = self.simulator.mine_replacement_blocks(3, blocks)
+        self.assertEqual(generated[2], ["raw-commit", "raw-reveal"])
+        self.assertEqual(sum(bool(txs) for txs in generated), 1)
+        self.assertEqual(len(generated), 13)
         self.assertEqual(result["replacement_replayed_tx_count"], 2)
         self.assertEqual(result["replacement_remaining_mempool_tx_count"], 0)
 
-    def test_replacement_blocks_reject_remaining_mempool(self) -> None:
+    def test_replacement_blocks_reject_noncontiguous_height_plan(self) -> None:
         self.simulator.args = SimpleNamespace(stable_lag_blocks=1)
-        mempool_results = iter([["tx-a"], ["tx-a"]])
-        self.simulator.get_mempool_txids = lambda: next(mempool_results)
-        self.simulator.mine_one_mempool_block = lambda: 1
-        self.simulator.mine_one_empty_block = lambda: 1
+        self.simulator.get_bitcoin_block_height = lambda: 100
+        with self.assertRaisesRegex(WorldSimError, "replacement height range"):
+            self.simulator.mine_replacement_blocks(2, [
+                {"height": 101}, {"height": 103}, {"height": 104}
+            ])
 
-        with self.assertRaisesRegex(
-            WorldSimError, "left disconnected transactions in mempool"
+    def test_replacement_blocks_reject_missing_transactions_and_residual_mempool(self) -> None:
+        self.simulator.args = SimpleNamespace(stable_lag_blocks=0, miner_wallet="miner")
+        self.simulator.get_bitcoin_block_height = lambda: 100
+        block = {
+            "height": 101, "hash": "old",
+            "transactions": [{"txid": "spend", "hex": "raw-spend"}],
+        }
+        for included, remaining, error in (
+            (["coinbase"], [], "replay mismatch"),
+            (["coinbase", "spend"], ["unrelated"], "left disconnected transactions"),
         ):
-            self.simulator.mine_replacement_blocks(2)
+            with self.subTest(included=included, remaining=remaining):
+                self.simulator.get_mempool_txids = lambda: remaining
+                self.simulator.run_btc_cli = lambda _wallet, args: {
+                    "getnewaddress": "address",
+                    "generateblock": json.dumps({"hash": "new"}),
+                    "getblock": json.dumps({"height": 101, "tx": included}),
+                }[args[0]]
+                with self.assertRaisesRegex(WorldSimError, error):
+                    self.simulator.mine_replacement_blocks(1, [block])
+
+    def test_reorg_capture_uses_old_blocks_and_excludes_coinbase(self) -> None:
+        self.simulator.get_block_hash = lambda height: f"old-{height}"
+        self.simulator.run_btc_cli = lambda _wallet, args: json.dumps({
+            "height": int(args[1].split("-")[1]),
+            "tx": [{"txid": "coinbase", "hex": "cb"}, {"txid": "spend", "hex": "raw"}],
+        })
+        blocks = self.simulator.capture_reorg_blocks(101, 113)
+        self.assertEqual(len(blocks), 13)
+        self.assertEqual(blocks[0]["transactions"], [{"txid": "spend", "hex": "raw"}])
+        self.assertEqual(blocks[-1]["height"], 113)
 
     def test_ord_reorg_trigger_advances_one_stable_height(self) -> None:
         self.simulator.args = SimpleNamespace(stable_lag_blocks=10)

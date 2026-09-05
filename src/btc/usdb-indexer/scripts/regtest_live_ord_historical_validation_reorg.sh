@@ -226,6 +226,8 @@ EOF
   regtest_log "Old historical context must fail after replacement chain changes height=${historical_height}"
   assert_historical_context_snapshot_mismatch "$pass_id" "$historical_height" "$context_json"
 
+  regtest_finish_ord_reorg
+
   regtest_log "USDB historical validation reorg test succeeded."
 }
 

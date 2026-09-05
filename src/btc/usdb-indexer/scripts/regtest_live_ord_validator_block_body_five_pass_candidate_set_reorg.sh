@@ -115,13 +115,14 @@ EOF
     replacement_address="$(regtest_get_new_address)"
     regtest_mine_empty_block "$replacement_address"
   done
-  regtest_wait_until_ord_server_synced_to_bitcoind
   regtest_wait_until_balance_history_synced_eq "$target_post_reorg_height"
   regtest_wait_until_usdb_synced_eq "$target_post_reorg_height"
   regtest_wait_balance_history_consensus_ready
   regtest_wait_usdb_consensus_ready
 
   regtest_validate_validator_candidate_set_payload_consensus_error "$payload_file" "-32042" "SNAPSHOT_ID_MISMATCH"
+
+  regtest_finish_ord_reorg
 
   regtest_log "USDB validator block-body five-pass candidate-set reorg test succeeded."
   regtest_log "winner=${winner_id}, candidate_count=5, historical_height=${historical_height}, replacement_tip=${target_post_reorg_height}"

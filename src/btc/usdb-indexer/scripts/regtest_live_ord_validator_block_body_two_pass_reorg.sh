@@ -151,6 +151,8 @@ EOF
   regtest_wait_usdb_consensus_ready
 
   regtest_validate_validator_competition_payload_consensus_error "$payload_file" "-32042" "SNAPSHOT_ID_MISMATCH"
+  regtest_finish_ord_reorg
+
   regtest_log "USDB validator block-body two-pass reorg test succeeded."
 }
 

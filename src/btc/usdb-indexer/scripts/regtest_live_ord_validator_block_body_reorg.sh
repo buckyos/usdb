@@ -114,6 +114,8 @@ EOF
   regtest_log "Old validator block-body payload must fail after same-height replacement"
   regtest_validate_validator_payload_consensus_error "$payload_file" "-32042" "SNAPSHOT_ID_MISMATCH"
 
+  regtest_finish_ord_reorg
+
   regtest_log "USDB validator block-body reorg test succeeded."
 }
 
