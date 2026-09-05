@@ -6,7 +6,9 @@
 - 适用阶段：USDB 开发期，不保留旧 snapshot schema 或安装流程的兼容双栈。
 - 已确认方向：将 `script_registry` 从 core snapshot 剥离为独立、只读的 SQLite
   sidecar；snapshot 安装节点不再把历史 registry 导入 RocksDB。
-- 本文只冻结目标语义、存储边界和实施顺序，不在本批修改运行时代码。
+- 批次 1 进度：core/registry v1 schema、manifest、artifact ID、签名域以及 registry
+  readiness/resolution 类型已实现，等待代码评审；现有生成器、安装器和 RPC 尚未切换。
+- 本文冻结目标语义、存储边界和实施顺序；批次 1 只增加可复用契约，不切换现有运行路径。
 
 相关文档：
 
@@ -223,11 +225,26 @@ core manifest 延续现有共识字段，但必须增加明确的：
 
 ```json
 {
+  "manifest_version": "balance-history-core-snapshot-manifest:v1",
   "artifact_type": "balance_history_core",
   "snapshot_schema_version": "balance-history-core-snapshot:v1",
-  "registry_included": false
+  "registry_included": false,
+  "core_snapshot_id": "...",
+  "core_artifact_id": "...",
+  "file_name": "balance_history_core_<H>.db",
+  "file_sha256": "...",
+  "state_ref": {},
+  "db_identity": {},
+  "balance_query_floor": 963800,
+  "history_query_floor": 963801,
+  "signature_scheme": "ed25519",
+  "signing_key_id": "...",
+  "generated_at": 1725000000
 }
 ```
+
+`core_snapshot_id` 是 `state_ref.snapshot_id`，表示可被共识引用的状态身份；
+`core_artifact_id` 额外绑定 schema、状态身份和实际 SQLite 文件 hash，只用于区分发布物字节。
 
 ### 9.2 Registry artifact
 
@@ -249,20 +266,25 @@ registry manifest 至少包含：
   "file_sha256": "...",
   "registry_artifact_id": "...",
   "registry_schema_version": "balance-history-script-registry-sqlite:v1",
-  "policy": "append_like_observed_scripts",
-  "btc_network": "bitcoin",
-  "btc_genesis_hash": "...",
-  "base_height": 963800,
-  "base_block_hash": "...",
-  "core_snapshot_id": "...",
+  "policy": "auxiliary_seen_scripts_non_consensus_v1",
+  "base": {
+    "btc_network": "bitcoin",
+    "btc_genesis_hash": "...",
+    "base_height": 963800,
+    "base_block_hash": "...",
+    "core_snapshot_id": "..."
+  },
   "entry_count": 1541365559,
   "signature_scheme": "ed25519",
-  "signing_key_id": "..."
+  "signing_key_id": "...",
+  "generated_at": 1725000001
 }
 ```
 
 `registry_artifact_id` 应由 canonical manifest identity 字段和文件 hash 派生。它与
 `core_snapshot_id` 分开，确保替换、缺失或损坏 registry 不改变共识状态身份。
+sidecar 启用前必须执行 `validate_against_core`，逐项匹配 `core_snapshot_id`、height、
+BTC block hash、network 和 genesis hash。
 
 ### 9.3 SQLite schema
 
@@ -279,6 +301,39 @@ CREATE TABLE script_registry (
 
 使用 `WITHOUT ROWID` 让 BLOB 主键和 value 位于同一 B-tree，避免当前普通 rowid 表同时维护
 table B-tree 与主键索引。生成、verify 和查询工具必须冻结 SQLite 版本下的 schema golden。
+
+批次 1 冻结的 schema 文件为：
+
+- `src/btc/balance-history/src/db/core_snapshot_v1.sql`；
+- `src/btc/balance-history/src/db/script_registry_v1.sql`。
+
+### 9.4 Artifact ID 与签名域
+
+两个 artifact ID 均使用 SHA-256，输入编码固定为：
+
+```text
+u32_be(domain_byte_length)
+|| domain_utf8
+|| u64_be(identity_json_byte_length)
+|| identity_json_utf8
+```
+
+identity JSON 按已冻结 Rust identity struct 的字段顺序做紧凑 UTF-8 JSON 编码。artifact ID
+包含文件 SHA-256，但不包含文件名、`generated_at`、签名 scheme 和 signer ID，因此重命名或
+更换签名密钥不改变 artifact identity，SQLite 字节变化则一定改变。
+
+签名 payload 使用相同长度前缀结构，但 JSON 是包含 artifact ID、文件名、时间和签名元数据的
+完整 manifest。core 与 registry 使用不同 domain：
+
+```text
+usdb.balance-history.core-snapshot-artifact-id:v1
+usdb.balance-history.core-snapshot-manifest-signature:v1
+usdb.balance-history.script-registry-artifact-id:v1
+usdb.balance-history.script-registry-manifest-signature:v1
+```
+
+manifest JSON 拒绝未知字段。Rust 单元测试固定 artifact ID 与签名 payload SHA-256 golden；
+其他语言或工具实现必须通过相同向量，不能自行调整 JSON 字段顺序或编码。
 
 ## 10. 查询语义
 
@@ -319,7 +374,8 @@ conflict
 
 ## 11. Registry Readiness 与 Provenance
 
-现有 `ScriptRegistryStatus.available` 只能表达 CF 是否可查询，不能表达历史覆盖。建议替换为：
+现有 `ScriptRegistryStatus.available` 只能表达 CF 是否可查询，不能表达历史覆盖。批次 1
+已冻结以下替代类型，但在分层 resolver 接入前不替换当前 RPC：
 
 ```text
 state:
@@ -336,6 +392,11 @@ coverage_mode:
   snapshot_plus_sidecar
   post_snapshot_only
 
+capabilities:
+  script_registry_lookup
+  script_registry_complete_coverage
+
+overlay_estimated_count
 base_height
 base_block_hash
 core_snapshot_id
@@ -347,6 +408,12 @@ last_error
 规则：
 
 - `query_ready` 和 `consensus_ready` 不读取这些字段；
+- `state` 只描述 optional sidecar 生命周期，`coverage_mode` 描述 overlay 与 sidecar
+  合并后的总覆盖范围，两者是正交字段；
+- `script_registry_complete_coverage` 必须与 coverage 匹配；只有完整 coverage 下的 miss
+  才能返回 `not_found`，否则返回 `unresolved`；
+- `full_replay` 使用 `state=disabled/absent` 且不携带 sidecar provenance；
+  `snapshot_plus_sidecar` 必须使用 `state=ready` 并携带完整 base/artifact provenance；
 - `failed/conflict` 产生清晰的 `WARN/ERROR` 和 operator guidance，但不停止核心索引；
 - `doctor` 校验 sidecar hash、签名、identity、active pointer 和可读性；
 - provenance 分为 core snapshot provenance 与 registry provenance，不能复用一个“安装完成”标志。
@@ -529,7 +596,7 @@ registry 保持 append-like：
 
 ## 16. 实施批次
 
-### 批次 1：冻结类型和 artifact 契约
+### 批次 1：冻结类型和 artifact 契约（已实现，待评审）
 
 - 冻结 core/registry schema、manifest、ID 和签名域。
 - 冻结 coverage、RPC result 和 readiness 状态机。

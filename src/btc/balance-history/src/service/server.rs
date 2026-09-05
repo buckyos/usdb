@@ -8,6 +8,7 @@ use super::{
 };
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::BalanceHistoryDBRef;
+use crate::snapshot_contract::SCRIPT_REGISTRY_POLICY;
 use crate::snapshot_provenance::SnapshotInstallProvenance;
 use crate::status::{SyncStatus, SyncStatusManagerRef};
 use bitcoincore_rpc::bitcoin::{Address, OutPoint, Script};
@@ -26,7 +27,6 @@ use usdb_util::{
 
 const MAX_ADDRESS_AGGREGATE_BUCKETS: u64 = 2_000;
 const MAX_SCRIPT_RESOLUTION_ITEMS: usize = 1_000;
-const SCRIPT_REGISTRY_POLICY: &str = "auxiliary_seen_scripts_non_consensus_v1";
 
 #[derive(Clone)]
 pub struct BalanceHistoryRpcServer {
