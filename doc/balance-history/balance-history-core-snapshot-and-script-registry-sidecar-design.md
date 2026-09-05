@@ -654,6 +654,9 @@ registry 保持 append-like：
   完成，避免 append-like registry 混入 `H` 之后观察到的脚本；
 - core 固定包含完整 live UTXO，不再暴露 `with_utxo=false`；core 和 registry 导出都要求
   RocksDB durable height 严格等于 `H`；
+- core 和 registry 导出源必须是从高度 `0` 本地重放得到的 RocksDB。导出入口检查 snapshot
+  install provenance，发现导入来源或无法读取 provenance 时，在创建 artifact 前直接报错；即使
+  节点已继续同步或安装 sidecar 也不接受，不引入 base 与 overlay 合并导出逻辑；
 - 本批次中的“publish”指 builder 临时 component 目录到 immutable component 目录的原子本地
   发布；对象存储 record、上传和 node bundle 仍在批次 5 统一切换。
 - 主网包装脚本由批次 5 直接使用 split finalization report 和 v3 release record，不再进入旧单文件流程。

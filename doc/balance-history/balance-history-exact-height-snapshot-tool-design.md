@@ -36,6 +36,11 @@ network + height + BTC block hash + consensus snapshot ID
 
 This keeps artifacts from different same-height BTC branches distinct.
 
+Export sources must be RocksDB workspaces built by local replay from height `0`. Before creating
+either artifact, the exporter rejects snapshot-install provenance or errors reading that
+provenance. Snapshot-installed nodes remain unsupported even after further indexing or sidecar
+activation; the exporter does not merge a historical registry base with its RocksDB overlay.
+
 ## 3. Storage layout
 
 One builder root owns one mutable balance-history workspace and serializes all build jobs:

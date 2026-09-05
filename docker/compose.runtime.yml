@@ -79,6 +79,7 @@ services:
     volumes:
       - ${BH_DATA_HOST_DIR:?BH_DATA_HOST_DIR is required}:/data/balance-history
       - ${BTC_NODE_DATA_HOST_DIR:?BTC_NODE_DATA_HOST_DIR is required}:/data/bitcoin:ro
+      - ${BH_SNAPSHOT_HOST_DIR:?BH_SNAPSHOT_HOST_DIR is required}:/snapshots:ro
       - ${BH_SNAPSHOT_TRUST_HOST_DIR:?BH_SNAPSHOT_TRUST_HOST_DIR is required}:/run/usdb/keys:ro
     ports:
       - "${BH_BIND_ADDRESS:-127.0.0.1}:${BH_BIND_PORT:-28010}:28010"

@@ -211,6 +211,18 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         self.assertNotIn("usdb-chain-data:", content)
         self.assertNotIn("control-plane-data:", content)
 
+    def test_snapshot_marker_readers_share_the_loader_artifact_mount(self) -> None:
+        content = (ROOT / "docker/compose.runtime.yml").read_text(encoding="utf-8")
+        services = content.split("\nservices:\n", 1)[1]
+        for service in ("snapshot-loader", "balance-history", "script-registry-installer"):
+            with self.subTest(service=service):
+                definition = services.split(f"  {service}:\n", 1)[1].split("\n\n", 1)[0]
+                self.assertIn(
+                    "${BH_SNAPSHOT_HOST_DIR:?BH_SNAPSHOT_HOST_DIR is required}:/snapshots:ro",
+                    definition,
+                    "Every core marker reader must see the same immutable manifest as the loader",
+                )
+
     def test_optional_registry_installer_is_independent_from_core_readiness(self) -> None:
         content = (ROOT / "docker/compose.runtime.yml").read_text(encoding="utf-8")
         registry = content.split("  script-registry-installer:", 1)[1].split(

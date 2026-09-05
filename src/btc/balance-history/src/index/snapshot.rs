@@ -88,7 +88,7 @@ impl SnapshotIndexer {
         Ok(())
     }
 
-    /// Exports and signs a registry-free core artifact for one exact BTC checkpoint.
+    /// Exports and signs a registry-free core artifact from a full replay at one exact BTC height.
     pub fn run_core_to_path(
         &self,
         target_block_height: u32,
@@ -252,7 +252,7 @@ impl SnapshotIndexer {
         })
     }
 
-    /// Exports and signs a standalone registry paired to an already-built core artifact.
+    /// Exports a full-replay registry paired to an already-built core artifact.
     pub fn run_registry_to_path(
         &self,
         core_manifest: &CoreSnapshotManifest,
@@ -351,7 +351,29 @@ impl SnapshotIndexer {
         })
     }
 
+    /// Rejects imported sources and non-current heights before creating either artifact.
     fn validate_export_target(&self, target_block_height: u32) -> Result<(), String> {
+        let provenance = self.db.get_snapshot_install_provenance().map_err(|error| {
+            let msg = format!(
+                "Failed to validate split snapshot export source: root_dir={}, target_block_height={}, error={}",
+                self.config.root_dir.display(), target_block_height, error
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        // Imported databases keep historical mappings outside RocksDB. Exporting only the
+        // overlay would incorrectly certify incomplete registry coverage, even with a sidecar.
+        if let Some(provenance) = provenance {
+            let msg = format!(
+                "Split snapshot export requires a full-replay RocksDB source: root_dir={}, target_block_height={}, installed_snapshot_height={}, core_snapshot_id={}; snapshot-installed sources are unsupported, even with a registry sidecar",
+                self.config.root_dir.display(),
+                target_block_height,
+                provenance.installed_block_height,
+                provenance.core_snapshot_id
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
         let last_synced_height = self.db.get_btc_block_height()?;
         if target_block_height != last_synced_height {
             return Err(format!(
@@ -2713,6 +2735,52 @@ mod tests {
         let snapshot_indexer = SnapshotIndexer::new(config.clone(), live_db, output);
         let err = snapshot_indexer.run(9).unwrap_err();
         assert!(err.contains("Split snapshot export requires exact current state"));
+    }
+
+    #[test]
+    fn test_snapshot_export_rejects_installed_source_before_creating_artifacts() {
+        let root_dir = temp_root("snapshot_export_installed_source");
+        let config = Arc::new(test_config_with_root(&root_dir));
+        let artifact = write_test_core_artifact(&config, &root_dir, None, None, None);
+        let output = Arc::new(IndexOutput::new(Arc::new(SyncStatusManager::new())));
+        SnapshotInstaller::new(
+            config.clone(),
+            open_test_live_db(&config, 0),
+            output.clone(),
+        )
+        .install(CoreSnapshotData {
+            file: artifact.db_path,
+            manifest_file: artifact.manifest_path,
+        })
+        .unwrap();
+
+        let db =
+            Arc::new(BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap());
+        let snapshot_indexer = SnapshotIndexer::new(config.clone(), db.clone(), output);
+        let core_path = root_dir.join("reexport/core.db");
+        let registry_path = root_dir.join("reexport/registry.db");
+        for error in [
+            snapshot_indexer.run(10).unwrap_err(),
+            snapshot_indexer
+                .run_core_to_path(10, &core_path)
+                .unwrap_err(),
+            snapshot_indexer
+                .run_registry_to_path(&artifact.manifest, &registry_path)
+                .unwrap_err(),
+        ] {
+            assert!(error.contains("Split snapshot export requires a full-replay RocksDB source"));
+            assert!(error.contains("installed_snapshot_height=10"));
+        }
+        assert!(!config.snapshot_dir().exists());
+        assert!(!core_path.parent().unwrap().exists());
+        assert_eq!(db.get_btc_block_height().unwrap(), 10);
+        assert_eq!(db.get_utxo(&artifact.outpoint).unwrap().unwrap().value, 75);
+
+        // Further local indexing must not erase the source's snapshot provenance.
+        db.put_btc_block_height(11).unwrap();
+        let error = snapshot_indexer.run(11).unwrap_err();
+        assert!(error.contains("installed_snapshot_height=10"));
+        assert!(!config.snapshot_dir().exists());
     }
 
     #[test]
