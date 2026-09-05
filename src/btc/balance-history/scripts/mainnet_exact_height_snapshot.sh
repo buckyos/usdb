@@ -630,64 +630,119 @@ run_finalize() {
     and (.script_registry == null or .script_registry.component == "script_registry")
   ' "$report" >/dev/null || die "Split finalization report is incomplete: ${report}"
 
-  if [[ ! -f "$marker" ]]; then
-    python3 - "$marker" "$report" "$producer_revision" "$finalizer_revision" "$TRUSTED_KEYS" <<'PY'
-import json
+  python3 - "$marker" "$report" "$producer_revision" "$finalizer_revision" "$TRUSTED_KEYS" <<'PY'
+import fcntl
 import hashlib
+import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 path, report_path, producer_revision, finalizer_revision, trusted_keys = sys.argv[1:]
-with open(report_path, encoding="utf-8") as source:
-    report = json.load(source)
-record = {
-    "schema_version": "usdb-snapshot-artifact-finalization:v2",
-    "artifacts": report,
-    "producer_revision": producer_revision,
-    "finalizer_revision": finalizer_revision,
-    "finalized_at_utc": datetime.now(timezone.utc).isoformat(),
-    "trusted_keys_sha256": hashlib.sha256(open(trusted_keys, "rb").read()).hexdigest(),
-}
-temporary = f"{path}.tmp.{os.getpid()}"
-try:
-    with open(temporary, "x", encoding="utf-8") as output:
-        json.dump(record, output, indent=2, sort_keys=True)
-        output.write("\n")
-        output.flush()
-        os.fsync(output.fileno())
-    os.replace(temporary, path)
+marker_path = Path(path)
+
+
+def require(condition, detail):
+    if not condition:
+        raise SystemExit(f"Artifact finalization marker rejected: {path}: {detail}")
+
+
+def sync_directory():
     directory = os.open(os.path.dirname(path), os.O_RDONLY)
     try:
         os.fsync(directory)
     finally:
         os.close(directory)
-finally:
-    try:
-        os.unlink(temporary)
-    except FileNotFoundError:
-        pass
-PY
-  else
-    python3 - "$marker" "$report" "$producer_revision" "$finalizer_revision" "$TRUSTED_KEYS" <<'PY'
-import hashlib
-import json
-import sys
 
-marker_path, report_path, producer_revision, finalizer_revision, trusted_keys = sys.argv[1:]
-with open(marker_path, encoding="utf-8") as source:
-    marker = json.load(source)
-with open(report_path, encoding="utf-8") as source:
-    report = json.load(source)
-assert marker["schema_version"] == "usdb-snapshot-artifact-finalization:v2"
-assert marker["artifacts"] == report
-assert marker["producer_revision"] == producer_revision
-assert marker["finalizer_revision"] == finalizer_revision
-assert marker["trusted_keys_sha256"] == hashlib.sha256(open(trusted_keys, "rb").read()).hexdigest()
-assert isinstance(marker["finalized_at_utc"], str) and marker["finalized_at_utc"]
+
+def commit_marker():
+    report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    catalog_hash = hashlib.sha256(Path(trusted_keys).read_bytes()).hexdigest()
+    for component in report.values():
+        require(component is None or component.get("trusted_keys_sha256") == catalog_hash,
+                "verified report trusted-key catalog differs from the current catalog")
+
+    require(not marker_path.is_symlink(), "marker must not be a symlink")
+    previous = None
+    if marker_path.exists():
+        require(marker_path.is_file(), "marker must be a regular file")
+        previous = marker_path.read_bytes()
+        marker = json.loads(previous)
+        require(isinstance(marker, dict), "marker must be a JSON object")
+        if marker.get("schema_version") == "usdb-snapshot-artifact-finalization:v2":
+            for field, expected in (("artifacts", report), ("producer_revision", producer_revision),
+                                    ("trusted_keys_sha256", catalog_hash)):
+                require(marker.get(field) == expected, f"existing split marker {field} differs from verified artifacts")
+            require(isinstance(marker.get("finalizer_revision"), str)
+                    and re.fullmatch(r"[0-9a-f]{40}", marker["finalizer_revision"]),
+                    "existing split marker has an invalid finalizer revision")
+            require(isinstance(marker.get("finalized_at_utc"), str) and marker["finalized_at_utc"],
+                    "existing split marker has no finalization timestamp")
+            # Preserve the first attestation and its content-addressed release record
+            # after a successful recheck, even when the wrapper revision has changed.
+            print(f"Artifact finalization already verified: {path} "
+                  f"(frozen revision {marker['finalizer_revision']})", file=sys.stderr)
+            return
+
+        # A legacy single-file release used the same height/hash directory. Its
+        # attestation cannot certify split files; retain it before writing a new one.
+        require(marker.get("version") == 1 and "schema_version" not in marker
+                and {"snapshot_file", "manifest_file", "file_sha256", "producer_revision",
+                     "finalizer_revision", "finalized_at_utc"} <= marker.keys(),
+                "unsupported marker format; existing marker was preserved")
+        core = report["core"]
+        for old_field, new_field in (("height", "height"), ("network", "network"),
+                                     ("btc_block_hash", "btc_block_hash"), ("snapshot_id", "core_snapshot_id")):
+            require(marker.get(old_field) == core[new_field],
+                    f"legacy marker {old_field} differs from the verified target")
+        backup = marker_path.with_name(f"artifact-finalized.legacy-v1-{hashlib.sha256(previous).hexdigest()}.json")
+        require(not backup.is_symlink(), "legacy backup must not be a symlink")
+        try:
+            os.link(marker_path, backup)
+        except FileExistsError:
+            require(backup.is_file() and backup.read_bytes() == previous,
+                    f"legacy backup conflicts with the existing marker: {backup}")
+        # The original remains in place until its backup is durable and the new
+        # attestation is fully written; interruption can safely retry this step.
+        sync_directory()
+        print(f"Preserved legacy finalization marker: {backup}", file=sys.stderr)
+
+    record = {
+        "schema_version": "usdb-snapshot-artifact-finalization:v2",
+        "artifacts": report,
+        "producer_revision": producer_revision,
+        "finalizer_revision": finalizer_revision,
+        "finalized_at_utc": datetime.now(timezone.utc).isoformat(),
+        "trusted_keys_sha256": catalog_hash,
+    }
+    temporary = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(temporary, "x", encoding="utf-8") as output:
+            json.dump(record, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        require(not marker_path.is_symlink() and
+                (marker_path.read_bytes() == previous if previous is not None else not marker_path.exists()),
+                "marker changed during finalization")
+        os.replace(temporary, path)
+        sync_directory()
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+try:
+    # Serialize the metadata commit after each invocation completes its own hash
+    # and signature checks. This lock does not authorize skipping those checks.
+    descriptor = os.open(f"{path}.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        commit_marker()
+except (OSError, ValueError) as error:
+    raise SystemExit(f"Cannot commit artifact finalization marker {path}: {error}") from error
 PY
-    log "Artifact finalization already verified: ${marker}"
-  fi
   log "Finalized artifact height=${HEIGHT} hash=${REQUESTED_HASH} marker=${marker}"
 }
 

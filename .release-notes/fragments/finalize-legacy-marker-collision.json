@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "finalize-legacy-marker-collision",
+  "type": "fixed",
+  "scopes": ["balance-history", "deployment"],
+  "summary": "Fix split snapshot finalization and release completion-marker contracts",
+  "details": [
+    "After verifying both split artifacts, preserve a matching legacy single-file attestation in a content-addressed backup and atomically write the v2 marker.",
+    "Reject unknown or conflicting markers with actionable errors, and resume safely after the legacy backup was written.",
+    "Repeated finalization still verifies artifact hashes and signatures while preserving an identical existing attestation across wrapper revisions.",
+    "The release publisher now validates completion marker version 2, matching the Rust core and registry artifact writer; tests guard the cross-language version contract."
+  ],
+  "operator_actions": [
+    "Retry mainnet_exact_height_snapshot.sh finalize for the same height and block hash after updating the script; completed snapshot databases do not need to be rebuilt."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

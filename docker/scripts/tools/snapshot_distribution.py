@@ -27,6 +27,8 @@ RECORD_SCHEMA_VERSION = "usdb-snapshot-release-record:v3"
 ARTIFACT_TYPE = "balance-history-split"
 CORE_MANIFEST_VERSION = "balance-history-core-snapshot-manifest:v1"
 REGISTRY_MANIFEST_VERSION = "balance-history-script-registry-manifest:v1"
+# Keep in sync with the Rust snapshot builder's state::COMPLETE_MARKER_VERSION.
+COMPLETE_MARKER_VERSION = 2
 SIGNATURE_SCHEME = "ed25519"
 DEFAULT_BUCKET = "usdb-snapshot"
 DEFAULT_ENDPOINT_URL = "https://87e0bdf811b13ee87fd0bcec7a4fd1e7.r2.cloudflarestorage.com"
@@ -315,7 +317,10 @@ def _validate_completion_marker(
         snapshot_field = "core_snapshot_id"
         count_fields = ("entry_count",)
     _require_exact_keys(marker, expected, f"{component_name} completion marker")
-    _require(marker["version"] == 1, f"unsupported {component_name} completion marker")
+    _require(
+        type(marker["version"]) is int and marker["version"] == COMPLETE_MARKER_VERSION,
+        f"unsupported {component_name} completion marker version: expected {COMPLETE_MARKER_VERSION}",
+    )
     _require(
         (
             marker["height"],

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -130,7 +131,7 @@ class SnapshotDistributionTests(unittest.TestCase):
         (self.core / "complete.json").write_text(
             json.dumps(
                 {
-                    "version": 1,
+                    "version": 2,
                     "height": self.height,
                     "network": "bitcoin",
                     "btc_block_hash": self.block_hash,
@@ -182,7 +183,7 @@ class SnapshotDistributionTests(unittest.TestCase):
         (self.registry / "complete.json").write_text(
             json.dumps(
                 {
-                    "version": 1,
+                    "version": 2,
                     "height": self.height,
                     "network": "bitcoin",
                     "btc_block_hash": self.block_hash,
@@ -280,6 +281,25 @@ class SnapshotDistributionTests(unittest.TestCase):
                 for item in DISTRIBUTION._all_files(record)
             )
         )
+
+    def test_completion_version_matches_the_rust_artifact_writer(self) -> None:
+        source = MODULE_PATH.parents[3] / "src/btc/balance-history-snapshot-tool/src/state.rs"
+        version = re.search(r"const COMPLETE_MARKER_VERSION:\s*u32\s*=\s*([0-9]+);", source.read_text())
+        self.assertIsNotNone(version)
+        self.assertEqual(DISTRIBUTION.COMPLETE_MARKER_VERSION, int(version[1]))
+
+    def test_prepare_rejects_legacy_unknown_and_non_integer_completion_versions(self) -> None:
+        for directory in (self.core, self.registry):
+            complete = directory / "complete.json"
+            original = complete.read_bytes()
+            marker = json.loads(original)
+            for version in (1, 3, 2.0, True):
+                with self.subTest(component=directory.name, version=version):
+                    marker["version"] = version
+                    complete.write_text(json.dumps(marker))
+                    with self.assertRaisesRegex(ValueError, "completion marker version: expected 2"):
+                        self.prepare()
+            complete.write_bytes(original)
 
     def test_prepare_allows_core_only_release(self) -> None:
         self._write_finalization(include_registry=False)

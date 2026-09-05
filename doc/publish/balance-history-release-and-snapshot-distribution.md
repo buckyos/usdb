@@ -139,6 +139,15 @@ identity、整文件 SHA-256 和 Ed25519 签名，不打开 SQLite，也不创�
 独立 validation report；首次主网发布、snapshot schema/installer 升级和周期性恢复演练建议执行，
 但它不是每次对象存储上传的硬门槛。
 
+同一高度/hash 的 finalization 目录可能残留拆分前的 `version: 1` 标记。重新执行 `finalize` 时，
+脚本先完成新 core/registry 的完整哈希和签名校验，再核对旧标记的目标高度、BTC hash、network
+和 snapshot identity，将旧标记原样保存为 `artifact-finalized.legacy-v1-<sha256>.json`，然后原子
+写入新的 v2 标记。未知格式或目标不一致会明确报错并保留原文件；无需重建已经完成的新 DB。
+已有 v2 标记与本次核验产物一致时，保留首次 finalizer revision 和时间戳，即使当前 Git revision
+已经改变也不会改写发布记录；每次重试仍执行 artifact 哈希和签名校验。
+每个 core/registry artifact 内的 `complete.json` 使用 Rust builder 写入的 `version: 2`；发布
+工具按这一版本验证完成标记，与外层 finalization 的 `schema_version` 分别校验。
+
 日常对象存储发布只需要高度参数。脚本从 pinned target 和 finalize 结果推导 BTC hash、producer
 revision、artifact、artifact-finalization marker 和 trusted catalog；对象存储默认值与高级覆盖项见
 [Snapshot 对象存储发布与安装](./balance-history-snapshot-object-storage.md)。

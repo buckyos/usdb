@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -34,6 +35,7 @@ class MainnetSnapshotReleaseWrapperTests(unittest.TestCase):
         self.core_snapshot_id = "2" * 64
         self.core_artifact_id = "5" * 64
         self.registry_artifact_id = "6" * 64
+        self.catalog_hash = hashlib.sha256(b"{}").hexdigest()
         self.core_report = {
             "component": "core",
             "height": self.height,
@@ -47,7 +49,7 @@ class MainnetSnapshotReleaseWrapperTests(unittest.TestCase):
             "signature_file": f"balance_history_core_{self.height}.manifest.sig",
             "file_sha256": self.file_hash,
             "signing_key_id": "test-signer",
-            "trusted_keys_sha256": "4" * 64,
+            "trusted_keys_sha256": self.catalog_hash,
         }
         self.registry_report = {
             "component": "script_registry",
@@ -62,7 +64,7 @@ class MainnetSnapshotReleaseWrapperTests(unittest.TestCase):
             "signature_file": f"script_registry_{self.height}.manifest.sig",
             "file_sha256": "7" * 64,
             "signing_key_id": "test-signer",
-            "trusted_keys_sha256": "4" * 64,
+            "trusted_keys_sha256": self.catalog_hash,
         }
         self.finalization_report = {
             "core": self.core_report,
@@ -142,7 +144,8 @@ exit 0
             )
         marker = self.snapshot_root / "releases/finalized" / f"{self.height_dir}-{self.block_hash}"
         marker.mkdir(parents=True)
-        (marker / "artifact-finalized.json").write_text(
+        self.finalization_marker = marker / "artifact-finalized.json"
+        self.finalization_marker.write_text(
             json.dumps(
                 {
                     "schema_version": "usdb-snapshot-artifact-finalization:v2",
@@ -150,7 +153,7 @@ exit 0
                     "producer_revision": self.revision,
                     "finalizer_revision": "b" * 40,
                     "finalized_at_utc": "2026-08-30T00:00:00+00:00",
-                    "trusted_keys_sha256": "4" * 64,
+                    "trusted_keys_sha256": self.catalog_hash,
                 }
             ),
             encoding="utf-8",
@@ -276,6 +279,93 @@ else:
         self.assertIn("finalize-artifact", snapshot_calls)
         self.assertNotIn(" verify ", snapshot_calls)
         self.assertFalse(self.balance_history_invocations.exists())
+
+    def _write_legacy_finalization_marker(self, **updates: object) -> bytes:
+        legacy = {
+            "version": 1,
+            "height": self.height,
+            "network": "bitcoin",
+            "btc_block_hash": self.block_hash,
+            "snapshot_id": self.core_snapshot_id,
+            "snapshot_file": f"snapshot_{self.height}.db",
+            "manifest_file": f"snapshot_{self.height}.manifest.json",
+            "signature_file": f"snapshot_{self.height}.manifest.sig",
+            "file_sha256": "8" * 64,
+            "producer_revision": "c" * 40,
+            "finalizer_revision": "d" * 40,
+            "finalized_at_utc": "2026-08-31T00:00:00+00:00",
+            **updates,
+        }
+        content = (json.dumps(legacy, indent=2) + "\n").encode()
+        self.finalization_marker.write_bytes(content)
+        return content
+
+    def test_finalize_preserves_legacy_attestation_before_recording_split_artifacts(self) -> None:
+        previous = self._write_legacy_finalization_marker()
+        result = self._run("finalize")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        backup = self.finalization_marker.with_name(
+            f"artifact-finalized.legacy-v1-{hashlib.sha256(previous).hexdigest()}.json"
+        )
+        self.assertEqual(backup.read_bytes(), previous)
+        marker = json.loads(self.finalization_marker.read_text())
+        self.assertEqual(marker["schema_version"], "usdb-snapshot-artifact-finalization:v2")
+        self.assertEqual(marker["artifacts"], self.finalization_report)
+        self.assertEqual(marker["producer_revision"], self.revision)
+        self.assertIn("Preserved legacy", result.stderr)
+        self.assertFalse(self.balance_history_invocations.exists())
+
+    def test_finalize_resumes_after_legacy_backup_was_already_written(self) -> None:
+        previous = self._write_legacy_finalization_marker()
+        backup = self.finalization_marker.with_name(
+            f"artifact-finalized.legacy-v1-{hashlib.sha256(previous).hexdigest()}.json"
+        )
+        backup.write_bytes(previous)
+        result = self._run("finalize")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(backup.read_bytes(), previous)
+        self.assertEqual(json.loads(self.finalization_marker.read_text())["artifacts"], self.finalization_report)
+
+    def test_finalize_rechecks_but_preserves_existing_attestation_from_another_revision(self) -> None:
+        previous = self.finalization_marker.read_bytes()
+        for _ in range(2):
+            result = self._run("finalize")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.finalization_marker.read_bytes(), previous)
+            self.assertIn(f"frozen revision {'b' * 40}", result.stderr)
+        calls = self.snapshot_tool_invocations.read_text().splitlines()
+        self.assertEqual(sum("finalize-artifact" in call for call in calls), 2)
+
+    def test_finalize_rejects_unknown_markers_and_conflicting_legacy_targets_cleanly(self) -> None:
+        for content in (b"{}", b"[]", b"not JSON", b'{"schema_version":"future"}',
+                        self._write_legacy_finalization_marker(btc_block_hash="9" * 64)):
+            with self.subTest(content=content):
+                self.finalization_marker.write_bytes(content)
+                result = self._run("finalize")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertIn(str(self.finalization_marker), result.stderr)
+                self.assertEqual(self.finalization_marker.read_bytes(), content)
+                self.assertEqual(list(self.finalization_marker.parent.glob("*.legacy-v1-*.json")), [])
+
+    def test_finalize_rejects_conflicting_split_artifacts_without_overwriting_marker(self) -> None:
+        marker = json.loads(self.finalization_marker.read_text())
+        marker["artifacts"]["core"]["file_sha256"] = "9" * 64
+        self.finalization_marker.write_text(json.dumps(marker))
+        previous = self.finalization_marker.read_bytes()
+        result = self._run("finalize")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("artifacts differs", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.finalization_marker.read_bytes(), previous)
+
+    def test_failed_artifact_verification_does_not_replace_or_archive_legacy_marker(self) -> None:
+        previous = self._write_legacy_finalization_marker()
+        self._write_executable(self.snapshot_tool, "#!/bin/sh\nexit 42\n")
+        result = self._run("finalize")
+        self.assertEqual(result.returncode, 42)
+        self.assertEqual(self.finalization_marker.read_bytes(), previous)
+        self.assertEqual(list(self.finalization_marker.parent.glob("*.legacy-v1-*.json")), [])
 
     def test_validate_install_is_explicit_and_idempotently_attested(self) -> None:
         first = self._run("validate-install")
