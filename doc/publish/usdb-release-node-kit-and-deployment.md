@@ -336,6 +336,18 @@ Indexer 行优先显示 readiness 返回的已提交高度与当前上游稳定�
 RPC 超时表示这次观测不可用，不能据此推断已提交高度归零。`up` 附加 controller 的面板与 `status --watch`
 使用相同的短暂超时缓存；单次 `--progress-json` 则始终输出当次真实观测。
 
+chain 启动前还有 `usdb-chain-init` 和 `paired-checkpoint-recovery` 两个一次性检查。
+面板会对未运行的容器补读 Docker `State`，因为 OCI 入口执行失败时，Compose 可能仍显示
+`created` 和 `ExitCode=0`。入口错误、非零退出码和 control-plane 启动失败在 chain 行显示
+`FAILED` 及具体服务名，不会被资源日志中的 `recover_services` 覆盖成计划重启。
+正常停止且没有错误的容器仍显示 `STARTING`；资源切换已完成时使用 managed service startup 文案。
+
+r15 的 `verify_paired_checkpoint_recovery.sh` 曾以 `0644` 打入 services 镜像，导致 chain
+在该检查之前持续重试。仓库已恢复执行权限，Compose 同时显式通过 `/bin/bash` 调用脚本。
+这保留 `paired-checkpoint` 模式的完整验证；`balance-history`/`none` 模式按原逻辑成功退出。
+已有 r15 可备份后仅热更新该 Compose 入口与面板代码，无需重下 snapshot、重启 Bitcoin 或重新发布镜像。
+正在运行的 watch 进程需要重新打开才能加载新的面板代码；controller 的后续重试会读取新的 Compose。
+
 `snapshot-loader` 将导入观测值以原子替换方式写入
 `<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.progress.json`，schema 为
 `balance-history-core-snapshot-install-progress:v1`。写入失败只记录 warning，不影响 installer

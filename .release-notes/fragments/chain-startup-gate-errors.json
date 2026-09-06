@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "chain-startup-gate-errors",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime", "testing"],
+  "summary": "Restore the checkpoint startup entrypoint and expose chain gate failures",
+  "details": [
+    "Restore executable permissions on the paired checkpoint recovery script and invoke it through Bash in runtime Compose, including when using an existing services image.",
+    "Read Docker State for non-running containers to detect OCI execution failures hidden by Compose Created status, without reading container environments.",
+    "Show failed chain initialization, checkpoint recovery and control-plane startup ahead of managed restart intent, while preserving clean planned-stop handling.",
+    "Test actual script execution, mode-specific verification, created-container errors, failed gates, transient inspection failures and successful retries."
+  ],
+  "operator_actions": [
+    "Use the updated node kit and reopen status --watch. Existing r15 installations can apply the scoped Compose and display fixes without reimporting snapshots or restarting upstream services.",
+    "Keep the checkpoint verification gate enabled; an active retrying controller resumes with the updated Compose entrypoint."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

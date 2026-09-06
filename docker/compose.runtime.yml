@@ -171,7 +171,7 @@ services:
   paired-checkpoint-recovery:
     <<: *usdb-service-defaults
     restart: "no"
-    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/verify_paired_checkpoint_recovery.sh"]
+    entrypoint: ["/bin/bash", "/opt/usdb/docker/scripts/entrypoints/verify_paired_checkpoint_recovery.sh"]
     depends_on:
       balance-history:
         condition: service_healthy

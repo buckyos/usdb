@@ -3088,6 +3088,7 @@ def _collect_compose_services(
         ("run_testnet_runtime.sh", ["ps", "--all", "--format", "json"]),
     )
     services: dict[str, dict[str, Any]] = {}
+    inspect_ids: dict[str, str] = {}
     for helper, arguments in commands:
         result = run_helper(
             layout,
@@ -3102,6 +3103,33 @@ def _collect_compose_services(
         for item in _parse_compose_ps(result.stdout or ""):
             service, status = _normalize_compose_service(item)
             services[service] = status
+            # Compose can report Created/ExitCode=0 after an OCI exec failure.
+            # Inspect only stopped/starting containers, without reading their environment.
+            identifier = item.get("ID")
+            if status["state"] in {"created", "exited", "dead", "restarting"} and identifier:
+                if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{12,64}", identifier):
+                    raise ValueError("Docker Compose returned an invalid container ID")
+                inspect_ids[identifier] = service
+    if inspect_ids:
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format", "{{json .State}}", *inspect_ids],
+                check=True, capture_output=True, text=True,
+                timeout=command_timeout_secs if command_timeout_secs is not None else 8,
+            )
+            states = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+            if len(states) != len(inspect_ids):
+                raise ValueError("Docker inspect returned an incomplete container state observation")
+            for service, state in zip(inspect_ids.values(), states):
+                if not isinstance(state, dict) or not isinstance(state.get("Status"), str):
+                    raise ValueError("Docker inspect returned an invalid container state")
+                services[service].update(
+                    state=state["Status"].lower(),
+                    exit_code=state.get("ExitCode"),
+                    container_error=state.get("Error") or "",
+                )
+        except subprocess.CalledProcessError as error:
+            raise ValueError("Docker container startup state could not be read") from error
     return services
 
 
@@ -3551,9 +3579,11 @@ def _failed_container_component(
     if service is None:
         return _component_progress(component_id, "WAITING", waiting_detail)
     state = service["state"]
-    if state in {"dead", "exited", "removing", "restarting"}:
+    if state in {"dead", "exited", "removing", "restarting"} or _container_start_failed(service):
         exit_code = service.get("exit_code")
         suffix = f", exit_code={exit_code}" if exit_code is not None else ""
+        if service.get("container_error"):
+            suffix += f"; {service['container_error']}"
         return _component_progress(
             component_id,
             "FAILED",
@@ -3561,6 +3591,36 @@ def _failed_container_component(
         )
     if state != "running":
         return _component_progress(component_id, "STARTING", f"container state={state}")
+    return None
+
+
+def _container_start_failed(service: dict[str, Any] | None) -> bool:
+    """Distinguish failed starts from clean stops recorded for a managed restart."""
+    return bool(service and service.get("state") != "running" and (
+        service.get("container_error")
+        or service.get("exit_code") not in {None, 0}
+        or service.get("state") in {"dead", "restarting"}
+    ))
+
+
+def _chain_startup_gate_component(services: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """Expose one-shot gate failures before interpreting a missing chain as waiting."""
+    if services.get("usdb-chain", {}).get("state") == "running":
+        jobs = ("usdb-control-plane",)
+    else:
+        jobs = ("usdb-chain-init", "paired-checkpoint-recovery", "usdb-control-plane")
+    for name in jobs:
+        service = services.get(name)
+        if _container_start_failed(service):
+            component = _failed_container_component("usdb_chain", service, "")
+            assert component is not None
+            component["detail"] = f"chain startup failed: {name}; {component['detail']}"
+            return component
+    for name in jobs:
+        if name != "usdb-control-plane" and services.get(name, {}).get("state") in {"created", "running"}:
+            return _component_progress(
+                "usdb_chain", "STARTING", f"chain startup gate {name}: {services[name]['state']}",
+            )
     return None
 
 
@@ -4021,8 +4081,13 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
                              "usdb_indexer": "usdb-indexer", "usdb_chain": "usdb-chain"}
             for component in components:
                 service = service_names.get(component["id"])
-                if service in waiting and services.get(service, {}).get("state") in {None, "exited", "created"}:
-                    component.update(state="STARTING", detail=f"planned resource transition to {state['phase']}; waiting for managed restart")
+                if (service in waiting
+                        and services.get(service, {}).get("state") in {None, "exited", "created"}
+                        and not _container_start_failed(services.get(service))
+                        and component["state"] != "BLOCKED"):
+                    detail = (f"planned resource transition to {state['phase']}; waiting for managed restart"
+                              if state.get("pending") else "waiting for managed service startup")
+                    component.update(state="STARTING", detail=detail)
             if not resource_waiting and _overall_progress_state(components) == "READY":
                 observed = _resource_containers(layout)
                 resources["runtime_adopted"] = all(
@@ -4034,6 +4099,13 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
                     _check_running_resource_budget(env, observed)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         resources["error"] = str(error)
+    # Startup failures take precedence over the durable restart intent, which
+    # intentionally remains present until the controller completes the attempt.
+    gate_component = _chain_startup_gate_component(services)
+    if gate_component is not None and (
+        gate_component["state"] == "FAILED" or chain_component["state"] not in {"FAILED", "BLOCKED"}
+    ):
+        chain_component.update(gate_component)
     overall = _overall_progress_state(components)
     # The watch client must not detach before the controller finishes the handoff.
     if overall == "READY" and resource_waiting:

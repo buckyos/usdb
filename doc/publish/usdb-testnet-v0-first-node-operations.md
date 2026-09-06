@@ -300,6 +300,20 @@ r15 首次导入后曾在此处回放大量 WAL：旧 `flush_all()` 只刷新默
 这是 balance-history 二进制修复，需要后续 services 镜像包含修正，不能只替换主机 shell 脚本。
 修复保证 flush 覆盖范围，不意味着以后的异常停机或并发写入不再需要 WAL 恢复。
 
+如果上游均已就绪，而 chain 长期显示 `planned resource transition to steady; waiting for managed restart`，
+检查 controller journal 和 `paired-checkpoint-recovery` 容器的 `State.Error`。r15 曾因镜像内
+`verify_paired_checkpoint_recovery.sh` 缺少执行权限，停在 genesis init 成功之后、geth 启动之前。
+该场景应显示启动检查失败；新版面板不会再用资源重启提示掩盖这个错误。
+经过核对的旧 r15 可备份其 node kit 的 `docker/compose.runtime.yml`，将该检查的入口改为：
+
+```yaml
+entrypoint: ["/bin/bash", "/opt/usdb/docker/scripts/entrypoints/verify_paired_checkpoint_recovery.sh"]
+```
+
+controller 仍在重试时会自动读取此修改；保留现有数据，不需要再执行 snapshot install 或整套 down/up。
+更新面板脚本后重新运行 `usdb-node status --watch`，旧面板进程不会自动重新加载 Python 代码。
+此修复只恢复自动 chain 启动；full 角色不自动挖矿，首个矿工和 SourceDAO bootstrap 仍按第 10、11 节操作。
+
 首次安装不执行 `usdb-node activate-release`，因为 `setup` 已写入当前 release 的 image digest。只有以后安装
 同一 `usdb-testnet-v0` bundle 的新 `rN`、runtime compatibility ID 不变且继续复用现有 `node.env` 时，才按
 `activate-release -> controller install -> doctor -> up -> status` 升级。contract 改变或新的 `vN`、chain ID、genesis 不得直接
