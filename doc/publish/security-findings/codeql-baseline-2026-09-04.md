@@ -12,6 +12,18 @@
 Fast/Nightly/Weekly。`SourceDAO=0` 不能替代 Slither、合约人工审计和 bytecode/storage golden
 comparison。
 
+### 1.1 USDB 处置更新（2026-09-05）
+
+| Analyzed revision | 处置前 open | 已 dismiss | 保持 open | 处置依据 |
+| --- | ---: | ---: | ---: | --- |
+| `6ef3dab326a6dd4d1d3e1f3252b03e4abcbbec18` | 21 | 18 | 3 | 逐项复核 source/sink、输入边界、release reachability 与现有 sanitizer |
+
+- alerts 15-26 以 `used in tests` dismiss：固定值仅用于 fake-chain 集成测试，不是密钥材料。
+- alerts 2、3、5、9、10、27 以 `false positive` dismiss；GitHub dismissal comment 已记录复核
+  revision 和代码依据。
+- alerts 7、8、11 保持 open，作为 public-mainnet 前的本地配置路径加固项；不能用本次处置
+  证明这些路径已经完成防御式约束。
+
 ## 2. USDB findings
 
 ### USDB-CQL-001：fake-chain 固定 block nonce 被识别为硬编码密钥
@@ -23,7 +35,7 @@ comparison。
 - `introduced_by`：USDB 自主测试代码
 - `reachability/exposure`：`unreachable` / `test-only`
 - `impact`：无密钥泄露；数值是构造确定性 fake block hash 的 nonce
-- `decision`：`false-positive`
+- `decision`：`dismissed`，GitHub reason 为 `used in tests`
 - `release_gate`：`none`
 - `recheck`：该 fixture 或测试 helper 进入 release target/image 时重新审计
 
@@ -58,12 +70,12 @@ comparison。
 - `introduced_by`：USDB 自主代码
 - `reachability/exposure`：`likely` with corrupted local marker / `local input`
 - `impact`：development profile 下可能把 mint payload 写出预期 runtime 目录
-- `decision`：`fix`
+- `decision`：`fix-complete / dismissed-false-positive`；CodeQL 未识别项目自定义 sanitizer
 - `worktree fix`：marker 解码和最终写文件前都要求长度不超过 64 bytes，字符集仅为 ASCII
   字母、数字、`-`、`_`
 - `release_gate`：`both`
 - `verification`：路径穿越/字符集/长度 corpus 单元测试与 control-plane `clippy -D warnings`
-  已通过；待提交后的下一次 CodeQL 扫描
+  已通过；revision `6ef3dab326a6dd4d1d3e1f3252b03e4abcbbec18` 的告警已人工复核并 dismiss
 
 ### USDB-CQL-004：Bitcoin cookie file 路径来自配置
 
@@ -87,21 +99,26 @@ comparison。
 - `component`：`usdb-control-plane` artifact summary
 - `artifact/owner`：USDB services image / control-plane owner
 - `reachability/exposure`：`unreachable` from remote request / `local input`
-- `impact`：本地配置可选择要展示摘要的 artifact
-- `decision`：`false-positive`
-- `evidence`：读取目标不是请求参数；绝对路径是 Docker bind mount 和 release bundle 的既定接口；
-  返回值仅包含解析后的摘要，不返回任意文件原文
-- `release_gate`：`none`
+- `impact`：本地配置可选择要读取的 JSON；当前 handler 将解析后的完整 `serde_json::Value`
+  放入响应，并非只返回固定 schema 的摘要
+- `decision`：`mitigate`，alerts 保持 open
+- `evidence`：读取目标不是远程请求参数，绝对路径是 Docker bind mount 和 release bundle 的
+  既定接口；这降低了远程可利用性，但不能替代文件类型、目录边界和响应字段约束
+- `owner/expires_at`：control-plane owner / public-mainnet security freeze
+- `required mitigation`：限定 approved artifact root；canonicalize 后验证 containment；拒绝 symlink
+  和非普通文件；限制文件大小；解析为明确 schema；响应只包含 allowlist 摘要字段
+- `release_gate`：`mainnet`
 
 ### USDB-CQL-006：snapshot trusted-key 日志被识别为明文 secret
 
 - `source`：CodeQL `rust/cleartext-logging`，alerts
-  [4](https://github.com/buckyos/usdb/security/code-scanning/4)-[6](https://github.com/buckyos/usdb/security/code-scanning/6)
+  [5](https://github.com/buckyos/usdb/security/code-scanning/5)、
+  [27](https://github.com/buckyos/usdb/security/code-scanning/27)
 - `component`：`balance-history` snapshot verifier
 - `artifact/owner`：balance-history binary and snapshot tools / balance-history owner
 - `reachability/exposure`：`unreachable` / `operator log`
 - `impact`：无私钥泄露
-- `decision`：`false-positive`
+- `decision`：`dismissed-false-positive`
 - `evidence`：日志只输出 trusted public-key set 的文件路径或 signer key ID；签名私钥不由该
   verifier 加载，也不在这些日志参数中
 - `release_gate`：`none`
@@ -115,7 +132,7 @@ comparison。
 - `artifact/owner`：release node kit / release tooling owner
 - `reachability/exposure`：`confirmed` / `local input`
 - `impact`：无算法降级选择；输出必须符合 Bitcoin Core `rpcauth=user:salt$hmac` 格式
-- `decision`：`false-positive`
+- `decision`：`dismissed-false-positive`
 - `evidence`：实现使用随机 128-bit salt、随机 256-bit password 和 HMAC-SHA256；validator
   使用 constant-time `hmac.compare_digest`
 - `release_gate`：`none`
@@ -172,7 +189,9 @@ comparison。
 
 ## 5. 下一步
 
-1. USDB-CQL-002/003/008 修复已经提交；复跑 CodeQL 后把新 scan revision/alert 状态写入下一份基线。
+1. USDB revision `6ef3dab326a6dd4d1d3e1f3252b03e4abcbbec18` 的 21 个 open alerts 已完成首轮
+   GitHub disposition：18 个按证据 dismiss，7、8、11 保持 open；下一批优先实现
+   USDB-CQL-004/005 的 public-mainnet 路径加固。
 2. Snapshot/checkpoint 的首轮 symlink、staging inventory 和 cleanup 专项审计已经完成，结论见
    [Snapshot/checkpoint 安装边界审计](./snapshot-checkpoint-install-audit-2026-09-04.md)；strict JSON
    duplicate-key corpus 已落地，剩余真实 artifact 跨进程演练继续跟踪。
