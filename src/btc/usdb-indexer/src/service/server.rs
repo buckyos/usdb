@@ -438,7 +438,7 @@ impl UsdbIndexerRpcServer {
     fn synced_height(&self) -> Result<Option<u32>, JsonError> {
         self.indexer
             .miner_pass_storage()
-            .get_synced_btc_block_height()
+            .get_committed_synced_btc_block_height()
             .map_err(Self::to_internal_error)
     }
 
@@ -1085,12 +1085,7 @@ impl UsdbIndexerRpcServer {
             return Ok(None);
         };
 
-        let local_synced_block_height = self
-            .indexer
-            .miner_pass_storage()
-            .get_synced_btc_block_height()
-            .map_err(Self::to_internal_error)?
-            .unwrap_or(anchor.stable_height);
+        let local_synced_block_height = self.synced_height()?.unwrap_or(anchor.stable_height);
         self.validate_stored_snapshot_stable_lag(
             anchor.stable_height,
             anchor.stable_lag,
@@ -1585,7 +1580,12 @@ impl UsdbIndexerRpcServer {
     fn readiness_info(&self) -> Result<ReadinessInfo, JsonError> {
         let sync_status = self.status.get_index_status_snapshot();
         let runtime = self.status.get_runtime_readiness();
-        let synced_height = self.synced_height()?;
+        let history = self
+            .indexer
+            .miner_pass_storage()
+            .get_committed_snapshot_history_progress(self.config.config().usdb.genesis_block_height)
+            .map_err(Self::to_internal_error)?;
+        let synced_height = history.synced_height;
         let durable_reorg_recovery_pending = self
             .indexer
             .miner_pass_storage()
@@ -1651,6 +1651,9 @@ impl UsdbIndexerRpcServer {
         if catching_up {
             blockers.push(ReadinessBlocker::CatchingUp);
         }
+        if history.pending_from.is_some() {
+            blockers.push(ReadinessBlocker::HistoryBackfillPending);
+        }
         match upstream_readiness.as_ref() {
             Some(readiness) => {
                 if !readiness.consensus_ready {
@@ -1698,6 +1701,8 @@ impl UsdbIndexerRpcServer {
             query_ready,
             consensus_ready,
             synced_block_height: synced_height,
+            snapshot_history_ready_height: history.ready_height,
+            snapshot_history_pending_from: history.pending_from,
             balance_history_stable_height: observed_upstream_height,
             upstream_snapshot_id: upstream_snapshot
                 .as_ref()
@@ -4087,6 +4092,12 @@ mod tests {
         let (server, root_dir) = build_server("readiness_consensus_ready", 120);
         server.status.set_rpc_alive(true);
         seed_state_ref_context(&server, 120);
+        let history: Vec<_> = (0..120).map(ready_balance_history_snapshot).collect();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_history_entries(&history)
+            .unwrap();
 
         let readiness = server.get_readiness().unwrap();
         assert!(readiness.rpc_alive);
@@ -4124,6 +4135,74 @@ mod tests {
         assert_eq!(readiness.balance_history_stable_height, Some(105));
         assert!(readiness.blockers.contains(&ReadinessBlocker::CatchingUp));
 
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_history_gap_blocks_consensus_even_when_upstream_stops_and_head_exists() {
+        let (server, root_dir) = build_server_with_genesis("history_gap_ready_gate", 120, 100);
+        server.status.set_rpc_alive(true);
+        seed_state_ref_context(&server, 120);
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.query_ready);
+        assert_eq!(readiness.synced_block_height, Some(120));
+        assert_eq!(readiness.balance_history_stable_height, Some(120));
+        assert!(!readiness.consensus_ready);
+        assert_eq!(readiness.snapshot_history_pending_from, Some(100));
+        assert!(
+            readiness
+                .blockers
+                .contains(&ReadinessBlocker::HistoryBackfillPending)
+        );
+        let error = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams {
+                block_height: 119,
+                context: None,
+            })
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotNotReady.code())
+        );
+
+        let history: Vec<_> = (100..120).map(ready_balance_history_snapshot).collect();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_history_entries(&history)
+            .unwrap();
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.consensus_ready);
+        assert_eq!(readiness.snapshot_history_ready_height, Some(120));
+        assert_eq!(readiness.snapshot_history_pending_from, None);
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_history_gap_gate_survives_restart_and_ignores_isolated_head() {
+        let (server, root_dir) = build_server_with_genesis("history_gap_restart", 102, 100);
+        seed_state_ref_context(&server, 102);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_history_entry(&ready_balance_history_snapshot(100))
+            .unwrap();
+        drop(server);
+        let server = open_server_from_root(&root_dir, None);
+        server.status.set_rpc_alive(true);
+        seed_upstream_anchor(&server, 102);
+        let readiness = server.get_readiness().unwrap();
+        assert!(!readiness.consensus_ready);
+        assert_eq!(readiness.snapshot_history_ready_height, Some(100));
+        assert_eq!(readiness.snapshot_history_pending_from, Some(101));
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_history_entry(&ready_balance_history_snapshot(101))
+            .unwrap();
+        assert!(server.get_readiness().unwrap().consensus_ready);
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
     }

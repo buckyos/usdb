@@ -5,7 +5,7 @@ use ord::InscriptionId;
 use ordinals::SatPoint;
 #[cfg(test)]
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -14,6 +14,8 @@ use usdb_util::BtcScriptHash;
 
 // Key for storing the last synced BTC block height
 const BTC_SYNCED_BLOCK_HEIGHT_KEY: &str = "btc_synced_block_height";
+const SNAPSHOT_HISTORY_START_KEY: &str = "snapshot_history_start_height";
+const SNAPSHOT_HISTORY_NEXT_KEY: &str = "snapshot_history_next_height";
 const BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY: &str = "balance_history_snapshot_height";
 const BALANCE_HISTORY_SNAPSHOT_BLOCK_HASH_KEY: &str = "balance_history_snapshot_block_hash";
 const BALANCE_HISTORY_SNAPSHOT_BLOCK_COMMIT_KEY: &str = "balance_history_snapshot_block_commit";
@@ -141,6 +143,19 @@ pub struct StoredPassBlockCommitEntry {
 pub struct MinerPassStorage {
     db_path: PathBuf,
     conn: Mutex<Connection>,
+    // RPC publication must not observe the writer's uncommitted savepoint state.
+    committed_conn: Mutex<Connection>,
+}
+
+/// Committed scan height and continuous anchor coverage from the configured origin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotHistoryProgress {
+    /// Durable business-state height visible to independent readers.
+    pub synced_height: Option<u32>,
+    /// Last height in the continuous historical prefix, capped at synced_height.
+    pub ready_height: Option<u32>,
+    /// First required missing height; None means no legacy recovery is pending.
+    pub pending_from: Option<u32>,
 }
 
 impl MinerPassStorage {
@@ -158,10 +173,27 @@ impl MinerPassStorage {
         })?;
         let open_connection_elapsed_ms = open_begin.elapsed().as_millis();
 
+        let committed_conn =
+            Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .and_then(|reader| {
+                    reader.busy_timeout(std::time::Duration::from_millis(500))?;
+                    Ok(reader)
+                })
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to open committed miner pass reader: path={}, error={}",
+                        db_path.display(),
+                        e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
         // Init the database
         let storage = MinerPassStorage {
             db_path,
             conn: Mutex::new(conn),
+            committed_conn: Mutex::new(committed_conn),
         };
         let schema_begin = Instant::now();
         storage.init_db()?;
@@ -639,33 +671,72 @@ impl MinerPassStorage {
         &self,
         snapshot: &BalanceHistorySnapshotInfo,
     ) -> Result<(), String> {
-        let stable_block_hash = snapshot.stable_block_hash.clone().ok_or_else(|| {
-            let msg = format!(
-                "Balance-history snapshot missing stable block hash at height {}",
-                snapshot.stable_height
-            );
-            error!("{}", msg);
-            msg
-        })?;
-        let latest_block_commit = snapshot.latest_block_commit.clone().ok_or_else(|| {
-            let msg = format!(
-                "Balance-history snapshot missing latest block commit at height {}",
-                snapshot.stable_height
-            );
-            error!("{}", msg);
-            msg
-        })?;
+        self.upsert_balance_history_snapshot_history_entries(std::slice::from_ref(snapshot))
+    }
 
-        let conn = self.conn.lock().unwrap();
+    /// Persist a bounded recovery batch and its coverage cursor in one transaction.
+    pub fn upsert_balance_history_snapshot_history_entries(
+        &self,
+        snapshots: &[BalanceHistorySnapshotInfo],
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .savepoint()
+            .map_err(|e| Self::history_error("begin batch", e))?;
+        for snapshot in snapshots {
+            let stable_block_hash = snapshot.stable_block_hash.clone().ok_or_else(|| {
+                let msg = format!(
+                    "Balance-history snapshot missing stable block hash at height {}",
+                    snapshot.stable_height
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let latest_block_commit = snapshot.latest_block_commit.clone().ok_or_else(|| {
+                let msg = format!(
+                    "Balance-history snapshot missing latest block commit at height {}",
+                    snapshot.stable_height
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+            Self::upsert_balance_history_snapshot_history_with_conn(
+                &tx,
+                snapshot.stable_height,
+                &stable_block_hash,
+                &latest_block_commit,
+                snapshot.stable_lag,
+                &snapshot.commit_protocol_version,
+                &snapshot.commit_hash_algo,
+            )?;
+        }
+        tx.commit()
+            .map_err(|e| Self::history_error("commit batch", e))
+    }
+
+    /// Reuse the exact upstream commit already consumed by the local block commit.
+    /// The caller's block savepoint makes this anchor atomic with the scan height.
+    pub fn upsert_balance_history_block_anchor(
+        &self,
+        commit: &balance_history::BlockCommitInfo,
+        stable_lag: u32,
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .savepoint()
+            .map_err(|e| Self::history_error("begin block anchor", e))?;
         Self::upsert_balance_history_snapshot_history_with_conn(
-            &conn,
-            snapshot.stable_height,
-            &stable_block_hash,
-            &latest_block_commit,
-            snapshot.stable_lag,
-            &snapshot.commit_protocol_version,
-            &snapshot.commit_hash_algo,
-        )
+            &tx,
+            commit.block_height,
+            &commit.btc_block_hash,
+            &commit.block_commit,
+            stable_lag,
+            &commit.commit_protocol_version,
+            &commit.commit_hash_algo,
+        )?;
+        tx.commit()
+            .map_err(|e| Self::history_error("commit block anchor", e))
     }
 
     fn upsert_balance_history_snapshot_anchor_with_conn(
@@ -782,7 +853,7 @@ impl MinerPassStorage {
             msg
         })?;
 
-        Ok(())
+        Self::advance_snapshot_history_coverage(conn, block_height)
     }
 
     pub fn clear_balance_history_snapshot_anchor(&self) -> Result<(), String> {
@@ -1171,6 +1242,17 @@ impl MinerPassStorage {
             })?;
 
         Self::clear_balance_history_snapshot_anchor_with_conn(&tx)?;
+        // Deleted suffix rows must never remain covered after rollback/replay.
+        if let (Some(start), Some(next)) = (
+            Self::history_number(&tx, SNAPSHOT_HISTORY_START_KEY)?,
+            Self::history_number(&tx, SNAPSHOT_HISTORY_NEXT_KEY)?,
+        ) {
+            Self::upsert_numeric_state_with_conn(
+                &tx,
+                SNAPSHOT_HISTORY_NEXT_KEY,
+                next.min(i64::from(target_height) + 1).max(start),
+            )?;
+        }
         match target_anchor {
             Some(anchor) => Self::upsert_balance_history_snapshot_anchor_with_conn(&tx, anchor)?,
             None => {
@@ -1418,88 +1500,136 @@ impl MinerPassStorage {
         }))
     }
 
-    pub fn get_first_missing_balance_history_snapshot_history_height(
-        &self,
-        start_height: u32,
-        end_height: u32,
-    ) -> Result<Option<u32>, String> {
-        if start_height > end_height {
-            return Ok(None);
-        }
+    fn history_error(action: &str, error: impl std::fmt::Display) -> String {
+        let msg = format!(
+            "Snapshot history storage failed: action={}, error={}",
+            action, error
+        );
+        error!("{}", msg);
+        msg
+    }
 
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "
-                SELECT block_height
-                FROM balance_history_snapshot_history
-                WHERE block_height BETWEEN ?1 AND ?2
-                ORDER BY block_height ASC
-                ",
-            )
-            .map_err(|e| {
-                let msg = format!(
-                    "Failed to prepare balance-history snapshot history coverage query for range [{}-{}]: {}",
-                    start_height, end_height, e
-                );
-                error!("{}", msg);
-                msg
-            })?;
+    fn history_number(conn: &Connection, key: &str) -> Result<Option<i64>, String> {
+        conn.query_row("SELECT value FROM state WHERE name = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(|e| Self::history_error(key, e))
+    }
 
+    // Return the first hole, or end + 1. u64 also represents coverage through u32::MAX.
+    fn snapshot_history_next_with_conn(
+        conn: &Connection,
+        start: u64,
+        end: u64,
+    ) -> Result<u64, String> {
+        let mut stmt = conn.prepare(
+            "SELECT block_height FROM balance_history_snapshot_history WHERE block_height BETWEEN ?1 AND ?2 ORDER BY block_height"
+        ).map_err(|e| Self::history_error("prepare coverage", e))?;
         let mut rows = stmt
-            .query(rusqlite::params![start_height as i64, end_height as i64])
-            .map_err(|e| {
-                let msg = format!(
-                    "Failed to query balance-history snapshot history coverage for range [{}-{}]: {}",
-                    start_height, end_height, e
-                );
-                error!("{}", msg);
-                msg
-            })?;
-
-        let mut expected_height = start_height;
-        while let Some(row) = rows.next().map_err(|e| {
-            let msg = format!(
-                "Failed to read balance-history snapshot history coverage row for range [{}-{}]: {}",
-                start_height, end_height, e
-            );
-            error!("{}", msg);
-            msg
-        })? {
-            let stored_height: i64 = row.get(0).map_err(|e| {
-                let msg = format!(
-                    "Failed to decode balance-history snapshot history height for range [{}-{}]: {}",
-                    start_height, end_height, e
-                );
-                error!("{}", msg);
-                msg
-            })?;
-            if stored_height < 0 {
-                let msg = format!(
-                    "Invalid negative balance-history snapshot history height {} in range [{}-{}]",
-                    stored_height, start_height, end_height
-                );
-                error!("{}", msg);
-                return Err(msg);
+            .query(rusqlite::params![start as i64, end as i64])
+            .map_err(|e| Self::history_error("query coverage", e))?;
+        let mut next = start;
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| Self::history_error("read coverage", e))?
+        {
+            let height: u32 = row
+                .get(0)
+                .map_err(|e| Self::history_error("decode coverage", e))?;
+            if u64::from(height) != next {
+                break;
             }
-
-            let stored_height = stored_height as u32;
-            if stored_height > expected_height {
-                return Ok(Some(expected_height));
-            }
-            if stored_height == expected_height {
-                expected_height = expected_height.saturating_add(1);
-                if expected_height > end_height {
-                    return Ok(None);
-                }
-            }
+            next += 1;
         }
+        Ok(next)
+    }
 
-        if expected_height <= end_height {
-            Ok(Some(expected_height))
-        } else {
-            Ok(None)
+    /// Rebuild the durable cursor from actual rows once at startup, before RPC can report ready.
+    /// This also repairs stale cursors left by an older binary or an interrupted upgrade.
+    pub fn reconcile_snapshot_history_coverage(&self, start: u32) -> Result<(), String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| Self::history_error("begin coverage reconciliation", e))?;
+        let synced = Self::history_number(&tx, BTC_SYNCED_BLOCK_HEIGHT_KEY)?;
+        let next = match synced {
+            Some(end) if end >= i64::from(start) => {
+                Self::snapshot_history_next_with_conn(&tx, u64::from(start), end as u64)?
+            }
+            _ => u64::from(start),
+        };
+        Self::upsert_numeric_state_with_conn(&tx, SNAPSHOT_HISTORY_START_KEY, i64::from(start))?;
+        Self::upsert_numeric_state_with_conn(&tx, SNAPSHOT_HISTORY_NEXT_KEY, next as i64)?;
+        tx.commit()
+            .map_err(|e| Self::history_error("commit coverage reconciliation", e))?;
+        info!(
+            "Snapshot history coverage reconciled: start_height={}, synced_height={:?}, next_height={}",
+            start, synced, next
+        );
+        Ok(())
+    }
+
+    // Advance only across a continuous prefix; an isolated head anchor cannot close older holes.
+    fn advance_snapshot_history_coverage(conn: &Connection, inserted: u32) -> Result<(), String> {
+        if let Some(next) = Self::history_number(conn, SNAPSHOT_HISTORY_NEXT_KEY)?
+            && next == i64::from(inserted)
+        {
+            let next =
+                Self::snapshot_history_next_with_conn(conn, next as u64, u64::from(u32::MAX))?;
+            Self::upsert_numeric_state_with_conn(conn, SNAPSHOT_HISTORY_NEXT_KEY, next as i64)?;
         }
+        Ok(())
+    }
+
+    /// Read only committed scan progress, even while the writer has an open block savepoint.
+    pub fn get_committed_synced_btc_block_height(&self) -> Result<Option<u32>, String> {
+        let conn = self.committed_conn.lock().unwrap();
+        Self::history_number(&conn, BTC_SYNCED_BLOCK_HEIGHT_KEY)?
+            .map(|height| {
+                u32::try_from(height).map_err(|e| Self::history_error("decode committed height", e))
+            })
+            .transpose()
+    }
+
+    /// Read height and coverage in one committed SQLite snapshot with constant-size queries.
+    pub fn get_committed_snapshot_history_progress(
+        &self,
+        required_start: u32,
+    ) -> Result<SnapshotHistoryProgress, String> {
+        let mut conn = self.committed_conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| Self::history_error("read committed coverage", e))?;
+        let synced_height = Self::history_number(&tx, BTC_SYNCED_BLOCK_HEIGHT_KEY)?
+            .map(|height| {
+                u32::try_from(height).map_err(|e| Self::history_error("decode coverage height", e))
+            })
+            .transpose()?;
+        let start = Self::history_number(&tx, SNAPSHOT_HISTORY_START_KEY)?;
+        let next = Self::history_number(&tx, SNAPSHOT_HISTORY_NEXT_KEY)?;
+        let next = match (start, next) {
+            (Some(start), Some(next))
+                if start == i64::from(required_start)
+                    && next >= start
+                    && next <= i64::from(u32::MAX) + 1 =>
+            {
+                next as u64
+            }
+            _ => u64::from(required_start),
+        };
+        let ready_height = synced_height
+            .filter(|height| *height >= required_start)
+            .and_then(|height| {
+                (next > u64::from(required_start)).then(|| u64::from(height).min(next - 1) as u32)
+            });
+        let pending_from =
+            synced_height.and_then(|height| (next <= u64::from(height)).then_some(next as u32));
+        Ok(SnapshotHistoryProgress {
+            synced_height,
+            ready_height,
+            pending_from,
+        })
     }
 
     pub fn upsert_pass_block_commit(&self, entry: &PassBlockCommitEntry) -> Result<(), String> {

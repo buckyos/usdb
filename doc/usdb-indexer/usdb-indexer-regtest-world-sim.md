@@ -130,7 +130,7 @@ weekly 默认启用 `SIM_REPLAY_CHECK_ENABLED=1`。每次重组收敛后立即�
 
 随后 `compare_world_replay.py` 为 balance-history 和 usdb-indexer 创建全新的空数据目录，只复用网络及协议配置，从高度 1 重放最终 canonical Bitcoin 链。两个服务使用独立端口，indexer 连接重建的 balance-history，铭文源固定为 `bitcoind`。每次尝试都创建新目录，不能复用上次重放产生的数据。
 
-新实例不仅要达到相同高度、hash 和 consensus readiness，还要完成历史锚点回填：批量同步可能先发布 head，再补齐历史 state ref。比较前等待所需检查点及最终高度前一块的历史锚点可查询，只重试明确的 `HISTORY_NOT_AVAILABLE`；mismatch 不会被当成暂未就绪而忽略。
+新实例需要达到相同高度、hash 和 consensus readiness。正常索引现在将每块历史锚点与同步高度一起提交；旧库历史缺口通过 `HistoryBackfillPending` 阻止提前就绪。对照仍逐一验证所需检查点及最终高度前一块的历史锚点可查询，只重试明确的 `HISTORY_NOT_AVAILABLE`；mismatch 不会被当成暂未就绪而忽略。
 
 对照范围包括：
 

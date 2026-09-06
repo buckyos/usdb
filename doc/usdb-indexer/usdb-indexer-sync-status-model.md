@@ -36,6 +36,10 @@
 
 这是 `usdb-indexer` 已经写入本地存储并完成提交后的高度。对外如果要回答“本机已经真正落盘到哪一块”，只能看它。
 
+正常索引中，该块历史 snapshot anchor 与业务 SQLite 状态在同一事务提交；RPC 使用独立只读连接读取
+高度，避免发布 writer 尚未提交的状态。旧库已有的历史缺口通过单独的恢复阶段补齐，所以不能仅凭该字段
+判断整个历史范围已就绪：还应检查 `get_readiness.snapshot_history_pending_from` 和 `consensus_ready`。
+
 适用场景：
 
 - CLI 判断本地是否已经追上某个目标高度。
@@ -76,6 +80,9 @@
 - CLI 当前的完成判定采用：
   - `synced_block_height >= balance_history_stable_height`
   - 且 `current >= total`
+
+上述 CLI 判定只表示扫描进度追平；下游启动和共识消费必须以 `get_readiness.consensus_ready` 为准，
+还需排除历史 anchor 回填、reorg recovery 等中间状态。
 
 注意：
 

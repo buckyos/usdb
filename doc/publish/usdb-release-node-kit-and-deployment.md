@@ -327,9 +327,12 @@ finalize 和 atomic swap。source hash 结束后的 SQLite integrity 与精确 c
 `STALE`；component 状态和最新错误仍使用当前探测结果，该缓存只改善显示连续性，不参与启动门禁或生命周期判断。
 
 Indexer 行优先显示 readiness 返回的已提交高度与当前上游稳定高度，并附带 `remaining_blocks`；初次追块
-后的历史 snapshot anchor 回填期间，旧扫描批次的 `current/total` 可能已相等，上游却已继续推进。
+后的旧库历史 snapshot anchor 恢复期间，旧扫描批次的 `current/total` 可能已相等，上游却已继续推进。
 若最后一条扫描消息长期不变，可在 indexer 持久化日志中检查 `Backfilling balance-history snapshot history`
-的逐高度推进。回填完成后索引循环会继续追上游；chain 仍以新鲜的 `consensus_ready` 响应作为启动条件。
+及 `Snapshot history backfill progress` 的推进。正常新块将 anchor 与业务状态一起提交；旧库缺口恢复
+期间 readiness 返回 `HistoryBackfillPending`，并提供 `snapshot_history_ready_height` 和
+`snapshot_history_pending_from`。回填完成后索引循环会继续追上游；chain 仍以新鲜的 `consensus_ready`
+响应作为启动条件。
 RPC 超时表示这次观测不可用，不能据此推断已提交高度归零。`up` 附加 controller 的面板与 `status --watch`
 使用相同的短暂超时缓存；单次 `--progress-json` 则始终输出当次真实观测。
 

@@ -242,6 +242,8 @@ impl InscriptionIndexer {
         // Init pass storage
         let miner_pass_storage = MinerPassStorage::new(&config.data_dir())?;
         let miner_pass_storage = Arc::new(miner_pass_storage);
+        miner_pass_storage
+            .reconcile_snapshot_history_coverage(config.config().usdb.genesis_block_height)?;
         if let Some(persisted_height) = miner_pass_storage.get_synced_btc_block_height()? {
             let persisted_versions = activation_registry
                 .lookup_active_version_set(persisted_height)
@@ -315,6 +317,9 @@ impl InscriptionIndexer {
         balance_history_client: Arc<dyn BalanceHistoryCommitApi>,
         status: Arc<dyn IndexStatusApi>,
     ) -> Self {
+        miner_pass_storage
+            .reconcile_snapshot_history_coverage(config.config().usdb.genesis_block_height)
+            .expect("test history coverage must reconcile");
         let effective_energy_resolver = Arc::new(EffectiveEnergyResolver::new(
             miner_pass_storage.clone(),
             pass_energy_manager.clone(),
@@ -1019,7 +1024,8 @@ impl InscriptionIndexer {
 
         let Some(first_missing_height) = self
             .miner_pass_storage
-            .get_first_missing_balance_history_snapshot_history_height(start_height, end_height)?
+            .get_committed_snapshot_history_progress(start_height)?
+            .pending_from
         else {
             return Ok(());
         };
@@ -1029,7 +1035,14 @@ impl InscriptionIndexer {
             first_missing_height, end_height
         );
 
+        let began = Instant::now();
+        let mut pending = Vec::with_capacity(64);
         for height in first_missing_height..=end_height {
+            if self.check_shutdown() {
+                let msg = "Snapshot history backfill interrupted by shutdown; committed batches remain resumable".to_string();
+                info!("{}", msg);
+                return Err(msg);
+            }
             if self
                 .miner_pass_storage
                 .get_balance_history_snapshot_anchor_at_height(height)?
@@ -1038,9 +1051,16 @@ impl InscriptionIndexer {
                 continue;
             }
 
-            warn!(
-                "Backfilling balance-history snapshot history at height {}: no snapshot anchor found, attempting to load historical state ref",
-                height
+            self.status.update_index_status(
+                None,
+                None,
+                Some(format!(
+                    "Backfilling snapshot anchors: height={}/{}, scanned={}/{}",
+                    height,
+                    end_height,
+                    height - first_missing_height,
+                    u64::from(end_height) - u64::from(first_missing_height) + 1
+                )),
             );
 
             let state_ref = self
@@ -1060,19 +1080,72 @@ impl InscriptionIndexer {
                 state_ref.consensus_identity.stable_lag,
                 "historical state ref during snapshot-history backfill",
             )?;
+            if state_ref.consensus_identity.stable_height != height
+                || state_ref.consensus_identity.stable_block_hash != state_ref.stable_block_hash
+            {
+                let msg = format!(
+                    "Snapshot history backfill anchor mismatch: requested_height={}, identity_height={}, identity_hash={}, block_hash={}",
+                    height,
+                    state_ref.consensus_identity.stable_height,
+                    state_ref.consensus_identity.stable_block_hash,
+                    state_ref.stable_block_hash
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
             let snapshot: BalanceHistorySnapshotInfo = state_ref.into();
-            self.miner_pass_storage
-                .upsert_balance_history_snapshot_history_entry(&snapshot)
-                .map_err(|e| {
-                    let msg = format!(
-                        "Failed to persist backfilled balance-history snapshot history: height={}, error={}",
-                        height, e
-                    );
-                    error!("{}", msg);
-                    msg
-                })?;
+            // Recovery must not attach another canonical history to existing local commits.
+            let local_commit = self.miner_pass_storage.get_pass_block_commit(height)?;
+            if snapshot.stable_height != height
+                || local_commit.as_ref().is_some_and(|entry| {
+                    entry.balance_history_block_height != height
+                        || Some(&entry.balance_history_block_commit)
+                            != snapshot.latest_block_commit.as_ref()
+                })
+            {
+                let msg = format!(
+                    "Snapshot history backfill anchor mismatch: requested_height={}, returned_height={}, local_upstream_commit={:?}, returned_commit={:?}",
+                    height,
+                    snapshot.stable_height,
+                    local_commit
+                        .as_ref()
+                        .map(|entry| &entry.balance_history_block_commit),
+                    snapshot.latest_block_commit
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+            pending.push(snapshot);
+            if pending.len() == 64 {
+                self.miner_pass_storage
+                    .upsert_balance_history_snapshot_history_entries(&pending)?;
+                pending.clear();
+                info!(
+                    "Snapshot history backfill progress: committed_through={}, target_height={}, elapsed_ms={}",
+                    height,
+                    end_height,
+                    began.elapsed().as_millis()
+                );
+            }
         }
-
+        if !pending.is_empty() {
+            self.miner_pass_storage
+                .upsert_balance_history_snapshot_history_entries(&pending)?;
+        }
+        self.status.update_index_status(
+            None,
+            None,
+            Some(format!(
+                "Snapshot anchor backfill completed through height {}",
+                end_height
+            )),
+        );
+        info!(
+            "Snapshot history backfill completed: start_height={}, end_height={}, elapsed_ms={}",
+            first_missing_height,
+            end_height,
+            began.elapsed().as_millis()
+        );
         Ok(())
     }
 
@@ -1262,6 +1335,11 @@ impl InscriptionIndexer {
                 msg
             })?;
 
+        // Repair legacy holes before publishing a new head or scanning more blocks.
+        // The durable history cursor keeps readiness closed across retries/restarts.
+        self.backfill_balance_history_snapshot_history(genesis_block_height, current_height)
+            .await?;
+
         if current_height >= latest_height {
             // Even on a no-op sync loop, persist the current upstream snapshot anchor.
             // This backfills metadata for already-synced data directories and keeps
@@ -1270,8 +1348,6 @@ impl InscriptionIndexer {
                 current_height,
                 &balance_history_snapshot,
             )?;
-            self.backfill_balance_history_snapshot_history(genesis_block_height, current_height)
-                .await?;
             let msg = format!(
                 "No new blocks to sync. Current height: {}, Latest height: {}",
                 current_height, latest_height
@@ -1311,17 +1387,12 @@ impl InscriptionIndexer {
         let persist_anchor_begin = Instant::now();
         self.persist_balance_history_snapshot_anchor(current_height, &balance_history_snapshot)?;
         let persist_anchor_elapsed_ms = persist_anchor_begin.elapsed().as_millis();
-        let backfill_begin = Instant::now();
-        self.backfill_balance_history_snapshot_history(genesis_block_height, current_height)
-            .await?;
-        let backfill_elapsed_ms = backfill_begin.elapsed().as_millis();
         info!(
-            "USDB indexer sync iteration completed: from_height={}, to_height={}, block_count={}, persist_snapshot_anchor_elapsed_ms={}, backfill_snapshot_history_elapsed_ms={}, total_elapsed_ms={}",
+            "USDB indexer sync iteration completed: from_height={}, to_height={}, block_count={}, persist_snapshot_anchor_elapsed_ms={}, total_elapsed_ms={}",
             sync_start_height.saturating_add(1),
             current_height,
             current_height.saturating_sub(sync_start_height),
             persist_anchor_elapsed_ms,
-            backfill_elapsed_ms,
             sync_once_begin.elapsed().as_millis()
         );
 
@@ -1838,7 +1909,11 @@ impl InscriptionIndexer {
         });
 
         let entry = collector.build_commit_entry(&upstream_commit, prev_local_commit.as_ref())?;
-        self.miner_pass_storage.upsert_pass_block_commit(&entry)
+        self.miner_pass_storage.upsert_pass_block_commit(&entry)?;
+        self.miner_pass_storage.upsert_balance_history_block_anchor(
+            &upstream_commit,
+            self.activation_registry().stable_lag_blocks(),
+        )
     }
 
     #[cfg(test)]

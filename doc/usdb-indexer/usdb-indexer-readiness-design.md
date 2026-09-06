@@ -48,6 +48,10 @@
    - `system_state_info`
 4. durably persisted recovery marker
    - `upstream_reorg_recovery_pending_height`
+5. 历史 anchor 的连续覆盖位置
+   - `snapshot_history_start_height` 与 `snapshot_history_next_height` 持久化在 SQLite `state`
+   - `next_height` 是从配置索引起点开始的第一个缺口，不能用历史表的最大高度代替
+   - 启动时从实际历史行重新核对位置；新块和回填事务负责增量推进，reorg 事务负责回退
 
 这里特别强调一点：`upstream_reorg_recovery_pending_height` 必须参与 readiness 计算，这样即使进程重启，服务也不会因为内存态丢失而错误地重新报告 ready。
 
@@ -59,6 +63,7 @@
 - `ShutdownRequested`
 - `SyncedHeightMissing`
 - `CatchingUp`
+- `HistoryBackfillPending`
 - `UpstreamReadinessUnknown`
 - `UpstreamConsensusNotReady`
 - `UpstreamSnapshotMissing`
@@ -93,6 +98,7 @@
 - `local_state_commit_info` 可生成
 - `system_state_info` 可生成
 - 没有任何 blocker
+- `snapshot_history_pending_from = null`，即所需历史 anchor 已连续覆盖本地已提交高度
 
 这样能把下面这些危险窗口显式挡住：
 
@@ -100,6 +106,33 @@
 - 上游已经有新 stable snapshot，但本地还在追块
 - rollback 已经开始，但 reorg recovery 还没完成
 - 进程正在 drain/shutdown
+- 本地与上游高度相同、head anchor 已存在，但中间历史 anchor 尚未补齐
+
+### 5.3 每块提交与旧库恢复
+
+正常索引复用生成 pass block commit 时取得的 `balance-history.get_block_commit(H)`，将同一高度的
+BTC hash、上游 block commit、stable lag 和协议版本写入历史 anchor。该行、连续覆盖位置和
+`synced_block_height` 与业务 SQLite 状态一起在现有每块 savepoint 内提交；能量库继续使用既有跨库恢复协议。
+正常追块完成后无需再逐块请求历史 state ref 来补 anchor。批次末尾的 adopted head anchor 仍单独发布。
+
+对外读取的同步高度和历史覆盖位置使用独立只读 SQLite 连接，只观察已提交状态。writer 的 savepoint
+尚未提交时，对外不能提前暴露新高度。readiness 的这两项状态来自同一次只读事务，查询开销不随历史长度增长。
+
+旧库可能仍有“业务高度在前、历史 anchor 在后”的缺口。启动时在 RPC 监听之前重算连续覆盖位置，
+索引循环在继续追块或发布新 head 之前先修复缺口。回填每批最多 64 行，在同一事务内写行并推进覆盖位置；
+失败或退出只重做未提交批次。返回的历史高度、hash identity 和已有本地 pass commit 的上游锚定必须一致，
+不一致时停止本轮并保留未就绪状态。
+
+`get_readiness` 新增：
+
+| 字段 | 含义 |
+| --- | --- |
+| `snapshot_history_ready_height` | 从索引起点连续具备 anchor 的最后已提交高度；首行尚缺时为 null |
+| `snapshot_history_pending_from` | 已提交业务范围内的第一个缺失高度；无缺口时为 null |
+
+回填时可继续提供普通本地查询；严格共识查询返回 `SNAPSHOT_NOT_READY`，blockers 包含
+`HistoryBackfillPending`。即使上游停止出块且双方高度完全相同，也只有补齐后才允许共识就绪。
+详细验收见 [历史 anchor 原子提交验收](./usdb-indexer-snapshot-anchor-acceptance.md)。
 
 ## 6. 与现有 RPC 的关系
 

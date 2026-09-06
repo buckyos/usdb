@@ -531,6 +531,8 @@ pub enum ReadinessBlocker {
     SyncedHeightMissing,
     /// Local durable state is behind the latest upstream stable snapshot.
     CatchingUp,
+    /// The durable historical anchor prefix does not yet cover the committed scan height.
+    HistoryBackfillPending,
     /// Upstream balance-history readiness has not been observed yet.
     UpstreamReadinessUnknown,
     /// Upstream balance-history is reachable but not consensus-ready.
@@ -566,6 +568,10 @@ pub struct ReadinessInfo {
     pub consensus_ready: bool,
     /// Local durable synced height, when available.
     pub synced_block_height: Option<u32>,
+    /// Last committed height with continuous historical anchors from the configured origin.
+    pub snapshot_history_ready_height: Option<u32>,
+    /// First missing anchor at or below the committed scan height, including after restart.
+    pub snapshot_history_pending_from: Option<u32>,
     /// Latest upstream stable height observed from balance-history, when available.
     pub balance_history_stable_height: Option<u32>,
     /// Current adopted upstream snapshot id, when available.

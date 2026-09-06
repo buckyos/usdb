@@ -151,6 +151,8 @@ impl IndexStatusApi for MockStatus {
 struct MockBalanceHistoryCommitProvider {
     commits: Mutex<HashMap<u32, Option<balance_history::BlockCommitInfo>>>,
     state_refs: Mutex<HashMap<u32, balance_history::HistoricalSnapshotStateRef>>,
+    state_ref_calls: Mutex<Vec<u32>>,
+    fail_state_ref_at: AtomicU32,
 }
 
 impl MockBalanceHistoryCommitProvider {
@@ -175,6 +177,13 @@ impl MockBalanceHistoryCommitProvider {
 
     fn default_state_ref(block_height: u32) -> balance_history::HistoricalSnapshotStateRef {
         let commit = Self::default_commit(block_height);
+        Self::state_ref_from_commit(&commit)
+    }
+
+    fn state_ref_from_commit(
+        commit: &balance_history::BlockCommitInfo,
+    ) -> balance_history::HistoricalSnapshotStateRef {
+        let block_height = commit.block_height;
         let stable_block_hash = commit.btc_block_hash.clone();
         let latest_block_commit = commit.block_commit.clone();
         let consensus_identity = usdb_util::ConsensusSnapshotIdentity {
@@ -195,8 +204,8 @@ impl MockBalanceHistoryCommitProvider {
             consensus_identity,
             snapshot_id_hash_algo: usdb_util::CONSENSUS_SNAPSHOT_ID_HASH_ALGO.to_string(),
             snapshot_id_version: usdb_util::CONSENSUS_SNAPSHOT_ID_VERSION.to_string(),
-            commit_protocol_version: commit.commit_protocol_version,
-            commit_hash_algo: commit.commit_hash_algo,
+            commit_protocol_version: commit.commit_protocol_version.clone(),
+            commit_hash_algo: commit.commit_hash_algo.clone(),
         }
     }
 
@@ -243,16 +252,40 @@ impl BalanceHistoryCommitApi for MockBalanceHistoryCommitProvider {
                 + 'a,
         >,
     > {
+        self.state_ref_calls.lock().unwrap().push(block_height);
+        if self.fail_state_ref_at.load(Ordering::SeqCst) == block_height && block_height != 0 {
+            return Box::pin(async move {
+                Err(format!(
+                    "Injected history RPC failure at height {}",
+                    block_height
+                ))
+            });
+        }
         let state_ref = self
             .state_refs
             .lock()
             .unwrap()
             .get(&block_height)
             .cloned()
-            .unwrap_or_else(|| Self::default_state_ref(block_height));
+            .unwrap_or_else(|| {
+                let commit = self
+                    .commits
+                    .lock()
+                    .unwrap()
+                    .get(&block_height)
+                    .cloned()
+                    .flatten();
+                commit
+                    .as_ref()
+                    .map(Self::state_ref_from_commit)
+                    .unwrap_or_else(|| Self::default_state_ref(block_height))
+            });
         Box::pin(async move { Ok(state_ref) })
     }
 }
+
+#[path = "../../../../../../tests/indexer_snapshot_anchors.rs"]
+mod snapshot_anchor_acceptance;
 
 #[derive(Clone)]
 struct MockCreateInfo {

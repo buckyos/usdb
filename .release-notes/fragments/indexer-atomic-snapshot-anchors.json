@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "indexer-atomic-snapshot-anchors",
+  "type": "fixed",
+  "scopes": ["indexer", "node-runtime", "testing"],
+  "summary": "Commit historical snapshot anchors with each indexed block and gate readiness on complete history",
+  "details": [
+    "Reuse the exact upstream block commit to persist the historical anchor in the same SQLite block transaction as business state, coverage, and synced height, eliminating normal post-scan history RPC backfill.",
+    "Read published heights and coverage through a separate committed SQLite view so open writer savepoints cannot expose uncommitted progress.",
+    "Reconcile continuous anchor coverage before RPC startup, repair legacy holes in bounded atomic batches, and keep HistoryBackfillPending across failures and restarts until the committed range is covered.",
+    "Expose snapshot_history_ready_height and snapshot_history_pending_from, validate recovered anchors against local upstream commits, and rewind coverage during reorg rollback.",
+    "Cover stationary upstreams, failed writes, interrupted processes before and after commit, partial backfill recovery, invalid anchors, and rollback/replay."
+  ],
+  "operator_actions": [
+    "Ship the updated usdb-services image and restart the indexer to adopt this fix. Existing databases are retained and any historical anchor holes are repaired before consensus readiness.",
+    "Observe the new history coverage fields and HistoryBackfillPending while legacy data is repaired; do not bypass the controller readiness gate."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}
