@@ -39,6 +39,8 @@ DEFAULT_S3_CHUNK_SIZE_MIB = 64
 DEFAULT_DOWNLOAD_CONCURRENCY = 8
 DEFAULT_DOWNLOAD_CHUNK_SIZE_MIB = 64
 PARALLEL_DOWNLOAD_MIN_SIZE = 128 * 1024 * 1024
+RANGE_DOWNLOAD_ATTEMPTS = 9
+RANGE_READ_BUFFER_SIZE = 1024 * 1024
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_ID_RE = re.compile(r"^balance-history-[a-z0-9-]+-h[0-9]+-[0-9a-f]{16}$")
@@ -1082,6 +1084,52 @@ def _pwrite_all(descriptor: int, data: bytes, offset: int) -> None:
         offset += written
 
 
+def _reserve_download_space(descriptor: int, expected_size: int) -> None:
+    """Reserve real filesystem space, including holes in an older sparse download."""
+    if not hasattr(os, "posix_fallocate"):
+        raise ValueError("parallel snapshot downloads require posix_fallocate support")
+    try:
+        os.posix_fallocate(descriptor, 0, expected_size)
+        os.fsync(descriptor)
+    except OSError as error:
+        raise ValueError(
+            f"failed to reserve {expected_size} bytes for parallel snapshot download: {error}"
+        ) from error
+
+
+def _validate_range_response(headers: bytes, start: int, end: int, expected_size: int) -> None:
+    """Validate the final response after any proxy handshake or HTTPS redirects."""
+    responses = [
+        block.splitlines()
+        for block in re.split(rb"\r?\n\r?\n", headers)
+        if block.startswith(b"HTTP/")
+    ]
+    _require(bool(responses), "parallel snapshot range returned no HTTP response headers")
+    response = responses[-1]
+    _require(
+        re.fullmatch(rb"HTTP/\S+\s+206(?:\s+.*)?", response[0]) is not None,
+        f"parallel snapshot range {start}-{end} did not return HTTP 206",
+    )
+    fields: dict[bytes, list[bytes]] = {}
+    for line in response[1:]:
+        name, separator, value = line.partition(b":")
+        if separator:
+            fields.setdefault(name.lower(), []).append(value.strip())
+    _require(
+        fields.get(b"content-range") == [f"bytes {start}-{end}/{expected_size}".encode()],
+        f"parallel snapshot range {start}-{end} returned an invalid Content-Range",
+    )
+    if b"content-length" in fields:
+        _require(
+            fields[b"content-length"] == [str(end - start + 1).encode()],
+            f"parallel snapshot range {start}-{end} returned an invalid Content-Length",
+        )
+    _require(
+        fields.get(b"content-encoding", [b"identity"]) == [b"identity"],
+        f"parallel snapshot range {start}-{end} returned an encoded response",
+    )
+
+
 def _download_range_chunk(
     *,
     url: str,
@@ -1092,60 +1140,60 @@ def _download_range_chunk(
     destination_descriptor: int,
     curl_executable: str,
 ) -> tuple[int, int]:
+    """Stream one bounded range directly into its reserved offset, retrying from its start."""
     start = index * chunk_size
     length = _chunk_length(index, chunk_size, expected_size)
     end = start + length - 1
-    chunk_path = work_dir / f"{index:08d}.part"
-    _require_managed_file(chunk_path, "parallel download chunk")
-    chunk_path.unlink(missing_ok=True)
-    result = subprocess.run(
-        [
-            curl_executable,
-            "--fail",
-            "--location",
-            "--proto",
-            "=https",
-            "--proto-redir",
-            "=https",
-            "--retry",
-            "8",
-            "--retry-delay",
-            "2",
-            "--retry-all-errors",
-            "--connect-timeout",
-            "30",
-            "--silent",
-            "--show-error",
-            "--range",
-            f"{start}-{end}",
-            "--max-filesize",
-            str(length),
-            "--output",
-            str(chunk_path),
-            "--write-out",
-            "%{http_code}",
-            url,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ValueError(
-            f"parallel snapshot range {start}-{end} failed: {result.stderr.strip()}"
-        )
-    _require(result.stdout.strip() == "206", f"parallel snapshot range {start}-{end} did not return HTTP 206")
-    _require(
-        chunk_path.is_file() and chunk_path.stat().st_size == length,
-        f"parallel snapshot range {start}-{end} returned the wrong length",
-    )
-    offset = start
-    with chunk_path.open("rb") as source:
-        for block in iter(lambda: source.read(8 * 1024 * 1024), b""):
-            _pwrite_all(destination_descriptor, block, offset)
-            offset += len(block)
-    chunk_path.unlink()
-    return index, length
+    for attempt in range(RANGE_DOWNLOAD_ATTEMPTS):
+        # Only small HTTP diagnostics use temporary files; payload bytes go through
+        # a bounded pipe buffer and pwrite. Anonymous files also disappear on crashes.
+        with tempfile.TemporaryFile(dir=work_dir) as headers, tempfile.TemporaryFile(dir=work_dir) as errors:
+            command = [
+                curl_executable, "--fail", "--location", "--proto", "=https",
+                "--proto-redir", "=https", "--connect-timeout", "30",
+                "--speed-limit", "1024", "--speed-time", "60",
+                "--silent", "--show-error", "--header", "Accept-Encoding: identity",
+                "--range", f"{start}-{end}", "--max-filesize", str(length),
+                "--dump-header", f"/dev/fd/{headers.fileno()}", "--output", "-", url,
+            ]
+            # curl's automatic retry can append a second response to stdout. Retry
+            # here instead so every attempt starts at the same assigned offset.
+            with subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=errors,
+                pass_fds=(headers.fileno(),),
+            ) as process:
+                received = 0
+                try:
+                    assert process.stdout is not None
+                    for block in iter(lambda: process.stdout.read(RANGE_READ_BUFFER_SIZE), b""):
+                        _require(
+                            received + len(block) <= length,
+                            f"parallel snapshot range {start}-{end} exceeded its assigned length",
+                        )
+                        _pwrite_all(destination_descriptor, block, start + received)
+                        received += len(block)
+                    returncode = process.wait()
+                except BaseException:
+                    process.kill()
+                    process.wait()
+                    raise
+            errors.seek(0)
+            error_text = errors.read(8192).decode("utf-8", errors="replace").strip()
+            if returncode != 0:
+                detail = f"parallel snapshot range {start}-{end} failed: curl exit {returncode}: {error_text}"
+                if attempt + 1 == RANGE_DOWNLOAD_ATTEMPTS:
+                    raise ValueError(detail)
+                print(f"{detail}; retrying range from start (attempt {attempt + 2}/{RANGE_DOWNLOAD_ATTEMPTS})",
+                      file=sys.stderr, flush=True)
+                time.sleep(2)
+                continue
+            headers.seek(0)
+            response_headers = headers.read(128 * 1024 + 1)
+            _require(len(response_headers) <= 128 * 1024, "parallel snapshot range headers are too large")
+            _validate_range_response(response_headers, start, end, expected_size)
+            _require(received == length, f"parallel snapshot range {start}-{end} returned the wrong length")
+            return index, length
+    raise AssertionError("parallel snapshot range exhausted attempts without a result")
 
 
 def _download_parallel_ranges(
@@ -1170,7 +1218,8 @@ def _download_parallel_ranges(
     _require_managed_file(state_path, "parallel download state")
     if _path_exists(state_path) and not destination_part.is_file():
         _cleanup_range_download(destination_part)
-    if _path_exists(state_path):
+    resuming = _path_exists(state_path)
+    if resuming:
         state = _load_json(state_path)
         _require_exact_keys(
             state,
@@ -1212,8 +1261,7 @@ def _download_parallel_ranges(
         }
         descriptor = os.open(destination_part, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o644)
         try:
-            os.ftruncate(descriptor, expected_size)
-            os.fsync(descriptor)
+            _reserve_download_space(descriptor, expected_size)
         finally:
             os.close(descriptor)
         _write_range_state(state_path, state)
@@ -1235,6 +1283,10 @@ def _download_parallel_ranges(
     descriptor = os.open(destination_part, os.O_RDWR)
     pending: list[tuple[int, int]] = []
     try:
+        # Older checkpoints used ftruncate and can still contain unallocated holes.
+        # fallocate preserves their completed bytes while reserving the remaining space.
+        if resuming:
+            _reserve_download_space(descriptor, expected_size)
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
             futures = {
                 executor.submit(

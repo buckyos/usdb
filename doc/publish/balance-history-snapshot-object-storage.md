@@ -225,9 +225,10 @@ usdb-node up
 
 1. 先下载较小的 content-addressed v3 release record；
 2. 在下载 DB 前校验 record schema、component identity、network、network bundle 的 index origin 和本地 trusted catalog；
-3. 对大于等于 `128 MiB` 的 DB 默认使用 `8 x 64 MiB` 并行 HTTP Range；预分配 `.part`，将已 fsync 的
-   chunk 记录到 `.ranges.json`，中断后只补缺失 chunk；小文件和旧连续 `.part` 继续单路续传；
-4. 汇总分片后对完整 `.part` 校验 size 和 SHA-256；
+3. 对大于等于 `128 MiB` 的 DB 默认使用 `8 x 64 MiB` 并行 HTTP Range；使用 `posix_fallocate`
+   为 `.part` 预留完整磁盘空间，各 worker 将响应流直接写入目标偏移，将已 fsync 的 chunk 记录到
+   `.ranges.json`，中断后只补缺失 chunk；小文件和旧连续 `.part` 继续单路续传；
+4. 所有 Range 写入完成后对完整 `.part` 校验 size 和 SHA-256；
 5. core 原子发布到 `<USDB_DATA_ROOT>/artifacts/balance-history/<snapshot-release-id>`；
 6. 在下载前持久化 bundle-scoped `node.env` 中的批准 snapshot 选择，并在未完成时阻止后续 runtime；
 7. 重新执行 runtime core snapshot validator。
@@ -250,8 +251,16 @@ usdb-node snapshot install \
   --download-chunk-size-mib 64
 ```
 
-Range worker 只同时保留每个 worker 的一个临时 chunk，不额外保留完整分片副本；目标 DB 仍会在开始时
-预分配全尺寸空间。调整 concurrency 不改变已有 `.ranges.json` 的 chunk 划分，调整 chunk size 只影响新任务。
+Range worker 使用有界内存缓冲和 `pwrite` 直接写入目标 DB，不再先落临时 chunk 再复制；完整下载中每段
+payload 只写一次。空间不足或文件系统不支持实际空间预留时，会在启动 Range 请求前报错。旧版稀疏 `.part`
+续传时先补足空间预留，并保留 `.ranges.json` 已确认完成的分片。进度以已持久化分片为准，不能用预分配后的
+文件长度判断已下载字节数。
+
+每个响应必须返回匹配请求区间及文件总长度的 HTTP 206 / `Content-Range`，并满足精确分片长度。
+断流重试从该分片起点覆盖写入，只有数据 fsync 完成后才更新断点；最终仍须完整 SHA-256 校验才能发布。
+调整 concurrency 不改变已有 `.ranges.json` 的 chunk 划分，调整 chunk size 只影响新任务。此下载器同时
+用于宿主机 core 下载和容器内 registry 下载，新 release 需同时包含更新后的 node kit 和 `usdb-services`
+镜像；已运行中的下载进程不会自动切换实现。
 
 这里的 controller snapshot 阶段或手工 `snapshot install` 只把 signed SQLite artifact 下载到本地 immutable
 artifact 目录，完成 release identity 校验并写入 `node.env` 选择；它不会创建 live balance-history RocksDB。

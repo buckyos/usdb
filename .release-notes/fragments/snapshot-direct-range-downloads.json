@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "snapshot-direct-range-downloads",
+  "type": "changed",
+  "scopes": ["balance-history", "deployment", "node-runtime"],
+  "summary": "Stream parallel snapshot ranges directly into a fully reserved target file",
+  "details": [
+    "Reserve real filesystem space before downloading, including unallocated holes in older resumable targets.",
+    "Write bounded HTTP response buffers directly at each range offset instead of copying temporary payload chunks, avoiding duplicate payload writes.",
+    "Validate HTTP 206 and exact Content-Range, overwrite interrupted ranges from their start on retry, and retain durable checkpoint ordering plus final whole-file SHA-256 verification.",
+    "Exercise real curl against a local HTTPS fixture for parallel writes, redirects, interrupted transfers, older checkpoints, malformed responses, allocation failures, and failed fsync."
+  ],
+  "operator_actions": [
+    "Ship the updated node kit and usdb-services image together so both host core downloads and container registry downloads use the new implementation.",
+    "Existing range checkpoints remain reusable; an already-running downloader continues using its loaded implementation."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}
