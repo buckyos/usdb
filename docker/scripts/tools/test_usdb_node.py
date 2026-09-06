@@ -172,9 +172,7 @@ class UsdbNodeTests(unittest.TestCase):
         answers = iter(
             [
                 str(data_root),
-                "miner",
-                address,
-                "2",
+                "full",
                 "enode://example",
                 "n",
                 "n",
@@ -192,9 +190,9 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(result.node_env, layout.node_env)
         self.assertFalse(result.apply_firewall)
         self.assertFalse(result.install_snapshot)
-        self.assertEqual(env["USDB_NODE_ROLE"], "miner")
-        self.assertEqual(env["USDB_MINER_ADDRESS"], address)
-        self.assertEqual(env["USDB_MINER_THREADS"], "2")
+        self.assertEqual(env["USDB_NODE_ROLE"], "full")
+        self.assertEqual(env["USDB_MINER_ADDRESS"], "")
+        self.assertEqual(env["USDB_MINER_THREADS"], "1")
         self.assertEqual(env["USDB_BOOTNODES"], "enode://example")
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
         self.assertEqual(env["USDB_FIREWALL_MODE"], "external")
@@ -446,7 +444,7 @@ class UsdbNodeTests(unittest.TestCase):
             "usdb-testnet-v0-Node-A.example",
         )
 
-    def test_set_role_requires_and_records_miner_identity(self) -> None:
+    def test_set_role_cannot_bypass_managed_mining_preflight(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         NODE.configure_node(
             layout,
@@ -460,13 +458,14 @@ class UsdbNodeTests(unittest.TestCase):
             bitcoin_p2p="private",
         )
         address = "0x1111111111111111111111111111111111111111"
-        NODE.set_role(layout, role="miner", miner_address=address, miner_threads=0)
+        before = layout.node_env.read_bytes()
+        with self.assertRaisesRegex(ValueError, "mining enable"):
+            NODE.set_role(layout, role="miner", miner_address=address, miner_threads=1)
         env = NODE.read_env(layout.node_env)
-        self.assertEqual(env["USDB_NODE_ROLE"], "miner")
-        self.assertEqual(env["USDB_MINER_ADDRESS"], address)
-        self.assertEqual(env["USDB_MINER_THREADS"], "0")
+        self.assertEqual(env["USDB_NODE_ROLE"], "full")
+        self.assertEqual(layout.node_env.read_bytes(), before)
 
-        with self.assertRaisesRegex(ValueError, "requires a non-zero EVM"):
+        with self.assertRaisesRegex(ValueError, "mining enable"):
             NODE.set_role(layout, role="miner", miner_address="", miner_threads=1)
 
     def test_release_identity_mismatch_is_rejected(self) -> None:
@@ -1985,7 +1984,9 @@ class UsdbNodeTests(unittest.TestCase):
                 output = "ready\n"
             return mock.Mock(returncode=0, stdout=output, stderr="")
 
-        with mock.patch.object(NODE, "run_helper", side_effect=ready):
+        with mock.patch.object(NODE, "run_helper", side_effect=ready), mock.patch.object(
+            NODE, "_mining_status", return_value={"state": "DISABLED", "applied": True}
+        ):
             report = NODE.collect_node_status(layout)
 
         self.assertEqual(report["overall_state"], "READY")

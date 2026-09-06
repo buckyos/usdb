@@ -29,6 +29,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/run_testnet_runtime.sh",
     "docker/scripts/tools/snapshot_distribution.py",
     "docker/scripts/tools/usdb_node.py",
+    "docker/scripts/tools/usdb_mining.py",
     "docker/scripts/tools/validate_network_bundle.py",
 )
 

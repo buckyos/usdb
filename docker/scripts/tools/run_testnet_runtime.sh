@@ -37,6 +37,8 @@ Actions:
                  Start or retry the release-approved optional registry installer.
   wait-indexer   Wait for usdb-indexer consensus readiness; timeout is the first argument.
   up-chain       Recheck all final readiness gates, then start the USDB chain.
+  stop-chain     Gracefully stop only chain and disable its automatic restart.
+  recreate-chain Apply a checked role change to chain with --no-deps.
   up             Complete all final gates and start indexer/chain for compatibility.
   indexer-status Print the current usdb-indexer readiness response.
   down           Stop containers without deleting bind-mounted node data.
@@ -292,6 +294,9 @@ case "${action}" in
       exit 1
     }
     validate_bundle --node-env "${node_env}" --require-runtime --require-bitcoin-runtime
+    if [[ "$(node_env_value USDB_NODE_ROLE)" == "miner" ]]; then
+      python3 "${script_dir}/usdb_node.py" --node-env "${node_env}" mining validate-start
+    fi
     USDB_TESTNET_BUNDLE_DIR="${bundle_dir}" \
       USDB_TESTNET_NODE_ENV="${node_env}" \
       "${bitcoin_runner}" wait
@@ -326,6 +331,21 @@ case "${action}" in
       compose up -d usdb-chain-init usdb-chain usdb-control-plane
     fi
     restore_runtime_restart_policy usdb-chain usdb-control-plane
+    ;;
+  stop-chain)
+    require_node_env
+    quiesce_runtime_services usdb-chain
+    ;;
+  recreate-chain)
+    require_node_env
+    validate_bundle --node-env "${node_env}" --require-runtime --require-bitcoin-runtime
+    if [[ "$(node_env_value USDB_NODE_ROLE)" == "miner" ]]; then
+      python3 "${script_dir}/usdb_node.py" --node-env "${node_env}" mining validate-start
+    fi
+    # Wait for the old writer to exit before Compose can create its replacement.
+    quiesce_runtime_services usdb-chain
+    compose up -d --no-deps --force-recreate usdb-chain
+    restore_runtime_restart_policy usdb-chain
     ;;
   up)
     require_node_env

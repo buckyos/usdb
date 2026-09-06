@@ -28,6 +28,9 @@ from typing import Any, Iterator
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+# Keep the CLI and imported mining engine on the same module instance.
+if __name__ == "__main__":
+    sys.modules["usdb_node"] = sys.modules[__name__]
 KIT_ROOT = SCRIPT_DIR.parents[2]
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -706,8 +709,8 @@ def _atomic_write_public(path: Path, content: str) -> None:
 def _require_role(role: str, miner_address: str, miner_threads: int) -> None:
     if role not in {"bootnode", "full", "miner"}:
         raise ValueError(f"unsupported node role: {role}")
-    if miner_threads < 0:
-        raise ValueError("miner threads cannot be negative")
+    if miner_threads < 1:
+        raise ValueError("miner threads must be positive")
     if role == "miner":
         if ADDRESS_RE.fullmatch(miner_address) is None or int(miner_address[2:], 16) == 0:
             raise ValueError("miner role requires a non-zero EVM --miner-address")
@@ -1022,6 +1025,8 @@ def configure_node(
             f"refusing to replace existing node configuration: {layout.node_env}; "
             "use set-role for role changes"
         )
+    if role == "miner":
+        raise ValueError("Configure a full node first; use usdb-node mining enable after upstream and chain initialization")
     _require_role(role, miner_address, miner_threads)
     if bitcoin_p2p not in {"private", "public"}:
         raise ValueError("bitcoin P2P mode must be private or public")
@@ -1260,20 +1265,14 @@ def setup_node(
         )
     role = _prompt_choice(
         "Node role",
-        ("full", "bootnode", "miner"),
+        ("full", "bootnode"),
         default="full",
         input_fn=input_fn,
         output=output,
     )
     miner_address = ""
     miner_threads = 1
-    if role == "miner":
-        miner_address = _prompt("Miner EVM address", input_fn=input_fn)
-        miner_threads_text = _prompt("CPU mining threads", default="1", input_fn=input_fn)
-        try:
-            miner_threads = int(miner_threads_text)
-        except ValueError as error:
-            raise ValueError("CPU mining threads must be an integer") from error
+    print("Enable mining after the full node is ready with usdb-node mining enable --address ADDRESS.", file=output)
     bootnodes = ""
     if role != "bootnode":
         bootnodes = _prompt("Bootnode enode(s), comma separated; optional", input_fn=input_fn)
@@ -1378,6 +1377,8 @@ def set_role(
 ) -> None:
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run configure first")
+    if role == "miner":
+        raise ValueError("Use usdb-node mining enable --address ADDRESS; set-role cannot bypass mining preflight")
     _require_role(role, miner_address, miner_threads)
     original = layout.node_env.read_text(encoding="utf-8")
     updated = render_env(
@@ -3783,8 +3784,10 @@ def _json_rpc_batch(
         raise ValueError("USDB chain RPC batch response must be a list")
     by_id: dict[int, Any] = {}
     for value in values:
-        if not isinstance(value, dict) or not isinstance(value.get("id"), int):
+        if not isinstance(value, dict) or type(value.get("id")) is not int:
             raise ValueError("USDB chain RPC returned an invalid batch item")
+        if value["id"] in by_id:
+            raise ValueError("USDB chain RPC returned a duplicate batch ID")
         if value.get("error") is not None:
             raise ValueError(f"USDB chain RPC returned an error: {value['error']}")
         by_id[value["id"]] = value.get("result")
@@ -4110,6 +4113,20 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
     # The watch client must not detach before the controller finishes the handoff.
     if overall == "READY" and resource_waiting:
         overall = "STARTING"
+    mining = None
+    if services.get("usdb-chain", {}).get("state") == "running" or (layout.node_env.parent / "node.mining.json").exists():
+        mining = _mining_status(layout)
+        if mining.get("state") == "SWITCHING" and chain_component["state"] not in {"FAILED", "BLOCKED"}:
+            chain_component.update(state="STARTING", detail=mining.get("detail", "Applying mining configuration"))
+            overall = _overall_progress_state(components)
+        elif mining.get("drift") and overall == "READY":
+            overall = "STARTING"
+        elif mining.get("state") == "FAILED":
+            overall = "FAILED"
+        elif mining.get("state") == "BLOCKED" and not mining.get("drift") and overall != "FAILED":
+            overall = "BLOCKED"
+        elif mining.get("observation_unavailable") and overall == "READY":
+            overall = "WAITING"
     return {
         "schema_version": NODE_PROGRESS_SCHEMA_VERSION,
         "release_id": layout.release_id,
@@ -4118,6 +4135,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         "controller_state": controller_state,
         "overall_state": "BLOCKED" if "error" in resources else overall,
         "resources": resources,
+        "mining": mining,
         "auxiliary_state": (
             "READY"
             if registry_component["state"] in {"READY", "SKIPPED"}
@@ -4179,6 +4197,12 @@ def render_node_progress(
         if len(detail) > available:
             detail = detail[: max(0, available - 3)] + "..."
         lines.append(prefix + detail)
+    mining = report.get("mining")
+    if isinstance(mining, dict):
+        configured = mining.get("configured", {})
+        lines.append(f"Mining            {mining['state']:<10} role={configured.get('USDB_NODE_ROLE', 'unknown')} "
+                     f"workers={configured.get('USDB_MINER_THREADS', 'unknown')} "
+                     f"{mining.get('detail', '')}")
     return "\n".join(lines)
 
 
@@ -4525,6 +4549,12 @@ def _finish_node_status(
     return report
 
 
+def _mining_status(layout: ReleaseLayout) -> dict[str, Any]:
+    """Keep mining observations separate from lifecycle and resource gates."""
+    import usdb_mining
+    return usdb_mining.observe(layout)
+
+
 def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
     checks: dict[str, dict[str, Any]] = {
         "release": {
@@ -4649,6 +4679,13 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
             ),
         )
     checks["runtime"] = runtime
+    mining = _mining_status(layout) if runtime["state"] == "ready" else None
+    if mining is not None:
+        checks["mining"] = {**mining, "summary": mining.get("detail", "Runtime mining configuration observed")}
+        if mining.get("drift") or mining.get("state") == "SWITCHING":
+            return _finish_node_status(report, "STARTING")
+        if mining.get("state") in {"BLOCKED", "FAILED"} or mining.get("observation_unavailable"):
+            return _finish_node_status(report, "BLOCKED")
     runtime_state = runtime["state"]
     if resource_pending and not resource_state.get("pending") and runtime_state == "degraded":
         unexpected_failures = [name for name, service in runtime.get("services", {}).items()
@@ -4707,6 +4744,7 @@ def _print_node_status_report(report: dict[str, Any]) -> None:
         "script_registry": "Script registry",
         "resources": "Resources",
         "runtime": "Runtime",
+        "mining": "Mining",
     }
     for key, label in labels.items():
         check = report["checks"].get(key)
@@ -4759,6 +4797,15 @@ def up_node(
     json_output: bool,
     enable_progress: bool = False,
 ) -> tuple[dict[str, Any], int]:
+    import usdb_mining
+    if not dry_run and usdb_mining.pending(layout):
+        with node_operation_lock(layout, "mining"):
+            code = usdb_mining.run_operation(layout)
+        report = collect_node_status(layout)
+        return {"schema_version": NODE_UP_SCHEMA_VERSION, "release_id": layout.release_id,
+                "network_bundle_id": layout.bundle_id, "initial_state": "STARTING",
+                "outcome": "ready" if code == 0 else "mining_pending_or_failed",
+                "completed_actions": ["mining"], "status": report}, code
     initial = collect_node_status(layout)
     action = _up_action(initial, allow_activation)
     result: dict[str, Any] = {
@@ -4819,6 +4866,14 @@ def up_node(
                     progress_monitor.set_phase("snapshot-install")
                     install_snapshot_release(layout)
                 elif action == "up":
+                    if report.get("checks", {}).get("mining", {}).get("drift"):
+                        code = usdb_mining.reconcile_config(layout)
+                        if code:
+                            result.update(outcome="mining_pending_or_failed", status=collect_node_status(layout))
+                            return result, code
+                        completed.append("mining")
+                        report = collect_node_status(layout)
+                        continue
                     startup_options: dict[str, Any] = {
                         "sync_timeout_secs": sync_timeout_secs,
                         "pull": pull,
@@ -4849,6 +4904,10 @@ def run_bootstrap_controller(
     pull: bool,
 ) -> int:
     """Run the non-interactive, non-activating up state machine for systemd."""
+    import usdb_mining
+    if usdb_mining.pending(layout):
+        with node_operation_lock(layout, "mining"):
+            return usdb_mining.run_operation(layout)
     result, return_code = up_node(
         layout,
         dry_run=False,
@@ -4886,6 +4945,14 @@ def submit_up_to_controller(
             pull=True,
             json_output=False,
         )
+
+    import usdb_mining
+    if usdb_mining.pending(layout):
+        unit = start_controller_unit(layout)
+        return {"schema_version": NODE_UP_SCHEMA_VERSION, "release_id": layout.release_id,
+                "network_bundle_id": layout.bundle_id, "initial_state": "STARTING",
+                "outcome": "controller_started", "completed_actions": [],
+                "controller_unit": unit, "status": collect_node_status(layout)}, 0
 
     initial = collect_node_status(layout)
     result: dict[str, Any] = {
@@ -5039,6 +5106,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="override the bundle-scoped private node.env path",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    import usdb_mining
+    usdb_mining.add_parser(subparsers)
 
     prepare_host_parser = subparsers.add_parser(
         "prepare-host",
@@ -5075,7 +5144,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
     configure.add_argument("--data-root", type=Path, default=Path.home() / ".usdb")
-    configure.add_argument("--role", choices=("bootnode", "full", "miner"), default="full")
+    configure.add_argument("--role", choices=("bootnode", "full"), default="full")
     configure.add_argument("--miner-address", default="")
     configure.add_argument("--miner-threads", type=int, default=1)
     configure.add_argument("--bootnodes", default="")
@@ -5337,6 +5406,13 @@ def _operation_name(args: argparse.Namespace) -> str | None:
 
 
 def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
+    if args.command == "mining":
+        import usdb_mining
+        return usdb_mining.execute(layout, args)
+    if args.command in {"set-role", "set-resource-policy", "set-bitcoin-profile", "set-firewall-mode", "activate-release", "snapshot"}:
+        import usdb_mining
+        if usdb_mining.pending(layout):
+            raise ValueError("A mining operation is pending; finish it or use mining disable before changing node configuration")
     if args.command in {"setup", "configure"} and args.resource_mode == "auto" and args.bitcoin_profile is not None:
         raise ValueError("--bitcoin-profile requires --resource-mode manual; automatic mode manages all Bitcoin phases")
     if args.command == "prepare-host":
@@ -5583,12 +5659,12 @@ def main() -> int:
         )
         with operation_context:
             return _execute_command(layout, args)
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        if args.command == "up" and args.json:
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        if args.command in {"up", "mining"} and getattr(args, "json", False):
             print(
                 json.dumps(
                     {
-                        "schema_version": NODE_UP_SCHEMA_VERSION,
+                        "schema_version": NODE_UP_SCHEMA_VERSION if args.command == "up" else "usdb-node-mining:v1",
                         "outcome": "error",
                         "error": str(error),
                     },

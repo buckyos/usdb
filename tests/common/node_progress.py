@@ -23,6 +23,7 @@ def progress_fixture(services, *, pending=False):
         ready = {"consensus_ready": True, "current": 10, "total": 10,
                  "synced_block_height": 10, "balance_history_stable_height": 10}
         observations = {
+            "_mining_status": {"state": "DISABLED", "applied": True},
             "controller_observed_state": "activating",
             "_collect_compose_services": services,
             "_snapshot_lifecycle_status": {},

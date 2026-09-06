@@ -373,7 +373,7 @@ export USDB_TESTNET_BUNDLE_DIR="$KIT_ROOT/docker/networks/usdb-testnet-v0"
 "$KIT_ROOT/docker/scripts/tools/run_testnet_runtime.sh" validate-node
 ```
 
-角色和 firewall policy 修改使用 `usdb-node set-role`/`set-firewall-mode`；managed UFW 操作使用 `firewall`；
+非挖矿角色和 firewall policy 修改使用 `usdb-node set-role`/`set-firewall-mode`；挖矿使用 `mining enable/disable`；managed UFW 操作使用 `firewall`；
 不要直接改私有 env 绕过校验，
 也不要把 `8332` 与 `8333` 一起开放。
 
@@ -476,38 +476,33 @@ curl -fsS -H 'content-type: application/json' \
 
 ## 10. 开启首个 Miner
 
-先调用 `resolve_miner_candidate` 复核该 `usdb_main` 在最新 external state 下能解析出
-`Active + Standard` pass，并记录返回的具体 pass ID、matching count 和 state identity。该 pass
-后续 consume/remint 时，只要新 pass 保持同一 `usdb_main`，miner 会自动跟随；改地址则停止组块。
-
-确认 candidate 后切换节点角色：
-
-使用 node kit 时执行：
+先以 full 节点完成上游与 chain 初始化，再使用受管矿工入口。工具自动按最新稳定状态选择
+Active Standard pass，并展示 pass ID、matching count、energy、网络身份和 CPU worker 数；
+零能量不阻止资格通过。默认 CPU PoW worker 为 1。
 
 ```bash
-usdb-node set-role \
-  --role miner \
-  --miner-address <stable-usdb-main-address> \
-  --miner-threads 1
-usdb-node up
-usdb-node logs usdb-chain
+# 可选的只读预检；无 seed 的首节点必须明确声明
+usdb-node mining check --address <stable-usdb-main-address> --first-node
+
+# 自带完整预检和一次确认，仅重建 chain
+usdb-node mining enable --address <stable-usdb-main-address> --first-node
+usdb-node mining status --watch
+
+# 持久禁用；即使上游暂不可用，也会停止本地挖矿
+usdb-node mining disable
 ```
 
-以下是手工回退路径对应的 `node.env` 修改：
+已有同网 seed 的加入节点省略 `--first-node`，并等待 P2P 连接与同步完成。
+未配置 seed 且未明确声明首节点会报 `PEER_SOURCE_REQUIRED`。
+首节点记录绑定网络、数据库和 node key；产块后重复启用不要求回到 genesis。
 
-```text
-USDB_NODE_ROLE=miner
-USDB_MINER_ADDRESS=<stable-usdb-main-address>
-USDB_MINER_THREADS=1
-```
+自动化增加 `--yes --json`。返回 `controller_submitted` 仅表示持久任务已交给 systemd；
+交互终端会等待配置生效，SSH 断开后可用 `mining status --watch` 重连观察。
+`WARMING_UP` 表示等待 DAG/work，`ACTIVE` 表示挖矿配置及有效 work 已观测到，
+均不能单独证明本机产块；需结合完整本地 seal hash 与 canonical block。
 
-然后重新执行：
-
-```bash
-docker/scripts/tools/run_testnet_runtime.sh validate-node
-docker/scripts/tools/run_testnet_runtime.sh up
-docker/scripts/tools/run_testnet_runtime.sh logs usdb-chain
-```
+不要再用 `set-role --role miner -> up` 或手工写 miner 配置绕过预检。旧入口现在会明确报错。
+完整恢复语义、故障阶段和测试范围见[矿工运维设计](./usdb-node-mining-operations-design.md)。
 
 确认区块持续增长、header selector 可由同一 usdb-indexer state-ref 验证后，才执行 SourceDAO bootstrap。
 后续节点以 `full -> late joiner -> second miner` 的顺序加入，CPU-only Ethash 的线程限制和验收指标见

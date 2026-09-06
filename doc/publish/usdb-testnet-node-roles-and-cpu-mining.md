@@ -1,6 +1,6 @@
 # USDB 测试网节点角色与 CPU 挖矿方案
 
-Status: implemented configuration; staged testnet rollout remains manual.
+Status: managed mining operations implemented; live rollout remains explicit.
 
 本文规定首个 USDB 三节点测试网的角色演进、矿工身份隔离和 CPU-only Ethash 运行基线。它适用于
 `testnet-v0` 启动及早期 soak，不改变 PoW 共识规则、难度参数或网络身份。
@@ -106,7 +106,10 @@ GPU worker / mining farm
   - 不选择 pass、coinbase 或 USDB policy
 ```
 
-coordinator 使用：
+以下是未来 remote-only coordinator 的 Geth 语义说明，**不属于当前受管 CPU miner 接口**。
+当前 `mining enable` 和 runtime 拒绝线程数 0；GPU/remote sealer 需另行实现与验收。
+
+未来 coordinator 配置示意：
 
 ```text
 USDB_NODE_ROLE=miner
@@ -156,8 +159,12 @@ GPU worker 本身不需要运行 Bitcoin、balance-history 或 usdb-indexer；�
 
 ## 6. 运行与应急控制
 
-长期配置通过私有 `node.env` 管理。修改 `USDB_NODE_ROLE` 或 `USDB_MINER_THREADS` 后，使用标准 runtime
-helper 重新创建 chain 容器；不要修改 network bundle。
+长期角色通过 `usdb-node mining enable --address ADDRESS` / `mining disable` 管理。
+无 seed 的首节点增加 `--first-node`，默认一个 CPU worker；高级覆盖使用正整数 `--threads N`。
+工具自动预检并只重建 chain；不要手工写入 miner 配置后调用旧 helper。
+
+`usdb-node mining status --watch` 展示持久任务、角色是否生效以及 work 状态；
+正常节点 `status` 面板也包含 mining 信息。详见[矿工运维设计](./usdb-node-mining-operations-design.md)。
 
 本地 operator RPC 保留 `miner` API 时，可以临时执行：
 

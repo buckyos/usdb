@@ -131,7 +131,7 @@ managed 模式的完整 firewall check 依据 `node.env` 对照 SSH、USDB P2P�
 实际 bind policy。external 模式的 `doctor/up` 跳过 UFW inspection，但相同的 bind policy 校验不会跳过。
 高级入口为 `set-firewall-mode`、`firewall check` 和 `firewall apply --confirm`。
 
-`setup` 拒绝覆盖已有 `node.env` 或 `rpcauth`。角色切换使用 `set-role`，不重新生成 secret。
+`setup` 拒绝覆盖已有 `node.env` 或 `rpcauth`。非挖矿角色切换使用 `set-role`，挖矿启停使用 `mining enable/disable`，不重新生成 secret。
 
 正式 snapshot 是可选启动加速器。release manifest 已冻结经过 review 的 content-addressed record、
 高度、BTC block hash、core snapshot ID、core/可选 registry 下载规模和 trusted-key catalog。交互式 `setup` 会显示这些信息并
@@ -496,15 +496,16 @@ Bitcoin RPC 返回 warmup 错误时，进度面板会从本次 `debug.log` 启�
 切换矿工角色：
 
 ```bash
-usdb-node set-role \
-  --role miner \
-  --miner-address 0x1111111111111111111111111111111111111111 \
-  --miner-threads 1
-usdb-node up
+usdb-node mining enable \
+  --address 0x1111111111111111111111111111111111111111 \
+  --first-node
+usdb-node mining status --watch
 ```
 
-GPU remote sealer 使用 `--miner-threads 0`。Joiner 在首次 `configure` 时传入 `--bootnodes` 和必要的
-`--nat`；这些是节点本地拓扑，不属于 release identity。
+没有 seed 的首节点才使用 `--first-node`。Joiner 在首次 `configure` 时传入 `--bootnodes` 和必要的
+`--nat`，连接同网 peer 并同步完成后省略 `--first-node` 启用 miner。默认 CPU worker 为 1，
+当前受管入口拒绝线程数 0，GPU remote sealer 不在本次范围。
+用 `mining disable` 持久回到 full；`--yes --json` 提供自动化提交与 operation ID。
 
 ## 6. 保留人工确认的事项
 

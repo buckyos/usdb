@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "managed-node-mining-operations",
+  "type": "added",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Add checked, recoverable CPU mining operations to the release node kit",
+  "details": [
+    "Add mining check, enable, disable and status with pinned candidate identity, explicit first-node acknowledgement and one CPU worker by default.",
+    "Persist chain-only role transitions under the systemd controller, preserve upstream processes and data, and distinguish runtime drift, warmup, work and canonical local seals.",
+    "Explicitly configure discovery in the chain runtime and reject managed mining or consensus flag overrides. Package the new host module with every node kit."
+  ],
+  "operator_actions": [
+    "Initialize nodes as full or bootnode, then use usdb-node mining enable --address ADDRESS; add --first-node only for an explicitly acknowledged genesis cold start without seeds.",
+    "Use mining disable for persistent shutdown and mining status --watch to observe submitted operations. Replace the chain image to adopt discovery and JSON logging changes."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": []
+}

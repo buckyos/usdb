@@ -153,6 +153,7 @@ class ResourceControllerTests(unittest.TestCase):
             return NODE._component_progress(name, "READY", "ready")
 
         with (
+            mock.patch.object(NODE, "_mining_status", return_value={"state": "DISABLED", "applied": True}),
             mock.patch.object(NODE, "controller_observed_state", return_value="active"),
             mock.patch.object(NODE, "_collect_compose_services", return_value=services),
             mock.patch.object(NODE, "_snapshot_lifecycle_status", return_value={}),

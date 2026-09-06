@@ -29,6 +29,7 @@
 - [USDB Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)
 - [USDB Network 数据布局与 Release 兼容契约](./usdb-network-data-layout-and-release-compatibility.md)
 - [USDB 测试网节点角色与 CPU 挖矿方案](./usdb-testnet-node-roles-and-cpu-mining.md)
+- [USDB 节点矿工切换与运维](./usdb-node-mining-operations-design.md)
 - [USDB testnet-v0 深 BTC 重组停链与整网重置](./usdb-testnet-v0-deep-btc-reorg-operations.md)
 - [Balance-History 发布与 Snapshot 分发](./balance-history-release-and-snapshot-distribution.md)
 - [Balance-history Snapshot 与 Indexer Checkpoint 兼容规则](./balance-history-indexer-checkpoint-compatibility.md)
