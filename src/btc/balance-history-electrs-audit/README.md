@@ -1,10 +1,52 @@
 # balance-history-electrs-audit
 
+本次已发布拆分快照的构建、路径、全量对拍和抽样命令统一见
+[拆分快照审计操作指南](../../../doc/balance-history/balance-history-split-snapshot-audit-operations.md)。
+
 这是一个独立、只读的离线审计工具，用固定 seed 从 balance-history SQLite snapshot
 抽取样本，并通过 electrs 历史交易重放计算目标高度余额。
 
 工具不会打开或修改 balance-history RocksDB，也不会修改 snapshot。它只会写入明确指定的
 JSON report 和 checkpoint。
+
+## 拆分快照
+
+工具同时支持旧整体 SQLite 和新 core＋script registry sidecar。新 core 使用 `--snapshot-db`，
+并必须提供 `--script-registry-db`；可用 `--script-registry-manifest` 指定非默认位置的 registry
+manifest。两组件的 schema、网络、genesis、height、BTC hash、core snapshot ID、manifest 与
+DB 元数据均在抽样前校验；正余额样本从 core 选择，缺失 registry 映射直接报错，不会跳过它。
+
+在仓库根目录先生成离线计划，检查当前产物与抽样；此步骤不联系 electrs、不写 checkpoint：
+
+```bash
+H=963800
+HASH=000000000000000000012c999b5f6d2043b1d3d76dcf06ee007b5f86290c0551
+NEW=/home/bucky/.usdb/balance-history-snapshot-mainnet/builder/snapshots/000000963800/$HASH
+cargo run --release --manifest-path src/btc/Cargo.toml -p balance-history-electrs-audit -- \
+  --snapshot-db "$NEW/core/balance_history_core_$H.db" \
+  --script-registry-db "$NEW/script-registry/script_registry_$H.db" \
+  --sample-count 32 --seed usdb-mainnet-963800-split-smoke-v1 --plan-only
+```
+
+确认下文 electrs 运行配置生效后，执行真实抽样：
+
+```bash
+cargo run --release --manifest-path src/btc/Cargo.toml -p balance-history-electrs-audit -- \
+  --snapshot-db "$NEW/core/balance_history_core_$H.db" \
+  --script-registry-db "$NEW/script-registry/script_registry_$H.db" \
+  --electrs-config /data/.electrs/config.toml \
+  --confirm-electrs-restarted-with-config \
+  --electrs-url tcp://127.0.0.1:50001 \
+  --sample-count 32 --seed usdb-mainnet-963800-split-smoke-v1 \
+  --output-dir /home/bucky/.usdb/balance-history-snapshot-mainnet/releases/reports
+```
+
+`--verify-file-hash` 在 split 模式下重算两个 DB 的 hash。报告与 checkpoint 已升级为 v2，
+`db_schema_version` 改为字符串；run identity 包含 core artifact ID、registry manifest/路径及
+hash 验证模式。更换 sidecar 或验证模式会生成不同 run ID；旧 v1 checkpoint 不可复用。
+
+读取使用只读 immutable SQLite，拒绝非空 WAL，不创建或修改输入的 WAL/SHM。离线计划只证明
+输入可读取和样本可选取，不是 electrs 校验报告；抽样通过也不替代全表语义对拍。
 
 ## Electrs 保护
 

@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "split-snapshot-semantic-audits",
+  "type": "added",
+  "scopes": ["balance-history"],
+  "summary": "Audit split snapshots against legacy state and Electrs",
+  "details": [
+    "Extend compare-legacy with direct immutable core and registry SQLite inputs, reusing the existing bounded shard scanner and frozen semantic difference rules.",
+    "Validate paired artifact manifests, schemas, database anchors and scanned row counts; optionally recompute current artifact file hashes before auditing.",
+    "Read paired core and registry inputs in Electrs sampling and fail on a missing registry mapping instead of silently replacing the positive-balance sample.",
+    "Bind Electrs checkpoint identity to both artifacts and hash verification mode, and provide a plan-only command for offline input and sample inspection."
+  ],
+  "operator_actions": [
+    "Use --core-snapshot-db and --script-registry-db for direct legacy-to-split comparison; the original RocksDB comparison remains available for fully replayed sources.",
+    "Pass --script-registry-db alongside the core --snapshot-db for Electrs auditing. Reports and checkpoints use v2; create fresh reports instead of reusing v1 checkpoints.",
+    "Use --verify-file-hash when this audit must independently bind current file bytes to the manifests; otherwise reports explicitly retain an unverified-hash status."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

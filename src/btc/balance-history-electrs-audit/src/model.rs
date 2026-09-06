@@ -1,12 +1,16 @@
+use balance_history::snapshot_audit::AuditRegistryArtifact;
 use serde::{Deserialize, Serialize};
 
-pub const AUDIT_REPORT_VERSION: &str = "balance-history-electrs-audit-report:v1";
-pub const AUDIT_CHECKPOINT_VERSION: &str = "balance-history-electrs-audit-checkpoint:v1";
+pub const AUDIT_REPORT_VERSION: &str = "balance-history-electrs-audit-report:v2";
+pub const AUDIT_CHECKPOINT_VERSION: &str = "balance-history-electrs-audit-checkpoint:v2";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunIdentity {
     pub snapshot_file: String,
     pub declared_snapshot_sha256: String,
+    pub core_artifact_id: Option<String>,
+    pub script_registry: Option<AuditRegistryArtifact>,
+    pub file_hashes_verified: bool,
     pub snapshot_height: u32,
     pub snapshot_block_hash: String,
     pub electrs_url: String,
@@ -27,7 +31,9 @@ pub struct SnapshotSummary {
     pub snapshot_id: Option<String>,
     pub height: u32,
     pub block_hash: String,
-    pub db_schema_version: u32,
+    pub db_schema_version: String,
+    pub core_artifact_id: Option<String>,
+    pub script_registry: Option<AuditRegistryArtifact>,
     pub balance_history_count: u64,
     pub utxo_count: u64,
     pub block_commit_count: u64,

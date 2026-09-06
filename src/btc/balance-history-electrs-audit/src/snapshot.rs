@@ -1,7 +1,11 @@
 use crate::model::{SampleKind, SnapshotSummary};
+use balance_history::snapshot_audit::{
+    SplitSnapshotAudit, immutable_audit_uri, open_immutable_audit_db,
+};
+use balance_history::snapshot_contract::CORE_SNAPSHOT_MANIFEST_VERSION;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{Network, Script, ScriptBuf};
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -86,6 +90,7 @@ pub struct SnapshotStore {
     conn: Connection,
     pub summary: SnapshotSummary,
     network: Network,
+    registry_table: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,13 +120,25 @@ struct RawCandidate {
     script_hash: Vec<u8>,
     height: Option<i64>,
     balance: i64,
-    script_pubkey: Vec<u8>,
+    script_pubkey: Option<Vec<u8>>,
 }
 
 impl SnapshotStore {
+    #[cfg(test)]
     pub fn open(
         snapshot_file: &Path,
         manifest_file: Option<&Path>,
+        verify_file_hash: bool,
+    ) -> Result<Self, String> {
+        Self::open_with_registry(snapshot_file, manifest_file, None, None, verify_file_hash)
+    }
+
+    /// Opens a legacy snapshot or an identity-checked core/registry pair for bounded sampling.
+    pub fn open_with_registry(
+        snapshot_file: &Path,
+        manifest_file: Option<&Path>,
+        registry_file: Option<&Path>,
+        registry_manifest: Option<&Path>,
         verify_file_hash: bool,
     ) -> Result<Self, String> {
         let snapshot_file = snapshot_file.canonicalize().map_err(|error| {
@@ -139,6 +156,26 @@ impl SnapshotStore {
                 manifest_file.display()
             )
         })?;
+        let format: serde_json::Value = serde_json::from_str(&manifest_data)
+            .map_err(|error| format!("Invalid audit manifest: {error}"))?;
+        if format["manifest_version"] == CORE_SNAPSHOT_MANIFEST_VERSION {
+            let registry =
+                registry_file.ok_or("Split snapshot sampling requires --script-registry-db")?;
+            let input = SplitSnapshotAudit::open(
+                &snapshot_file,
+                Some(&manifest_file),
+                Some(registry),
+                registry_manifest,
+                verify_file_hash,
+            )?;
+            return Self::open_split(input);
+        }
+        if registry_file.is_some() || registry_manifest.is_some() {
+            return Err("Registry sidecar options require a split core snapshot".to_string());
+        }
+        if format["manifest_version"] != "balance-history-snapshot-manifest:v1" {
+            return Err("Unsupported audit snapshot manifest version".to_string());
+        }
         let manifest: AuditManifest = serde_json::from_str(&manifest_data).map_err(|error| {
             format!(
                 "Failed to parse snapshot manifest {}: {error}",
@@ -171,18 +208,7 @@ impl SnapshotStore {
             }
         }
 
-        let conn = Connection::open_with_flags(
-            &snapshot_file,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(|error| {
-            format!(
-                "Failed to open snapshot {} read-only: {error}",
-                snapshot_file.display()
-            )
-        })?;
-        conn.pragma_update(None, "query_only", true)
-            .map_err(|error| format!("Failed to enable SQLite query_only: {error}"))?;
+        let conn = open_immutable_audit_db(&snapshot_file)?;
 
         let meta = conn
             .query_row(
@@ -200,6 +226,12 @@ impl SnapshotStore {
                 },
             )
             .map_err(|error| format!("Failed to load snapshot meta: {error}"))?;
+        if meta.5 != 2 {
+            return Err(format!(
+                "Unsupported legacy audit snapshot schema: {}",
+                meta.5
+            ));
+        }
         let height = nonnegative_u32(meta.0, "meta.block_height")?;
         if height != manifest.state_ref.block_height {
             return Err(format!(
@@ -227,7 +259,9 @@ impl SnapshotStore {
             snapshot_id: manifest.state_ref.snapshot_id,
             height,
             block_hash: manifest.state_ref.stable_block_hash,
-            db_schema_version: nonnegative_u32(meta.5, "meta.version")?,
+            db_schema_version: nonnegative_u32(meta.5, "meta.version")?.to_string(),
+            core_artifact_id: None,
+            script_registry: None,
             balance_history_count: nonnegative_u64(meta.1, "meta.balance_history_count")?,
             utxo_count: nonnegative_u64(meta.2, "meta.utxo_count")?,
             block_commit_count: nonnegative_u64(meta.3, "meta.block_commit_count")?,
@@ -239,6 +273,52 @@ impl SnapshotStore {
             conn,
             summary,
             network,
+            registry_table: "main.script_registry",
+        })
+    }
+
+    fn open_split(input: SplitSnapshotAudit) -> Result<Self, String> {
+        let registry = input
+            .script_registry
+            .as_ref()
+            .ok_or("Split audit registry missing")?;
+        let conn = open_immutable_audit_db(&input.core.file)?;
+        conn.execute(
+            "ATTACH DATABASE ?1 AS registry",
+            [immutable_audit_uri(&registry.file)?],
+        )
+        .map_err(|error| format!("Failed to attach immutable audit registry: {error}"))?;
+        conn.execute_batch("PRAGMA registry.cache_size=-8192;")
+            .map_err(|error| format!("Failed to bound audit registry cache: {error}"))?;
+        let manifest = &input.core.manifest;
+        let network = manifest
+            .db_identity
+            .btc_network
+            .parse::<Network>()
+            .map_err(|error| format!("Invalid audit Bitcoin network: {error}"))?;
+        let summary = SnapshotSummary {
+            file: input.core.file.display().to_string(),
+            manifest_file: input.core.manifest_file.display().to_string(),
+            manifest_version: manifest.manifest_version.clone(),
+            declared_file_sha256: manifest.file_sha256.clone(),
+            file_sha256_verified: input.file_hashes_verified,
+            snapshot_id: Some(manifest.core_snapshot_id.clone()),
+            height: input.core_meta.block_height,
+            block_hash: manifest.state_ref.stable_block_hash.clone(),
+            db_schema_version: manifest.snapshot_schema_version.clone(),
+            core_artifact_id: Some(manifest.core_artifact_id.clone()),
+            script_registry: input.script_registry.clone(),
+            balance_history_count: input.core_meta.balance_history_count,
+            utxo_count: input.core_meta.utxo_count,
+            block_commit_count: input.core_meta.block_commit_count,
+            script_registry_count: registry.manifest.entry_count,
+            btc_network: network.to_string(),
+        };
+        Ok(Self {
+            conn,
+            summary,
+            network,
+            registry_table: "registry.script_registry",
         })
     }
 
@@ -317,7 +397,12 @@ impl SnapshotStore {
                     stats.duplicate_candidates_replaced += 1;
                     continue;
                 }
-                let script_pubkey = ScriptBuf::from_bytes(candidate.script_pubkey);
+                let script_pubkey =
+                    ScriptBuf::from_bytes(candidate.script_pubkey.ok_or_else(|| {
+                        format!(
+                            "Audit registry mapping missing for core balance script {script_hash:x}"
+                        )
+                    })?);
                 let actual_hash = script_pubkey.to_btc_script_hash();
                 if actual_hash != script_hash {
                     return Err(format!(
@@ -348,20 +433,22 @@ impl SnapshotStore {
     fn probe_candidate(&self, kind: SampleKind, probe: &[u8; 32]) -> Result<RawCandidate, String> {
         let (range_sql, wrap_sql) = match kind {
             SampleKind::PositiveBalance => (
-                "SELECT b.script_hash, b.height, b.balance, s.script_pubkey FROM balance_history b JOIN script_registry s ON s.script_hash=b.script_hash WHERE b.script_hash>=?1 AND b.balance>0 ORDER BY b.script_hash ASC LIMIT 1",
-                "SELECT b.script_hash, b.height, b.balance, s.script_pubkey FROM balance_history b JOIN script_registry s ON s.script_hash=b.script_hash WHERE b.balance>0 ORDER BY b.script_hash ASC LIMIT 1",
+                "SELECT b.script_hash, b.height, b.balance, s.script_pubkey FROM balance_history b LEFT JOIN {registry} s ON s.script_hash=b.script_hash WHERE b.script_hash>=?1 AND b.balance>0 ORDER BY b.script_hash ASC LIMIT 1",
+                "SELECT b.script_hash, b.height, b.balance, s.script_pubkey FROM balance_history b LEFT JOIN {registry} s ON s.script_hash=b.script_hash WHERE b.balance>0 ORDER BY b.script_hash ASC LIMIT 1",
             ),
             SampleKind::ZeroBalance => (
-                "SELECT s.script_hash, NULL, 0, s.script_pubkey FROM script_registry s LEFT JOIN balance_history b ON b.script_hash=s.script_hash WHERE s.script_hash>=?1 AND b.script_hash IS NULL ORDER BY s.script_hash ASC LIMIT 1",
-                "SELECT s.script_hash, NULL, 0, s.script_pubkey FROM script_registry s LEFT JOIN balance_history b ON b.script_hash=s.script_hash WHERE b.script_hash IS NULL ORDER BY s.script_hash ASC LIMIT 1",
+                "SELECT s.script_hash, NULL, 0, s.script_pubkey FROM {registry} s LEFT JOIN balance_history b ON b.script_hash=s.script_hash WHERE s.script_hash>=?1 AND b.script_hash IS NULL ORDER BY s.script_hash ASC LIMIT 1",
+                "SELECT s.script_hash, NULL, 0, s.script_pubkey FROM {registry} s LEFT JOIN balance_history b ON b.script_hash=s.script_hash WHERE b.script_hash IS NULL ORDER BY s.script_hash ASC LIMIT 1",
             ),
         };
+        let range_sql = range_sql.replace("{registry}", self.registry_table);
+        let wrap_sql = wrap_sql.replace("{registry}", self.registry_table);
         if let Some(candidate) =
-            self.query_candidate(range_sql, rusqlite::params![probe.as_slice()])?
+            self.query_candidate(&range_sql, rusqlite::params![probe.as_slice()])?
         {
             return Ok(candidate);
         }
-        self.query_candidate(wrap_sql, [])?
+        self.query_candidate(&wrap_sql, [])?
             .ok_or_else(|| format!("Snapshot has no {:?} sampling candidates", kind))
     }
 
@@ -439,6 +526,10 @@ fn nonnegative_u64(value: i64, field: &str) -> Result<u64, String> {
 fn nonnegative_u32(value: i64, field: &str) -> Result<u32, String> {
     u32::try_from(value).map_err(|_| format!("{field} is outside u32 range: {value}"))
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/common/split_snapshot_audit.rs"]
+pub(crate) mod split_fixture;
 
 #[cfg(test)]
 mod tests {
@@ -564,5 +655,102 @@ mod tests {
         let blacklist = Blacklist::load(Some(&file), Network::Bitcoin).unwrap();
         assert!(blacklist.contains(&script.to_btc_script_hash()));
         assert!(blacklist.contains(&address.script_pubkey().to_btc_script_hash()));
+    }
+    #[test]
+    fn split_sampling_is_stratified_and_missing_mapping_fails() {
+        let temp = TempDir::new().unwrap();
+        let fixture = super::split_fixture::fixture(temp.path());
+        assert!(fixture.legacy.is_file());
+        let open = || {
+            SnapshotStore::open_with_registry(
+                &fixture.core,
+                None,
+                Some(&fixture.registry),
+                None,
+                false,
+            )
+        };
+        let store = open().unwrap();
+        let plan = store
+            .sample("split-seed", 8, 25, &Blacklist::default())
+            .unwrap();
+        assert_eq!(
+            plan.samples
+                .iter()
+                .filter(|sample| sample.kind == SampleKind::PositiveBalance)
+                .count(),
+            6
+        );
+        assert_eq!(
+            plan.samples
+                .iter()
+                .filter(|sample| sample.kind == SampleKind::ZeroBalance)
+                .count(),
+            2
+        );
+        assert_eq!(store.summary.script_registry_count, 12);
+        assert!(store.summary.script_registry.is_some());
+        let repeated = store
+            .sample("split-seed", 8, 25, &Blacklist::default())
+            .unwrap();
+        assert_eq!(
+            plan.samples
+                .iter()
+                .map(|sample| sample.script_hash)
+                .collect::<Vec<_>>(),
+            repeated
+                .samples
+                .iter()
+                .map(|sample| sample.script_hash)
+                .collect::<Vec<_>>()
+        );
+        let missing = plan.samples[0].script_hash;
+        drop(store);
+        Connection::open(&fixture.registry)
+            .unwrap()
+            .execute(
+                "DELETE FROM script_registry WHERE script_hash=?1",
+                [missing.as_ref() as &[u8]],
+            )
+            .unwrap();
+        let error = open()
+            .unwrap()
+            .sample("split-seed", 8, 25, &Blacklist::default())
+            .unwrap_err();
+        assert!(error.contains("registry mapping missing"), "{error}");
+    }
+
+    #[test]
+    fn split_sampling_requires_paired_registry_and_rejects_corrupt_hash() {
+        let temp = TempDir::new().unwrap();
+        let fixture = super::split_fixture::fixture(temp.path());
+        let missing = SnapshotStore::open_with_registry(&fixture.core, None, None, None, false)
+            .err()
+            .unwrap();
+        assert!(missing.contains("requires --script-registry-db"));
+        let verified = SnapshotStore::open_with_registry(
+            &fixture.core,
+            None,
+            Some(&fixture.registry),
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(verified.summary.file_sha256_verified);
+        drop(verified);
+        Connection::open(&fixture.registry)
+            .unwrap()
+            .execute_batch("UPDATE script_registry SET script_pubkey=x'51'")
+            .unwrap();
+        let error = SnapshotStore::open_with_registry(
+            &fixture.core,
+            None,
+            Some(&fixture.registry),
+            None,
+            true,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("SHA256 mismatch"));
     }
 }

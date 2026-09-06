@@ -100,6 +100,9 @@ mod tests {
         RunIdentity {
             snapshot_file: "/snapshot.db".to_string(),
             declared_snapshot_sha256: "11".repeat(32),
+            core_artifact_id: None,
+            script_registry: None,
+            file_hashes_verified: false,
             snapshot_height: 10,
             snapshot_block_hash: "22".repeat(32),
             electrs_url: "tcp://127.0.0.1:50001".to_string(),
@@ -128,5 +131,29 @@ mod tests {
         save_checkpoint(&path, &checkpoint).unwrap();
         let second_id = build_run_id(&identity("b")).unwrap();
         assert!(load_or_create_checkpoint(&path, &second_id).is_err());
+    }
+    #[test]
+    fn checkpoint_binds_sidecar_and_verification_mode() {
+        let temp = TempDir::new().unwrap();
+        let fixture = crate::snapshot::split_fixture::fixture(temp.path());
+        let input = balance_history::snapshot_audit::SplitSnapshotAudit::open(
+            &fixture.core,
+            None,
+            Some(&fixture.registry),
+            None,
+            false,
+        )
+        .unwrap();
+        let mut first = identity("same-seed");
+        first.core_artifact_id = Some(input.core.manifest.core_artifact_id);
+        first.script_registry = input.script_registry;
+        let original = build_run_id(&first).unwrap();
+        let path = temp.path().join("checkpoint.json");
+        save_checkpoint(&path, &load_or_create_checkpoint(&path, &original).unwrap()).unwrap();
+        let mut verified = first.clone();
+        verified.file_hashes_verified = true;
+        assert!(load_or_create_checkpoint(&path, &build_run_id(&verified).unwrap()).is_err());
+        first.script_registry.as_mut().unwrap().manifest.file_sha256 = "aa".repeat(32);
+        assert!(load_or_create_checkpoint(&path, &build_run_id(&first).unwrap()).is_err());
     }
 }

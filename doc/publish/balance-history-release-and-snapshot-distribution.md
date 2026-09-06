@@ -9,9 +9,12 @@
 - [Exact-Height Snapshot Tool Design](../balance-history/balance-history-exact-height-snapshot-tool-design.md)
 - [主网 Exact-Height Snapshot 操作指南](../balance-history/balance-history-mainnet-exact-height-snapshot-operations.md)
 
-> 当前切换状态：split v1 artifact 和 core-only installer 已实现，但 snapshot record、network
-> bundle、对象存储 resolver/publisher 仍在后续批次切换。仓库当前主网包装脚本会对这些旧单文件
-> 发布命令 fail closed；本章描述的远端发布流程在该批次完成前不能用于新 split artifact。
+> 当前切换状态：split v1 artifact、v3 snapshot release record、对象存储 publisher/resolver 和
+> core-only installer 已接通。testnet-v0 bundle 已纳入高度 963800 的拆分 record；公网发布
+> 已验证 record、8 个公开对象长度和两个 DB 的 Range；目标机安装与主网语义审计另行验收。
+> 旧快照语义对拍和 electrs 抽样工具均支持拆分产物，命令见
+> [旧快照语义对拍边界](../balance-history/balance-history-legacy-snapshot-semantic-comparison.md)
+> 和 [electrs 审计工具](../../src/btc/balance-history-electrs-audit/README.md)。
 
 ## 2. 发布物边界
 
@@ -41,8 +44,14 @@ script-registry/script_registry_<H>.manifest.sig   # optional
 script-registry/complete.json                      # optional
 ```
 
-新的 snapshot record 路径和 schema 将在部署发布闭环批次中冻结；不得复用旧 v2 单文件 record
-表示 split artifact。
+Snapshot record 使用 `usdb-snapshot-release-record:v3`，公开路径为
+`snapshot-records/v3/<record-sha256>.json`；不得复用旧 v2 单文件 record 表示 split artifact。
+
+USDB release 读取 network bundle 的 `snapshots/balance-history-snapshot-release-record.json`，
+将其 SHA-256、公开 URL、core 和可选 registry 信息写入 release manifest，并把原 record 带入
+node kit。更换快照时更新这份 record；安装脚本从经过校验的 release manifest/record 选择文件，
+不需要硬编码新的数据库下载地址。Candidate 和 publish workflow 都执行 `verify-public`；需在
+snapshot 上传结束后通过该检查再发布。该检查确认分发可用性，不替代数据库语义审计。
 
 发布对象不包含 signing private key、builder workspace、job state、接收方 trusted-key catalog 或
 validation DB。对象存储具体契约和命令见

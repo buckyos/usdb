@@ -1,0 +1,17 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "pin-split-mainnet-snapshot-record",
+  "type": "changed",
+  "scopes": ["balance-history", "deployment"],
+  "summary": "Pin the split height 963800 snapshot in the testnet-v0 release bundle",
+  "details": [
+    "Include the canonical v3 release record for the core and script-registry artifacts so release manifests and node kits select their pinned download identities.",
+    "Document the verified public publication and the split-artifact audit commands."
+  ],
+  "operator_actions": [
+    "Create releases from a revision containing this record; candidate and publish workflows recheck public object availability.",
+    "Run the direct legacy-to-split comparator and paired core/registry Electrs audit to qualify the new artifacts."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

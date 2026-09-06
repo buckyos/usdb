@@ -1,9 +1,13 @@
 # Balance-History 旧快照跨版本语义对拍
 
+本次已发布拆分快照的完整执行流程见
+[拆分快照全量对拍与 Electrs 抽样操作](./balance-history-split-snapshot-audit-operations.md)。
+
 ## 1. 目的与边界
 
 `balance-history-snapshot-tool compare-legacy` 用于把旧版 schema v2 SQLite snapshot
-与当前代码从创世块重新生成的 RocksDB 固定在同一 BTC 高度后逐项对拍。它解决的是跨版本
+与当前代码从创世块重新生成的 RocksDB，或从该状态导出的 core/registry SQLite，在同一 BTC
+高度逐项对拍。它解决的是跨版本
 正确性审计问题，不承担以下职责：
 
 - 不允许生产 snapshot installer 接受旧 schema；installer 仍只接受当前 schema 并 fail closed。
@@ -22,6 +26,50 @@ commit 链差异均属于 unexpected difference，命令返回非零状态。
 
 ## 2. 对拍范围
 
+### 拆分格式支持
+
+`compare-legacy` 支持两种互斥的当前侧输入：
+
+- `--balance-history-root`：从创世块重放、冻结在同一高度的 RocksDB。
+- `--core-snapshot-db`：新 core SQLite；全量辅助状态对拍时另传 `--script-registry-db`。
+
+两条路径共用有界分片扫描和冻结的差异分类规则。SQLite 路径直接读取两个拆分文件，不恢复
+RocksDB、不复制大表，默认每个 SQLite connection 的 cache 上限为 8 MiB。扫描前校验 core
+manifest、SQLite schema/metadata、最新 block commit，以及 sidecar 的 network、genesis、height、
+BTC hash 和 `core_snapshot_id` 绑定。所有选中表的实际扫描行数都与两侧元数据比较。
+
+RocksDB 路径的 `--include-script-registry` 直接扫描 registry column family；若库由 snapshot
+恢复，工具会拒绝把它当成完整 registry 源，应改用两个 SQLite 文件。
+
+直接对拍本次主网产物（以下命令在仓库根目录执行）：
+
+```bash
+H=963800
+HASH=000000000000000000012c999b5f6d2043b1d3d76dcf06ee007b5f86290c0551
+OLD=/data/.usdb/balance-history-snapshot-mainnet/builder/snapshots/000000963800/$HASH
+NEW=/home/bucky/.usdb/balance-history-snapshot-mainnet/builder/snapshots/000000963800/$HASH
+REPORT=/home/bucky/.usdb/balance-history-snapshot-mainnet/releases/reports/legacy-vs-split-$H-full.json
+
+cargo run --release --manifest-path src/btc/Cargo.toml -p balance-history-snapshot-tool -- \
+  --root-dir /tmp/usdb-split-audit --json compare-legacy \
+  --snapshot-db "$OLD/snapshot_$H.db" \
+  --core-snapshot-db "$NEW/core/balance_history_core_$H.db" \
+  --include-script-registry \
+  --script-registry-db "$NEW/script-registry/script_registry_$H.db" \
+  --height "$H" --parallelism 4 --integrity-check off \
+  --output "$REPORT"
+```
+
+移除 `--include-script-registry` 和 `--script-registry-db` 可先运行核心三表。Manifest 默认在对应
+DB 旁；非默认位置分别用 `--core-manifest`、`--script-registry-manifest` 指定。`--verify-file-hash`
+会在扫描前重算所有当前侧 DB 的 SHA-256；旧快照 hash 继续由独立发布校验确认。
+
+上例复用已完成的 finalize/verify，关闭重复 SQLite integrity scan；来源未验证时保留默认 `quick`
+或显式使用 `full`。不论是否重算 hash，都会进行完整语义扫描。报告 schema 为
+`balance-history-legacy-split-comparison:v1`，`current` 包含两个具体 manifest、文件路径和
+`file_hashes_verified`；该标志为 false 时不宣称本轮验证了文件 hash。输入存在非空 WAL 时拒绝
+immutable 读取，防止遗漏尚未 checkpoint 的数据。工具不会停止运行中的服务。
+
 默认比较共识和恢复相关的三组状态：
 
 - 每个 script hash 在目标高度的最新非零余额记录；
@@ -34,7 +82,7 @@ commit 链差异均属于 unexpected difference，命令返回非零状态。
 比较器使用 256 个有序 key shard，内存占用有界；`--parallelism` 控制并发 shard 数，默认
 为 4。报告只保留每张表有限数量的示例，但所有差异都会计数。
 
-## 3. 执行前置条件
+## 3. RocksDB 对拍的执行前置条件
 
 1. 当前代码重放的 RocksDB 已经到达目标高度，且服务使用 `--max-block-height` 冻结在该高度。
    达到有限目标后服务进入 `Synced`，继续提供 RPC，但不再轮询 BTC 或自动响应目标高度的后续重组；
@@ -56,7 +104,7 @@ cargo build --release -p balance-history-snapshot-tool
 
 ```bash
 ROOT=/home/bucky/.usdb/balance-history-mainnet-audit
-OLD_ROOT=/home/bucky/.usdb/balance-history-snapshot-mainnet/builder/snapshots
+OLD_ROOT=/data/.usdb/balance-history-snapshot-mainnet/builder/snapshots
 HEIGHT=963800
 HASH=000000000000000000012c999b5f6d2043b1d3d76dcf06ee007b5f86290c0551
 HEIGHT_PADDED=$(printf '%012d' "$HEIGHT")

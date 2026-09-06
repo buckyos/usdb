@@ -18,3 +18,9 @@ toml = "0.9"
 
 [dev-dependencies]
 bitcoincore-rpc = "0.19"
+rusqlite = { version = "0.38", features = ["bundled"] }
+tempfile = "3.23"
+
+[[test]]
+name = "split_snapshot_audit"
+path = "../../../tests/split_snapshot_audit.rs"

@@ -1,3 +1,7 @@
+#[path = "legacy_compare/split.rs"]
+mod split;
+pub use split::{SplitLegacyComparisonReport, compare_legacy_split_snapshot};
+
 use super::rocksdb::{Direction, IteratorMode};
 use super::{
     BALANCE_HISTORY_CF, BALANCE_HISTORY_KEY_LEN, BLOCK_COMMIT_VALUE_LEN, BLOCK_COMMITS_CF,
@@ -310,6 +314,11 @@ impl BalanceHistoryDB {
         progress: Option<LegacyStateCompareProgressRef>,
     ) -> Result<LegacyStateComparisonReport, String> {
         validate_options(options)?;
+        if options.include_script_registry && self.get_snapshot_install_provenance()?.is_some() {
+            let message = "Registry comparison requires a fully replayed RocksDB; use split artifact inputs to audit a sidecar base";
+            log::error!("Legacy comparison input rejected: {message}");
+            return Err(message.to_string());
+        }
         let started = Instant::now();
         let legacy_path = options.snapshot_db.canonicalize().map_err(|e| {
             format!(
@@ -425,7 +434,7 @@ impl BalanceHistoryDB {
         options: &LegacyStateCompareOptions,
         progress: Option<LegacyStateCompareProgressRef>,
     ) -> Result<LegacyStateTableComparison, String> {
-        self.compare_sharded_table("balance_history", options, progress, |shard| {
+        compare_sharded_table("balance_history", options, progress, |shard| {
             self.compare_balance_shard(options, shard)
         })
     }
@@ -435,7 +444,7 @@ impl BalanceHistoryDB {
         options: &LegacyStateCompareOptions,
         progress: Option<LegacyStateCompareProgressRef>,
     ) -> Result<LegacyStateTableComparison, String> {
-        self.compare_sharded_table("utxos", options, progress, |shard| {
+        compare_sharded_table("utxos", options, progress, |shard| {
             self.compare_utxo_shard(options, shard)
         })
     }
@@ -445,63 +454,9 @@ impl BalanceHistoryDB {
         options: &LegacyStateCompareOptions,
         progress: Option<LegacyStateCompareProgressRef>,
     ) -> Result<LegacyStateTableComparison, String> {
-        self.compare_sharded_table("script_registry", options, progress, |shard| {
+        compare_sharded_table("script_registry", options, progress, |shard| {
             self.compare_registry_shard(options, shard)
         })
-    }
-
-    fn compare_sharded_table<F>(
-        &self,
-        table: &str,
-        options: &LegacyStateCompareOptions,
-        progress: Option<LegacyStateCompareProgressRef>,
-        compare_shard: F,
-    ) -> Result<LegacyStateTableComparison, String>
-    where
-        F: Fn(u8) -> Result<ShardComparison, String> + Send + Sync,
-    {
-        let started = Instant::now();
-        let completed = AtomicUsize::new(0);
-        let legacy_rows = AtomicU64::new(0);
-        let current_rows = AtomicU64::new(0);
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(options.parallelism)
-            .thread_name(move |index| format!("legacy-compare-{}", index))
-            .build()
-            .map_err(|e| format!("Failed to build comparator thread pool: {}", e))?;
-        let reports = pool.install(|| {
-            (0u16..SHARD_COUNT as u16)
-                .into_par_iter()
-                .map(|shard| {
-                    let report = compare_shard(shard as u8)?;
-                    legacy_rows.fetch_add(report.legacy_rows, AtomicOrdering::Relaxed);
-                    current_rows.fetch_add(report.current_rows, AtomicOrdering::Relaxed);
-                    let done = completed.fetch_add(1, AtomicOrdering::Relaxed) + 1;
-                    if let Some(progress) = &progress
-                        && (done == SHARD_COUNT || done.is_multiple_of(8))
-                    {
-                        progress(LegacyStateCompareProgress {
-                            table: table.to_string(),
-                            completed_shards: done,
-                            total_shards: SHARD_COUNT,
-                            legacy_rows: legacy_rows.load(AtomicOrdering::Relaxed),
-                            current_rows: current_rows.load(AtomicOrdering::Relaxed),
-                        });
-                    }
-                    Ok(report)
-                })
-                .collect::<Result<Vec<_>, String>>()
-        })?;
-
-        let mut table_report = LegacyStateTableComparison {
-            table: table.to_string(),
-            ..LegacyStateTableComparison::default()
-        };
-        for report in reports {
-            report.merge_into(&mut table_report, options.max_examples);
-        }
-        table_report.duration_seconds = started.elapsed().as_secs_f64();
-        Ok(table_report)
     }
 
     fn compare_balance_shard(
@@ -821,6 +776,59 @@ impl BalanceHistoryDB {
         shard.merge_into(&mut report, options.max_examples);
         Ok(report)
     }
+}
+
+fn compare_sharded_table<F>(
+    table: &str,
+    options: &LegacyStateCompareOptions,
+    progress: Option<LegacyStateCompareProgressRef>,
+    compare_shard: F,
+) -> Result<LegacyStateTableComparison, String>
+where
+    F: Fn(u8) -> Result<ShardComparison, String> + Send + Sync,
+{
+    let started = Instant::now();
+    let completed = AtomicUsize::new(0);
+    let legacy_rows = AtomicU64::new(0);
+    let current_rows = AtomicU64::new(0);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(options.parallelism)
+        .thread_name(move |index| format!("legacy-compare-{}", index))
+        .build()
+        .map_err(|e| format!("Failed to build comparator thread pool: {}", e))?;
+    let reports = pool.install(|| {
+        (0u16..SHARD_COUNT as u16)
+            .into_par_iter()
+            .map(|shard| {
+                let report = compare_shard(shard as u8)?;
+                legacy_rows.fetch_add(report.legacy_rows, AtomicOrdering::Relaxed);
+                current_rows.fetch_add(report.current_rows, AtomicOrdering::Relaxed);
+                let done = completed.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+                if let Some(progress) = &progress
+                    && (done == SHARD_COUNT || done.is_multiple_of(8))
+                {
+                    progress(LegacyStateCompareProgress {
+                        table: table.to_string(),
+                        completed_shards: done,
+                        total_shards: SHARD_COUNT,
+                        legacy_rows: legacy_rows.load(AtomicOrdering::Relaxed),
+                        current_rows: current_rows.load(AtomicOrdering::Relaxed),
+                    });
+                }
+                Ok(report)
+            })
+            .collect::<Result<Vec<_>, String>>()
+    })?;
+
+    let mut table_report = LegacyStateTableComparison {
+        table: table.to_string(),
+        ..LegacyStateTableComparison::default()
+    };
+    for report in reports {
+        report.merge_into(&mut table_report, options.max_examples);
+    }
+    table_report.duration_seconds = started.elapsed().as_secs_f64();
+    Ok(table_report)
 }
 
 fn validate_options(options: &LegacyStateCompareOptions) -> Result<(), String> {

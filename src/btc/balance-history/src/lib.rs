@@ -10,6 +10,7 @@ pub mod index;
 pub mod output;
 pub mod runtime;
 pub mod service;
+pub mod snapshot_audit;
 pub mod snapshot_contract;
 pub mod snapshot_provenance;
 pub mod status;

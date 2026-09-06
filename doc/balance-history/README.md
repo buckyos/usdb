@@ -27,6 +27,7 @@
 
 ## 快照与恢复
 
+- [拆分快照全量对拍与 Electrs 抽样操作](./balance-history-split-snapshot-audit-operations.md)
 - [balance-history-snapshot-signing.md](./balance-history-snapshot-signing.md)
 - [balance-history-exact-height-snapshot-tool-design.md](./balance-history-exact-height-snapshot-tool-design.md)
 - [balance-history-exact-height-snapshot-capacity.md](./balance-history-exact-height-snapshot-capacity.md)

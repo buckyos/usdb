@@ -92,12 +92,27 @@ SourceDAO full bootstrap config 已随 bundle 冻结，但 bootstrap private key
 只允许 local/world-sim。bundle validator 会拒绝 testnet/mainnet 使用该地址；未来 mainnet 还必须
 生成与本 testnet 地址不同的 signer。Git 和 bundle 只记录公开地址。
 
+## 可选快照
+
+`snapshots/balance-history-snapshot-release-record.json` 固定本次拆分快照的下载清单：
+
+- BTC height：`963800`；snapshot release：`balance-history-bitcoin-h963800-59e54b88ef118294`。
+- Record SHA-256：`56ad21c69c4b02a9bf398f63ab609de91ea35935fd1a7d3af151bd2098678789`。
+- Core DB：约 `34.46 GiB`；可选 script registry DB：约 `183.19 GiB`。
+
+Release manifest 从此文件派生公开 record URL、组件 ID、文件大小和可信 catalog hash，node kit
+携带同一文件；安装脚本无需另写 DB URL。制作新 release 时必须包含该文件所在的 USDB revision。
+`setup` 仍由操作员选择 snapshot 或 full sync；选择 snapshot 后先安装 core，controller 再处理
+可选 registry，registry 不阻塞核心服务启动。
+
+上传使用“组件文件在前、record 最后”的顺序；`publish` 运行中 record 可能尚不可访问。发布 candidate
+前必须通过工作流中的 `snapshot_distribution.py verify-public`，核验公开 record、全部对象长度和
+两个 DB 的 byte range。本次 record 已通过公网检查（8 个文件、2 个 DB Range）；语义审计单独验收。
+
 ## 尚未冻结
 
 - 三个发布镜像的 digest 与最终三仓 release manifest；candidate workflow 已具备，但尚待实际 artifact。
-- release-approved snapshot record 已冻结为 BTC height `963800` 的 content-addressed artifact；candidate
-  和 publish 必须确认公开 record、对象长度和 DB byte-range 可用。节点仍可在 `setup` 中选择 full sync，
-  选择 snapshot 时再逐文件完成 SHA-256 与签名校验。
+- 上述拆分 snapshot 的目标机安装验收；安装时逐文件完成 SHA-256 与签名校验。
 - 三台机器的 bootnode enode、外部 IP 和 miner pass。
 - 正式 PoW calibration 报告。
 - SourceDAO bootstrap 执行记录和完成 checkpoint。

@@ -21,13 +21,25 @@ const TOOL_NAME: &str = "balance-history-electrs-audit";
 #[command(name = TOOL_NAME)]
 #[command(about = "Deterministically audit a balance-history SQLite snapshot against electrs")]
 struct Cli {
-    /// Immutable balance-history SQLite snapshot.
+    /// Immutable legacy snapshot or split core SQLite snapshot.
     #[arg(long)]
     snapshot_db: PathBuf,
 
     /// Snapshot manifest sidecar. Defaults to <snapshot>.manifest.json.
     #[arg(long)]
     manifest: Option<PathBuf>,
+
+    /// Required registry sidecar when --snapshot-db is a split core.
+    #[arg(long)]
+    script_registry_db: Option<PathBuf>,
+
+    /// Registry manifest. Defaults to <registry>.manifest.json.
+    #[arg(long, requires = "script_registry_db")]
+    script_registry_manifest: Option<PathBuf>,
+
+    /// Validate inputs and print the deterministic sample plan without contacting electrs.
+    #[arg(long)]
+    plan_only: bool,
 
     /// Electrs TCP/SSL endpoint.
     #[arg(long, default_value = "tcp://127.0.0.1:50001")]
@@ -116,9 +128,11 @@ fn run(cli: Cli) -> Result<(), String> {
     if cli.sample_count > 10_000 {
         return Err("sample_count must not exceed 10000".to_string());
     }
-    let snapshot = SnapshotStore::open(
+    let snapshot = SnapshotStore::open_with_registry(
         &cli.snapshot_db,
         cli.manifest.as_deref(),
+        cli.script_registry_db.as_deref(),
+        cli.script_registry_manifest.as_deref(),
         cli.verify_file_hash,
     )?;
     let blacklist = Blacklist::load(cli.blacklist.as_deref(), snapshot.network())?;
@@ -128,6 +142,30 @@ fn run(cli: Cli) -> Result<(), String> {
         cli.zero_sample_percent,
         &blacklist,
     )?;
+    if cli.plan_only {
+        let samples = plan
+            .samples
+            .iter()
+            .map(|sample| {
+                serde_json::json!({
+                    "sample_id": sample.sample_id,
+                    "kind": sample.kind,
+                    "script_hash": format!("{:x}", sample.script_hash),
+                    "script_pubkey": hex::encode(sample.script_pubkey.as_bytes()),
+                    "expected_balance": sample.expected_balance,
+                    "last_change_height": sample.last_change_height,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "mode": "plan_only", "snapshot": snapshot.summary, "samples": samples,
+            }))
+            .map_err(|error| format!("Failed to serialize audit plan: {error}"))?
+        );
+        return Ok(());
+    }
     let server_limit = validate_server_limit(
         cli.electrs_config.as_deref(),
         cli.max_history_entries,
@@ -150,6 +188,9 @@ fn run(cli: Cli) -> Result<(), String> {
     let run_identity = RunIdentity {
         snapshot_file: snapshot.summary.file.clone(),
         declared_snapshot_sha256: snapshot.summary.declared_file_sha256.clone(),
+        core_artifact_id: snapshot.summary.core_artifact_id.clone(),
+        script_registry: snapshot.summary.script_registry.clone(),
+        file_hashes_verified: snapshot.summary.file_sha256_verified,
         snapshot_height: snapshot.summary.height,
         snapshot_block_hash: snapshot.summary.block_hash.clone(),
         electrs_url: cli.electrs_url.clone(),
@@ -334,6 +375,9 @@ mod tests {
         RunIdentity {
             snapshot_file: "/snapshot.db".to_string(),
             declared_snapshot_sha256: "11".repeat(32),
+            core_artifact_id: None,
+            script_registry: None,
+            file_hashes_verified: false,
             snapshot_height: 963_800,
             snapshot_block_hash: "22".repeat(32),
             electrs_url: "tcp://127.0.0.1:50001".to_string(),

@@ -1,7 +1,8 @@
+use balance_history::snapshot_audit::SplitSnapshotAudit;
 use balance_history::{
     BalanceHistoryConfig, BalanceHistoryDB, DEFAULT_CACHE_BUDGET_PERCENT, IndexConfig,
     LegacySnapshotIntegrityCheck, LegacyStateCompareOptions, LegacyStateCompareProgressRef,
-    derive_cache_limits,
+    compare_legacy_split_snapshot, derive_cache_limits,
 };
 use balance_history_snapshot_tool::{
     ExactHeightSnapshotBuilder, SnapshotComponent, SnapshotCreateOptions,
@@ -124,11 +125,35 @@ enum Command {
         component: SnapshotComponentArg,
     },
 
-    /// Compare a legacy v2 SQLite snapshot with a rebuilt RocksDB at the same exact height.
+    /// Compare legacy v2 SQLite with rebuilt RocksDB or split artifacts at the same height.
     CompareLegacy {
         /// Service root containing the rebuilt balance-history RocksDB and config.toml.
-        #[arg(long)]
-        balance_history_root: PathBuf,
+        #[arg(
+            long,
+            required_unless_present = "core_snapshot_db",
+            conflicts_with = "core_snapshot_db"
+        )]
+        balance_history_root: Option<PathBuf>,
+
+        /// Immutable current core SQLite, instead of a rebuilt RocksDB.
+        #[arg(long, required_unless_present = "balance_history_root")]
+        core_snapshot_db: Option<PathBuf>,
+
+        /// Core manifest. Defaults to <core>.manifest.json.
+        #[arg(long, requires = "core_snapshot_db")]
+        core_manifest: Option<PathBuf>,
+
+        /// Current registry SQLite for --include-script-registry in split mode.
+        #[arg(long, requires_all = ["core_snapshot_db", "include_script_registry"])]
+        script_registry_db: Option<PathBuf>,
+
+        /// Registry manifest. Defaults to <registry>.manifest.json.
+        #[arg(long, requires = "script_registry_db")]
+        script_registry_manifest: Option<PathBuf>,
+
+        /// Recompute all supplied current artifact hashes before the semantic scan.
+        #[arg(long, requires = "core_snapshot_db")]
+        verify_file_hash: bool,
 
         /// Immutable legacy SQLite snapshot file.
         #[arg(long)]
@@ -283,6 +308,11 @@ fn main() -> ExitCode {
             .and_then(|report| print_value(&report, cli.json)),
         Command::CompareLegacy {
             balance_history_root,
+            core_snapshot_db,
+            core_manifest,
+            script_registry_db,
+            script_registry_manifest,
+            verify_file_hash,
             snapshot_db,
             height,
             include_script_registry,
@@ -292,6 +322,11 @@ fn main() -> ExitCode {
             output,
         } => compare_legacy(CompareLegacyArgs {
             balance_history_root,
+            core_snapshot_db,
+            core_manifest,
+            script_registry_db,
+            script_registry_manifest,
+            verify_file_hash,
             snapshot_db,
             height,
             include_script_registry,
@@ -316,7 +351,12 @@ fn main() -> ExitCode {
 }
 
 struct CompareLegacyArgs {
-    balance_history_root: PathBuf,
+    balance_history_root: Option<PathBuf>,
+    core_snapshot_db: Option<PathBuf>,
+    core_manifest: Option<PathBuf>,
+    script_registry_db: Option<PathBuf>,
+    script_registry_manifest: Option<PathBuf>,
+    verify_file_hash: bool,
     snapshot_db: PathBuf,
     height: u32,
     include_script_registry: bool,
@@ -328,13 +368,6 @@ struct CompareLegacyArgs {
 }
 
 fn compare_legacy(args: CompareLegacyArgs) -> Result<(), String> {
-    let config = Arc::new(BalanceHistoryConfig::load(&args.balance_history_root)?);
-    eprintln!(
-        "[compare-legacy] opening RocksDB read-only at {} (stop balance-history before the full comparison)",
-        config.db_dir().display()
-    );
-    let db = BalanceHistoryDB::open_read_only(config)?;
-    eprintln!("[compare-legacy] RocksDB opened; validating frozen height and legacy snapshot");
     let progress: LegacyStateCompareProgressRef = Arc::new(|event| {
         eprintln!(
             "[compare-legacy] table={} shards={}/{} legacy_rows={} current_rows={}",
@@ -345,17 +378,51 @@ fn compare_legacy(args: CompareLegacyArgs) -> Result<(), String> {
             event.current_rows
         );
     });
-    let report = db.compare_legacy_snapshot(
-        &LegacyStateCompareOptions {
-            snapshot_db: args.snapshot_db,
-            target_height: args.height,
-            include_script_registry: args.include_script_registry,
-            parallelism: args.parallelism,
-            max_examples: args.max_examples,
-            integrity_check: args.integrity_check,
-        },
-        Some(progress),
-    )?;
+    let options = LegacyStateCompareOptions {
+        snapshot_db: args.snapshot_db,
+        target_height: args.height,
+        include_script_registry: args.include_script_registry,
+        parallelism: args.parallelism,
+        max_examples: args.max_examples,
+        integrity_check: args.integrity_check,
+    };
+    let (value, ok, unexpected) = if let Some(core) = &args.core_snapshot_db {
+        eprintln!(
+            "[compare-legacy] validating split artifact identities: core={}",
+            core.display()
+        );
+        let input = SplitSnapshotAudit::open(
+            core,
+            args.core_manifest.as_deref(),
+            args.script_registry_db.as_deref(),
+            args.script_registry_manifest.as_deref(),
+            args.verify_file_hash,
+        )?;
+        let report = compare_legacy_split_snapshot(&options, input, Some(progress))?;
+        (
+            serde_json::to_value(&report),
+            report.ok,
+            report.unexpected_difference_rows,
+        )
+    } else {
+        let root = args
+            .balance_history_root
+            .as_ref()
+            .ok_or("Missing comparison source")?;
+        let config = Arc::new(BalanceHistoryConfig::load(root)?);
+        eprintln!(
+            "[compare-legacy] opening RocksDB read-only at {} (stop balance-history before the full comparison)",
+            config.db_dir().display()
+        );
+        let db = BalanceHistoryDB::open_read_only(config)?;
+        let report = db.compare_legacy_snapshot(&options, Some(progress))?;
+        (
+            serde_json::to_value(&report),
+            report.ok,
+            report.unexpected_difference_rows,
+        )
+    };
+    let report = value.map_err(|error| format!("Failed to serialize audit report: {error}"))?;
     if let Some(output) = args.output {
         if let Some(parent) = output
             .parent()
@@ -383,10 +450,9 @@ fn compare_legacy(args: CompareLegacyArgs) -> Result<(), String> {
         })?;
     }
     print_value(&report, args.json)?;
-    if !report.ok {
+    if !ok {
         return Err(format!(
-            "Legacy state comparison found {} unexpected difference rows",
-            report.unexpected_difference_rows
+            "Legacy state comparison found {unexpected} unexpected difference rows"
         ));
     }
     Ok(())
