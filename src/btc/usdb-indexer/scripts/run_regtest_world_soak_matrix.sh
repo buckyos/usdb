@@ -203,6 +203,8 @@ metrics = session_end["final_metrics"]
 failures = {key: value for key, value in metrics.items() if key.endswith("_fail") and value}
 if failures:
     raise SystemExit(f"non-zero failure metrics for seed {seed}: {failures}")
+if metrics.get("agent_energy_check_ok", 0) <= 0:
+    raise SystemExit(f"no strict numeric energy intervals checked for seed {seed}")
 
 summary = {
     "seed": seed,

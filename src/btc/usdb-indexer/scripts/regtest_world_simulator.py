@@ -365,6 +365,11 @@ class RegtestWorldSimulator:
             "verify_fail": 0,
             "agent_self_check_ok": 0,
             "agent_self_check_fail": 0,
+            "agent_energy_check_ok": 0,
+            "agent_energy_check_balance_events": 0,
+            "agent_energy_check_baseline": 0,
+            "agent_energy_check_skipped_no_active": 0,
+            "agent_energy_check_skipped_same_height": 0,
             "global_cross_check_ok": 0,
             "global_cross_check_fail": 0,
             "reorg_ok": 0,
@@ -4200,6 +4205,7 @@ class RegtestWorldSimulator:
             agent.oracle_last_owner_balance = None
             agent.oracle_last_record_block_height = None
             agent.oracle_last_active_block_height = None
+            self.metrics["agent_energy_check_skipped_no_active"] += 1
             return
 
         energy_snapshot = self.get_pass_energy_snapshot(
@@ -4221,7 +4227,6 @@ class RegtestWorldSimulator:
         state = str(energy_snapshot.get("state", ""))
         owner_address = str(energy_snapshot.get("owner_address", ""))
         owner_balance = int(energy_snapshot.get("owner_balance", 0))
-        owner_delta = int(energy_snapshot.get("owner_delta", 0))
         energy = int(energy_snapshot.get("raw_energy", 0))
 
         if query_height != block_height:
@@ -4250,7 +4255,16 @@ class RegtestWorldSimulator:
         prev_owner_balance = agent.oracle_last_owner_balance
         prev_active_block_height = agent.oracle_last_active_block_height
 
-        # Strict numeric oracle when check cadence is consecutive and active pass is stable.
+        bh_balance = self.get_balance_at_height(agent.owner_script_hash, block_height)
+        if owner_balance != bh_balance:
+            raise WorldSimError(
+                "agent self-check balance mismatch: "
+                f"agent={agent.wallet_name}, block_height={block_height}, "
+                f"indexer={owner_balance}, balance_history={bh_balance}"
+            )
+
+        # Replaying the independent balance timeline preserves intermediate penalties;
+        # comparing only endpoint balances loses spend/refill events between samples.
         if (
             prev_height is not None
             and prev_pass_id == active_pass_id
@@ -4258,32 +4272,24 @@ class RegtestWorldSimulator:
             and prev_energy is not None
             and prev_owner_balance is not None
             and prev_active_block_height is not None
-            and block_height == prev_height + 1
         ):
-            expected_energy = self.saturating_energy_add(
-                prev_energy, self.calc_growth_delta(prev_owner_balance, 1)
-            )
-            if record_block_height == block_height and owner_delta < 0:
-                expected_energy = self.saturating_energy_sub(
-                    expected_energy,
-                    self.calc_balance_penalty(
-                        prev_owner_balance,
-                        owner_balance,
-                        prev_active_block_height,
-                        block_height,
-                    ),
-                )
-
-            if energy != expected_energy:
+            if block_height < prev_height:
                 raise WorldSimError(
-                    "agent self-check energy mismatch: "
-                    f"agent={agent.wallet_name}, inscription_id={active_pass_id}, "
-                    f"block_height={block_height}, prev_height={prev_height}, "
-                    f"prev_energy={prev_energy}, prev_owner_balance={prev_owner_balance}, "
-                    f"prev_active_block_height={prev_active_block_height}, "
-                    f"record_block_height={record_block_height}, owner_delta={owner_delta}, "
-                    f"expected_energy={expected_energy}, actual_energy={energy}"
+                    "agent energy oracle height regressed without reorg reset: "
+                    f"previous={prev_height}, current={block_height}"
                 )
+            event_count = self.check_active_energy_interval(
+                agent, block_height, energy_snapshot
+            )
+            if block_height == prev_height:
+                self.metrics["agent_energy_check_skipped_same_height"] += 1
+            else:
+                self.metrics["agent_energy_check_ok"] += 1
+                self.metrics["agent_energy_check_balance_events"] += event_count
+        else:
+            # A new pass (including inherited energy) or a reorg starts a new
+            # transition baseline, never a successful numeric replay interval.
+            self.metrics["agent_energy_check_baseline"] += 1
 
         agent.oracle_last_checked_height = block_height
         agent.oracle_last_pass_id = active_pass_id
@@ -4292,6 +4298,79 @@ class RegtestWorldSimulator:
         agent.oracle_last_owner_balance = owner_balance
         agent.oracle_last_record_block_height = record_block_height
         agent.oracle_last_active_block_height = active_block_height
+
+    def check_active_energy_interval(
+        self, agent: Agent, block_height: int, final_snapshot: dict[str, Any]
+    ) -> int:
+        height = int(agent.oracle_last_checked_height)
+        balance = int(agent.oracle_last_owner_balance)
+        energy = int(agent.oracle_last_energy)
+        active_height = int(agent.oracle_last_active_block_height)
+        rows = self.rpc_balance_history(
+            "get_address_balance",
+            [{
+                "script_hash": agent.owner_script_hash,
+                "block_height": None,
+                "block_range": {"start": height + 1, "end": block_height + 1},
+            }],
+        ) if height < block_height else []
+        if not isinstance(rows, list):
+            raise WorldSimError(f"agent energy oracle invalid balance range: {rows}")
+
+        def assert_snapshot(snapshot: dict[str, Any] | None, query_height: int) -> None:
+            expected = {
+                "query_block_height": query_height,
+                "state": "active",
+                "owner_address": agent.owner_script_hash,
+                "owner_balance": balance,
+                "active_block_height": active_height,
+                "raw_energy": str(energy),
+            }
+            if snapshot is None or any(snapshot.get(k) != v for k, v in expected.items()):
+                raise WorldSimError(
+                    "agent self-check energy mismatch: "
+                    f"agent={agent.wallet_name}, inscription_id={agent.active_pass_id}, "
+                    f"expected={expected}, actual={snapshot}"
+                )
+
+        for row in rows:
+            try:
+                event_height = int(row["block_height"])
+                next_balance = int(row["balance"])
+                delta = int(row["delta"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise WorldSimError(f"agent energy oracle malformed balance row: {row}") from exc
+            if not height < event_height <= block_height or next_balance < 0:
+                raise WorldSimError(f"agent energy oracle invalid balance row order/range: {row}")
+            if balance + delta != next_balance:
+                raise WorldSimError(
+                    f"agent energy oracle discontinuous balance history: before={balance}, row={row}"
+                )
+            energy = self.saturating_energy_add(
+                energy, self.calc_growth_delta(balance, event_height - height)
+            )
+            energy = self.saturating_energy_sub(
+                energy,
+                self.calc_balance_penalty(balance, next_balance, active_height, event_height),
+            )
+            before_units = self.balance_units(balance)
+            after_units = self.balance_units(next_balance)
+            if (before_units == 0) != (after_units == 0):
+                active_height = event_height
+            balance = next_balance
+            height = event_height
+            # Check each settlement as well as the endpoint, so a later clamp
+            # cannot hide an incorrect intermediate energy or age transition.
+            snapshot = final_snapshot if height == block_height else self.get_pass_energy_snapshot(
+                agent.active_pass_id, height, mode="at_or_before"
+            )
+            assert_snapshot(snapshot, height)
+
+        energy = self.saturating_energy_add(
+            energy, self.calc_growth_delta(balance, block_height - height)
+        )
+        assert_snapshot(final_snapshot, block_height)
+        return len(rows)
 
     def should_run_global_cross_check(self, tick: int) -> bool:
         if not self.args.global_cross_check_enabled:

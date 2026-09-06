@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "world-sim-energy-interval-oracle",
+  "type": "fixed",
+  "scopes": ["testing"],
+  "summary": "Execute strict world-sim energy checks across sampled BTC height intervals",
+  "details": [
+    "Replay balance-history events between samples, checking intermediate and final energy, balance and age against indexer snapshots.",
+    "Distinguish numeric replay successes from new-pass/reorg baselines and skipped checks; require a positive numeric replay count in weekly soak.",
+    "Keep 2500 rounds, sampling cadence and stable confirmation depth unchanged. Initial and inherited pass energy remain explicit transition baselines."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

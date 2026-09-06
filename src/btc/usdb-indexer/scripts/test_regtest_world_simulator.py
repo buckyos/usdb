@@ -2,6 +2,9 @@
 
 import json
 import random
+import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -56,6 +59,222 @@ class RegtestWorldSimulatorFormulaTests(unittest.TestCase):
             [candidate("b" * 64 + "i0", 10), candidate("a" * 64 + "i0", 10)]
         )
         self.assertEqual(winner.inscription_id, "a" * 64 + "i0")
+
+
+class RegtestWorldSimulatorEnergyIntervalTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.simulator = RegtestWorldSimulator.__new__(RegtestWorldSimulator)
+        self.simulator.metrics = dict.fromkeys([
+            "agent_energy_check_ok", "agent_energy_check_balance_events",
+            "agent_energy_check_baseline", "agent_energy_check_skipped_no_active",
+            "agent_energy_check_skipped_same_height",
+        ], 0)
+        self.agent = Agent(0, "alice", "btc-address", "usdb-address", "owner", "steady")
+        self.agent.active_pass_id = "pass-a"
+        self.snapshots = {}
+        self.rows = []
+        self.point_balance = 200_000
+        self.simulator.get_pass_energy_snapshot = mock.Mock(
+            side_effect=lambda pass_id, height, mode: self.snapshots[height]
+        )
+        self.simulator.get_balance_at_height = mock.Mock(
+            side_effect=lambda owner, height: self.point_balance
+        )
+        self.simulator.rpc_balance_history = mock.Mock(side_effect=lambda *args: self.rows)
+        self.check(100, 1000)
+
+    def snapshot(self, height, energy, balance=200_000, age=80):
+        return {
+            "query_block_height": height, "record_block_height": height,
+            "state": "active", "owner_address": "owner",
+            "owner_balance": balance, "active_block_height": age,
+            "raw_energy": str(energy),
+        }
+
+    def check(self, height, energy, balance=200_000, age=80):
+        self.snapshots[height] = self.snapshot(height, energy, balance, age)
+        self.point_balance = balance
+        self.simulator.run_agent_self_check(self.agent, height)
+
+    def test_weekly_cadence_and_confirmation_gaps_recompute_energy(self):
+        # Each check uses a new baseline after succeeding at a nonconsecutive height.
+        height, energy = 100, 1000
+        for gap in (1, 11, 55, 110):
+            previous = height
+            height += gap
+            energy += gap * 2
+            self.check(height, energy)
+            self.simulator.rpc_balance_history.assert_called_with(
+                "get_address_balance", [{
+                    "script_hash": "owner", "block_height": None,
+                    "block_range": {"start": previous + 1, "end": height + 1},
+                }],
+            )
+        self.assertEqual(self.simulator.metrics["agent_energy_check_ok"], 4)
+
+    def test_wrong_energy_at_gap_55_fails_without_advancing_baseline(self):
+        with self.assertRaisesRegex(WorldSimError, "energy mismatch"):
+            self.check(155, 0)
+        self.assertEqual(self.agent.oracle_last_checked_height, 100)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_ok"], 0)
+
+    def seed_spend_refill(self):
+        self.rows = [
+            {"block_height": 110, "balance": 100_000, "delta": -100_000},
+            {"block_height": 130, "balance": 200_000, "delta": 100_000},
+        ]
+        # At 110: 1000 + 2*10 - floor(1*30*3/2) = 975.
+        # At 130: 975 + 1*20 = 995. Refill preserves age 80.
+        self.snapshots[110] = self.snapshot(110, 975, 100_000)
+        self.snapshots[130] = self.snapshot(130, 995)
+
+    def test_spend_refill_with_identical_endpoint_balances_keeps_penalty(self):
+        self.seed_spend_refill()
+        self.check(155, 1045)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_balance_events"], 2)
+
+    def test_endpoint_only_growth_cannot_hide_intermediate_spend(self):
+        self.seed_spend_refill()
+        with self.assertRaisesRegex(WorldSimError, "energy mismatch"):
+            self.check(155, 1110)
+
+    def test_correct_endpoint_cannot_hide_corrupt_intermediate_settlement(self):
+        self.seed_spend_refill()
+        self.snapshots[110]["raw_energy"] = "976"
+        with self.assertRaisesRegex(WorldSimError, "energy mismatch"):
+            self.check(155, 1045)
+
+    def test_unit_clear_and_refill_reset_age_at_each_boundary(self):
+        self.agent.oracle_last_owner_balance = 100_001
+        self.rows = [
+            {"block_height": 110, "balance": 99_999, "delta": -2},
+            {"block_height": 130, "balance": 100_000, "delta": 1},
+        ]
+        self.snapshots[110] = self.snapshot(110, 965, 99_999, 110)
+        self.snapshots[130] = self.snapshot(130, 965, 100_000, 130)
+        self.check(155, 990, 100_000, 130)
+
+    def test_subunit_withdrawal_preserves_age_and_has_no_penalty(self):
+        self.agent.oracle_last_owner_balance = 199_999
+        self.rows = [{"block_height": 110, "balance": 100_000, "delta": -99_999}]
+        self.snapshots[110] = self.snapshot(110, 1010, 100_000)
+        self.check(155, 1055, 100_000)
+
+    def test_positive_funding_keeps_age_while_changing_growth_slope(self):
+        self.rows = [{"block_height": 110, "balance": 300_000, "delta": 100_000}]
+        self.snapshots[110] = self.snapshot(110, 1020, 300_000)
+        self.check(155, 1155, 300_000)
+
+    def test_wrong_age_is_rejected_even_with_correct_energy(self):
+        with self.assertRaisesRegex(WorldSimError, "energy mismatch"):
+            self.check(155, 1110, age=100)
+
+    def test_growth_saturates_before_penalty_and_penalty_floors_at_zero(self):
+        maximum = RegtestWorldSimulator.ENERGY_MAX
+        self.agent.oracle_last_energy = maximum - 1
+        self.rows = [{"block_height": 110, "balance": 100_000, "delta": -100_000}]
+        self.check(110, maximum - 45, 100_000)
+        self.agent.oracle_last_energy = 0
+        self.rows = [{"block_height": 111, "balance": 0, "delta": -100_000}]
+        self.check(111, 0, 0, 111)
+
+    def test_malformed_or_incomplete_balance_timelines_fail_closed(self):
+        cases = [
+            None,
+            [{}],
+            [{"block_height": 100, "balance": 200_000, "delta": 0}],
+            [{"block_height": 156, "balance": 200_000, "delta": 0}],
+            [{"block_height": 110, "balance": 100_000, "delta": -1}],
+            [{"block_height": 110, "balance": -1, "delta": -200_001}],
+            [{"block_height": 110, "balance": 200_000, "delta": 0}] * 2,
+        ]
+        self.snapshots[110] = self.snapshot(110, 1020)
+        for rows in cases:
+            with self.subTest(rows=rows):
+                self.rows = rows
+                with self.assertRaises(WorldSimError):
+                    self.check(155, 1110)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_ok"], 0)
+
+    def test_current_balance_must_match_balance_history(self):
+        self.snapshots[155] = self.snapshot(155, 1110, 100_000)
+        with self.assertRaisesRegex(WorldSimError, "balance mismatch"):
+            self.simulator.run_agent_self_check(self.agent, 155)
+
+    def test_pass_switch_establishes_baseline_without_counting_numeric_success(self):
+        self.agent.active_pass_id = "reminted-pass"
+        self.check(155, 123, age=155)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_baseline"], 2)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_ok"], 0)
+        self.check(210, 233, age=155)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_ok"], 1)
+
+    def test_no_active_pass_resets_baseline_and_records_skip(self):
+        self.agent.active_pass_id = None
+        self.simulator.run_agent_self_check(self.agent, 155)
+        self.assertIsNone(self.agent.oracle_last_energy)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_skipped_no_active"], 1)
+        self.agent.active_pass_id = "new-pass"
+        self.check(210, 0, age=210)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_ok"], 0)
+
+    def test_same_height_does_not_count_as_replay_but_still_rejects_mutation(self):
+        self.check(100, 1000)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_skipped_same_height"], 1)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_ok"], 0)
+        with self.assertRaisesRegex(WorldSimError, "energy mismatch"):
+            self.check(100, 1001)
+
+    def test_reorg_resets_baseline_before_lower_height_is_accepted(self):
+        with self.assertRaisesRegex(WorldSimError, "height regressed"):
+            self.check(99, 998)
+        self.simulator.agents = [self.agent]
+        self.simulator.pass_owner_by_id = {}
+        self.simulator.pass_identity_by_id = {}
+        self.simulator.reset_local_chain_view()
+        self.agent.active_pass_id = "pass-a"
+        self.check(99, 50)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_ok"], 0)
+        self.check(154, 160)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_ok"], 1)
+
+    def test_serialized_baseline_resumes_the_same_numeric_interval(self):
+        saved = self.simulator.serialize_agent(self.agent)
+        self.agent = Agent(0, "alice", "btc-address", "usdb-address", "owner", "steady")
+        self.simulator.apply_agent_state(self.agent, json.loads(json.dumps(saved)))
+        self.seed_spend_refill()
+        self.check(155, 1045)
+        self.assertEqual(self.simulator.metrics["agent_energy_check_ok"], 1)
+
+
+class RegtestWorldSoakEnergyCoverageTests(unittest.TestCase):
+    def test_soak_summary_requires_actual_numeric_checks(self):
+        script = (Path(__file__).with_name("run_regtest_world_soak_matrix.sh")).read_text()
+        # Exercise the actual summary entrypoint, including its failure gate.
+        match = re.search(r'python3 - "\$seed".*?<<\'PY\'\n(.*?)\nPY', script, re.DOTALL)
+        self.assertIsNotNone(match)
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "report.jsonl"
+            summary = Path(directory) / "summary.json"
+            for metrics, passes in [
+                ({"agent_self_check_ok": 100}, False),
+                ({"agent_energy_check_ok": 0, "agent_energy_check_baseline": 100}, False),
+                ({"agent_energy_check_ok": 1}, True),
+                ({"agent_energy_check_ok": 1, "agent_self_check_fail": 1}, False),
+            ]:
+                with self.subTest(metrics=metrics):
+                    report.write_text(json.dumps({"event": "session_end", "final_metrics": metrics}) + "\n")
+                    result = subprocess.run(
+                        [sys.executable, "-", "43", "2500", "1", "1", "0", str(report), str(summary)],
+                        input=match.group(1), text=True, capture_output=True,
+                    )
+                    self.assertEqual(result.returncode == 0, passes, result.stderr)
+                    if not passes:
+                        self.assertIn(
+                            "non-zero failure metrics" if metrics.get("agent_self_check_fail")
+                            else "no strict numeric energy intervals",
+                            result.stderr,
+                        )
 
 
 class RegtestWorldSimulatorPayloadTests(unittest.TestCase):

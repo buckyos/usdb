@@ -62,7 +62,12 @@
     - 当前 world-sim 顶层摘要没有单独提升 `balance_history_stable_height`；如果需要分析上游稳定 ceiling，应查看原始 `get_sync_status` 返回值
   - 本块执行动作与失败数
   - 动作后 RPC 验证成功/失败
-  - agent 粒度自检（默认开启）：按 UIP-0003 unit、age penalty 和 `u128` 饱和规则，对选中 agent 的 active pass 做独立能量数值校验
+  - agent 粒度自检（默认开启）：对连续两次抽查中保持同一 Active pass 的区间，读取 balance-history 的完整余额事件，按 UIP-0003 unit、age penalty 和 `u128` 饱和规则逐段重算；同时检查中间事件高度和最终高度的能量、余额和余额年龄起点，不要求两次 BTC 高度相邻。
+    - `agent_energy_check_ok` 只统计实际完成数值重算的前进区间；`agent_energy_check_balance_events` 统计这些区间内重放的余额记录。
+    - 首次采样、pass 切换及重组重建后的首次采样计入 `agent_energy_check_baseline`。新 pass 的初始/继承能量在这里作为基线，不能把该计数解释为 mint/remint 公式已独立验证。
+    - 无 Active pass、同高重复检查分别计入 `agent_energy_check_skipped_no_active`、`agent_energy_check_skipped_same_height`；原有 `agent_self_check_ok` 仍包含结构检查和基线检查。
+    - weekly soak 要求 `agent_energy_check_ok > 0`，防止仅建立基线却没有实际执行数值断言。2500 轮、抽查间隔和 stable lag 保持不变。
+    - 该 oracle 独立于 indexer 能量计算，但余额输入来自 balance-history；它不是从 Bitcoin 原始交易独立重建全部 pass 状态的 oracle。
   - 全局交叉检查（低频采样，默认开启）：
     - 对比 raw-energy leaderboard 与 `get_pass_energy`
     - 要求 candidate set 精确等于 active standard 集合，并按 `effective_energy DESC, pass_id ASC` 排序
