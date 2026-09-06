@@ -66,7 +66,7 @@
     - `agent_energy_check_ok` 只统计实际完成数值重算的前进区间；`agent_energy_check_balance_events` 统计这些区间内重放的余额记录。
     - 首次采样、pass 切换及重组重建后的首次采样计入 `agent_energy_check_baseline`。新 pass 的初始/继承能量在这里作为基线，不能把该计数解释为 mint/remint 公式已独立验证。
     - 无 Active pass、同高重复检查分别计入 `agent_energy_check_skipped_no_active`、`agent_energy_check_skipped_same_height`；原有 `agent_self_check_ok` 仍包含结构检查和基线检查。
-    - weekly soak 要求 `agent_energy_check_ok > 0`，防止仅建立基线却没有实际执行数值断言。2500 轮、抽查间隔和 stable lag 保持不变。
+    - weekly soak 要求严格数值重算达到最低次数，默认 2500 轮、每 5 轮抽查时至少 50 次，并至少重放 1 条余额事件。工作轮数、抽查间隔和 stable lag 保持不变。
     - 该 oracle 独立于 indexer 能量计算，但余额输入来自 balance-history；它不是从 Bitcoin 原始交易独立重建全部 pass 状态的 oracle。
   - 全局交叉检查（低频采样，默认开启）：
     - 对比 raw-energy leaderboard 与 `get_pass_energy`
@@ -90,9 +90,12 @@
 - 可选启用 validator sampled historical validation：
   - 周期性从 UIP-0006 canonical candidate view 抓取一张或多张 active standard pass 历史样本
   - 在 head 继续前进后，按包含完整 version identity 的历史 `ConsensusQueryContext` 重新校验 `state ref / economic profile / candidate set / collab breakdown`
-  - `candidate_set` 模式下还会重算 winner，并可选执行 wrong-winner / tamper 检测
+  - `candidate_set` 模式下还会重算 winner，并可选把错误 winner 传入候选比较断言，确认其拒绝；只有一名候选时篡改其 raw energy。该计数表示模拟器候选断言的负向检查，不代表执行过 geth 区块导入。
   - 报告中会出现 `event = "validator_sample_capture"` 与 `event = "validator_sample_validation"`
   - 如果打开 tamper 检测，还会出现 `event = "validator_sample_tamper_validation"`
+  - 有限工作轮次结束后进入收尾：只挖空块推进稳定 head，不再安排业务动作、采样或重组，直到全部样本满足 `SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE` 并完成验证。默认最后一轮采样后再挖 2 个 BTC 空块，2500 个工作轮次保持不变。
+  - 收尾等待 Ord 与两个索引服务在目标高度及 canonical hash 上收敛；验证失败或仍有 pending 样本时不会输出成功的 `session_end`。
+  - `validator_finalization` 记录本次收尾的 `extra_blocks`、`pending_before/after` 和耗时；`session_end` 包含 `completed_work_ticks`、`validator_samples` 的采集/验证/待验证数量，以及收尾证据。恢复点保留在第 N+1 轮；收尾中断后按当前稳定高度继续，不重跑已完成的工作轮次。
 - 运行失败时会自动打印关键日志尾部，提升排障速度。
 - 可选 deterministic economic bootstrap：
   - 依次构造 standard Leader、fixed collab、address collab 和第二张 standard candidate
@@ -101,6 +104,24 @@
   - 每一步都执行完整 profile/candidate/breakdown 全局交叉检查
 
 `world-sim` 的整体组件关系、读写链路和 reorg 时的侧视变化见：[usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)。
+
+## Weekly soak 完成门禁
+
+`run_regtest_world_soak_matrix.sh` 汇总最后一次 session 时，除要求所有 `_fail` 为零，还通过 `world_soak_coverage.py` 检查工作身份、完成轮次和正向覆盖证据。默认每个 seed 的要求为：
+
+| 检查 | 2500 轮默认门槛 |
+| --- | --- |
+| 工作轮次 | 恰好完成 2500 轮，收尾空块不计入 |
+| validator 样本 | pending 为 0，captured、validated 与成功计数一致 |
+| 成功重组 | 4 次；按 `min(轮数 // 重组间隔, 最大次数)` 计算，最大次数为 0 时不封顶 |
+| 正向历史验证 | 至少 12 次，不包含预期的重组失配拒绝 |
+| 篡改拒绝 | 至少 12 次实际候选比较拒绝 |
+| 严格能量重算 | 至少 50 个区间，且至少覆盖 1 条余额事件 |
+| 必需动作 | 10 类动作各至少 1 次结果验证成功 |
+
+历史验证和篡改拒绝下限为 `max(1, (轮数 // 采样间隔) // 2)`，为无候选或被重组失效的样本留出空间；能量重算下限为 `max(1, (轮数 // 自检间隔) // 10)`，允许新 pass 基线和状态切换。关闭必需检查会使门禁失败。
+
+动作覆盖使用新增的 `<action>_verified`，只有链上结果通过断言后才增加；原有提交阶段的 `_ok` 不能替代它。必需动作包括三类 mint、三类 remint、transfer、send_balance、spend_balance 和 invalid_mint；最后一项要求确认无效 mint 被识别为 Invalid。noop 不参与门禁。旧版 recovery/report 缺少这些证据时不能通过新门禁，需要重新运行。
 
 ## 运行示例
 

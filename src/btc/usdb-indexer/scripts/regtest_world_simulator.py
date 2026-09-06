@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -375,11 +375,13 @@ class RegtestWorldSimulator:
             "reorg_ok": 0,
             "reorg_fail": 0,
             "validator_sample_ok": 0,
+            "validator_sample_history_ok": 0,
             "validator_sample_fail": 0,
             "validator_sample_tamper_ok": 0,
             "validator_sample_tamper_fail": 0,
             "skip": 0,
         }
+        self.metrics.update({f"{action}_verified": 0 for action in self.SUPPORTED_ACTIONS if action != "noop"})
         self.reorg_events_applied = 0
         self.validator_samples: list[ValidatorSample] = []
 
@@ -2681,12 +2683,18 @@ class RegtestWorldSimulator:
             None,
         )
         if tampered_winner is None:
-            return
+            # A single-candidate sample still exercises rejection using corrupt
+            # energy, rather than silently omitting its negative check.
+            tampered_winner = replace(actual_winner, raw_energy=actual_winner.raw_energy ^ 1)
 
-        if tampered_winner.inscription_id == actual_winner.inscription_id:
+        try:
+            self.assert_validator_candidate_matches(actual_winner, tampered_winner, sample.sample_id)
+        except WorldSimError:
+            pass
+        else:
             self.metrics["validator_sample_tamper_fail"] += 1
             raise WorldSimError(
-                "validator sample tamper check failed to produce a different winner: "
+                "validator sample tamper check accepted a corrupt candidate: "
                 f"sample={sample.sample_id}, winner={actual_winner.inscription_id}"
             )
 
@@ -2702,6 +2710,7 @@ class RegtestWorldSimulator:
                 "result": "tamper_detected",
                 "actual_winner_inscription_id": actual_winner.inscription_id,
                 "tampered_winner_inscription_id": tampered_winner.inscription_id,
+                "tampered_raw_energy": str(tampered_winner.raw_energy),
             },
         )
 
@@ -2994,6 +3003,7 @@ class RegtestWorldSimulator:
                 sample.validated = True
                 sample.validated_tick = tick
                 self.metrics["validator_sample_ok"] += 1
+                self.metrics["validator_sample_history_ok"] += 1
                 self.emit_report(
                     "validator_sample_validation",
                     {
@@ -3967,6 +3977,12 @@ class RegtestWorldSimulator:
         if action == "transfer":
             self.metrics["transfer_fail"] += 1
             return
+
+    def verify_and_record_expectation(self, expectation: ActionExpectation, block_height: int) -> None:
+        self.verify_expectation(expectation, block_height)
+        self.metrics["verify_ok"] += 1
+        if expectation.action in self.SUPPORTED_ACTIONS - {"noop"}:
+            self.metrics[f"{expectation.action}_verified"] += 1
 
     def verify_expectation(self, expectation: ActionExpectation, block_height: int) -> None:
         actor = self.agents[expectation.actor_id]
@@ -5338,8 +5354,7 @@ class RegtestWorldSimulator:
         )
         block_height = self.mine_one_block()
         self.wait_service_synced(block_height)
-        self.verify_expectation(expectation, block_height)
-        self.metrics["verify_ok"] += 1
+        self.verify_and_record_expectation(expectation, block_height)
         actor.last_action = action
         actor.cooldown = 0
         for active_agent_id in self.get_active_agent_ids():
@@ -5506,6 +5521,58 @@ class RegtestWorldSimulator:
             f"height={final_height}, leader={leader_v2}, collabs={sorted(final_collab_ids)}"
         )
 
+    def validator_sample_summary(self) -> dict[str, int]:
+        return {
+            "captured": len(self.validator_samples),
+            "validated": sum(sample.validated for sample in self.validator_samples),
+            "pending": sum(not sample.validated for sample in self.validator_samples),
+            "history_validated": sum(
+                sample.validated and sample.expected_consensus_error is None
+                for sample in self.validator_samples
+            ),
+        }
+
+    def finalize_validator_samples(self, tick: int, batch_seed: int) -> dict[str, Any]:
+        """Drain samples without introducing actions, captures, reorgs or work ticks."""
+        started = time.perf_counter()
+        pending = [sample for sample in self.validator_samples if not sample.validated]
+        current_height = self.get_stable_block_height()
+        if pending and not self.args.validator_sample_enabled:
+            raise WorldSimError("cannot finalize pending samples with validator sampling disabled")
+        if any(sample.block_height > current_height for sample in pending):
+            raise WorldSimError("pending validator sample is ahead of the stable BTC head")
+        min_advance = max(1, self.args.validator_sample_min_head_advance)
+        target_height = max([current_height] + [sample.block_height + min_advance for sample in pending])
+        extra_blocks = target_height - current_height
+        # The normal between-ticks checkpoint at N+1 also represents finalization.
+        # On restart, run() skips the completed work loop and resumes this drain.
+        self.write_recovery_state(self.build_between_ticks_snapshot(
+            batch_seed=batch_seed, next_tick=tick + 1, current_height=current_height,
+        ))
+        for _ in range(extra_blocks):
+            self.mine_one_empty_block()
+        if pending:
+            self.wait_ord_server_synced()
+            self.wait_service_height_exact(target_height)
+            self.wait_snapshot_hashes(target_height, self.get_block_hash(target_height))
+            _, failures, details = self.validate_pending_validator_samples(target_height, tick)
+            if failures:
+                raise WorldSimError(f"validator finalization failed: {details}")
+        summary = self.validator_sample_summary()
+        if summary["pending"]:
+            raise WorldSimError(f"validator finalization left pending samples: {summary}")
+        self.write_recovery_state(self.build_between_ticks_snapshot(
+            batch_seed=batch_seed, next_tick=tick + 1, current_height=target_height,
+        ))
+        result = {
+            "work_ticks": tick, "extra_blocks": extra_blocks,
+            "final_height": target_height, "pending_before": len(pending),
+            "pending_after": summary["pending"],
+            "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        }
+        self.emit_report("validator_finalization", result)
+        return result
+
     def run(self) -> None:
         self.log(
             "World simulation started: "
@@ -5537,10 +5604,12 @@ class RegtestWorldSimulator:
             self.log(f"Recovery state enabled: path={self.recovery_state_path}")
 
         tick = 0
+        batch_seed = self.action_seed
         resume_tick_state: dict[str, Any] | None = None
         if self.resume_state is not None:
             resume_status = str(self.resume_state.get("status", ""))
             self.apply_recovery_snapshot(self.resume_state)
+            batch_seed = int(self.resume_state.get("batch_seed", self.action_seed))
             if resume_status == "between_ticks":
                 tick = max(0, int(self.resume_state.get("next_tick", 1)) - 1)
                 self.log(
@@ -6101,8 +6170,7 @@ class RegtestWorldSimulator:
 
             for expectation in expectations:
                 try:
-                    self.verify_expectation(expectation, block_height)
-                    self.metrics["verify_ok"] += 1
+                    self.verify_and_record_expectation(expectation, block_height)
                 except Exception as e:  # noqa: BLE001
                     self.metrics["verify_fail"] += 1
                     verify_failed += 1
@@ -6316,9 +6384,15 @@ class RegtestWorldSimulator:
                 )
             )
 
+        finalization = self.finalize_validator_samples(tick, batch_seed)
         self.log("World simulation completed.")
         self.log(f"final_metrics={json.dumps(self.metrics, sort_keys=True)}")
-        self.emit_report("session_end", {"final_metrics": self.metrics})
+        self.emit_report("session_end", {
+            "final_metrics": self.metrics, "completed_work_ticks": tick,
+            "reorg_events_applied": self.reorg_events_applied,
+            "validator_samples": self.validator_sample_summary(),
+            "finalization": finalization,
+        })
         self.clear_recovery_state()
 
 

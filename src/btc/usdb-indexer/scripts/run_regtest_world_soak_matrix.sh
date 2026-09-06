@@ -165,12 +165,15 @@ run_seed() {
   duration_sec=$((finished_at - started_at))
   workspace_bytes="$(du -sb "$work_dir" | awk '{print $1}')"
   python3 - "$seed" "$BLOCKS" "$duration_sec" "$workspace_bytes" \
-    "$resumed_from_recovery" "$report_file" "$summary_file" <<'PY'
+    "$resumed_from_recovery" "$report_file" "$summary_file" "$SCRIPT_DIR" <<'PY'
 import json
 import math
 import pathlib
 import statistics
 import sys
+
+sys.path.insert(0, sys.argv[8])
+from world_soak_coverage import check_world_soak_coverage
 
 seed = int(sys.argv[1])
 blocks = int(sys.argv[2])
@@ -180,6 +183,7 @@ resumed_from_recovery = sys.argv[5] == "1"
 report_path = pathlib.Path(sys.argv[6])
 summary_path = pathlib.Path(sys.argv[7])
 
+session_start = None
 session_end = None
 tick_times = []
 phase_totals = {}
@@ -187,6 +191,7 @@ with report_path.open(encoding="utf-8") as report:
     for line in report:
         payload = json.loads(line)
         if payload.get("event") == "session_start":
+            session_start = payload
             session_end = None
             tick_times = []
             phase_totals = {}
@@ -200,11 +205,10 @@ if session_end is None:
     raise SystemExit(f"missing session_end in {report_path}")
 
 metrics = session_end["final_metrics"]
-failures = {key: value for key, value in metrics.items() if key.endswith("_fail") and value}
-if failures:
-    raise SystemExit(f"non-zero failure metrics for seed {seed}: {failures}")
-if metrics.get("agent_energy_check_ok", 0) <= 0:
-    raise SystemExit(f"no strict numeric energy intervals checked for seed {seed}")
+try:
+    coverage_requirements = check_world_soak_coverage(session_start, session_end, blocks, seed)
+except ValueError as exc:
+    raise SystemExit(f"seed {seed}: {exc}") from exc
 
 summary = {
     "seed": seed,
@@ -216,6 +220,9 @@ summary = {
     "workspace_bytes_before_cleanup": workspace_bytes,
     "resumed_from_recovery": resumed_from_recovery,
     "final_metrics": metrics,
+    "coverage_requirements": coverage_requirements,
+    "validator_samples": session_end["validator_samples"],
+    "finalization": session_end["finalization"],
     "tick_timing": {
         "scope": "last_session_excluding_end_of_tick_report_checkpoint_and_sleep",
         "count": len(tick_times),

@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "world-soak-finalization-coverage",
+  "type": "fixed",
+  "scopes": ["testing"],
+  "summary": "Drain final world-sim validator samples and enforce weekly coverage minimums",
+  "details": [
+    "Keep 2500 work rounds and advance only empty BTC blocks during recoverable finalization; require every captured sample to finish validation before session_end.",
+    "Gate weekly summaries on configured reorg completion, positive historical validation, actual candidate tamper rejection, numeric energy replay and verified outcomes for all required actions.",
+    "Record finalization and sample accounting in reports; submission counts and expected reorg mismatches cannot replace positive coverage. Older reports and recovery snapshots without this evidence do not satisfy the new gate."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import copy
 import json
 import random
 import re
@@ -20,8 +21,31 @@ from regtest_world_simulator import (
     ValidatorSampleCandidate,
     WorldSimError,
 )
+from world_soak_coverage import REQUIRED_ACTIONS, check_world_soak_coverage
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def completed_soak_fixture():
+    start = {
+        "event": "session_start", "seed": 43, "blocks": 2500,
+        "validator_sample_enabled": True, "validator_sample_tamper_enabled": True,
+        "validator_sample_mode": "candidate_set", "validator_sample_interval_blocks": 100,
+        "agent_self_check_enabled": True, "agent_self_check_interval_blocks": 5,
+        "reorg_interval_blocks": 500, "reorg_depth": 3, "reorg_max_events": 4,
+    }
+    end = {
+        "event": "session_end", "completed_work_ticks": 2500, "reorg_events_applied": 4,
+        "validator_samples": {"captured": 25, "validated": 25, "pending": 0, "history_validated": 25},
+        "finalization": {"work_ticks": 2500, "pending_after": 0},
+        "final_metrics": {
+            "reorg_ok": 4, "validator_sample_ok": 25, "validator_sample_history_ok": 25,
+            "validator_sample_tamper_ok": 25, "agent_energy_check_ok": 50,
+            "agent_energy_check_balance_events": 1,
+            **{f"{action}_verified": 1 for action in REQUIRED_ACTIONS},
+        },
+    }
+    return start, end
 
 
 class RegtestWorldSimulatorFormulaTests(unittest.TestCase):
@@ -257,24 +281,218 @@ class RegtestWorldSoakEnergyCoverageTests(unittest.TestCase):
             report = Path(directory) / "report.jsonl"
             summary = Path(directory) / "summary.json"
             for metrics, passes in [
-                ({"agent_self_check_ok": 100}, False),
+                ({"agent_energy_check_ok": 0, "agent_self_check_ok": 100}, False),
                 ({"agent_energy_check_ok": 0, "agent_energy_check_baseline": 100}, False),
-                ({"agent_energy_check_ok": 1}, True),
-                ({"agent_energy_check_ok": 1, "agent_self_check_fail": 1}, False),
+                ({"agent_energy_check_ok": 50}, True),
+                ({"agent_energy_check_ok": 50, "agent_self_check_fail": 1}, False),
             ]:
                 with self.subTest(metrics=metrics):
-                    report.write_text(json.dumps({"event": "session_end", "final_metrics": metrics}) + "\n")
+                    start, end = completed_soak_fixture()
+                    end["final_metrics"].update(metrics)
+                    report.write_text(json.dumps(start) + "\n" + json.dumps(end) + "\n")
                     result = subprocess.run(
-                        [sys.executable, "-", "43", "2500", "1", "1", "0", str(report), str(summary)],
+                        [sys.executable, "-", "43", "2500", "1", "1", "0", str(report), str(summary), str(Path(__file__).parent)],
                         input=match.group(1), text=True, capture_output=True,
                     )
                     self.assertEqual(result.returncode == 0, passes, result.stderr)
                     if not passes:
                         self.assertIn(
                             "non-zero failure metrics" if metrics.get("agent_self_check_fail")
-                            else "no strict numeric energy intervals",
+                            else "agent_energy_check_ok",
                             result.stderr,
                         )
+
+
+class RegtestWorldSoakCoverageTests(unittest.TestCase):
+    def test_weekly_minimums_and_required_actions(self):
+        start, end = completed_soak_fixture()
+        required = check_world_soak_coverage(start, end, 2500, 43)
+        self.assertEqual(required["reorg_ok"], 4)
+        self.assertEqual(required["validator_sample_history_ok"], 12)
+        self.assertEqual(required["validator_sample_tamper_ok"], 12)
+        self.assertEqual(required["agent_energy_check_ok"], 50)
+        self.assertEqual(set(REQUIRED_ACTIONS), RegtestWorldSimulator.SUPPORTED_ACTIONS - {"noop"})
+
+    def test_each_missing_verified_action_or_numeric_minimum_is_rejected(self):
+        start, end = completed_soak_fixture()
+        requirements = check_world_soak_coverage(start, end, 2500, 43)
+        for name, minimum in requirements.items():
+            broken = copy.deepcopy(end)
+            broken["final_metrics"][name] = minimum - 1
+            broken["final_metrics"][name.removesuffix("_verified") + "_ok"] = 999
+            # Keep the reorg negative control below its expected total.
+            if name == "reorg_ok":
+                broken["final_metrics"][name] = minimum - 1
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                check_world_soak_coverage(start, broken, 2500, 43)
+
+    def test_unfinished_work_pending_samples_and_inconsistent_totals_fail(self):
+        for field, value in (
+            ("completed_work_ticks", 2499), ("reorg_events_applied", 3),
+            ("validator_samples", {"captured": 25, "validated": 24, "pending": 1, "history_validated": 24}),
+            ("finalization", None),
+        ):
+            start, end = completed_soak_fixture()
+            end[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                check_world_soak_coverage(start, end, 2500, 43)
+
+    def test_expected_reorg_mismatches_cannot_replace_positive_history(self):
+        start, end = completed_soak_fixture()
+        end["validator_samples"]["history_validated"] = 0
+        end["final_metrics"]["validator_sample_history_ok"] = 0
+        end["final_metrics"]["validator_sample_tamper_ok"] = 0
+        with self.assertRaisesRegex(ValueError, "validator_sample_history_ok=0"):
+            check_world_soak_coverage(start, end, 2500, 43)
+
+    def test_disabled_checks_and_wrong_identity_fail(self):
+        for field, value in (
+            ("validator_sample_enabled", False), ("agent_self_check_enabled", False),
+            ("validator_sample_tamper_enabled", False), ("reorg_depth", 0),
+            ("validator_sample_interval_blocks", 0), ("seed", 42), ("blocks", 2499),
+        ):
+            start, end = completed_soak_fixture()
+            start[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                check_world_soak_coverage(start, end, 2500, 43)
+
+    def test_reorg_requirement_respects_interval_and_unlimited_limit(self):
+        start, end = completed_soak_fixture()
+        start["reorg_max_events"] = 0
+        end["reorg_events_applied"] = end["final_metrics"]["reorg_ok"] = 5
+        self.assertEqual(check_world_soak_coverage(start, end, 2500, 43)["reorg_ok"], 5)
+
+
+class RegtestWorldFinalizationTests(unittest.TestCase):
+    def setUp(self):
+        self.sim = RegtestWorldSimulator.__new__(RegtestWorldSimulator)
+        self.sim.args = SimpleNamespace(validator_sample_enabled=True, validator_sample_min_head_advance=2)
+        self.height = 100
+        self.sample = SimpleNamespace(block_height=100, validated=False, expected_consensus_error=None)
+        self.sim.validator_samples = [self.sample]
+        self.sim.get_stable_block_height = lambda: self.height
+        self.sim.mine_one_empty_block = mock.Mock(side_effect=self.mine)
+        self.sim.wait_ord_server_synced = mock.Mock()
+        self.sim.wait_service_height_exact = mock.Mock()
+        self.sim.wait_snapshot_hashes = mock.Mock()
+        self.sim.get_block_hash = lambda height: f"hash-{height}"
+        self.sim.write_recovery_state = mock.Mock()
+        self.sim.build_between_ticks_snapshot = mock.Mock(side_effect=lambda **kwargs: {
+            **kwargs, "samples": copy.deepcopy(self.sim.validator_samples),
+        })
+        self.sim.emit_report = mock.Mock()
+        self.sim.validate_pending_validator_samples = mock.Mock(side_effect=self.validate)
+
+    def mine(self):
+        self.height += 1
+        return self.height + 10
+
+    def validate(self, height, tick):
+        for sample in self.sim.validator_samples:
+            if height >= sample.block_height + 2:
+                sample.validated = True
+        return 1, 0, []
+
+    def test_last_tick_sample_is_drained_with_only_two_empty_blocks(self):
+        result = self.sim.finalize_validator_samples(2500, 43)
+        self.assertEqual(result["work_ticks"], 2500)
+        self.assertEqual(result["extra_blocks"], 2)
+        self.assertEqual(result["pending_after"], 0)
+        self.assertEqual(self.sim.mine_one_empty_block.call_count, 2)
+        self.sim.wait_service_height_exact.assert_called_once_with(102)
+        self.sim.wait_snapshot_hashes.assert_called_once_with(102, "hash-102")
+        self.sim.validate_pending_validator_samples.assert_called_once_with(102, 2500)
+        self.assertEqual(self.sim.write_recovery_state.call_args.args[0]["next_tick"], 2501)
+
+    def test_no_pending_or_already_mature_sample_does_not_mine(self):
+        for validated in (True, False):
+            with self.subTest(validated=validated):
+                self.sample.validated = validated
+                self.height = 102
+                result = self.sim.finalize_validator_samples(2500, 43)
+                self.assertEqual(result["extra_blocks"], 0)
+        self.sim.mine_one_empty_block.assert_not_called()
+
+    def test_pending_or_failed_validation_blocks_completion(self):
+        for response in ((0, 0, []), (1, 1, ["bad snapshot"])):
+            self.sim.validate_pending_validator_samples.side_effect = None
+            self.sim.validate_pending_validator_samples.return_value = response
+            with self.subTest(response=response), self.assertRaises(WorldSimError):
+                self.sim.finalize_validator_samples(2500, 43)
+        self.sim.emit_report.assert_not_called()
+
+    def test_crash_after_mining_resumes_without_extra_mining(self):
+        self.sim.validate_pending_validator_samples.side_effect = WorldSimError("interrupted")
+        with self.assertRaises(WorldSimError):
+            self.sim.finalize_validator_samples(2500, 43)
+        checkpoint = self.sim.write_recovery_state.call_args.args[0]
+        self.sim.validator_samples = checkpoint["samples"]
+        self.sim.validate_pending_validator_samples.side_effect = self.validate
+        result = self.sim.finalize_validator_samples(2500, 43)
+        self.assertEqual(result["extra_blocks"], 0)
+        self.assertEqual(self.sim.mine_one_empty_block.call_count, 2)
+        self.assertEqual(result["pending_after"], 0)
+
+    def test_future_sample_and_disabled_validation_fail_without_mining(self):
+        self.sample.block_height = 101
+        with self.assertRaises(WorldSimError):
+            self.sim.finalize_validator_samples(2500, 43)
+        self.sample.block_height = 100
+        self.sim.args.validator_sample_enabled = False
+        with self.assertRaises(WorldSimError):
+            self.sim.finalize_validator_samples(2500, 43)
+        self.sim.mine_one_empty_block.assert_not_called()
+
+    def test_resume_after_last_work_tick_does_not_execute_more_actions(self):
+        self.sim.args = mock.Mock(blocks=2500, validator_sample_enabled=True, validator_sample_min_head_advance=2)
+        self.sim.action_seed = 43
+        self.sim.total_agents = self.sim.active_agent_count = 1
+        self.sim.report_path = self.sim.recovery_state_path = None
+        self.sim.resume_state = {"status": "between_ticks", "next_tick": 2501, "batch_seed": 43}
+        self.sim.apply_recovery_snapshot = mock.Mock()
+        self.sim.log = mock.Mock()
+        self.sim.metrics = {}
+        self.sim.reorg_events_applied = 4
+        self.sim.clear_recovery_state = mock.Mock()
+        self.sim.execute_agent_action = mock.Mock()
+        self.sim.run()
+        self.sim.execute_agent_action.assert_not_called()
+        self.sim.clear_recovery_state.assert_called_once()
+        event, summary = self.sim.emit_report.call_args.args
+        self.assertEqual(event, "session_end")
+        self.assertEqual(summary["completed_work_ticks"], 2500)
+        self.assertEqual(summary["validator_samples"]["pending"], 0)
+
+
+class RegtestWorldVerifiedOutcomeTests(unittest.TestCase):
+    def test_action_is_counted_only_after_verification_succeeds(self):
+        sim = RegtestWorldSimulator.__new__(RegtestWorldSimulator)
+        sim.agents = [SimpleNamespace(owner_script_hash="owner", wallet_name="alice")]
+        sim.metrics = {"verify_ok": 0, "send_balance_verified": 0, "send_ok": 1}
+        sim.get_balance_at_height = mock.Mock(return_value=10)
+        expectation = ActionExpectation("send_balance", 0, actor_pre_balance=10, amount_sat=5)
+        with self.assertRaises(WorldSimError):
+            sim.verify_and_record_expectation(expectation, 100)
+        self.assertEqual(sim.metrics["send_balance_verified"], 0)
+        sim.get_balance_at_height.return_value = 15
+        sim.verify_and_record_expectation(expectation, 100)
+        self.assertEqual(sim.metrics["send_balance_verified"], 1)
+
+    def test_single_candidate_tamper_must_actually_be_rejected(self):
+        sim = RegtestWorldSimulator.__new__(RegtestWorldSimulator)
+        sim.args = SimpleNamespace(validator_sample_tamper_enabled=True)
+        sim.metrics = {"validator_sample_tamper_ok": 0, "validator_sample_tamper_fail": 0}
+        sim.emit_report = mock.Mock()
+        candidate = ValidatorSampleCandidate("pass", "owner", "active", "standard", 10, 0, 10, 0, 10000)
+        sample = SimpleNamespace(sample_id="s", block_height=100, mode="candidate_set", candidates=[candidate])
+        sim.validate_tampered_candidate_set_sample(sample, candidate, 2500, 102)
+        self.assertEqual(sim.metrics["validator_sample_tamper_ok"], 1)
+        self.assertEqual(candidate.raw_energy, 10)
+        sim.assert_validator_candidate_matches = mock.Mock(return_value=None)
+        with self.assertRaisesRegex(WorldSimError, "accepted a corrupt"):
+            sim.validate_tampered_candidate_set_sample(sample, candidate, 2500, 102)
+        self.assertEqual(sim.metrics["validator_sample_tamper_ok"], 1)
+        self.assertEqual(sim.metrics["validator_sample_tamper_fail"], 1)
 
 
 class RegtestWorldSimulatorPayloadTests(unittest.TestCase):
