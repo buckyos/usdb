@@ -287,6 +287,19 @@ r15 的该 helper 曾把两份 JSON 连续写入 stdout，导致 controller 即�
 不必为此执行整套 `down/up`。恢复时应先看到 core snapshot 进入 `IMPORTING`；core 导入成功后，
 balance-history 和已选择的 script registry installer 才启动，两者的 readiness 分别观测。
 
+core 已 `READY`、balance-history 容器持续运行但 readiness 报 `Connection reset by peer`
+或 `Connection refused` 时，检查 `BH_DATA_HOST_DIR/logs/balance-history_rCURRENT.log`。
+如果最后停在 `Opening RocksDB`，再检查 `BH_DATA_HOST_DIR/db/balance_history/LOG` 的
+`Recovering log` / `Recovered to log` 是否持续推进。RPC 在数据库打开之后才监听；
+连接失败本身不能区分启动恢复与服务故障，需要结合容器 restart count、OOM 状态及数据库日志判断。
+
+r15 首次导入后曾在此处回放大量 WAL：旧 `flush_all()` 只刷新默认列族，日志却记为 `scope=all`，
+余额、UTXO 和元数据列族未全部显式落入 SST，导致导入日志保留到下次打开数据库时处理。
+修复后导入收尾及正常关闭会等待所有列族（包括 default）的 flush 完成。
+已经在恢复的节点可继续使用现有数据；不要为此删除 WAL、重新安装 snapshot 或反复重启。
+这是 balance-history 二进制修复，需要后续 services 镜像包含修正，不能只替换主机 shell 脚本。
+修复保证 flush 覆盖范围，不意味着以后的异常停机或并发写入不再需要 WAL 恢复。
+
 首次安装不执行 `usdb-node activate-release`，因为 `setup` 已写入当前 release 的 image digest。只有以后安装
 同一 `usdb-testnet-v0` bundle 的新 `rN`、runtime compatibility ID 不变且继续复用现有 `node.env` 时，才按
 `activate-release -> controller install -> doctor -> up -> status` 升级。contract 改变或新的 `vN`、chain ID、genesis 不得直接

@@ -762,12 +762,34 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
+    /// Flush every column family to SSTs and wait before snapshot handoff or shutdown.
     pub fn flush_all(&self) -> Result<(), String> {
         let flush_begin = Instant::now();
         let mut flush_opts = rocksdb::FlushOptions::default();
         flush_opts.set_wait(true); // Wait until flush is done
 
-        self.db.flush_opt(&flush_opts).map_err(|e| {
+        // flush_opt only covers the default CF. Leaving a small metadata memtable
+        // unflushed can retain the WAL for an entire bulk import and delay reopening.
+        let cfs = std::iter::once("default")
+            .chain(BALANCE_HISTORY_COLUMN_FAMILIES)
+            .map(|name| {
+                self.db.cf_handle(name).ok_or_else(|| {
+                    let msg = format!(
+                        "Column family {} not found while flushing RocksDB at {}",
+                        name,
+                        self.file.display()
+                    );
+                    error!("{}", msg);
+                    msg
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        info!(
+            "Flushing balance-history RocksDB: scope=all, path={}, column_family_count={}",
+            self.file.display(),
+            cfs.len()
+        );
+        self.db.flush_cfs_opt(&cfs, &flush_opts).map_err(|e| {
             let msg = format!("Failed to flush RocksDB at {}: {}", self.file.display(), e);
             error!("{}", msg);
             msg
@@ -3845,6 +3867,67 @@ mod tests {
     use bitcoincore_rpc::bitcoin::{Network, ScriptBuf};
     use std::sync::{Arc, Mutex};
     use usdb_util::ToBtcScriptHash;
+
+    #[test]
+    fn test_flush_all_persists_every_column_family_without_wal_replay() {
+        for mode in [
+            BalanceHistoryDBMode::Normal,
+            BalanceHistoryDBMode::BestEffort,
+        ] {
+            let temp_dir = std::env::temp_dir().join(format!(
+                "balance_history_flush_all_{mode:?}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let mut config = BalanceHistoryConfig {
+                root_dir: temp_dir.clone(),
+                ..Default::default()
+            };
+            config.btc.network = Network::Regtest;
+            let config = Arc::new(config);
+            let db = BalanceHistoryDB::open(config.clone(), mode).unwrap();
+            let names: Vec<_> = std::iter::once("default")
+                .chain(BALANCE_HISTORY_COLUMN_FAMILIES)
+                .collect();
+            let key = [0x55; BALANCE_HISTORY_KEY_LEN];
+            let value = b"flush-all-persistence-probe";
+            // A reopen must read these values from SSTs rather than recover them from WAL.
+            let mut writes = WriteOptions::default();
+            writes.disable_wal(true);
+            for name in &names {
+                let cf = db.db.cf_handle(name).unwrap();
+                db.db.put_cf_opt(cf, key, value, &writes).unwrap();
+            }
+
+            db.flush_all().unwrap();
+            let files = db.db.live_files().unwrap();
+            for name in &names {
+                // Check before close: RocksDB's destructor must not hide an incomplete flush.
+                assert!(
+                    files
+                        .iter()
+                        .any(|file| file.column_family_name == *name && file.num_entries > 0),
+                    "flush_all left column family {name} without an SST in mode {mode:?}"
+                );
+            }
+            drop(db);
+
+            let reopened = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
+            for name in names {
+                let cf = reopened.db.cf_handle(name).unwrap();
+                assert_eq!(
+                    reopened.db.get_cf(cf, key).unwrap().as_deref(),
+                    Some(value.as_slice()),
+                    "column family {name} did not persist in mode {mode:?}"
+                );
+            }
+            drop(reopened);
+            std::fs::remove_dir_all(temp_dir).unwrap();
+        }
+    }
 
     #[test]
     fn test_db_identity_initializes_and_reopens_on_same_network() {

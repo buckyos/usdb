@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "balance-history-flush-all-column-families",
+  "type": "fixed",
+  "scopes": ["balance-history", "deployment", "node-runtime"],
+  "summary": "Flush every balance-history column family before snapshot handoff and clean shutdown",
+  "details": [
+    "Replace the default-column-family-only flush with a synchronous flush of default and all balance-history column families.",
+    "Prevent explicit full flushes from leaving import WAL pinned by unflushed metadata and data memtables, which delayed the first service open before RPC could listen.",
+    "Log the start of a full flush and test persistence without WAL replay in both normal and bulk import modes."
+  ],
+  "operator_actions": [
+    "Include this fix in the next usdb-services image; replacing host scripts alone does not update the database implementation.",
+    "Let an already-running RocksDB recovery finish and inspect its LOG for progress. Existing snapshots and node data remain reusable."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}
