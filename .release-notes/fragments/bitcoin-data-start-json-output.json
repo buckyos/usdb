@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "bitcoin-data-start-json-output",
+  "type": "fixed",
+  "scopes": ["bitcoin", "deployment", "node-runtime"],
+  "summary": "Unblock managed snapshot bootstrap after Bitcoin reaches the signed data-start anchor",
+  "details": [
+    "Keep the Bitcoin data-progress stdout to one readiness JSON document by sending bundle validation diagnostics to stderr.",
+    "Log failed helper observations and invalid readiness documents instead of silently reporting an unmet data-start gate.",
+    "Retain the minimum tip height and signed anchor hash checks; a failed or malformed observation never authorizes downstream startup."
+  ],
+  "operator_actions": [
+    "Install the corrected host node kit. An active controller reads the corrected helper on its next poll; this fix needs no Bitcoin restart or snapshot reinstall.",
+    "Observe core import before expecting balance-history and the optional script registry installer to start."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}

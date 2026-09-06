@@ -272,6 +272,21 @@ Bitcoin/balance-history 的现有同步状态继续。controller 到达 `READY` 
 SourceDAO bootstrap 仍保持独立，因为 Bootstrap Admin 私钥不能进入 node kit 或 Compose。设计与故障边界见
 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
 
+如果 Bitcoin 已 `READY`，而 core artifact 已验证、core 导入和 balance-history 长期 `WAITING`，
+先区分 data-start gate 的真实阻塞与检查脚本失败。除了 tip 达到 snapshot 高度加 stable lag，
+gate 还要求 Bitcoin 在 snapshot 高度的活动链 block hash 与签名快照匹配。
+`run_testnet_bitcoin.sh data-progress` 的 stdout 必须只有一份
+`usdb-bitcoin-data-start-readiness:v1` JSON；配置验证摘要属于 stderr。
+r15 的该 helper 曾把两份 JSON 连续写入 stdout，导致 controller 即使收到 `ready: true`
+也会因解析失败而持续等待。修复后，检查进程失败、JSON 无效或 schema 不匹配会在 controller
+日志中显示 `phase=bitcoin-data-start: readiness observation failed`，门禁继续保持关闭。
+
+此故障发生在 RocksDB 导入启动前，无需重下 snapshot、重建数据库或重新同步 Bitcoin。
+修复属于主机 node kit 的 `docker/scripts/tools/run_testnet_bitcoin.sh`，无需重建容器镜像。
+如果经过核对后仅替换这个 helper，仍在运行的 controller 会在下一轮轮询读取修正后的脚本；
+不必为此执行整套 `down/up`。恢复时应先看到 core snapshot 进入 `IMPORTING`；core 导入成功后，
+balance-history 和已选择的 script registry installer 才启动，两者的 readiness 分别观测。
+
 首次安装不执行 `usdb-node activate-release`，因为 `setup` 已写入当前 release 的 image digest。只有以后安装
 同一 `usdb-testnet-v0` bundle 的新 `rN`、runtime compatibility ID 不变且继续复用现有 `node.env` 时，才按
 `activate-release -> controller install -> doctor -> up -> status` 升级。contract 改变或新的 `vN`、chain ID、genesis 不得直接

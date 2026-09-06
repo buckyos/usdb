@@ -326,7 +326,8 @@ case "${action}" in
     ;;
   wait-data|data-progress)
     require_node_env
-    validate_bitcoin_runtime
+    # Keep stdout limited to the readiness document consumed by the controller.
+    validate_bitcoin_runtime >&2
     wait_data_start "${1:-}" "${2:-}" "${3:-}"
     ;;
   wait)

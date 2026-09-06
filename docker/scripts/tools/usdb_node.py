@@ -2086,17 +2086,28 @@ def _transition_resources(layout: ReleaseLayout, target: str, *, output_to_stder
 
 
 def _managed_data_ready(layout: ReleaseLayout, anchor: BitcoinDataStartAnchor) -> bool:
+    """Keep failed observations closed and visible instead of silently waiting."""
     arguments = ["data-progress", str(anchor.minimum_tip_height)]
     if anchor.block_hash is not None:
         arguments.extend([str(anchor.stable_height), anchor.block_hash])
     try:
         result = run_helper(layout, "run_testnet_bitcoin.sh", arguments, check=False,
                             capture_output=True, command_timeout_secs=20)
-        report = json.loads(result.stdout) if result.returncode == 0 else {}
-        return (isinstance(report, dict)
-                and report.get("schema_version") == "usdb-bitcoin-data-start-readiness:v1"
-                and report.get("ready") is True)
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+        if result.returncode != 0:
+            raise ValueError(f"data-progress helper exited with code {result.returncode}")
+        report = json.loads(result.stdout)
+        if (not isinstance(report, dict)
+                or report.get("schema_version") != "usdb-bitcoin-data-start-readiness:v1"
+                or not isinstance(report.get("ready"), bool)):
+            raise ValueError("data-progress helper returned an invalid readiness document")
+        return report["ready"]
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        _print_startup_phase(
+            "bitcoin-data-start",
+            f"readiness observation failed: minimum_tip_height={anchor.minimum_tip_height}, "
+            f"anchor_height={anchor.stable_height}, error={exc}",
+            output_to_stderr=True,
+        )
         return False
 
 
