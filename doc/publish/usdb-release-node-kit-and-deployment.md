@@ -326,6 +326,13 @@ finalize 和 atomic swap。source hash 结束后的 SQLite integrity 与精确 c
 `up` 面板或 `status --watch` 在 readiness RPC 暂时超时时，最多保留 60 秒最近一次成功观测并显式标记
 `STALE`；component 状态和最新错误仍使用当前探测结果，该缓存只改善显示连续性，不参与启动门禁或生命周期判断。
 
+Indexer 行优先显示 readiness 返回的已提交高度与当前上游稳定高度，并附带 `remaining_blocks`；初次追块
+后的历史 snapshot anchor 回填期间，旧扫描批次的 `current/total` 可能已相等，上游却已继续推进。
+若最后一条扫描消息长期不变，可在 indexer 持久化日志中检查 `Backfilling balance-history snapshot history`
+的逐高度推进。回填完成后索引循环会继续追上游；chain 仍以新鲜的 `consensus_ready` 响应作为启动条件。
+RPC 超时表示这次观测不可用，不能据此推断已提交高度归零。`up` 附加 controller 的面板与 `status --watch`
+使用相同的短暂超时缓存；单次 `--progress-json` 则始终输出当次真实观测。
+
 `snapshot-loader` 将导入观测值以原子替换方式写入
 `<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.progress.json`，schema 为
 `balance-history-core-snapshot-install-progress:v1`。写入失败只记录 warning，不影响 installer

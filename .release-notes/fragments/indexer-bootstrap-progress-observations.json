@@ -1,0 +1,17 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "indexer-bootstrap-progress-observations",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Keep controller progress stable during RPC timeouts and show the current indexer target",
+  "details": [
+    "Apply the existing bounded last-good display cache when up follows the bootstrap controller, retaining heights with a STALE label while keeping the current failed probe state.",
+    "Display the indexer's committed height and observed upstream stable height instead of the previous scan batch target, with an explicit remaining block count.",
+    "Keep controller readiness decisions and one-shot progress JSON based on fresh observations; historical display values never open startup gates."
+  ],
+  "operator_actions": [
+    "Use the updated node kit and reopen the progress view to apply the display fixes; running data services do not need a restart."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

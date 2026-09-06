@@ -3619,6 +3619,15 @@ def _indexed_service_component(
     current_value = current if isinstance(current, int) and not isinstance(current, bool) else None
     total_value = total if isinstance(total, int) and not isinstance(total, bool) else None
     detail_parts: list[str] = []
+    if component_id == "usdb_indexer":
+        # The scan target can stay frozen during snapshot-history backfill while
+        # upstream advances. Display the heights used by the readiness gate.
+        synced_height = readiness.get("synced_block_height")
+        upstream_height = readiness.get("balance_history_stable_height")
+        if all(isinstance(value, int) and not isinstance(value, bool) and value >= 0
+               for value in (synced_height, upstream_height)):
+            current_value, total_value = synced_height, upstream_height
+            detail_parts.append(f"remaining_blocks={max(0, upstream_height - synced_height)}")
     phase = readiness.get("phase")
     if isinstance(phase, str) and phase:
         detail_parts.append(f"phase={phase}")
@@ -4862,6 +4871,7 @@ def follow_submitted_controller(
     """Render controller progress until READY, a manual stop, or operator detach."""
     output = sys.stderr
     display = TerminalProgressDisplay(output)
+    history = NodeProgressHistory()
     started_at = time.monotonic()
     observed_running = False
     display.start()
@@ -4870,7 +4880,7 @@ def follow_submitted_controller(
             progress = collect_node_progress(layout)
             display.render(
                 render_node_progress(
-                    progress,
+                    history.apply(progress),
                     phase="bootstrap-controller",
                     width=shutil.get_terminal_size(fallback=(120, 24)).columns,
                 )
