@@ -103,8 +103,11 @@ EOF
 
   continue_address="$(regtest_get_new_address)"
   regtest_mine_empty_block "$continue_address"
-  regtest_wait_until_balance_history_synced_eq "$((historical_height + 1))"
-  regtest_wait_until_usdb_synced_eq "$((historical_height + 1))"
+  # The previous tip was already historical_height + 1. Wait for the newly
+  # mined tip so cached readiness at the old height cannot release validation.
+  current_tip_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  regtest_wait_until_balance_history_synced_eq "$current_tip_height"
+  regtest_wait_until_usdb_synced_eq "$current_tip_height"
   regtest_wait_balance_history_consensus_ready
   regtest_wait_usdb_consensus_ready
 

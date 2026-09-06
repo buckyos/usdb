@@ -3814,6 +3814,11 @@ impl MinerPassStorage {
         Ok(count as u64)
     }
 
+    // Drive history-set lookups from the latest-event aggregate. SQLite 3.51
+    // otherwise may scan the state/owner index first and rerun the aggregate
+    // coroutine for every matching history row. CROSS JOIN keeps one aggregate
+    // pass followed by primary-key lookups, preserving MAX(id), height bounds,
+    // state/owner filters and pagination without reading mutable current state.
     pub fn get_pass_state_stats_from_history_at_height(
         &self,
         block_height: u32,
@@ -3833,8 +3838,8 @@ impl MinerPassStorage {
                 SELECT
                     h.new_state,
                     COUNT(*)
-                FROM miner_pass_state_history h
-                INNER JOIN latest l ON h.id = l.max_id
+                FROM latest l
+                CROSS JOIN miner_pass_state_history h ON h.id = l.max_id
                 GROUP BY h.new_state;
                 ",
             )
@@ -3976,8 +3981,8 @@ impl MinerPassStorage {
                     GROUP BY inscription_id
                 )
                 SELECT COUNT(*)
-                FROM miner_pass_state_history h
-                INNER JOIN latest l ON h.id = l.max_id
+                FROM latest l
+                CROSS JOIN miner_pass_state_history h ON h.id = l.max_id
                 WHERE h.new_state IN ({});
                 ",
             placeholders
@@ -4454,8 +4459,8 @@ impl MinerPassStorage {
             SELECT
                 h.inscription_id,
                 h.new_owner
-            FROM miner_pass_state_history h
-            INNER JOIN latest l ON h.id = l.max_id
+            FROM latest l
+            CROSS JOIN miner_pass_state_history h ON h.id = l.max_id
             WHERE h.new_state IN ({})
             ORDER BY h.block_height DESC, h.id DESC
             LIMIT ?{} OFFSET ?{};
@@ -4708,8 +4713,8 @@ impl MinerPassStorage {
                 GROUP BY inscription_id
             )
             SELECT COUNT(*)
-            FROM miner_pass_state_history h
-            INNER JOIN latest l ON h.id = l.max_id
+            FROM latest l
+            CROSS JOIN miner_pass_state_history h ON h.id = l.max_id
             WHERE h.new_owner = ?2
             {};
             ",
@@ -4798,9 +4803,9 @@ impl MinerPassStorage {
                 m.leader_btc_addr,
                 m.leader_btc_owner,
                 h.block_height AS latest_event_height
-            FROM miner_pass_state_history h
-            INNER JOIN latest l ON h.id = l.max_id
-            INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
+            FROM latest l
+            CROSS JOIN miner_pass_state_history h ON h.id = l.max_id
+            CROSS JOIN miner_passes m ON m.inscription_id = h.inscription_id
             WHERE h.new_owner = ?2
             {}
             ORDER BY h.block_height {}, h.id {}
@@ -4879,9 +4884,9 @@ impl MinerPassStorage {
                 GROUP BY inscription_id
             )
             SELECT COUNT(*)
-            FROM miner_pass_state_history h
-            INNER JOIN latest l ON h.id = l.max_id
-            INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
+            FROM latest l
+            CROSS JOIN miner_pass_state_history h ON h.id = l.max_id
+            CROSS JOIN miner_passes m ON m.inscription_id = h.inscription_id
             {};
             ",
             state_filter
@@ -4967,9 +4972,9 @@ impl MinerPassStorage {
                 m.leader_btc_addr,
                 m.leader_btc_owner,
                 h.block_height AS latest_event_height
-            FROM miner_pass_state_history h
-            INNER JOIN latest l ON h.id = l.max_id
-            INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
+            FROM latest l
+            CROSS JOIN miner_pass_state_history h ON h.id = l.max_id
+            CROSS JOIN miner_passes m ON m.inscription_id = h.inscription_id
             {}
             ORDER BY m.mint_block_height {}, m.inscription_number {}, h.id {}
             LIMIT ?{} OFFSET ?{};
@@ -5041,8 +5046,8 @@ impl MinerPassStorage {
             SELECT
                 h.inscription_id,
                 h.new_owner
-            FROM miner_pass_state_history h
-            INNER JOIN latest l ON h.id = l.max_id
+            FROM latest l
+            CROSS JOIN miner_pass_state_history h ON h.id = l.max_id
             WHERE h.new_state = ?2 AND h.new_owner = ?3
             ORDER BY h.block_height DESC, h.id DESC
             LIMIT 2;
@@ -6821,6 +6826,134 @@ mod tests {
         assert_eq!(active_150[0].owner, owner2);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_history_query_work_scales_linearly() {
+        // Count SQLite VM steps instead of wall time so a nested aggregate
+        // regression fails deterministically even on a fast or busy runner.
+        thread_local! {
+            static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        }
+        fn measure(pass_count: u8) -> u64 {
+            let dir = test_data_dir("history_query_work");
+            let storage = MinerPassStorage::new(&dir).unwrap();
+            let guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
+            for tag in 1..=pass_count {
+                let pass = make_pass(tag, 0, script_hash(tag), MinerPassState::Active, 100);
+                storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+                storage
+                    .update_state_at_height(
+                        &pass.inscription_id,
+                        MinerPassState::Dormant,
+                        MinerPassState::Active,
+                        110,
+                    )
+                    .unwrap();
+                storage
+                    .update_state_at_height(
+                        &pass.inscription_id,
+                        MinerPassState::Active,
+                        MinerPassState::Dormant,
+                        120,
+                    )
+                    .unwrap();
+            }
+            guard.commit().unwrap();
+
+            STEPS.set(0);
+            storage.set_sql_trace_for_test(Some(|event| {
+                if let TraceEvent::Profile(stmt, _) = event {
+                    STEPS.set(
+                        STEPS.get() + stmt.get_status(rusqlite::StatementStatus::VmStep) as u64,
+                    );
+                }
+            }));
+            // Include a historical height whose state differs from current
+            // rows, plus filtered counts/pages and unfiltered statistics.
+            for (height, state) in [
+                (110, MinerPassState::Dormant),
+                (120, MinerPassState::Active),
+            ] {
+                let states = [state];
+                assert_eq!(
+                    storage
+                        .get_pass_state_stats_from_history_at_height(height)
+                        .unwrap()
+                        .total_count,
+                    pass_count as u64
+                );
+                assert_eq!(
+                    storage
+                        .get_pass_count_from_history_at_height_by_states(height, &states)
+                        .unwrap(),
+                    pass_count as u64
+                );
+                assert_eq!(
+                    storage
+                        .get_passes_by_page_from_history_at_height_by_states(
+                            0, 1024, height, &states
+                        )
+                        .unwrap()
+                        .len(),
+                    pass_count as usize
+                );
+                let owner = script_hash(1);
+                assert_eq!(
+                    storage
+                        .get_owner_pass_count_from_history_at_height_by_states(
+                            &owner, height, &states
+                        )
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    storage
+                        .get_owner_passes_by_page_from_history_at_height_by_states(
+                            &owner, height, &states, 0, 1024, true
+                        )
+                        .unwrap()
+                        .len(),
+                    1
+                );
+                assert_eq!(
+                    storage
+                        .get_recent_pass_count_from_history_at_height_by_states(height, &states)
+                        .unwrap(),
+                    pass_count as u64
+                );
+                assert_eq!(
+                    storage
+                        .get_recent_passes_by_page_from_history_at_height_by_states(
+                            height, &states, 0, 1024, true
+                        )
+                        .unwrap()
+                        .len(),
+                    pass_count as usize
+                );
+                assert_eq!(
+                    storage
+                        .get_owner_active_pass_from_history_at_height(&owner, height)
+                        .unwrap()
+                        .is_some(),
+                    height == 120
+                );
+            }
+            storage.set_sql_trace_for_test(None);
+            let steps = STEPS.get();
+            drop(storage);
+            std::fs::remove_dir_all(dir).unwrap();
+            steps
+        }
+
+        let small = measure(32);
+        let large = measure(128);
+        eprintln!("Historical query VM steps: 32 passes={small}, 128 passes={large}");
+        assert!(small > 0);
+        assert!(
+            large < small * 6,
+            "Historical query work grew superlinearly: small={small}, large={large}"
+        );
     }
 
     #[test]

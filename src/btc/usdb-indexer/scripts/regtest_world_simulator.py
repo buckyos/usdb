@@ -1920,9 +1920,11 @@ class RegtestWorldSimulator:
         return payload.get("result")
 
     @classmethod
-    def snapshot_rpc_result_if_ready(
+    def rpc_result_if_ready(
         cls, payload: dict[str, Any], method: str
-    ) -> dict[str, Any] | None:
+    ) -> Any:
+        # Readiness gates are transient during catch-up and rollback. Only
+        # bounded wait loops may retry them; ordinary assertions stay strict.
         error = payload.get("error")
         if isinstance(error, dict) and (
             error.get("code") == cls.SNAPSHOT_NOT_READY_RPC_CODE
@@ -1930,7 +1932,13 @@ class RegtestWorldSimulator:
         ):
             return None
 
-        result = cls.rpc_result(payload, method)
+        return cls.rpc_result(payload, method)
+
+    @classmethod
+    def snapshot_rpc_result_if_ready(
+        cls, payload: dict[str, Any], method: str
+    ) -> dict[str, Any] | None:
+        result = cls.rpc_result_if_ready(payload, method)
         if result is None:
             return None
         if not isinstance(result, dict):
@@ -3052,9 +3060,14 @@ class RegtestWorldSimulator:
     def wait_service_height_exact(self, target_height: int) -> None:
         start = time.time()
         while True:
-            bh_height = int(self.rpc_balance_history("get_block_height", []) or 0)
-            usdb_height = self.rpc_usdb("get_synced_block_height", [])
-            usdb_height_num = 0 if usdb_height is None else int(usdb_height)
+            bh_height = self.rpc_result_if_ready(
+                self.rpc_call(self.args.balance_history_rpc_url, "get_block_height", []),
+                "balance-history get_block_height",
+            )
+            usdb_height = self.rpc_result_if_ready(
+                self.rpc_call(self.args.usdb_indexer_rpc_url, "get_synced_block_height", []),
+                "usdb-indexer get_synced_block_height",
+            )
             bh_readiness = self.rpc_balance_history("get_readiness", [])
             usdb_readiness = self.rpc_usdb("get_readiness", [])
             bh_consensus_ready = bool(
@@ -3070,7 +3083,7 @@ class RegtestWorldSimulator:
 
             if (
                 bh_height == target_height
-                and usdb_height_num == target_height
+                and usdb_height == target_height
                 and bh_consensus_ready
                 and usdb_consensus_ready
             ):
@@ -3079,7 +3092,7 @@ class RegtestWorldSimulator:
             if time.time() - start > self.args.sync_timeout_sec:
                 raise WorldSimError(
                     "exact sync timeout: "
-                    f"target_height={target_height}, bh_height={bh_height}, usdb_height={usdb_height_num}, "
+                    f"target_height={target_height}, bh_height={bh_height}, usdb_height={usdb_height}, "
                     f"bh_consensus_ready={bh_consensus_ready}, usdb_consensus_ready={usdb_consensus_ready}"
                 )
             time.sleep(0.8)
@@ -3087,7 +3100,10 @@ class RegtestWorldSimulator:
     def wait_balance_history_height_exact(self, target_height: int) -> None:
         start = time.time()
         while True:
-            bh_height = int(self.rpc_balance_history("get_block_height", []) or 0)
+            bh_height = self.rpc_result_if_ready(
+                self.rpc_call(self.args.balance_history_rpc_url, "get_block_height", []),
+                "balance-history get_block_height",
+            )
             bh_readiness = self.rpc_balance_history("get_readiness", [])
             bh_consensus_ready = bool(
                 bh_readiness.get("consensus_ready")

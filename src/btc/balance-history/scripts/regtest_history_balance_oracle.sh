@@ -161,11 +161,21 @@ response = json.loads(encoded_response)
 if response.get("error"):
     raise SystemExit(f"script registry RPC failed for {address}: {response['error']}")
 item = response["result"]["items"][0]
-if item["script_hash"] != script_hash or item["found"] != (expected_found == "true"):
+# This fixture indexes from genesis without a base sidecar: observed scripts
+# must resolve from the overlay, and complete coverage makes misses definitive.
+found = expected_found == "true"
+expected_status = "found_overlay" if found else "not_found"
+expected_source = "overlay" if found else None
+if (
+    item["script_hash"] != script_hash
+    or item["status"] != expected_status
+    or item["source"] != expected_source
+):
     raise SystemExit(
-        f"script registry mismatch for {address}: expected_found={expected_found}, actual={item}"
+        f"script registry mismatch for {address}: "
+        f"expected_status={expected_status}, expected_source={expected_source}, actual={item}"
     )
-if item["found"] and item["address"] != address:
+if item["address"] != (address if found else None):
     raise SystemExit(f"script registry address mismatch for {address}: {item}")
 PY
   done

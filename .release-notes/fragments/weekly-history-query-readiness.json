@@ -1,0 +1,21 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "weekly-history-query-readiness",
+  "type": "fixed",
+  "scopes": ["indexer", "testing"],
+  "summary": "Avoid repeated historical Pass aggregation and repair weekly readiness checks",
+  "details": [
+    "Historical Pass set queries drive SQLite joins from the latest-event aggregate, retaining event ID selection, height bounds, owner/state filters and pagination without a schema migration.",
+    "The regtest script-registry oracle checks layered status/source results, and historical-context validation waits for the newly mined tip.",
+    "Bounded world-sim convergence waits retry SNAPSHOT_NOT_READY during rollback while keeping other errors and consensus checks strict.",
+    "Weekly keeps 2500 continuous rounds per seed and separates service compilation from the 300-minute simulation budget."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}
