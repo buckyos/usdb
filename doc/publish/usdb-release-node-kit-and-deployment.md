@@ -424,6 +424,22 @@ systemd unit 名为 `usdb-node-bootstrap-<bundle-id>.service`，随主机启动�
 停止。bundle-scoped `flock` 防止配置、activation、前台启动和 controller 并发执行，进程退出后由内核释放，
 不应手工删除锁文件。
 
+正常退出 controller 不等于禁用其 systemd unit；应保留开机启用状态，用于重入未完成的初始化或角色切换。
+Docker 自动恢复已有常驻容器时，不能依赖 Compose `depends_on` 重新执行完整业务门禁；各服务必须自行等待
+上游和处理运行中的 RPC 故障。snapshot-loader、chain-init 等一次性任务另按各自重启策略管理。
+
+chain 镜像中的 deep-reorg guard 将两种恢复路径分开：
+
+- RPC 不可达、超时或响应无效：启动时保持 geth 未启动，按 guard poll interval 重试；运行中连续失败达到
+  阈值后先优雅停止 geth，等待原进程退出，再进入相同的检查循环。上游恢复且原有 baseline 校验通过后，
+  在同一容器内恢复原 full/miner 配置；不依赖 controller，不重置数据库或 baseline。
+- reorg epoch 前进或回退、已有 `halted.json`：继续持久停机；容器或主机重启都不能绕过该记录。
+  恢复检查同样会检测故障期间发生的 epoch 变化，不会自动将旧 baseline 改为新值。
+
+等待期间 chain RPC 不可用，容器存活不代表 chain 已就绪。可在 chain 日志中查看
+`waiting for upstream guard recovery`；未知 guard 退出或 geth 崩溃会结束容器，让 Docker 接管进程重启。
+这项恢复修复需要更新 chain 镜像，仅替换主机 node-kit 脚本不会改变旧容器中的入口脚本。
+
 `setup` 中选择 snapshot 后，选择意图先写入 `node.env`，实际下载由 controller 执行。因此配置完成后即使 SSH
 断开，后续仍保持 `SNAPSHOT_INCOMPLETE` 并可安全续传，不会误启 full sync。
 

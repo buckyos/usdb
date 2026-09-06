@@ -177,6 +177,11 @@ node key 必须随数据目录保留，NAT 下要核对实际可达的外部地�
 将角色恢复 full 并重建 chain；RPC 不可达时也必须能通过停止 chain 容器落实禁用。
 如果 deep-reorg guard 已停链，禁用不能恢复被 guard 禁止的 chain 运行。
 
+角色切换完成后 controller 可以退出，保留 systemd unit 的开机启用状态。chain 容器自行处理临时上游故障：
+启动时 guard RPC 失败会定时重试；运行中达到连续错误阈值后先优雅停止 geth，再等待上游恢复。
+只有原有 baseline 校验通过才恢复原角色，保持 miner 地址和线程数，不通过重新执行 `mining enable` 恢复。
+真实 epoch 变化及持久 `halted.json` 继续阻止自动恢复；不得把临时 RPC 故障与深重组事件合并为永久等待。
+
 现有 `set-role` 与 `up` 必须纳入同一状态模型：配置角色与实际容器角色不一致时不能报告已完全就绪，
 也不能返回「already ready」跳过应用。所有将配置应用为 miner 的入口都执行上述硬检查，不能由旧入口绕过。
 `set-role` 如继续保留配置编辑语义，应明确报告尚未应用，并由 `up` 调用同一个角色转换引擎。
@@ -233,6 +238,9 @@ SourceDAO 未完成不能阻止 genesis 冷启动挖出用于执行 bootstrap �
 | 配置 miner 但运行 full / 地址或线程参数漂移 | 状态明确未应用，不能报 ACTIVE |
 | OCI 创建失败或初始化 RPC 超时 | 真正失败与 pending 分开；不无限重启正常初始化 |
 | 上游失败、pass 已失效时 disable | 仍能持久禁用，本地不再 sealing；不清除 recovery latch |
+| chain 先于 indexer 启动、运行中 RPC 503/超时/响应损坏 | 自动等待与恢复，原 baseline 和 miner 参数不变；新旧 geth 不重叠 |
+| RPC 故障期间 reorg epoch 前进或回退 | 恢复时记录 incident 并保持停机；重启不能绕过 |
+| guard 检查、重试等待、运行或持久停机期间收到 SIGTERM | 正常退出并回收子进程；未知 guard 退出和 geth 崩溃交给 Docker 重启 |
 | 无 peer 配置且未声明 first-node | PEER_SOURCE_REQUIRED，配置和容器不变 |
 | 已配置 peer 但暂时不可达 | 等待/连接错误，不自动首节点，不启用独立挖矿 |
 | 首节点首次启用与产块后再次 enable | 首次检查 genesis；后续校验绑定的首节点记录并幂等恢复 |

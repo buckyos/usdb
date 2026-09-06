@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "recover-chain-upstream-guard",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Recover chain runtime after transient upstream guard failures",
+  "details": [
+    "Wait and retry startup RPC failures; gracefully stop geth after repeated monitoring errors and resume only after validating the existing reorg baseline.",
+    "Preserve persistent deep-reorg incidents, miner configuration and chain data, and reap stopped writers before starting a replacement process.",
+    "Keep retry waits interruptible and let Docker restart the container after unexpected guard exits or geth crashes."
+  ],
+  "operator_actions": [
+    "Update the chain image and recreate the chain container to apply the runtime fix; replacing the host node-kit scripts alone is insufficient.",
+    "Retain baseline.json and halted.json. Transient RPC recovery requires no new mining enable operation or controller process."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}
