@@ -178,7 +178,36 @@ ghcr.io/buckyos/usdb-bitcoin-core@sha256:<64-char-digest>
 - attestation source digest 等于 manifest 中冻结的 Git commit；
 - runner 不是 self-hosted runner。
 
-### 3.6 CI 资格与可安装候选
+### 3.6 最终 image digest 漏洞扫描
+
+三类 image workflow 在 publish 和 attestation 之后调用同一套 digest scan。扫描输入只能是
+`ghcr.io/buckyos/<image>@sha256:<digest>`，不能使用 candidate tag；scanner、数据库下载、JSON/SARIF
+格式校验或 artifact 上传失败都会使 image-producing workflow 失败。每次扫描保存：
+
+- 包含全部 severity 的 Trivy JSON；
+- 只包含 High/Critical 的 SARIF；
+- 绑定 image digest、source revision、policy、severity counts 和 report SHA-256 的 metadata；
+- 覆盖上述文件的 `SHA256SUMS`。
+
+证据 artifact 名称包含 image 类型、workflow run ID 和 attempt，保留 30 天。正式 release tag 的
+策略如下：
+
+| Image | `testnet` tag | `mainnet` tag | 说明 |
+| --- | --- | --- | --- |
+| `usdb-services` | High/Critical 阻断 | High/Critical 阻断 | USDB Rust runtime 和发布依赖严格处理 |
+| `usdb-bitcoin-core` | High/Critical 阻断 | High/Critical 阻断 | Bitcoin runtime/base image 严格处理 |
+| `usdb-chain` | report-only | High/Critical 阻断 | 测试网先保留 ETHW 继承基线，不以未完成归因的历史包告警阻断 |
+
+人工 dispatch 用于诊断，三类 image 均为 report-only。report-only 只放宽 finding count，不放宽
+scanner 和证据有效性。`usdb-chain` 的测试网例外不覆盖 Go 中 USDB 增量；该增量仍由 Fast、
+cross-repository golden、CodeQL 和阶段 C 共识差分审计严格处理。
+
+Release Candidate resolver 只选择同一 release tag/source revision 上成功的 image-producing run，
+因此 services/Bitcoin 的严格扫描失败会阻止测试网 candidate 选中该镜像；chain 测试网可以携带
+完整报告继续资格验证。该阶段先把报告绑定到 producer run，后续 schema 升级再把 scan metadata
+digest 写入 release manifest。
+
+### 3.7 CI 资格与可安装候选
 
 资格等级与发布介质是两个维度。三个等级都生成相同的完整 GitHub Release assets，因此都可通过
 release-bound installer 部署：

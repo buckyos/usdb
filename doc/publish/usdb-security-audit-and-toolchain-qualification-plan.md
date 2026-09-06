@@ -214,6 +214,13 @@ artifact-changing batch 修复，不能与 Hardhat/npm 升级合并。
 从 Incremental 进入 Strict release 前，必须完成阶段 A-C 的高风险收敛、最终镜像扫描和例外审批
 自动校验。不得仅因为打开了 GitHub 安全功能，就一次性把全部历史告警配置成合并阻断。
 
+最终 image digest 扫描的第一阶段已经接入三类 image-producing workflow：扫描器和报告错误始终
+失败；services 与 Bitcoin 的正式 testnet/mainnet tag 对 High/Critical 严格阻断；chain image 在
+testnet 对 finding count 保持 report-only，在 mainnet 严格阻断。该 chain 例外只用于避免尚未完成
+可达性归因的 ETHW 继承依赖阻塞测试网，不适用于 Go 中的 USDB 增量代码。每个扫描 artifact 都
+保存完整 JSON、High/Critical SARIF、digest-bound metadata 和 checksums；metadata 纳入 release
+manifest 属于下一步。
+
 ### 9.2 `testnet-v0`
 
 允许带限期例外上线，但必须满足：

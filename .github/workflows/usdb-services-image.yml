@@ -24,6 +24,8 @@ jobs:
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.prepare.outputs.image }}
       reference: ${{ steps.prepare.outputs.image }}@${{ steps.build.outputs.digest }}
+      revision: ${{ steps.prepare.outputs.revision }}
+      scan_enforcement: ${{ steps.prepare.outputs.scan_enforcement }}
     steps:
       - name: Check out source revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,9 +61,15 @@ jobs:
 
           image="ghcr.io/buckyos/usdb-services"
           tag="${image}:git-${revision}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          scan_enforcement="report-only"
+          if [[ "$GITHUB_REF_TYPE" == "tag" &&
+                "$GITHUB_REF_NAME" =~ ^usdb-(testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$ ]]; then
+            scan_enforcement="strict"
+          fi
           {
             echo "image=$image"
             echo "revision=$revision"
+            echo "scan_enforcement=$scan_enforcement"
             echo "tag=$tag"
           } >>"$GITHUB_OUTPUT"
 
@@ -113,3 +121,16 @@ jobs:
             echo
             echo "Source revision: \`${{ steps.prepare.outputs.revision }}\`"
           } >>"$GITHUB_STEP_SUMMARY"
+
+  scan:
+    name: Scan USDB services image
+    needs: publish
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/release-image-security.yml
+    with:
+      artifact_name: usdb-services-image-security
+      enforcement: ${{ needs.publish.outputs.scan_enforcement }}
+      image_reference: ${{ needs.publish.outputs.reference }}
+      source_revision: ${{ needs.publish.outputs.revision }}
