@@ -75,6 +75,11 @@ SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE="${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE:-
 SIM_REORG_INTERVAL_BLOCKS="${SIM_REORG_INTERVAL_BLOCKS:-0}"
 SIM_REORG_DEPTH="${SIM_REORG_DEPTH:-3}"
 SIM_REORG_MAX_EVENTS="${SIM_REORG_MAX_EVENTS:-1}"
+SIM_REPLAY_CHECK_ENABLED="${SIM_REPLAY_CHECK_ENABLED:-0}"
+SIM_REPLAY_OUTPUT_DIR="${SIM_REPLAY_OUTPUT_DIR:-$WORK_DIR/replay-audit}"
+SIM_REPLAY_TIMEOUT_SEC="${SIM_REPLAY_TIMEOUT_SEC:-1800}"
+REPLAY_BH_RPC_PORT="${REPLAY_BH_RPC_PORT:-$((BH_RPC_PORT + 3))}"
+REPLAY_INDEXER_RPC_PORT="${REPLAY_INDEXER_RPC_PORT:-$((USDB_INDEXER_RPC_PORT + 3))}"
 
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-8}"
@@ -900,6 +905,13 @@ PY
     report_args+=(--report-flush-every "$SIM_REPORT_FLUSH_EVERY")
   fi
   local recovery_args=()
+  local replay_args=()
+  if [[ "$SIM_REPLAY_CHECK_ENABLED" == "1" ]]; then
+    replay_args+=(--enable-replay-check --replay-output-dir "$SIM_REPLAY_OUTPUT_DIR")
+  elif [[ "$SIM_REPLAY_CHECK_ENABLED" != "0" ]]; then
+    log "SIM_REPLAY_CHECK_ENABLED must be 0 or 1"
+    exit 1
+  fi
   if [[ "$SIM_RECOVERY_ENABLED" == "1" ]]; then
     recovery_args+=(--recovery-state-file "$SIM_RECOVERY_STATE_FILE")
   fi
@@ -938,7 +950,7 @@ PY
     economic_bootstrap_args+=(--enable-economic-bootstrap)
   fi
 
-  python3 "$WORLD_SIMULATOR" \
+  PYTHONDONTWRITEBYTECODE=1 python3 "$WORLD_SIMULATOR" \
     --btc-cli "$BITCOIN_CLI_BIN" \
     --bitcoin-dir "$BITCOIN_DIR" \
     --btc-rpc-port "$BTC_RPC_PORT" \
@@ -979,12 +991,25 @@ PY
     "${validator_sample_args[@]}" \
     "${report_args[@]}" \
     "${recovery_args[@]}" \
+    "${replay_args[@]}" \
     --reorg-interval-blocks "$SIM_REORG_INTERVAL_BLOCKS" \
     --reorg-depth "$SIM_REORG_DEPTH" \
     --reorg-max-events "$SIM_REORG_MAX_EVENTS" \
     --temp-dir "$WORK_DIR" \
     "${fail_fast_arg[@]}" \
     2>&1 | tee -a "$SIM_LOG_FILE"
+
+  if [[ "$SIM_REPLAY_CHECK_ENABLED" == "1" ]]; then
+    PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_ROOT/src/btc/usdb-indexer/scripts/compare_world_replay.py" \
+      --report "$SIM_REPORT_FILE" --output-dir "$SIM_REPLAY_OUTPUT_DIR" --work-dir "$WORK_DIR" \
+      --balance-root "$BALANCE_HISTORY_ROOT" --indexer-root "$USDB_INDEXER_ROOT" \
+      --manifest "$REPO_ROOT/src/btc/Cargo.toml" \
+      --balance-port "$REPLAY_BH_RPC_PORT" --indexer-port "$REPLAY_INDEXER_RPC_PORT" \
+      --timeout-sec "$SIM_REPLAY_TIMEOUT_SEC"
+    if [[ "$SIM_RECOVERY_ENABLED" == "1" ]]; then
+      rm -f -- "$SIM_RECOVERY_STATE_FILE"
+    fi
+  fi
 
   log "World simulation finished successfully."
   log "Logs: ${WORK_DIR}/ord-server.log, ${WORK_DIR}/balance-history.log, ${WORK_DIR}/usdb-indexer.log"

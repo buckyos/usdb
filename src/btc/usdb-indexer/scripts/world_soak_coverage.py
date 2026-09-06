@@ -75,3 +75,36 @@ def check_world_soak_coverage(
         actual = count(metrics.get(name), name)
         require(actual >= minimum, f"{name}={actual}, required >= {minimum}")
     return {"reorg_ok": expected_reorgs, **minimums}
+
+
+def check_world_replay_coverage(start, end, replay):
+    """Require this session's successful fresh replay for every saved checkpoint."""
+    def require(condition, message):
+        if not condition:
+            raise ValueError(f"world-replay coverage: {message}")
+
+    require(start.get("replay_check_enabled") is True, "replay disabled")
+    require(isinstance(replay, dict) and replay.get("status") == "ok", "no successful replay comparison")
+    require(replay.get("schema") == "usdb-world-replay:v1" and replay.get("fresh_databases") is True,
+            "fresh replay evidence missing")
+    require(replay.get("session_start_ts_ms") == start.get("ts_ms") and replay.get("seed") == start["seed"],
+            "replay belongs to a different session")
+    require(replay.get("completed_work_ticks") == end["completed_work_ticks"], "replay workload mismatch")
+    checkpoints = end.get("replay_checkpoints", [])
+    reorgs = [item for item in checkpoints if item.get("kind") == "reorg"]
+    finals = [item for item in checkpoints if item.get("kind") == "final"]
+    require(len(reorgs) == end["reorg_events_applied"] > 0, "missing post-reorg comparisons")
+    require([item["tick"] for item in reorgs] == [
+        start["reorg_interval_blocks"] * index for index in range(1, end["reorg_events_applied"] + 1)
+    ], "reorg checkpoint cadence mismatch")
+    require(len(finals) == 1 and len(checkpoints) == len(reorgs) + 1, "missing final comparison")
+    require(finals[0]["tick"] == end["completed_work_ticks"], "final checkpoint tick mismatch")
+    require(len({item["file"] for item in checkpoints}) == len(checkpoints), "duplicate checkpoints")
+    require(replay.get("final_height") == finals[0]["height"] == end["finalization"]["final_height"],
+            "replay final height mismatch")
+    require(replay.get("final_hash") == finals[0]["block_hash"], "replay final hash mismatch")
+    comparisons = replay.get("comparisons", [])
+    require(len(comparisons) == len(checkpoints), "not all checkpoints compared")
+    for expected, actual in zip(checkpoints, comparisons):
+        require(actual == {**expected, "actual_sha256": expected["sha256"]}, "checkpoint comparison mismatch")
+        require(expected.get("passes", 0) > 0, "empty pass comparison")

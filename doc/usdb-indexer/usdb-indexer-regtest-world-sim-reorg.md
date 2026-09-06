@@ -22,6 +22,7 @@
 3. 等待 `ord`、`balance-history`、`usdb-indexer` 一起收敛；Ord 必须同时满足 `blockcount == BTC raw tip + 1` 和 tip hash 相等。
 4. reorg 后重建模拟器内部 `owned_passes / active_pass_id / invalid_passes / pass_owner_by_id` 视图，避免后续动作沿用旧链本地缓存。
 5. 在 replacement tip 上立即跑一次 global cross-check，再继续后续随机业务。
+6. weekly 额外启用 `SIM_REPLAY_CHECK_ENABLED=1`，立即保存每次重组后的完整状态；工作结束后用空数据库重新同步 balance-history/indexer，并对照这些历史检查点与最终状态。失败后保留 N+1 恢复点，不重跑工作轮次。范围、门禁及时间预算见 [独立状态重建对照](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim.md#重组后的独立状态重建对照)。
 
 Bitcoin Core 28.1 的 `invalidateblock` 只尝试将最先断开的 10 个块中的交易放回 mempool；深度 3 加稳定滞后 10 会断开 13 个块。因此不能用回滚后的 mempool 代替断链交易清单，否则钱包可能保留未确认交易占用的输入，导致后续 Ord 报 `wallet contains no cardinal utxos`。
 

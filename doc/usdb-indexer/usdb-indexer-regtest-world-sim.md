@@ -118,10 +118,34 @@
 | 篡改拒绝 | 至少 12 次实际候选比较拒绝 |
 | 严格能量重算 | 至少 50 个区间，且至少覆盖 1 条余额事件 |
 | 必需动作 | 10 类动作各至少 1 次结果验证成功 |
+| 独立重建对照 | 4 个重组检查点和 1 个最终检查点全部匹配 |
 
 历史验证和篡改拒绝下限为 `max(1, (轮数 // 采样间隔) // 2)`，为无候选或被重组失效的样本留出空间；能量重算下限为 `max(1, (轮数 // 自检间隔) // 10)`，允许新 pass 基线和状态切换。关闭必需检查会使门禁失败。
 
 动作覆盖使用新增的 `<action>_verified`，只有链上结果通过断言后才增加；原有提交阶段的 `_ok` 不能替代它。必需动作包括三类 mint、三类 remint、transfer、send_balance、spend_balance 和 invalid_mint；最后一项要求确认无效 mint 被识别为 Invalid。noop 不参与门禁。旧版 recovery/report 缺少这些证据时不能通过新门禁，需要重新运行。
+
+## 重组后的独立状态重建对照
+
+weekly 默认启用 `SIM_REPLAY_CHECK_ENABLED=1`。每次重组收敛后立即保存原实例在该高度的完整业务视图；完成 2500 个工作轮次和 validator sample 收尾后，再保存最终检查点。所有查询都固定 BTC 高度、canonical hash 和完整历史 state identity，读取前后要求该 identity 不变。
+
+随后 `compare_world_replay.py` 为 balance-history 和 usdb-indexer 创建全新的空数据目录，只复用网络及协议配置，从高度 1 重放最终 canonical Bitcoin 链。两个服务使用独立端口，indexer 连接重建的 balance-history，铭文源固定为 `bitcoind`。每次尝试都创建新目录，不能复用上次重放产生的数据。
+
+新实例不仅要达到相同高度、hash 和 consensus readiness，还要完成历史锚点回填：批量同步可能先发布 head，再补齐历史 state ref。比较前等待所需检查点及最终高度前一块的历史锚点可查询，只重试明确的 `HISTORY_NOT_AVAILABLE`；mismatch 不会被当成暂未就绪而忽略。
+
+对照范围包括：
+
+- 每个检查点的 balance-history state ref、indexer snapshot/local commit/system state identity。
+- 全部 pass 的枚举和状态统计、所有权、satpoint、prev、失效原因、fixed/address Leader 绑定，以及所有 pass 的经济 profile。
+- 完整 candidate set、每个 standard pass 的 collab breakdown、相关地址的 owner-pass/active-pass 视图和余额；地址集合包含全部 agent、mint owner 及当时 owner。
+- 最终检查点额外比较所有 pass 的完整状态历史、能量记录，以及相关地址的完整余额历史；历史 owner 也加入余额对照集合。
+
+分页必须完整遍历，并检查总数、重复行和 continuation。仅排除 SQLite 本地分配的 `event_id`、`last_event_id`，保留事件顺序和全部业务字段。出现差异时保存原检查点、重建结果和 `difference.json`，报告第一个不同字段的路径。相同摘要只用于记录已完成的逐项比较，不替代状态读取和语义检查。
+
+报告新增 `replay_checkpoint` 和 `replay_comparison`。weekly 门禁要求本次 session 的所有重组检查点与最终检查点都比较成功，不能使用旧 session 的成功记录。`session_end` 表示模拟工作及采样完成；启用重放后，driver 成功还要求其后的 `replay_comparison.status=ok`。recovery 文件保留到对照成功，失败后可从 N+1 恢复，无需重新执行工作轮次。
+
+参数：`SIM_REPLAY_OUTPUT_DIR` 保存检查点、比较摘要及两项服务启动日志；matrix 默认放在输出根目录的 `seed-<seed>-replay`，成功清理临时数据库后仍保留。服务内部详细日志位于临时重放目录，失败时随 workspace 保留。`SIM_REPLAY_TIMEOUT_SEC` 默认 1800 秒，限制启动、同步和比较阶段；预算为 2500 轮产生的数万 BTC 区块及历史锚点回填留出余量，实际增量耗时需以完整 weekly 测量。`REPLAY_BH_RPC_PORT`、`REPLAY_INDEXER_RPC_PORT` 设置独立端口，matrix 使用 seed 端口组的 `+13/+14`。普通 world-sim 默认关闭此项，手动启用时需要有限轮次、结构化报告和至少一次重组。
+
+该测试验证“经历重组的实例”与“同一实现从 canonical 链重建的实例”一致，可以发现回滚残留、历史污染和派生视图不一致。它不证明共同实现中的协议算法正确，也不重建 Ord 数据库；独立公式 oracle、Ord 重组校验及 geth 共识测试仍各自承担对应覆盖。
 
 ## 运行示例
 

@@ -100,11 +100,11 @@ run_seed() {
   local started_at
   local resumed_from_recovery=0
   local -a time_prefix=()
-  local -a port_offsets=(0 1 2 10 11 12)
+  local -a port_offsets=(0 1 2 10 11 12 13 14)
   started_at="$(date +%s)"
   if [[ -f "$recovery_file" ]]; then
     resumed_from_recovery=1
-    port_offsets=(10 11 12)
+    port_offsets=(10 11 12 13 14)
   fi
   for offset in "${port_offsets[@]}"; do
     assert_port_available "$((port_base + offset))"
@@ -126,6 +126,10 @@ run_seed() {
       BH_RPC_PORT="$((port_base + 10))" \
       USDB_INDEXER_RPC_PORT="$((port_base + 11))" \
       ORD_SERVER_PORT="$((port_base + 12))" \
+      REPLAY_BH_RPC_PORT="$((port_base + 13))" \
+      REPLAY_INDEXER_RPC_PORT="$((port_base + 14))" \
+      SIM_REPLAY_CHECK_ENABLED=1 \
+      SIM_REPLAY_OUTPUT_DIR="${OUTPUT_ROOT}/seed-${seed}-replay" \
       SIM_BLOCKS="$BLOCKS" \
       SIM_SEED="$seed" \
       SIM_MAX_ACTIONS_PER_BLOCK=2 \
@@ -173,7 +177,7 @@ import statistics
 import sys
 
 sys.path.insert(0, sys.argv[8])
-from world_soak_coverage import check_world_soak_coverage
+from world_soak_coverage import check_world_soak_coverage, check_world_replay_coverage
 
 seed = int(sys.argv[1])
 blocks = int(sys.argv[2])
@@ -185,6 +189,7 @@ summary_path = pathlib.Path(sys.argv[7])
 
 session_start = None
 session_end = None
+replay_comparison = None
 tick_times = []
 phase_totals = {}
 with report_path.open(encoding="utf-8") as report:
@@ -193,6 +198,7 @@ with report_path.open(encoding="utf-8") as report:
         if payload.get("event") == "session_start":
             session_start = payload
             session_end = None
+            replay_comparison = None
             tick_times = []
             phase_totals = {}
         elif payload.get("event") == "tick" and "tick_elapsed_ms" in payload:
@@ -201,12 +207,16 @@ with report_path.open(encoding="utf-8") as report:
                 phase_totals[phase] = phase_totals.get(phase, 0) + elapsed
         elif payload.get("event") == "session_end":
             session_end = payload
+            replay_comparison = None
+        elif payload.get("event") == "replay_comparison":
+            replay_comparison = payload
 if session_end is None:
     raise SystemExit(f"missing session_end in {report_path}")
 
 metrics = session_end["final_metrics"]
 try:
     coverage_requirements = check_world_soak_coverage(session_start, session_end, blocks, seed)
+    check_world_replay_coverage(session_start, session_end, replay_comparison)
 except ValueError as exc:
     raise SystemExit(f"seed {seed}: {exc}") from exc
 
@@ -223,6 +233,7 @@ summary = {
     "coverage_requirements": coverage_requirements,
     "validator_samples": session_end["validator_samples"],
     "finalization": session_end["finalization"],
+    "replay_comparison": replay_comparison,
     "tick_timing": {
         "scope": "last_session_excluding_end_of_tick_report_checkpoint_and_sleep",
         "count": len(tick_times),

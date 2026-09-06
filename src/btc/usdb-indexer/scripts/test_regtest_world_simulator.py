@@ -26,26 +26,8 @@ from world_soak_coverage import REQUIRED_ACTIONS, check_world_soak_coverage
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
-def completed_soak_fixture():
-    start = {
-        "event": "session_start", "seed": 43, "blocks": 2500,
-        "validator_sample_enabled": True, "validator_sample_tamper_enabled": True,
-        "validator_sample_mode": "candidate_set", "validator_sample_interval_blocks": 100,
-        "agent_self_check_enabled": True, "agent_self_check_interval_blocks": 5,
-        "reorg_interval_blocks": 500, "reorg_depth": 3, "reorg_max_events": 4,
-    }
-    end = {
-        "event": "session_end", "completed_work_ticks": 2500, "reorg_events_applied": 4,
-        "validator_samples": {"captured": 25, "validated": 25, "pending": 0, "history_validated": 25},
-        "finalization": {"work_ticks": 2500, "pending_after": 0},
-        "final_metrics": {
-            "reorg_ok": 4, "validator_sample_ok": 25, "validator_sample_history_ok": 25,
-            "validator_sample_tamper_ok": 25, "agent_energy_check_ok": 50,
-            "agent_energy_check_balance_events": 1,
-            **{f"{action}_verified": 1 for action in REQUIRED_ACTIONS},
-        },
-    }
-    return start, end
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+from common.world_soak_fixture import add_replay_fixture, completed_soak_fixture
 
 
 class RegtestWorldSimulatorFormulaTests(unittest.TestCase):
@@ -289,7 +271,8 @@ class RegtestWorldSoakEnergyCoverageTests(unittest.TestCase):
                 with self.subTest(metrics=metrics):
                     start, end = completed_soak_fixture()
                     end["final_metrics"].update(metrics)
-                    report.write_text(json.dumps(start) + "\n" + json.dumps(end) + "\n")
+                    replay = add_replay_fixture(start, end)
+                    report.write_text("".join(json.dumps(item) + "\n" for item in (start, end, replay)))
                     result = subprocess.run(
                         [sys.executable, "-", "43", "2500", "1", "1", "0", str(report), str(summary), str(Path(__file__).parent)],
                         input=match.group(1), text=True, capture_output=True,
@@ -945,6 +928,7 @@ class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
         self.simulator.active_agent_count = 0
         self.simulator.metrics = {}
         self.simulator.reorg_events_applied = 0
+        self.simulator.replay_checkpoints = []
         self.simulator.pass_owner_by_id = {}
         self.simulator.pass_identity_by_id = {}
         self.simulator.agents = []
@@ -1047,6 +1031,7 @@ class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
         self.simulator.active_agent_count = 2
         self.simulator.metrics = {}
         self.simulator.reorg_events_applied = 0
+        self.simulator.replay_checkpoints = []
         self.simulator.validator_samples = []
         agent_payloads = [
             self.simulator.serialize_agent(agent) for agent in self.simulator.agents

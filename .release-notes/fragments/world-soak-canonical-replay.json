@@ -1,0 +1,21 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "world-soak-canonical-replay",
+  "type": "added",
+  "scopes": ["testing"],
+  "summary": "Compare post-reorg world-soak state against fresh canonical replay",
+  "details": [
+    "Capture all pass snapshots, economic profiles, ownership views, candidate sets, collab breakdowns and relevant owner balances immediately after each reorg and at finalization; include complete pass and balance histories in the final checkpoint.",
+    "Replay canonical Bitcoin data from genesis into separate empty balance-history and indexer databases, comparing pinned historical identities and every semantic field while excluding only local SQLite event sequence numbers.",
+    "Require a successful comparison for every reorg and the final checkpoint in weekly summaries. Retain recovery at the completed workload until replay succeeds, keeping all 2500 work rounds unchanged.",
+    "This checks rollback versus fresh replay using the same implementation; it is not an independently implemented protocol oracle or a clean rebuild of Ord."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

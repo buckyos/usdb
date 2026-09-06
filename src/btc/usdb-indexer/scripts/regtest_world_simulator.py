@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 from urllib import request
 
+from world_replay_state import capture_state, digest, write_json
+
 
 class WorldSimError(Exception):
     pass
@@ -211,6 +213,8 @@ class Args:
     validator_sample_interval_blocks: int
     validator_sample_size: int
     validator_sample_min_head_advance: int
+    replay_check_enabled: bool = False
+    replay_output_dir: str | None = None
 
     @property
     def rpc_timeout_sec(self) -> float:
@@ -280,6 +284,8 @@ class RegtestWorldSimulator:
         return min(candidates, key=lambda item: (-int(item.effective_energy), item.inscription_id))
 
     def __init__(self, args: Args) -> None:
+        if args.replay_check_enabled and (args.blocks <= 0 or not args.report_file or not args.replay_output_dir):
+            raise WorldSimError("replay checking requires finite work ticks, a report and an output directory")
         if len(args.agent_wallets) != len(args.agent_addresses):
             raise WorldSimError(
                 "agent_wallets and agent_addresses length mismatch: "
@@ -383,6 +389,7 @@ class RegtestWorldSimulator:
         }
         self.metrics.update({f"{action}_verified": 0 for action in self.SUPPORTED_ACTIONS if action != "noop"})
         self.reorg_events_applied = 0
+        self.replay_checkpoints: list[dict[str, Any]] = []
         self.validator_samples: list[ValidatorSample] = []
 
         self.report_path: Path | None = None
@@ -498,6 +505,7 @@ class RegtestWorldSimulator:
                 "validator_sample_interval_blocks": self.args.validator_sample_interval_blocks,
                 "validator_sample_size": self.args.validator_sample_size,
                 "validator_sample_min_head_advance": self.args.validator_sample_min_head_advance,
+                "replay_check_enabled": self.args.replay_check_enabled,
             },
         )
 
@@ -827,6 +835,7 @@ class RegtestWorldSimulator:
             "action_fail_samples": list(action_fail_samples),
             "metrics": dict(self.metrics),
             "reorg_events_applied": self.reorg_events_applied,
+            "replay_checkpoints": list(self.replay_checkpoints),
             "pass_owner_by_id": {
                 inscription_id: int(owner_id)
                 for inscription_id, owner_id in self.pass_owner_by_id.items()
@@ -861,6 +870,7 @@ class RegtestWorldSimulator:
             "active_agent_count": self.active_agent_count,
             "metrics": dict(self.metrics),
             "reorg_events_applied": self.reorg_events_applied,
+            "replay_checkpoints": list(self.replay_checkpoints),
             "pass_owner_by_id": {
                 inscription_id: int(owner_id)
                 for inscription_id, owner_id in self.pass_owner_by_id.items()
@@ -1262,6 +1272,7 @@ class RegtestWorldSimulator:
             restored_metrics.setdefault(key, 0)
         self.metrics = restored_metrics
         self.reorg_events_applied = int(payload.get("reorg_events_applied", 0))
+        self.replay_checkpoints = list(payload.get("replay_checkpoints", []))
         self.pass_owner_by_id = {
             str(inscription_id): int(owner_id)
             for inscription_id, owner_id in (payload.get("pass_owner_by_id") or {}).items()
@@ -5027,6 +5038,7 @@ class RegtestWorldSimulator:
         info["global_cross_check_info"] = cross_check_info
         info["validator_sample_invalidated_ids"] = invalidated_sample_ids
         self.emit_report("reorg", info)
+        self.capture_replay_checkpoint("reorg", tick, convergence_height)
         return info
 
     def run_global_cross_check(self, block_height: int, tick: int) -> dict[str, Any]:
@@ -5520,6 +5532,26 @@ class RegtestWorldSimulator:
             "Deterministic economic bootstrap completed: "
             f"height={final_height}, leader={leader_v2}, collabs={sorted(final_collab_ids)}"
         )
+
+    def capture_replay_checkpoint(self, kind: str, tick: int, height: int) -> None:
+        """Preserve the rollback instance's actual view before further workload can repair it."""
+        if getattr(self.args, "replay_check_enabled", False) is not True:
+            return
+        started = time.perf_counter()
+        state = capture_state(
+            self.rpc_usdb, self.rpc_balance_history, height, self.get_block_hash(height),
+            [agent.owner_script_hash for agent in self.agents],
+            self.build_consensus_context_from_state_ref, history=kind == "final",
+        )
+        filename = f"{kind}-{tick}-{height}.json"
+        write_json(Path(self.args.replay_output_dir) / filename, state)
+        checkpoint = {
+            "kind": kind, "tick": tick, "height": height, "block_hash": state["block_hash"],
+            "file": filename, "sha256": digest(state), "passes": len(state["passes"]),
+        }
+        self.replay_checkpoints = [item for item in self.replay_checkpoints if item["file"] != filename]
+        self.replay_checkpoints.append(checkpoint)
+        self.emit_report("replay_checkpoint", {**checkpoint, "elapsed_ms": round((time.perf_counter() - started) * 1000)})
 
     def validator_sample_summary(self) -> dict[str, int]:
         return {
@@ -6385,6 +6417,13 @@ class RegtestWorldSimulator:
             )
 
         finalization = self.finalize_validator_samples(tick, batch_seed)
+        self.capture_replay_checkpoint("final", tick, finalization["final_height"])
+        if getattr(self.args, "replay_check_enabled", False) is True:
+            # The driver clears this only after fresh replay succeeds. A failed
+            # comparison can resume at N+1 without repeating the work rounds.
+            self.write_recovery_state(self.build_between_ticks_snapshot(
+                batch_seed=batch_seed, next_tick=tick + 1, current_height=finalization["final_height"],
+            ))
         self.log("World simulation completed.")
         self.log(f"final_metrics={json.dumps(self.metrics, sort_keys=True)}")
         self.emit_report("session_end", {
@@ -6392,8 +6431,10 @@ class RegtestWorldSimulator:
             "reorg_events_applied": self.reorg_events_applied,
             "validator_samples": self.validator_sample_summary(),
             "finalization": finalization,
+            "replay_checkpoints": getattr(self, "replay_checkpoints", []),
         })
-        self.clear_recovery_state()
+        if getattr(self.args, "replay_check_enabled", False) is not True:
+            self.clear_recovery_state()
 
 
 def parse_args() -> Args:
@@ -6462,6 +6503,8 @@ def parse_args() -> Args:
     parser.add_argument("--report-file")
     parser.add_argument("--report-flush-every", type=int, default=1)
     parser.add_argument("--recovery-state-file")
+    parser.add_argument("--enable-replay-check", action="store_true", help="Capture state for independent canonical replay")
+    parser.add_argument("--replay-output-dir", help="Directory for replay checkpoints and comparison evidence")
     parser.add_argument(
         "--disable-agent-self-check",
         action="store_true",
@@ -6638,6 +6681,8 @@ def parse_args() -> Args:
         reorg_interval_blocks=parsed.reorg_interval_blocks,
         reorg_depth=parsed.reorg_depth,
         reorg_max_events=parsed.reorg_max_events,
+        replay_check_enabled=parsed.enable_replay_check,
+        replay_output_dir=parsed.replay_output_dir,
     )
 
 
