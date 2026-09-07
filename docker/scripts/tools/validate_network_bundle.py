@@ -27,6 +27,7 @@ from runtime_compatibility import (  # noqa: E402
     snapshot_artifact_dir,
 )
 from resource_policy import resource_mode, validate_resource_environment  # noqa: E402
+from sourcedao_release import validate_frozen_bundle  # noqa: E402
 
 EXPECTED_BUNDLE_ID = "usdb-testnet-v0"
 EXPECTED_CHAIN_ID = 202608250
@@ -605,6 +606,7 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     )
 
     validate_artifact_hashes(bundle_dir, network)
+    validate_frozen_bundle(bundle_dir, network, read_json)
     template = read_env(bundle_dir / "node.env.example")
     data_root = Path(template.get("USDB_DATA_ROOT", ""))
     require(data_root.is_absolute(), "node.env.example USDB_DATA_ROOT must be absolute")

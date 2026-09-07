@@ -644,6 +644,13 @@ bootstrap.validation
 - acceptance artifact 必须进入签名 release manifest；签名承诺发布方接受该精确链历史，
   block hash/state root 则承诺 checkpoint 之前的链上状态和交易。
 
+发布工具链区分私有恢复状态与公开部署记录。私有 state、交易签名恢复日志和运行诊断由部署方保存；
+发布前通过白名单导出 `sourcedao-bootstrap-public-state:v1`，仅包含 ceremony 身份、地址绑定及
+completed transaction evidence。`bootstrap.state_sha256` 在新发布流程中绑定该公开记录的原始字节，
+strict validator 与 acceptance 使用同一份公开记录，独立 joiner 无需取得私有恢复日志。
+导出发生在验收之前；验收后不得重新格式化或脱敏已接受的公开文件。公开记录中的未知字段、
+与验证证据不一致的 ceremony 身份应被拒绝；原私有 state 继续独立用于恢复。
+
 验收失败时：
 
 - 当前 candidate chain 必须标记为 rejected。

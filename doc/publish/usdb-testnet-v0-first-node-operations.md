@@ -510,67 +510,64 @@ usdb-node mining disable
 
 ## 11. SourceDAO Bootstrap
 
-USDB 已选择独立 DAO。下面流程中的公开配置必须先完成独立代币分配、委员会、项目参数与 custody 冻结；
-当前历史 bundle 内的 BuckyOS 参数不能据此视作已批准的 USDB 独立 DAO 配置。
-工具与 v2 验收要求见 [SourceDAO bootstrap 工具说明](../../../SourceDAO/docs/usdb-bootstrap-tools.md)。
+公开参数应先经过“共享源链导入 → prepare 生成网络 final → 人工调整 → 冻结 → Git 审核/tag → release”流程。
+`freeze_sourcedao_bootstrap.py` 提供新 bundle 输出与 `--apply` 晋升，并自动更新摘要。
+模板中的其余历史参数不能视作已批准的 USDB 独立 DAO 方案。冻结、工具镜像和文件分级管理见
+[SourceDAO bootstrap 工具说明](../../../SourceDAO/docs/usdb-bootstrap-tools.md)。
 
-在独立受控运维机 checkout candidate manifest 固定的 SourceDAO revision，安装 Node.js 24 和依赖：
+部署是由授权管理员执行的一次性、可恢复任务。普通节点加入时验证已发布的验收材料。
+在独立受控运维机使用 release 固定的 SourceDAO revision 或工具镜像，通过 SSH tunnel 访问
+测试机 `127.0.0.1:8545`。本机 checkout 路径与安装包中的 bundle 路径可以不同：
 
 ```bash
-cd /path/to/SourceDAO
-git checkout --detach <source-dao-revision>
-npm ci
-npm run test:usdb:compile-and-audit
+# 一次设置安装环境；开发环境默认使用 security/candidate/usdb-testnet-v0/frozen-network-bundle
+export SOURCE_DAO_RELEASE_DIR=/path/to/installed/node-kit
+export SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY_FILE=/secure/keys/bootstrap-admin.key
+
+npm run bootstrap:full
+npm run export:bootstrap:state
+npm run validate:bootstrap
+
+# 读取实际位置供 geth 验收使用，无需手填配置摘要或重复拼接目录
+BOOTSTRAP_PATHS="$(node --import tsx scripts/usdb_bootstrap_tools.ts paths)"
+BUNDLE_DIR="$(jq -r '.bundleDir' <<< "$BOOTSTRAP_PATHS")"
+PUBLIC_STATE="$(jq -r '.publicState' <<< "$BOOTSTRAP_PATHS")"
+VALIDATION="$(jq -r '.validation' <<< "$BOOTSTRAP_PATHS")"
 ```
 
-通过 SSH tunnel 访问节点 `127.0.0.1:8545`。使用 bundle 中未经修改的公开配置；配置不携带
-机器路径，脚本从当前固定 revision 的 `artifacts-usdb` 读取 artifact：
+本节以已经构建并验收的工具环境为前提；源码执行时先按固定 Node 24.12.0 工具链安装依赖并检查
+USDB artifacts/golden。`--bundle-dir` 要求冻结记录，并验证配置、genesis 与工具 golden 一致。
+它不替代安装包来源验证，且不能与 `--config` 同时使用。
+
+默认 RPC 为 `http://127.0.0.1:8545`。私有 state 默认位于
+`~/.usdb/sourcedao-bootstrap/<chainId>/<genesisHash>/<configDigest>/state.json`，与同名
+`.transactions.json` 配套备份，不进入 Git 或 node-kit。公开输出默认位于 SourceDAO 的
+`security/public/<chainId>/<genesisHash>/<configDigest>/`；可用 `SOURCE_DAO_BOOTSTRAP_PRIVATE_DIR` 和
+`SOURCE_DAO_BOOTSTRAP_PUBLIC_DIR` 一次覆盖两类存储根。已有部署通过 `--state-file` 使用原私有 state。
+恢复时继续使用原私有路径；公开 state 不能用于恢复。确认原进程停止后才可移除遗留
+`<state-file>.lock`。Docker 开发 runner 的前置错误继续写入 `.runner-status.json`。
+
+必须在 block `8192` fee gate 前完成 `Dividend.finalizeBootstrap()`。
+bundle 模式默认 strict，已有默认报告会复用原检查点并保留字节。公开导出记录与 strict 报告不含
+RPC URL、本地路径或已签名交易字节。取得报告的检查点 H，
+等待发布策略要求的非零确认深度后，用这份公开 state 创建验收文件：
 
 ```bash
-SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY="${SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY:?required}" \
-  npx tsx scripts/usdb_bootstrap_full.ts \
-  --config /path/to/usdb/docker/networks/testnet-v0/artifacts/sourcedao-bootstrap-config.json \
-  --rpc-url http://127.0.0.1:8545 \
-  --state-file /secure/release/usdb-testnet-v0-r1-sourcedao-state.json
-```
-
-脚本会拒绝私钥派生地址与 `bootstrapAdminAddress` 不一致。完成后执行严格只读复检：
-
-```bash
-npm run validate:bootstrap -- \
-  --config /path/to/usdb/docker/networks/testnet-v0/artifacts/sourcedao-bootstrap-config.json \
-  --rpc-url http://127.0.0.1:8545 \
-  --state-file /secure/release/usdb-testnet-v0-r1-sourcedao-state.json \
-  --output /secure/release/usdb-testnet-v0-r1-sourcedao-validation.json \
-  --strict
-```
-
-必须在 block `8192` fee gate 前完成 `Dividend.finalizeBootstrap()`。保存每笔交易 hash、完成区块、
-state file 和 strict validation report。同时保留 `<state-file>.transactions.json`；该恢复日志在广播前
-持久化已签名交易、nonce 和 CREATE 地址，重跑必须使用原日志。确认原进程已停止后才可移除遗留
-`<state-file>.lock`。已完成 state 重跑保持原始字节，避免使 acceptance 文件摘要失效。
-Docker runner 的 full bootstrap 前置错误写入 `<state-file>.runner-status.json`，不覆盖 worker 的交易证据。
-
-严格报告会固定一个 checkpoint H；等待发布策略要求的非零确认数后执行 Go 验收：
-
-```bash
-H=$(jq -r '.evidence.checkpoint.number' /secure/release/usdb-testnet-v0-r1-sourcedao-validation.json)
+H=$(jq -r '.evidence.checkpoint.number' "$VALIDATION")
 geth usdb-bootstrap-acceptance create \
   --rpc-url http://127.0.0.1:8545 \
-  --genesis /secure/release/genesis.json \
-  --bootstrap-config /path/to/usdb/docker/networks/testnet-v0/artifacts/sourcedao-bootstrap-config.json \
-  --bootstrap-state /secure/release/usdb-testnet-v0-r1-sourcedao-state.json \
-  --validation /secure/release/usdb-testnet-v0-r1-sourcedao-validation.json \
-  --contract-golden /path/to/SourceDAO/security/usdb-contract-golden.json \
+  --genesis "$BUNDLE_DIR/artifacts/usdb-genesis.json" \
+  --bootstrap-config "$BUNDLE_DIR/artifacts/sourcedao-bootstrap-config.json" \
+  --bootstrap-state "$PUBLIC_STATE" --validation "$VALIDATION" \
+  --contract-golden "$BUNDLE_DIR/artifacts/sourcedao-contract-golden.json" \
   --checkpoint-block "$H" --min-confirmations "${CONFIRMATIONS:?release policy required}" \
-  --artifact /secure/release/usdb-bootstrap-acceptance.json
+  --artifact /secure/bootstrap-public/usdb-bootstrap-acceptance.json
 ```
 
-重启或 joiner 复检时，validator 添加 `--block "$H"`，然后使用相同本地 golden 执行 acceptance `verify`。
-执行历史复检的审计节点需保留该高度的 archive state；普通 full 节点剪枝后不能承担该复检。
-历史状态不可用必须报错，不会以 latest 替代。验收 artifact 升级为
-`uip-0010-bootstrap-acceptance:v2`，随后仍通过现有签名 release manifest 流程发布；旧 v1 文件需重新验收。
-该步骤不会自动开启公开 P2P、切换 miner 或替换 genesis。
+验收绑定公开 state 的原始字节，之后不可再删改或格式化。公开 state、validation 和 acceptance
+随签名发布材料归档。重启或 joiner 复检使用相同公开输入及 golden，validator 添加 `--block "$H"`，
+随后执行 acceptance `verify`。历史复检节点需保留 archive state；历史数据不可用时直接失败。
+该任务不会自动启用公开 P2P、切换 miner 或替换 genesis。
 
 ## 12. Restart 与故障处理
 

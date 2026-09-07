@@ -329,3 +329,41 @@ strict 检查和 v2 acceptance。源链持有人需要掌握相应地址的签�
 本次 TypeScript 检查与 `npm run test:usdb:tools` 的 7 组测试全部通过；最终版导入工具在相同源链高度
 重复读取，候选配置和来源报告的字节内容均完全一致。此验证只覆盖导入工具和初始化工具回归，
 不代表其余独立治理审计问题已经解决。
+
+## 冻结发布与公开部署记录工具（2026-09-06）
+
+后续已补齐本地工具闭环，操作说明以 SourceDAO 的 `docs/usdb-bootstrap-tools.md` 和本仓库
+`usdb-testnet-v0-first-node-operations.md` 为准：
+
+- `freeze_sourcedao_bootstrap.py` 验证最终候选，记录导入后的参数调整，并更新配置、genesis manifest、
+  network artifact 摘要；`--output-dir` 生成新 bundle，`--apply` 向维护者 Git 工作区晋升并保留回滚副本。
+- node-kit 仅复制声明的公开文件。bootstrap/validator 的 `--bundle-dir` 直接使用冻结配置，并检查
+  实际 genesis 与本地 golden；执行端无需重填网络参数。
+- `Dockerfile.usdb-tools` 打包 Node、工具、USDB artifacts 与 golden。支持从只读挂载的文件注入管理员
+  私钥，网络配置和状态独立挂载。本批没有推送工具镜像或修改发布 CI 权限。
+- `usdb_export_bootstrap_state.ts` 核对私有 state 与签名恢复日志，输出白名单公开记录；strict 报告不再
+  包含 RPC URL 或本地路径。Go acceptance 验证公开记录的 schema/ceremony，并绑定公开文件的精确摘要。
+- 8 组 TypeScript 工具回归、冻结/回滚测试及相关 bundle/release 检查通过。本机真实 geth 双节点演练
+  使用公开记录完成 checkpoint 52、3 次确认的验收，覆盖重启、延迟加入、fee gate 和幂等恢复；共 22 笔
+  初始化交易。无网络容器读取同一冻结 bundle 并对照 golden，导出的公开记录与宿主机字节一致。
+
+演练证据位于 `/tmp/usdb-bootstrap-release-e2e-hwg9hehj`；这些是临时测试材料，不是正式发布输入。
+本次没有替换已发布测试网参数、启用矿工或修改测试机。独立 DAO 尚未确定的经济参数仍需单独冻结。
+
+## 共享源链导入与默认路径（2026-09-06）
+
+- OP 的公共 RPC、高度和区块哈希统一放入 SourceDAO 的
+  `security/sources/optimism/sourcedao-opmain-import-source.json`。`imports/156576688` 的共享结果与 v2
+  报告由此前保存的取证记录转换，原始观察内容保持一致，本轮没有重新查询 OP。
+- 新共享结果不含目标链或管理员参数；`prepare:bootstrap` 生成网络 final 草稿及来源摘要引用，
+  `freeze:bootstrap` 默认消费这些文件。测试网候选位于 `security/candidate/usdb-testnet-v0`，仍待
+  独立 DAO 参数审核，未冻结到 Git 工作区或应用到 release。
+- bootstrap/export/validate 共用 bundle 选择和按 chain/genesis/config 划分的默认路径；本机 RPC 默认
+  localhost，私有恢复目录位于仓库外。默认 strict 报告重复执行时固定原检查点并保留已有字节。
+- `paths` 无需 RPC 或私钥即可输出后续 geth 验收所需的位置。工具镜像默认使用 `/release`、`/private`
+  和 `/public` 挂载；准备及冻结在维护者 checkout 执行。
+- 最终 10 项 TypeScript 回归、8 项准备/冻结/回滚测试、51 项 bundle 校验及 node-kit 打包测试通过。
+  本地镜像 `sourcedao-bootstrap-tools:defaults-review-20260906` 构建通过，禁用网络的容器成功读取
+  `/tmp/usdb-sourcedao-defaults-freeze-20260906` 并解析默认路径。镜像及临时 bundle 均未发布。
+
+这批验收覆盖工具参数和默认工作流；本轮没有重新运行 geth 双节点生命周期演练，也未改变合约代码。

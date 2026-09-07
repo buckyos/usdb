@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from usdb_node import load_release_layout
+from sourcedao_release import copy_public_bundle
 
 
 NODE_KIT_FILES = (
@@ -28,6 +29,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/run_testnet_bitcoin.sh",
     "docker/scripts/tools/run_testnet_runtime.sh",
     "docker/scripts/tools/snapshot_distribution.py",
+    "docker/scripts/tools/sourcedao_release.py",
     "docker/scripts/tools/usdb_node.py",
     "docker/scripts/tools/usdb_mining.py",
     "docker/scripts/tools/validate_network_bundle.py",
@@ -80,7 +82,7 @@ def build_node_kit(
             raise ValueError("release manifest has an invalid network bundle ID")
         target_bundle = staging / "docker/networks" / bundle_id
         target_bundle.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(bundle, target_bundle, ignore=shutil.ignore_patterns("node.env"))
+        copy_public_bundle(bundle, target_bundle, json.loads((bundle / "network.json").read_text(encoding="utf-8")))
         if (target_bundle / "node.env").exists():
             raise ValueError("private node.env must not enter the release node kit")
         layout = load_release_layout(staging)

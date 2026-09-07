@@ -1,0 +1,32 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "sourcedao-frozen-config-public-state",
+  "type": "added",
+  "scopes": [
+    "sourcedao",
+    "release",
+    "deployment",
+    "testing"
+  ],
+  "summary": "Freeze SourceDAO release configuration and publish bootstrap evidence separately from private recovery state",
+  "details": [
+    "Freeze reviewed candidates with source provenance, explicit parameter overrides, reviewed golden and synchronized bundle hashes; promote into the release workspace with a rollback copy.",
+    "Execute bootstrap and validation from frozen bundle configuration and package only declared public inputs in the node kit.",
+    "Provide a dedicated bootstrap tools image and private-key file injection while keeping configuration and recovery storage outside the image.",
+    "Export deterministic public deployment records and bind their exact bytes to acceptance while preserving private signed transaction journals for recovery.",
+    "Share one pinned source import across target networks; keep source RPC/checkpoint defaults in public source configuration and preserve immutable source evidence references in editable candidates.",
+    "Prepare and freeze candidates using network-specific default directories, and execute bootstrap/export/strict validation with default localhost RPC and separate identity-scoped private/public storage.",
+    "Reuse existing default validation checkpoints without rewriting evidence and expose resolved artifact paths for downstream acceptance."
+  ],
+  "operator_actions": [
+    "For a new SourceDAO bootstrap, review and freeze the public configuration before publishing the release, then use the bundle directory at execution time.",
+    "Export public state before strict validation and acceptance. Publish that public record and retain the original state and transaction journal in private backup storage."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}
