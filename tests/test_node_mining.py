@@ -20,6 +20,90 @@ class Interrupted(BaseException):
 
 
 class MiningTests(unittest.TestCase):
+    def test_private_geth_files_preserve_binding_across_chain_stop_and_restart(self):
+        with MiningFixture() as f:
+            expected = MINING.binding(f.layout, f.env)
+            with f.protected_files() as probes:
+                self.assertEqual(MINING.binding(f.layout, f.env), expected)
+                f.enable()
+                self.assertEqual(f.run(), 0)
+                self.assertEqual(MINING.read_state(f.layout)["phase"], "APPLIED")
+                self.assertEqual(MINING.binding(f.layout, f.env), expected)
+                f.fail_rpc = "get_readiness"
+                MINING.submit(f.layout, disable=True, yes=True)
+                self.assertEqual(f.run(), 0)
+            self.assertEqual(f.container_number, 2)
+            self.assertTrue(any(action == "binding" and state == "exited" for action, state, _ in probes))
+            self.assertNotIn("test-node-key", json.dumps(probes))
+            self.assertEqual(NODE.read_env(f.layout.node_env)["USDB_NODE_ROLE"], "full")
+
+    def test_readable_directory_with_private_nodekey_uses_same_binding(self):
+        with MiningFixture() as f:
+            expected = MINING.binding(f.layout, f.env)
+            with f.protected_files(key_only=True) as probes:
+                self.assertEqual(MINING.binding(f.layout, f.env), expected)
+            self.assertEqual(len(probes), 1)
+
+    def test_private_data_replacement_after_stop_still_refuses_restart(self):
+        with MiningFixture() as f:
+            key = Path(f.env["USDB_CHAIN_DATA_HOST_DIR"], "geth/nodekey")
+            def replace(action):
+                if action == "stop-chain":
+                    # Simulate another actor replacing the file outside the denied host reader.
+                    with open(key, "w") as output:
+                        output.write("replacement")
+            f.after_helper = replace
+            with f.protected_files():
+                f.enable()
+                self.assertEqual(f.run(), NODE.CONTROLLER_MANUAL_EXIT_CODE)
+            self.assertEqual(f.container_number, 0)
+            self.assertEqual(MINING.read_state(f.layout)["rollback"], "refused_identity_or_config_change")
+
+    def test_private_missing_database_is_not_treated_as_permission_success(self):
+        with MiningFixture() as f:
+            Path(f.env["USDB_CHAIN_DATA_HOST_DIR"], "geth/chaindata/CURRENT").unlink()
+            before = f.layout.node_env.read_bytes()
+            with f.protected_files(), self.assertRaisesRegex(ValueError, "CHAIN_NOT_INITIALIZED"):
+                f.enable()
+            self.assertEqual(f.layout.node_env.read_bytes(), before)
+            self.assertFalse(MINING.state_path(f.layout).exists())
+            self.assertEqual(f.calls, [])
+
+    def test_private_recovery_markers_preserve_halt_and_epoch_checks(self):
+        for baseline, halted, error in ((0, False, None), (1, False, "DEEP_REORG_EPOCH_CHANGED"),
+                                       (0, True, "DEEP_REORG_HALTED"),
+                                       ("broken", False, "CHAIN_DATA_INSPECTION_FAILED")):
+            with self.subTest(baseline=baseline, halted=halted), MiningFixture() as f:
+                guard = Path(f.env["USDB_CHAIN_DATA_HOST_DIR"], "recovery/deep-btc-reorg")
+                guard.mkdir(parents=True)
+                (guard / "baseline.json").write_text(json.dumps({"upstream_reorg_epoch": baseline}))
+                if halted:
+                    (guard / "halted.json").write_text("{}")
+                before = {p.name: p.read_bytes() for p in guard.iterdir()}
+                with f.protected_files():
+                    if error:
+                        with self.assertRaisesRegex(ValueError, error):
+                            MINING.preflight(f.layout, ADDRESS, first_node=True)
+                    else:
+                        MINING.preflight(f.layout, ADDRESS, first_node=True)
+                self.assertEqual({p.name: p.read_bytes() for p in guard.iterdir()}, before)
+                self.assertEqual(f.calls, [])
+
+    def test_failed_private_probe_cannot_submit_or_change_config(self):
+        failures = [FileNotFoundError("docker unavailable"), subprocess.TimeoutExpired("docker", 30),
+                    subprocess.CompletedProcess([], 1, "", "cached image unavailable"),
+                    subprocess.CompletedProcess([], 0, "{}", "")]
+        for failure in failures:
+            with self.subTest(failure=failure), MiningFixture() as f:
+                before = f.layout.node_env.read_bytes()
+                response = {"side_effect": failure} if isinstance(failure, Exception) else {"return_value": failure}
+                with f.protected_files(), mock.patch.object(MINING.subprocess, "run", **response), \
+                        self.assertRaisesRegex(ValueError, "CHAIN_DATA_INSPECTION_FAILED"):
+                    f.enable()
+                self.assertEqual(f.layout.node_env.read_bytes(), before)
+                self.assertFalse(MINING.state_path(f.layout).exists())
+                self.assertEqual(f.calls, [])
+
     def test_zero_energy_without_registry_is_eligible_and_selector_is_pinned(self):
         with MiningFixture() as f:
             plan = MINING.preflight(f.layout, ADDRESS, first_node=True)

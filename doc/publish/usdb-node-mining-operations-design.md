@@ -68,7 +68,7 @@ BTC 余额总量为零、目标不高于已发行量，或整数舍入结果为�
 以下入口共用角色转换逻辑：
 
 ```bash
-# 可选：只读检查，无配置或容器变更
+# 可选：只读检查，无节点配置或服务变更
 usdb-node mining check --address <usdb-main-address>
 # 无 seed 的首节点预检需同样明确声明：
 usdb-node mining check --address <usdb-main-address> --first-node
@@ -87,6 +87,14 @@ usdb-node mining disable
 ```
 
 `enable` 自带完整预检，不要求先执行 check，也不复用旧 check 报告来跳过新检查。
+以安装节点的普通运维用户运行这些命令，该用户需具有现有 Docker 访问权限。
+Geth 容器可能以 root 创建 `geth/`、`nodekey` 或恢复标记；宿主机读取遇到权限错误时，
+脚本自动使用当前 release 固定的 chain 镜像启动临时只读探针，仅挂载链数据目录，
+读取文件元数据、身份哈希和恢复标记。探针不启动 Geth，不打开数据库引擎，不输出 nodekey 内容，
+chain 已停止时仍可执行。无需把整条命令改为 `sudo usdb-node ...`，也不要对数据目录执行递归 `chmod/chown`。
+如果探针失败，`CHAIN_DATA_INSPECTION_FAILED` 会提示检查 Docker 权限和本机 release 镜像；
+数据库身份、深重组停机标记及 epoch 校验继续生效，不能通过权限回退跳过这些检查。
+
 交互终端提交后等待配置生效；`--json` 或非交互输出返回 operation ID 与 `controller_submitted`，
 表示任务已提交，不能等同于已启用。使用 `mining status --watch` 继续观察。
 交互模式只在检查通过后确认一次，显示完整地址、自动选中的 pass、网络身份、线程数和影响范围。

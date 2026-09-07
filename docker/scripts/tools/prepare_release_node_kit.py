@@ -19,6 +19,7 @@ NODE_KIT_FILES = (
     "docker/compose.bitcoin.yml",
     "docker/compose.runtime.yml",
     "docker/scripts/tools/check_json_rpc_readiness.py",
+    "docker/scripts/tools/chain_file_inspection.py",
     "docker/scripts/tools/generate_bitcoin_rpcauth.py",
     "docker/scripts/tools/install_usdb_node.sh",
     "docker/scripts/tools/prepare_usdb_firewall.sh",

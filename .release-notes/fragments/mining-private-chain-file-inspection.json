@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "mining-private-chain-file-inspection",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime", "testing"],
+  "summary": "Allow managed mining checks to inspect private container-owned chain files",
+  "details": [
+    "On host permission errors, inspect chain identity and recovery markers through a temporary read-only container using the cached release chain image, without starting Geth or exposing nodekey contents.",
+    "Preserve database inode, device, dataset and nodekey bindings across stop, recreate, disable and retry, including deep-reorg halt and epoch checks.",
+    "Package the standalone probe in the node kit and cover denied reads, identity replacement, missing databases, recovery markers and probe failures."
+  ],
+  "operator_actions": [
+    "Use the updated node kit and retry mining check or enable as the normal node operator with Docker access. No database permission change or data rebuild is required.",
+    "If CHAIN_DATA_INSPECTION_FAILED is reported, check Docker access and the cached release chain image before retrying."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import usdb_node as node
+import chain_file_inspection as chain_files
 
 SCHEMA = "usdb-node-mining:v1"
 VIEW = "uip-0006-usdb-economic-state-view:v1"
@@ -104,18 +105,63 @@ def authorization_config(env: dict[str, str]) -> dict[str, str]:
     return {key: env.get(key, "") for key in ("USDB_BOOTNODES", "USDB_NAT", "USDB_CHAIN_EXTRA_ARGS")}
 
 
+def _read_chain_files(layout: node.ReleaseLayout, env, action: str) -> dict:
+    """Use the operator's access first, then a read-only mount through Docker.
+
+    A separate probe also works after chain has stopped. Docker access is already
+    required by mining and the controller, so no interactive sudo is needed.
+    """
+    root = Path(env["USDB_CHAIN_DATA_HOST_DIR"]).resolve()
+    try:
+        return chain_files.inspect_files(root, action, node.DATASET_IDENTITY_FILE)
+    except PermissionError:
+        pass
+    if any(char in str(root) for char in (",", "\n", "\r", "\0")):
+        raise ValueError("CHAIN_DATA_INSPECTION_FAILED: unsupported character in chain data mount path")
+    command = ["docker", "run", "--rm", "--interactive", "--pull=never", "--network=none",
+               "--read-only", "--user=0:0", "--cap-drop=ALL", "--cap-add=DAC_READ_SEARCH",
+               "--security-opt=no-new-privileges", "--pids-limit=32", "--memory=64m", "--cpus=0.25",
+               "--mount", f"type=bind,src={root},dst=/chain,readonly", "--entrypoint=python3",
+               layout.images["USDB_CHAIN_IMAGE"], "-", action, "/chain", node.DATASET_IDENTITY_FILE]
+    try:
+        result = subprocess.run(command, input=Path(chain_files.__file__).read_text(),
+                                capture_output=True, text=True, timeout=30, check=False)
+        if result.returncode:
+            raise ValueError(result.stderr.strip() or "chain probe exited without a result")
+        value = json.loads(result.stdout)
+        if not isinstance(value, dict) or value.get("schema_version") != chain_files.SCHEMA or value.get("action") != action:
+            raise ValueError("unexpected chain file inspection response")
+        report = value.get("result")
+        if not isinstance(report, dict):
+            raise ValueError("chain file inspection did not return metadata")
+        if action == "binding":
+            expected = {"initialized"}
+            if report.get("initialized") is True:
+                expected |= {"data_device", "data_inode", "dataset_sha256", "node_key_sha256"}
+                if (any(type(report.get(key)) is not int or report[key] < 0 for key in ("data_device", "data_inode")) or
+                        any(not isinstance(report.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", report[key])
+                            for key in ("dataset_sha256", "node_key_sha256"))):
+                    raise ValueError("invalid chain identity metadata")
+            if set(report) != expected or type(report.get("initialized")) is not bool:
+                raise ValueError("invalid chain initialization metadata")
+        elif (set(report) != {"halted", "baseline_present", "baseline_epoch"} or
+              type(report.get("halted")) is not bool or type(report.get("baseline_present")) is not bool or
+              (report["baseline_present"] and (type(report["baseline_epoch"]) is not int or report["baseline_epoch"] < 0))):
+            raise ValueError("invalid chain recovery metadata")
+        return report
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise ValueError(f"CHAIN_DATA_INSPECTION_FAILED: cannot inspect {root} through the read-only chain image: {error}. "
+                         "Check Docker access and the cached release image; keep the database ownership and permissions unchanged.") from error
+
+
 def binding(layout: node.ReleaseLayout, env):
     """Bind acknowledgements to this generation and this actual chain database."""
     root = Path(env["USDB_CHAIN_DATA_HOST_DIR"]).resolve()
-    data = root / "geth/chaindata"
-    key = root / "geth/nodekey"
-    if not (data / "CURRENT").is_file() or not key.is_file():
+    info = _read_chain_files(layout, env, "binding")
+    if not info["initialized"]:
         raise ValueError("CHAIN_NOT_INITIALIZED: start the full node before enabling mining")
-    info = data.stat()
     return {"network": layout.network_identity, "data_path": str(root),
-            "data_device": info.st_dev, "data_inode": info.st_ino,
-            "dataset_sha256": node._sha256(root / node.DATASET_IDENTITY_FILE),
-            "node_key_sha256": node._sha256(key)}
+            **{key: info[key] for key in ("data_device", "data_inode", "dataset_sha256", "node_key_sha256")}}
 
 
 def rpc(layout: node.ReleaseLayout, method, params=None, *, indexer=False):
@@ -236,19 +282,18 @@ def check_resources(layout: node.ReleaseLayout, env, runtime, threads):
     return cpus
 
 
-def guard_check(env, epoch=None):
-    root = Path(env["USDB_CHAIN_DATA_HOST_DIR"]) / "recovery/deep-btc-reorg"
-    if (root / "halted.json").exists():
+def guard_check(layout: node.ReleaseLayout, env, epoch=None):
+    report = _read_chain_files(layout, env, "guard")
+    if report["halted"]:
         raise ValueError("DEEP_REORG_HALTED: preserve the recovery incident; mining cannot resume this generation")
-    if epoch is not None and (root / "baseline.json").exists():
-        baseline = node._load_json(root / "baseline.json")
-        if baseline.get("upstream_reorg_epoch") != epoch:
+    if epoch is not None and report["baseline_present"]:
+        if report["baseline_epoch"] != epoch:
             raise ValueError("DEEP_REORG_EPOCH_CHANGED: current upstream epoch differs from the chain baseline")
 
 
 def upstream_candidate(layout: node.ReleaseLayout, address, expect_pass=None):
     env = node.read_env(layout.node_env)
-    guard_check(env)
+    guard_check(layout, env)
     bitcoin = node._bitcoin_startup_progress(layout, command_timeout_secs=20)
     if not bitcoin or bitcoin.get("ready") is not True:
         raise ValueError("BITCOIN_NOT_READY: full Bitcoin readiness is required")
@@ -269,7 +314,7 @@ def upstream_candidate(layout: node.ReleaseLayout, address, expect_pass=None):
             first_epoch = epoch
         if epoch != first_epoch:
             raise ValueError("REORG_DURING_CHECK: repeat the check against the new history")
-        guard_check(env, epoch)
+        guard_check(layout, env, epoch)
         for key in ("upstream_snapshot_id", "system_state_id", "local_state_commit"):
             if not isinstance(ready.get(key), str) or not HASH.fullmatch(ready[key]):
                 raise ValueError(f"INVALID_READINESS: missing {key}")
@@ -573,7 +618,7 @@ def _rollback(layout: node.ReleaseLayout, operation, error):
     _stop(layout)
     _write_role(layout, target)
     try:
-        guard_check(node.read_env(layout.node_env))
+        guard_check(layout, node.read_env(layout.node_env))
     except ValueError as guard_error:
         _phase(layout, operation, "FAILED", rollback="full_configured_chain_halted", rollback_detail=str(guard_error))
         return
@@ -636,7 +681,7 @@ def run_operation(layout: node.ReleaseLayout, *, wait_secs: float = 120) -> int:
         if operation["phase"] == "CONFIGURED":
             if not enabling:
                 try:
-                    guard_check(env)
+                    guard_check(layout, env)
                 except ValueError as error:
                     _phase(layout, operation, "APPLIED", result="disabled_chain_halted", detail=str(error))
                     return 0
@@ -655,7 +700,7 @@ def run_operation(layout: node.ReleaseLayout, *, wait_secs: float = 120) -> int:
             while time.monotonic() < deadline:
                 runtime = inspect_chain(layout)
                 try:
-                    guard_check(node.read_env(layout.node_env))
+                    guard_check(layout, node.read_env(layout.node_env))
                 except ValueError as error:
                     if enabling:
                         raise
@@ -790,7 +835,7 @@ def observe(layout: node.ReleaseLayout, *, details: bool = False) -> dict[str, A
         runtime = inspect_chain(layout)
         report["runtime"] = {key: runtime.get(key) for key in ("id", "state", "image", "environment", "error", "exit_code")}
         try:
-            guard_check(env)
+            guard_check(layout, env)
         except ValueError as error:
             report.update(state="BLOCKED", detail=str(error))
             return report

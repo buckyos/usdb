@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -85,10 +86,16 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertTrue((output / "docker/compose.runtime.yml").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_node.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_mining.py").is_file())
+        self.assertTrue((output / "docker/scripts/tools/chain_file_inspection.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_sourcedao.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/runtime_compatibility.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/snapshot_distribution.py").is_file())
         self.assertFalse((layout.bundle_dir / "node.env").exists())
+        # Import only from the built kit to catch omitted transitive CLI dependencies.
+        command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
+                                  "mining", "check", "--help"], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(command.returncode, 0, command.stderr)
+        self.assertIn("--first-node", command.stdout)
 
         with self.assertRaisesRegex(ValueError, "refusing to replace"):
             BUILDER.build_node_kit(

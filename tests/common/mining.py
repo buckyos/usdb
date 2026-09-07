@@ -1,5 +1,5 @@
 """Controllable RPC and Docker boundaries for durable mining acceptance tests."""
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -136,6 +136,41 @@ class MiningFixture:
     def run(self):
         with NODE.node_operation_lock(self.layout, "mining"):
             return MINING.run_operation(self.layout, wait_secs=0.02)
+
+    @contextmanager
+    def protected_files(self, *, key_only=False):
+        """Deny host reads and execute the actual stdin probe at the Docker boundary."""
+        import subprocess
+        import sys
+        data = Path(self.env["USDB_CHAIN_DATA_HOST_DIR"])
+        original_stat, original_open, original_run = Path.stat, Path.open, subprocess.run
+        probes = []
+
+        def host_stat(path, *args, **kwargs):
+            if not key_only and any(path.is_relative_to(data / name) for name in ("geth", "recovery")):
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_stat(path, *args, **kwargs)
+
+        def host_open(path, *args, **kwargs):
+            if path == data / "geth/nodekey":
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_open(path, *args, **kwargs)
+
+        def docker_probe(command, **kwargs):
+            assert command[:2] == ["docker", "run"], command
+            for flag in ("--rm", "--pull=never", "--network=none", "--read-only", "--user=0:0",
+                         "--cap-drop=ALL", "--cap-add=DAC_READ_SEARCH", "--security-opt=no-new-privileges"):
+                assert flag in command, command
+            assert command[command.index("--mount") + 1] == f"type=bind,src={data},dst=/chain,readonly"
+            assert command[-5] == self.layout.images["USDB_CHAIN_IMAGE"]
+            assert command[-3] in ("binding", "guard") and command[-2] == "/chain"
+            result = original_run([sys.executable, "-", command[-3], str(data), command[-1]], **kwargs)
+            probes.append((command[-3], self.runtime["state"], result.stdout))
+            return result
+
+        with mock.patch.object(Path, "stat", host_stat), mock.patch.object(Path, "open", host_open), \
+                mock.patch.object(MINING.subprocess, "run", side_effect=docker_probe):
+            yield probes
 
 
 class RuntimeScriptFixture:
