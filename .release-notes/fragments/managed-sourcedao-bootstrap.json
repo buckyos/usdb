@@ -1,0 +1,27 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "managed-sourcedao-bootstrap",
+  "type": "added",
+  "scopes": [
+    "deployment",
+    "release"
+  ],
+  "summary": "Manage SourceDAO bootstrap and public evidence through the release node kit",
+  "details": [
+    "Add sourcedao check, bootstrap, status, export and validate using a digest-pinned tools container and the installed frozen bundle.",
+    "Preserve private signing journals across detached task failures and reject conflicting node operations while a ceremony runs.",
+    "Require the SourceDAO tools image and its source attestation in release manifest v8 and package the managed command module."
+  ],
+  "operator_actions": [
+    "Upgrade the node kit, start mining, then run sourcedao check and sourcedao bootstrap --key-file with the frozen Bootstrap Admin key.",
+    "Observe sourcedao status --watch, then export and validate; preserve private recovery files and publish only the public exports.",
+    "Wait for the locked SourceDAO Fast run and tools image before creating the release candidate."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

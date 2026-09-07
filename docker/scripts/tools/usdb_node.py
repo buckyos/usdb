@@ -403,6 +403,8 @@ def disable_controller_unit(layout: ReleaseLayout) -> None:
 
 def down_node(layout: ReleaseLayout, *, keep_bitcoin: bool) -> None:
     """Stop bootstrap orchestration and then stop node services in dependency order."""
+    import usdb_sourcedao
+    usdb_sourcedao.require_idle(layout)
     if controller_unit_path(layout).is_file():
         stop_controller_unit(layout)
     with node_operation_lock(layout, "down"):
@@ -515,6 +517,9 @@ def node_operation_lock(layout: ReleaseLayout, operation: str) -> Iterator[None]
         lock.flush()
         os.fsync(lock.fileno())
         try:
+            if not operation.startswith("sourcedao-"):
+                import usdb_sourcedao
+                usdb_sourcedao.require_idle(layout)
             yield
         finally:
             if acquired:
@@ -611,6 +616,7 @@ def load_release_layout(
         "USDB_CHAIN_IMAGE": _require_image(manifest, "usdb_chain", "usdb-chain"),
         "USDB_BITCOIN_IMAGE": _require_image(manifest, "bitcoin_core", "usdb-bitcoin-core"),
     }
+    _require_image(manifest, "sourcedao_tools", "sourcedao-bootstrap-tools")
     private_node_env = (
         node_env.expanduser().resolve()
         if node_env is not None
@@ -5108,6 +5114,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     import usdb_mining
     usdb_mining.add_parser(subparsers)
+    import usdb_sourcedao
+    usdb_sourcedao.add_parser(subparsers)
 
     prepare_host_parser = subparsers.add_parser(
         "prepare-host",
@@ -5406,6 +5414,9 @@ def _operation_name(args: argparse.Namespace) -> str | None:
 
 
 def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
+    if args.command == "sourcedao":
+        import usdb_sourcedao
+        return usdb_sourcedao.execute(layout, args)
     if args.command == "mining":
         import usdb_mining
         return usdb_mining.execute(layout, args)
@@ -5660,11 +5671,11 @@ def main() -> int:
         with operation_context:
             return _execute_command(layout, args)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        if args.command in {"up", "mining"} and getattr(args, "json", False):
+        if args.command in {"up", "mining", "sourcedao"} and getattr(args, "json", False):
             print(
                 json.dumps(
                     {
-                        "schema_version": NODE_UP_SCHEMA_VERSION if args.command == "up" else "usdb-node-mining:v1",
+                        "schema_version": NODE_UP_SCHEMA_VERSION if args.command == "up" else f"usdb-node-{args.command}:v1",
                         "outcome": "error",
                         "error": str(error),
                     },

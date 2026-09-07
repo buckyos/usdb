@@ -10,14 +10,17 @@
 - 两仓同名、不可移动的 annotated release tag 重新运行 Fast gate，并发布 `linux/amd64` 候选镜像；
 - 每个镜像绑定 source commit、OCI digest 和 GitHub provenance attestation；
 - manifest workflow 只接收 release ID，从两仓同名 tag、compatibility lock、tag build 和 network bundle
-  派生 revisions、三个镜像 digest 与 genesis identity；
+  派生 revisions、四个镜像 digest 与 genesis identity；
 - candidate manifest 从 bundle 派生并冻结 release-approved snapshot record、可信公钥目录及公开下载身份；
 - candidate 与 publish workflow 都必须确认 record 和全部对象已在公开 HTTPS 端点完整可用，节点是否采用该
   snapshot 仍由 `usdb-node setup` 显式选择。
 
 Snapshot 大文件由独立对象存储分发，不进入 GitHub Release；最终 GitHub Release 和节点部署批准仍由
 受保护的 publish workflow 负责。
-SourceDAO 当前没有独立运行镜像，但其 commit 和 CI check 是 release manifest 的必要输入。
+SourceDAO 提供独立的一次性 bootstrap 工具镜像。锁定 revision 的 main push Fast workflow
+在合约检查后调用 `usdb-tools-image.yml`，发布镜像、SBOM、provenance 和漏洞扫描证据；
+candidate 必须找到包含该构建的成功 run。目标节点通过
+[usdb-node sourcedao](usdb-node-sourcedao-operations.md) 执行，其他主服务不受其生命周期管理。
 
 GitHub 官方参考：
 
@@ -331,6 +334,7 @@ python3 docker/scripts/tools/release_manifest.py create \
   --services-image ghcr.io/buckyos/usdb-services@sha256:<digest> \
   --chain-image ghcr.io/buckyos/usdb-chain@sha256:<digest> \
   --bitcoin-image ghcr.io/buckyos/usdb-bitcoin-core@sha256:<digest> \
+  --sourcedao-tools-image ghcr.io/buckyos/sourcedao-bootstrap-tools@sha256:<digest> \
   --qualification-level fast \
   --qualification-evidence /path/to/qualification-evidence.json
 ```

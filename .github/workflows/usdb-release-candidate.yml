@@ -267,6 +267,7 @@ jobs:
         env:
           SERVICES_TAG: ${{ steps.candidate.outputs.services_tag }}
           CHAIN_TAG: ${{ steps.candidate.outputs.chain_tag }}
+          SOURCEDAO_TOOLS_TAG: ${{ steps.candidate.outputs.sourcedao_tools_tag }}
           BITCOIN_TAG: ${{ steps.candidate.outputs.bitcoin_tag }}
         run: |
           set -euo pipefail
@@ -285,16 +286,19 @@ jobs:
           resolve_image services_image ghcr.io/buckyos/usdb-services "$SERVICES_TAG"
           resolve_image chain_image ghcr.io/buckyos/usdb-chain "$CHAIN_TAG"
           resolve_image bitcoin_image ghcr.io/buckyos/usdb-bitcoin-core "$BITCOIN_TAG"
+          resolve_image sourcedao_tools_image ghcr.io/buckyos/sourcedao-bootstrap-tools "$SOURCEDAO_TOOLS_TAG"
 
       - name: Verify image existence and provenance
         shell: bash
         env:
+          SOURCE_DAO_REVISION: ${{ steps.candidate.outputs.source_dao_revision }}
           GH_TOKEN: ${{ github.token }}
           GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
           USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
           SERVICES_IMAGE: ${{ steps.images.outputs.services_image }}
           CHAIN_IMAGE: ${{ steps.images.outputs.chain_image }}
           BITCOIN_IMAGE: ${{ steps.images.outputs.bitcoin_image }}
+          SOURCEDAO_TOOLS_IMAGE: ${{ steps.images.outputs.sourcedao_tools_image }}
         run: |
           set -euo pipefail
           verify_image() {
@@ -326,6 +330,11 @@ jobs:
             buckyos/usdb \
             buckyos/usdb/.github/workflows/usdb-bitcoin-image.yml \
             "$USDB_REVISION"
+          verify_image \
+            "$SOURCEDAO_TOOLS_IMAGE" \
+            buckyos/SourceDAO \
+            buckyos/SourceDAO/.github/workflows/usdb-tools-image.yml \
+            "$SOURCE_DAO_REVISION"
 
       - name: Verify approved snapshot publication
         shell: bash
@@ -347,6 +356,7 @@ jobs:
           SERVICES_IMAGE: ${{ steps.images.outputs.services_image }}
           CHAIN_IMAGE: ${{ steps.images.outputs.chain_image }}
           BITCOIN_IMAGE: ${{ steps.images.outputs.bitcoin_image }}
+          SOURCEDAO_TOOLS_IMAGE: ${{ steps.images.outputs.sourcedao_tools_image }}
           QUALIFICATION_LEVEL: ${{ steps.candidate.outputs.qualification_level }}
           QUALIFICATION_EVIDENCE_JSON: ${{ steps.candidate.outputs.qualification_evidence_json }}
         run: |
@@ -367,6 +377,7 @@ jobs:
             --services-image "$SERVICES_IMAGE" \
             --chain-image "$CHAIN_IMAGE" \
             --bitcoin-image "$BITCOIN_IMAGE" \
+            --sourcedao-tools-image "$SOURCEDAO_TOOLS_IMAGE" \
             --qualification-level "$QUALIFICATION_LEVEL" \
             --qualification-evidence "$evidence"
           rm "$evidence"

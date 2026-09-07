@@ -123,6 +123,7 @@ class ReleaseManifestTests(unittest.TestCase):
                 "usdb_services": "ghcr.io/buckyos/usdb-services@sha256:" + "d" * 64,
                 "usdb_chain": "ghcr.io/buckyos/usdb-chain@sha256:" + "e" * 64,
                 "bitcoin_core": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "f" * 64,
+                "sourcedao_tools": "ghcr.io/buckyos/sourcedao-bootstrap-tools@sha256:" + "1" * 64,
             },
             qualification_level="fast",
             qualification_evidence=self.qualification_evidence(),
@@ -130,6 +131,7 @@ class ReleaseManifestTests(unittest.TestCase):
 
     def test_candidate_round_trip_is_stable(self) -> None:
         manifest = self.valid_manifest()
+        self.assertEqual(manifest["images"]["sourcedao_tools"]["source_revision"], "c" * 40)
         self.assertEqual(manifest, self.valid_manifest())
         snapshot = manifest["snapshot"]
         self.assertEqual(snapshot["status"], "available")
@@ -198,6 +200,7 @@ class ReleaseManifestTests(unittest.TestCase):
                     "usdb_services": "ghcr.io/buckyos/usdb-services:latest",
                     "usdb_chain": "ghcr.io/buckyos/usdb-chain@sha256:" + "e" * 64,
                     "bitcoin_core": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "f" * 64,
+                "sourcedao_tools": "ghcr.io/buckyos/sourcedao-bootstrap-tools@sha256:" + "1" * 64,
                 },
                 qualification_level="fast",
                 qualification_evidence=self.qualification_evidence(),
@@ -219,6 +222,7 @@ class ReleaseManifestTests(unittest.TestCase):
                     "usdb_services": "ghcr.io/buckyos/usdb-services@sha256:" + "d" * 64,
                     "usdb_chain": "ghcr.io/buckyos/usdb-chain@sha256:" + "e" * 64,
                     "bitcoin_core": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "f" * 64,
+                "sourcedao_tools": "ghcr.io/buckyos/sourcedao-bootstrap-tools@sha256:" + "1" * 64,
                 },
                 qualification_level="fast",
                 qualification_evidence=self.qualification_evidence(),

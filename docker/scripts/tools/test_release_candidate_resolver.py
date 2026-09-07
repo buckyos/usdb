@@ -71,6 +71,9 @@ class ReleaseCandidateResolverTests(unittest.TestCase):
             event="push",
         )
         self.qualification_runs = {"workflow_runs": []}
+        self.source_dao_runs["workflow_runs"][0]["referenced_workflows"] = [
+            {"path": f"buckyos/SourceDAO/.github/workflows/usdb-tools-image.yml@{self.source_dao_revision}"}
+        ]
         self.qualification_level = "fast"
 
     def runs(self, *, revision: str, run_id: int, workflows: set[str]) -> dict:
@@ -219,6 +222,16 @@ class ReleaseCandidateResolverTests(unittest.TestCase):
         self.source_dao_runs = {"workflow_runs": []}
         with self.assertRaisesRegex(ValueError, "missing successful"):
             self.resolve()
+
+    def test_source_dao_fast_without_tools_build_is_rejected(self) -> None:
+        self.source_dao_runs["workflow_runs"][0]["referenced_workflows"] = []
+        with self.assertRaisesRegex(ValueError, "missing successful"):
+            self.resolve()
+
+    def test_tools_tag_is_bound_to_locked_source_and_successful_run(self) -> None:
+        result = self.resolve()
+        self.assertEqual(result["sourcedao_tools_tag"],
+                         f"ghcr.io/buckyos/sourcedao-bootstrap-tools:git-{self.source_dao_revision}-run-303-1")
 
     def test_non_push_or_wrong_revision_run_is_rejected(self) -> None:
         self.go_runs["workflow_runs"][0]["event"] = "workflow_dispatch"

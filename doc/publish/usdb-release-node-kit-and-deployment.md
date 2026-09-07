@@ -534,8 +534,9 @@ usdb-node mining status --watch
 - PoW calibration、release approval 和深 BTC reorg 整网重置批准；
 - 是否采用 release-approved snapshot，以及 paired checkpoint 恢复选择。
 
-SourceDAO bootstrap 保持独立，是因为 node kit 不应接触管理员私钥。未来可以增加一个只生成待签交易和
-验收报告的子命令，但不能把 signer secret 放入 Compose environment。
+SourceDAO bootstrap 通过管理员显式调用 `usdb-node sourcedao bootstrap --key-file ...` 启动独立
+工具容器。私钥只读挂载，不放入 Compose environment，主服务 controller 不自动签名。
+完整检查、恢复、导出和验收见 [SourceDAO 受管操作](usdb-node-sourcedao-operations.md)。
 
 ## 7. 当前验证边界
 

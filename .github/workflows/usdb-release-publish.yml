@@ -271,6 +271,7 @@ jobs:
             echo "services_image=$(jq -er '.images.usdb_services.reference' "$manifest")"
             echo "chain_image=$(jq -er '.images.usdb_chain.reference' "$manifest")"
             echo "bitcoin_image=$(jq -er '.images.bitcoin_core.reference' "$manifest")"
+            echo "sourcedao_tools_image=$(jq -er '.images.sourcedao_tools.reference' "$manifest")"
             echo "manifest_sha256=$(sha256sum "$manifest" | cut -d ' ' -f 1)"
             qualification_level="$(jq -er '.qualification.level' "$manifest")"
             echo "qualification_level=$qualification_level"
@@ -296,7 +297,9 @@ jobs:
       - name: Reverify OCI image provenance
         shell: bash
         env:
+          SOURCE_DAO_REVISION: ${{ steps.manifest.outputs.source_dao_revision }}
           BITCOIN_IMAGE: ${{ steps.manifest.outputs.bitcoin_image }}
+          SOURCEDAO_TOOLS_IMAGE: ${{ steps.manifest.outputs.sourcedao_tools_image }}
           CHAIN_IMAGE: ${{ steps.manifest.outputs.chain_image }}
           GH_TOKEN: ${{ github.token }}
           GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
@@ -333,6 +336,11 @@ jobs:
             buckyos/usdb \
             buckyos/usdb/.github/workflows/usdb-bitcoin-image.yml \
             "$USDB_REVISION"
+          verify_image \
+            "$SOURCEDAO_TOOLS_IMAGE" \
+            buckyos/SourceDAO \
+            buckyos/SourceDAO/.github/workflows/usdb-tools-image.yml \
+            "$SOURCE_DAO_REVISION"
 
       - name: Build immutable public release assets
         id: assets
@@ -400,6 +408,7 @@ jobs:
         shell: bash
         env:
           BITCOIN_IMAGE: ${{ steps.manifest.outputs.bitcoin_image }}
+          SOURCEDAO_TOOLS_IMAGE: ${{ steps.manifest.outputs.sourcedao_tools_image }}
           BTC_REGISTRY: ${{ steps.manifest.outputs.btc_registry }}
           BUNDLE_ID: ${{ steps.manifest.outputs.bundle_id }}
           CANDIDATE_RUN_ATTEMPT: ${{ needs.preflight.outputs.candidate_run_attempt }}
@@ -448,6 +457,7 @@ jobs:
           - \`${SERVICES_IMAGE}\`
           - \`${CHAIN_IMAGE}\`
           - \`${BITCOIN_IMAGE}\`
+          - \`${SOURCEDAO_TOOLS_IMAGE}\`
 
           Nodes must deploy from the attached manifest and public network bundle. Do not
           substitute mutable image tags or local configuration. Private keys, RPC credentials,

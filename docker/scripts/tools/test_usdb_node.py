@@ -62,6 +62,7 @@ class UsdbNodeTests(unittest.TestCase):
             "snapshot": NODE.build_snapshot_state(self.bundle),
             "runtime_compatibility": NODE.build_runtime_compatibility(network_identity),
             "images": {
+                "sourcedao_tools": {"reference": "ghcr.io/buckyos/sourcedao-bootstrap-tools@sha256:" + "4" * 64},
                 "usdb_services": {
                     "reference": f"ghcr.io/buckyos/usdb-services@sha256:{digest}"
                 },

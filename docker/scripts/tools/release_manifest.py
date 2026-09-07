@@ -26,7 +26,7 @@ from validate_network_bundle import (  # noqa: E402
 from snapshot_distribution import validate_release_record  # noqa: E402
 from runtime_compatibility import build_runtime_compatibility  # noqa: E402
 
-SCHEMA_VERSION = "usdb-release-manifest:v7"
+SCHEMA_VERSION = "usdb-release-manifest:v8"
 QUALIFICATION_SCHEMA_VERSION = "usdb-ci-qualification:v1"
 SNAPSHOT_RECORD_RELATIVE_PATH = Path(
     "snapshots/balance-history-snapshot-release-record.json"
@@ -47,6 +47,11 @@ REPOSITORY_DIRECTORIES = {
     "source_dao": "SourceDAO",
 }
 IMAGE_SPECS = {
+    "sourcedao_tools": {
+        "name": "ghcr.io/buckyos/sourcedao-bootstrap-tools",
+        "source": "source_dao",
+        "signer_workflow": "buckyos/SourceDAO/.github/workflows/usdb-tools-image.yml",
+    },
     "usdb_services": {
         "name": "ghcr.io/buckyos/usdb-services",
         "source": "usdb",
@@ -590,6 +595,7 @@ def parse_args() -> argparse.Namespace:
     create.add_argument("--services-image", required=True)
     create.add_argument("--chain-image", required=True)
     create.add_argument("--bitcoin-image", required=True)
+    create.add_argument("--sourcedao-tools-image", required=True)
     create.add_argument("--qualification-level", choices=sorted(QUALIFICATION_LEVELS), required=True)
     create.add_argument("--qualification-evidence", type=Path, required=True)
 
@@ -619,6 +625,7 @@ def main() -> int:
                     "usdb_services": args.services_image,
                     "usdb_chain": args.chain_image,
                     "bitcoin_core": args.bitcoin_image,
+                    "sourcedao_tools": args.sourcedao_tools_image,
                 },
                 qualification_level=args.qualification_level,
                 qualification_evidence=load_qualification_evidence(

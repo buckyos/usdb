@@ -43,6 +43,7 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
                 "snapshot": build_snapshot_state(self.bundle),
                 "runtime_compatibility": build_runtime_compatibility(network_identity),
                 "images": {
+                "sourcedao_tools": {"reference": "ghcr.io/buckyos/sourcedao-bootstrap-tools@sha256:" + "4" * 64},
                     "usdb_services": {
                         "reference": f"ghcr.io/buckyos/usdb-services@sha256:{digest}"
                     },
@@ -84,6 +85,7 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertTrue((output / "docker/compose.runtime.yml").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_node.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_mining.py").is_file())
+        self.assertTrue((output / "docker/scripts/tools/usdb_sourcedao.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/runtime_compatibility.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/snapshot_distribution.py").is_file())
         self.assertFalse((layout.bundle_dir / "node.env").exists())

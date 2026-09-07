@@ -175,6 +175,7 @@ def select_latest_successful_run(
     repository: str,
     workflow_path: str,
     allowed_events: set[str],
+    required_workflows: set[str] | None = None,
 ) -> dict[str, int]:
     require_revision(revision, f"{repository} revision")
     workflow_runs = payload.get("workflow_runs")
@@ -193,6 +194,9 @@ def select_latest_successful_run(
         and run["id"] > 0
         and isinstance(run.get("run_attempt"), int)
         and run["run_attempt"] > 0
+        and (required_workflows or set()).issubset({
+            entry.get("path") for entry in (run.get("referenced_workflows") or []) if isinstance(entry, dict)
+        })
     ]
     if not candidates:
         raise ValueError(
@@ -249,6 +253,7 @@ def resolve_candidate(
         repository="buckyos/SourceDAO",
         workflow_path=SOURCE_DAO_FAST_WORKFLOW_PATH,
         allowed_events={"push"},
+        required_workflows={f"buckyos/SourceDAO/.github/workflows/usdb-tools-image.yml@{source_dao_revision}"},
     )
     evidence = [
         {
@@ -297,6 +302,10 @@ def resolve_candidate(
         )
     return {
         "source_dao_revision": source_dao_revision,
+        "sourcedao_tools_tag": (
+            "ghcr.io/buckyos/sourcedao-bootstrap-tools:"
+            f"git-{source_dao_revision}-run-{source_dao_run['id']}-{source_dao_run['attempt']}"
+        ),
         "usdb_run_id": str(usdb_run["id"]),
         "usdb_run_attempt": str(usdb_run["attempt"]),
         "go_run_id": str(go_run["id"]),

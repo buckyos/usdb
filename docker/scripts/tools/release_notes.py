@@ -417,6 +417,7 @@ MANIFEST_DIFF_FIELDS = {
     "images.usdb_services.reference": "restart_required",
     "images.usdb_chain.reference": "restart_required",
     "images.bitcoin_core.reference": "restart_required",
+    "images.sourcedao_tools.reference": "source",
     "snapshot.status": "optional_snapshot",
     "snapshot.snapshot_release_id": "optional_snapshot",
     "snapshot.height": "optional_snapshot",

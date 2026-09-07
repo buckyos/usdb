@@ -32,6 +32,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/sourcedao_release.py",
     "docker/scripts/tools/usdb_node.py",
     "docker/scripts/tools/usdb_mining.py",
+    "docker/scripts/tools/usdb_sourcedao.py",
     "docker/scripts/tools/validate_network_bundle.py",
 )
 

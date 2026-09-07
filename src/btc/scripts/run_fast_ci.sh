@@ -98,6 +98,8 @@ env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_testn
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_prepare_usdb_firewall.py"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_prepare_usdb_host.py"
 
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/tests/test_node_sourcedao.py"
+
 log "checking snapshot release and distribution tools"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_snapshot_distribution.py"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_mainnet_snapshot_release_wrapper.py"

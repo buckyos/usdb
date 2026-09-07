@@ -96,8 +96,11 @@ release 读取，但新工具不会自动移动、复制或认领这些目录。
 
 ## 4. Release compatibility contract
 
-`usdb-release-manifest:v7` 保留 `runtime_compatibility` 与不可变 CI qualification 证据，并增加 split v3
+`usdb-release-manifest:v8` 保留 `runtime_compatibility`、不可变 CI qualification 证据及 v7 的 split v3
 snapshot 的 required core / optional script-registry component binding：
+
+v8 还绑定一次性 SourceDAO 工具镜像的 digest、源码 revision 和 provenance；该工具镜像不属于
+Compose 常驻服务，也不改变既有数据目录身份。
 
 - 每个服务的 storage schema；
 - 影响数据语义的 BTC network、index origin、registry、chain ID 和 genesis hash；
