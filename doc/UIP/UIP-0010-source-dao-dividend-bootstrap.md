@@ -607,7 +607,7 @@ ceremony，而不是从 block `0` 开始无条件开放 initializer 竞争。
 strict validation 成功后必须生成：
 
 ```text
-schema_version = "uip-0010-bootstrap-acceptance:v1"
+schema_version = "uip-0010-bootstrap-acceptance:v2"
 chain_id
 genesis.json_sha256
 genesis.block_hash
@@ -630,7 +630,15 @@ bootstrap.validation
   transaction hash 集合精确相等；额外交易、缺失交易和重复 transaction evidence 均 invalid。
 - public network 必须冻结非零 confirmation depth；local dev / CI 可以使用 `0`。
 - `bootstrap.validation` 必须移除 RPC URL、本地路径和生成时间，只保留可由独立 joiner 重算的
-  chain ID、DAO/Dividend、bootstrap admin、module address 和 version。
+  chain ID、DAO/Dividend、bootstrap admin、module address 和 version，以及 v2 `evidence`：
+  同一个 checkpoint 的 height/hash/state root、genesis hash、公开配置语义摘要、reviewed contract golden
+  摘要、runtime code hash、storage word 和 contract-call transcript。验收所用 checkpoint 必须与报告一致。
+- strict validator 必须固定所有读取的区块高度，并在完成后重新确认 block hash/state root；不可将缺失的
+  historical state 回退为 latest。初始分配必须逐地址核对，并检查 DevToken 自持储备、反向 DAO 绑定、
+  ERC1967 implementation slot 和实际 implementation runtime。
+- acceptance create/verify 必须使用受信审查渠道提供的本地 `--contract-golden`，独立核对实际代码与
+  golden（包含 ERC1967Proxy 以及已审核的 UUPS `__self` immutable offsets），重放报告中的 storage/call，
+  并拒绝报告或本地 golden 不匹配。v1 address/version-only 报告不得直接升级标签后作为 v2 使用。
 - acceptance parser 必须拒绝重复 JSON key、未知 schema、缺失 module、错误 operation、
   文件 hash 不一致和 checkpoint replacement。
 - acceptance artifact 必须进入签名 release manifest；签名承诺发布方接受该精确链历史，

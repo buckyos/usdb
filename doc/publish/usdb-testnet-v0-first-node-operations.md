@@ -510,6 +510,10 @@ usdb-node mining disable
 
 ## 11. SourceDAO Bootstrap
 
+USDB 已选择独立 DAO。下面流程中的公开配置必须先完成独立代币分配、委员会、项目参数与 custody 冻结；
+当前历史 bundle 内的 BuckyOS 参数不能据此视作已批准的 USDB 独立 DAO 配置。
+工具与 v2 验收要求见 [SourceDAO bootstrap 工具说明](../../../SourceDAO/docs/usdb-bootstrap-tools.md)。
+
 在独立受控运维机 checkout candidate manifest 固定的 SourceDAO revision，安装 Node.js 24 和依赖：
 
 ```bash
@@ -542,7 +546,31 @@ npm run validate:bootstrap -- \
 ```
 
 必须在 block `8192` fee gate 前完成 `Dividend.finalizeBootstrap()`。保存每笔交易 hash、完成区块、
-state file 和 strict validation report。
+state file 和 strict validation report。同时保留 `<state-file>.transactions.json`；该恢复日志在广播前
+持久化已签名交易、nonce 和 CREATE 地址，重跑必须使用原日志。确认原进程已停止后才可移除遗留
+`<state-file>.lock`。已完成 state 重跑保持原始字节，避免使 acceptance 文件摘要失效。
+Docker runner 的 full bootstrap 前置错误写入 `<state-file>.runner-status.json`，不覆盖 worker 的交易证据。
+
+严格报告会固定一个 checkpoint H；等待发布策略要求的非零确认数后执行 Go 验收：
+
+```bash
+H=$(jq -r '.evidence.checkpoint.number' /secure/release/usdb-testnet-v0-r1-sourcedao-validation.json)
+geth usdb-bootstrap-acceptance create \
+  --rpc-url http://127.0.0.1:8545 \
+  --genesis /secure/release/genesis.json \
+  --bootstrap-config /path/to/usdb/docker/networks/testnet-v0/artifacts/sourcedao-bootstrap-config.json \
+  --bootstrap-state /secure/release/usdb-testnet-v0-r1-sourcedao-state.json \
+  --validation /secure/release/usdb-testnet-v0-r1-sourcedao-validation.json \
+  --contract-golden /path/to/SourceDAO/security/usdb-contract-golden.json \
+  --checkpoint-block "$H" --min-confirmations "${CONFIRMATIONS:?release policy required}" \
+  --artifact /secure/release/usdb-bootstrap-acceptance.json
+```
+
+重启或 joiner 复检时，validator 添加 `--block "$H"`，然后使用相同本地 golden 执行 acceptance `verify`。
+执行历史复检的审计节点需保留该高度的 archive state；普通 full 节点剪枝后不能承担该复检。
+历史状态不可用必须报错，不会以 latest 替代。验收 artifact 升级为
+`uip-0010-bootstrap-acceptance:v2`，随后仍通过现有签名 release manifest 流程发布；旧 v1 文件需重新验收。
+该步骤不会自动开启公开 P2P、切换 miner 或替换 genesis。
 
 ## 12. Restart 与故障处理
 

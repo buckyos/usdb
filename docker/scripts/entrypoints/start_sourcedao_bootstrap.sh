@@ -41,7 +41,20 @@ write_state() {
   local dividend_address="${5:-}"
   local completed_at="${6:-}"
 
-  cat >"${state_file}" <<EOF
+  # The full worker owns acceptance evidence. Runner failures and disabled mode
+  # must never replace that file with a smaller status document.
+  local target_file="${state_file}"
+  if [[ "${scope}" == "full" || -e "${state_file}.transactions.json" ]] ||
+     { [[ -s "${state_file}" ]] && node -e '
+       const fs = require("node:fs");
+       try { process.exit(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).scope === "full" ? 0 : 1); }
+       catch { process.exit(1); }
+     ' "${state_file}"; }; then
+    target_file="${state_file}.runner-status.json"
+  fi
+  local temporary_file
+  temporary_file=$(mktemp "${target_file}.XXXXXX")
+  cat >"${temporary_file}" <<EOF
 {
   "generated_at": $(json_string "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"),
   "mode": $(json_string "${mode}"),
@@ -60,6 +73,7 @@ write_state() {
   "completed_at": $(if [[ -n "${completed_at}" ]]; then json_string "${completed_at}"; else printf 'null'; fi)
 }
 EOF
+  mv -f "${temporary_file}" "${target_file}"
 }
 
 write_marker() {
