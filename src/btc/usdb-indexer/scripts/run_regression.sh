@@ -23,6 +23,8 @@ run_cmd() {
 
 run_core_protocol_tests() {
   local tests=(
+    "storage::pass::tests::test_committed_reader_remains_available_during_spilled_savepoint"
+    "storage::pass::tests::test_committed_reader_preserves_existing_rollback_journal_database"
     "index::test::indexer_behavior::test_sync_blocks_timeline_mint_transfer_burn_remint_replay"
     "index::test::indexer_behavior::test_sync_blocks_passive_transfer_keeps_receiver_active_and_transferred_pass_dormant"
     "index::test::indexer_behavior::test_sync_blocks_same_owner_multiple_mints_keep_only_latest_active"
@@ -39,6 +41,18 @@ run_core_protocol_tests() {
       "${test_name}" \
       -- --exact
   done
+
+  # Exercise atomic publication and crash recovery alongside the committed-reader checks.
+  run_cmd cargo test \
+    --manifest-path "${MANIFEST_PATH}" \
+    -p usdb-indexer \
+    snapshot_anchor_acceptance
+
+  run_cmd cargo test \
+    --manifest-path "${MANIFEST_PATH}" \
+    -p usdb-indexer-checkpoint-tool \
+    test::staged_wal_checkpoint_keeps_inventory_stable_during_validation \
+    -- --exact
 }
 
 run_regtest_smoke_scenarios() {

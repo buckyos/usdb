@@ -10,6 +10,14 @@
 启动重算、正常提交、回填提交和 reorg 回退都维护这个位置。恢复操作不修改已提交业务高度；已有数据可直接升级，
 不需要重新导入 snapshot 或重建 indexer。能量库继续遵循原有跨库一致性恢复流程。
 
+`miner_pass.db` 运行时使用 WAL 与 `synchronous=FULL`；写连接与独立的只读已提交连接各有 5 秒锁等待上限。
+WAL 使 RPC 在块事务写入及脏页落盘期间仍可读取上一份已提交状态，避免默认 rollback journal 下连续提交
+阻塞读连接。启动日志记录实际日志模式和锁等待配置；不能启用 WAL 时明确失败。旧库在打开时原地切换日志模式。
+
+checkpoint 导出在停止 indexer 并复制完整数据目录后，仅对临时副本合并 WAL、切回 DELETE 模式，再生成
+文件清单和签名。这保证已提交 WAL 中的数据进入发布文件，后续只读验证不会创建或修改 WAL/SHM 辅助文件。
+源数据库保持运行时格式，安装后的数据库由 indexer 在启动时重新启用 WAL。
+
 ## 验收用例
 
 集成用例位于仓库根目录 `tests/indexer_snapshot_anchors.rs`，通过 indexer 的测试模块复用可注入上游
@@ -21,6 +29,9 @@ fixture，SQLite 与 RocksDB 使用真实临时数据库。共识入口用例位
 | 中间块缺少上游 commit | 只保留前一块的高度与 anchor；重试后一起推进 |
 | anchor 已写、同步高度写入失败 | 该块 anchor、pass commit、余额快照和覆盖位置全部回滚 |
 | 写 savepoint 尚未提交 | 独立读取看不到新高度或新覆盖位置 |
+| 小页缓存强制未提交脏页落盘 | 两个已提交状态读取入口均成功返回旧状态；回滚不推进高度，提交后才可见 |
+| 旧 DELETE 日志模式数据库升级并重开 | 原有高度保留，未提交写入仍与 RPC 读取隔离 |
+| checkpoint 副本含已提交、尚未合并的 WAL | 合并后数据完整，多次状态校验不改变文件清单，源目录不变 |
 | 提交前进程直接退出 | 重开数据库后只见前一块，不依赖 Rust Drop 执行回滚 |
 | 提交后进程直接退出 | 重开数据库后高度、anchor 和业务状态一起保留 |
 | 回填一个批次中后续行非法 | 整个批次及覆盖位置回滚 |
@@ -41,6 +52,8 @@ fixture，SQLite 与 RocksDB 使用真实临时数据库。共识入口用例位
 ```bash
 cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer snapshot_anchor_acceptance
 cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer history_gap
+cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer committed_reader
+cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer-checkpoint-tool staged_wal_checkpoint
 cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer
 bash src/btc/usdb-indexer/scripts/regtest_reorg_smoke.sh
 ```
@@ -51,8 +64,20 @@ bash src/btc/usdb-indexer/scripts/regtest_reorg_smoke.sh
 
 上述用例验证逻辑和进程退出恢复；不等价于物理断电或文件系统损坏测试。
 
+`run_regression.sh` 显式执行两项存储并发回归、snapshot anchor 验收组及 WAL checkpoint 副本验证，
+由 weekly 的 `indexer-protocol` job 执行；Fast CI 的 Rust workspace 全量测试也包含这些用例。
+
 ## 本次验证结果（2026-09-06）
 
 - Indexer 全量测试：317 项通过、0 失败、7 个独立入口 ignored；其中崩溃子进程入口已由父用例实际执行。
 - 独立 regtest：同步至 40，回退至 29，替代分支同步至 40，重启后继续至 41，共识就绪恢复且 reorg epoch 保留。
 - 停止测试进程后核对落盘数据：1–41 的 anchor 连续完整，全部匹配对应 pass block commit；覆盖游标为 42，SQLite 完整性检查通过。
+
+WAL 并发读取修复的增量验收：
+
+- 小缓存与强制脏页落盘用例在旧实现稳定复现 `database is locked`，修复后读操作在写事务保持打开时成功。
+- Indexer 全量 319 项、checkpoint 工具 13 项、usdb-util 61 项通过；原有崩溃子进程由父用例执行。
+- 真实 seed 42 / 24 agents / 200 工作轮次通过，跨过原失败的第 166 轮、高度 2056；第 180 轮执行一次深度 3 重组。
+- 收尾额外推进 2 块至 2433，两个 validator 样本全部完成历史验证及篡改拒绝；严格能量检查成功 191 次。
+- 新建独立数据库从头重放，与重组后及最终状态两个 checkpoint 一致；两个数据库完整性检查通过，未出现数据库锁错误。
+- 此为短程定向验证；正式 weekly 的三组 seed 与每组 2500 工作轮次保持不变，完整重跑由后续 weekly 验证。

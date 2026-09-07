@@ -2,7 +2,7 @@ use crate::crypto::{
     require_signing_key_trusted, sign_manifest, verify_balance_history_manifest_signature,
     verify_manifest_signature,
 };
-use crate::data::{IndexerDiskLayout, validate_indexer_data};
+use crate::data::{IndexerDiskLayout, finalize_staged_sqlite, validate_indexer_data};
 use crate::rpc::{
     CheckpointRpcClient, extract_indexer_state_identity, require_consensus_ready,
     validate_paired_state_refs,
@@ -153,6 +153,7 @@ pub async fn export_checkpoint(
     }
     let temp_data = temp_dir.join("data");
     copy_directory(&layout.data_dir, &temp_data)?;
+    finalize_staged_sqlite(&temp_data)?;
     let files = inventory_files(&temp_data)?;
     let operation_id = build_operation_id(
         &options.network_bundle_id,

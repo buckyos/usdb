@@ -87,6 +87,39 @@ struct SnapshotAnchorRow {
     stable_lag: u32,
 }
 
+/// Consolidate only the frozen staging copy before hashing/signing its file inventory.
+/// DELETE mode checkpoints committed WAL frames and avoids mutable WAL/SHM sidecars
+/// being created by later read-only verification of the distributed artifact.
+pub(crate) fn finalize_staged_sqlite(data_dir: &Path) -> Result<(), String> {
+    let db_path = data_dir.join(MINER_PASS_DB_FILE);
+    let result = (|| -> Result<(), String> {
+        let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|e| e.to_string())?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        if !mode.eq_ignore_ascii_case("delete") {
+            return Err(format!("Expected DELETE journal mode, got {mode}"));
+        }
+        Ok(())
+    })();
+    result.map_err(|e| {
+        let msg = format!(
+            "Failed to finalize staged indexer SQLite: path={}, error={e}",
+            db_path.display()
+        );
+        log::error!("{msg}");
+        msg
+    })?;
+    log::info!(
+        "Finalized staged indexer SQLite: path={}, journal_mode=DELETE",
+        db_path.display()
+    );
+    Ok(())
+}
+
 /// Opens a frozen indexer data directory read-only and recomputes its checkpoint identity.
 pub fn validate_indexer_data(
     layout: &IndexerDiskLayout,

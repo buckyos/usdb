@@ -389,6 +389,62 @@ fn install_options(fixture: &Fixture, tag: &str) -> InstallPairOptions {
 }
 
 #[test]
+fn staged_wal_checkpoint_keeps_inventory_stable_during_validation() {
+    let fixture = build_fixture("wal_inventory");
+    for pending_wal in [false, true] {
+        let source = fixture.root.join(format!("wal-source-{pending_wal}"));
+        crate::artifact::copy_directory(&fixture.source_root.join("data"), &source).unwrap();
+        let writer = Connection::open(source.join("miner_pass.db")).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+                 INSERT INTO state VALUES ('wal_checkpoint_sentinel', 42);",
+            )
+            .unwrap();
+        // Keep the writer idle but open to preserve a committed, uncheckpointed WAL.
+        let writer = if pending_wal {
+            Some(writer)
+        } else {
+            drop(writer);
+            None
+        };
+        let staged = fixture.root.join(format!("wal-staged-{pending_wal}"));
+        crate::artifact::copy_directory(&source, &staged).unwrap();
+        if pending_wal {
+            assert!(staged.join("miner_pass.db-wal").metadata().unwrap().len() > 0);
+        }
+        let source_before = inventory_files(&source).unwrap();
+        crate::data::finalize_staged_sqlite(&staged).unwrap();
+        assert!(!staged.join("miner_pass.db-wal").exists());
+        assert!(!staged.join("miner_pass.db-shm").exists());
+        let before = inventory_files(&staged).unwrap();
+        let layout = IndexerDiskLayout {
+            data_dir: staged.clone(),
+            bitcoin_network: Network::Regtest,
+            genesis_block_height: fixture.manifest.index_origin_height,
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                validate_indexer_data(&layout, &fixture.manifest).unwrap(),
+                fixture.manifest.state_identity
+            );
+            assert_eq!(inventory_files(&staged).unwrap(), before);
+        }
+        let reader = Connection::open(staged.join("miner_pass.db")).unwrap();
+        let sentinel: i64 = reader
+            .query_row(
+                "SELECT value FROM state WHERE name = 'wal_checkpoint_sentinel'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sentinel, 42);
+        assert_eq!(inventory_files(&source).unwrap(), source_before);
+        drop(writer);
+    }
+}
+
+#[test]
 fn offline_state_ref_recomputation_matches_manifest() {
     let fixture = build_fixture("offline_state_ref");
     let layout = IndexerDiskLayout::load(&fixture.source_root).unwrap();

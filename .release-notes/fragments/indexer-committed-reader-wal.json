@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "indexer-committed-reader-wal",
+  "type": "fixed",
+  "scopes": ["indexer", "node-runtime", "testing"],
+  "summary": "Keep committed indexer RPC reads available during SQLite block writes",
+  "details": [
+    "Use WAL with FULL synchronous commits and bounded connection lock waits so block writes do not exclude the independent committed-state reader.",
+    "Preserve atomic height and anchor publication, rollback, crash recovery, and existing database contents when adopting WAL.",
+    "Consolidate WAL only in the frozen checkpoint staging copy before hashing and signing its files, preserving committed data and stable verification inventories.",
+    "Run deterministic spilled-write, legacy database, atomic snapshot, and checkpoint WAL regressions in the weekly indexer protocol suite."
+  ],
+  "operator_actions": [
+    "Ship the updated indexer and checkpoint tool together and restart the indexer. Existing data is retained; no network reset or database rebuild is required."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": ["https://github.com/buckyos/go-ethereum/actions/runs/34042929801/job/101513290316"]
+}

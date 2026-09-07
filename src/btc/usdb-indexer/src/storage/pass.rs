@@ -9,7 +9,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use usdb_util::BtcScriptHash;
 
 // Key for storing the last synced BTC block height
@@ -26,6 +26,7 @@ const BALANCE_HISTORY_SNAPSHOT_COMMIT_HASH_ALGO_KEY: &str =
     "balance_history_snapshot_commit_hash_algo";
 const UPSTREAM_REORG_RECOVERY_PENDING_HEIGHT_KEY: &str = "upstream_reorg_recovery_pending_height";
 const UPSTREAM_REORG_EPOCH_KEY: &str = "upstream_reorg_epoch";
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 // Default savepoint name for miner pass operations
 const SAVEPOINT_MINER_PASS_OPS: &str = "miner_pass_ops";
@@ -171,12 +172,41 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })?;
+        // Rollback-journal commits (and dirty-page spills inside a savepoint) exclude
+        // the committed reader. WAL keeps the previous committed snapshot readable
+        // throughout block writes, including while upstream work is still pending.
+        let journal_mode: String = conn
+            .busy_timeout(SQLITE_BUSY_TIMEOUT)
+            .and_then(|()| conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0)))
+            .and_then(|mode| {
+                // Keep durable commits; NORMAL would weaken power-loss guarantees.
+                conn.pragma_update(None, "synchronous", "FULL")?;
+                Ok(mode)
+            })
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to configure miner pass SQLite: path={}, error={}",
+                    db_path.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        if !journal_mode.eq_ignore_ascii_case("wal") {
+            let msg = format!(
+                "Miner pass SQLite requires WAL: path={}, actual_journal_mode={}",
+                db_path.display(),
+                journal_mode
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
         let open_connection_elapsed_ms = open_begin.elapsed().as_millis();
 
         let committed_conn =
             Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .and_then(|reader| {
-                    reader.busy_timeout(std::time::Duration::from_millis(500))?;
+                    reader.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
                     Ok(reader)
                 })
                 .map_err(|e| {
@@ -198,8 +228,10 @@ impl MinerPassStorage {
         let schema_begin = Instant::now();
         storage.init_db()?;
         info!(
-            "Opened miner pass SQLite: path={}, open_connection_elapsed_ms={}, schema_validation_elapsed_ms={}, total_elapsed_ms={}",
+            "Opened miner pass SQLite: path={}, journal_mode={}, synchronous=FULL, busy_timeout_ms={}, open_connection_elapsed_ms={}, schema_validation_elapsed_ms={}, total_elapsed_ms={}",
             storage.db_path.display(),
+            journal_mode,
+            SQLITE_BUSY_TIMEOUT.as_millis(),
             open_connection_elapsed_ms,
             schema_begin.elapsed().as_millis(),
             open_begin.elapsed().as_millis()
@@ -6630,6 +6662,101 @@ mod tests {
         assert_eq!(active[0].inscription_id, pass.inscription_id);
         assert_eq!(active[0].owner, owner2);
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_committed_reader_preserves_existing_rollback_journal_database() {
+        let dir = test_data_dir("committed_reader_legacy");
+        let db_path = dir.join(crate::constants::MINER_PASS_DB_FILE);
+        let legacy = Connection::open(&db_path).unwrap();
+        legacy
+            .execute_batch(
+                "PRAGMA journal_mode=DELETE;
+                 CREATE TABLE state (name TEXT PRIMARY KEY, value INTEGER);
+                 INSERT INTO state VALUES ('btc_synced_block_height', 100);",
+            )
+            .unwrap();
+        drop(legacy);
+
+        for _ in 0..2 {
+            let storage = MinerPassStorage::new(&dir).unwrap();
+            assert_eq!(
+                storage.get_committed_synced_btc_block_height().unwrap(),
+                Some(100)
+            );
+            let guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
+            storage.update_synced_btc_block_height(101).unwrap();
+            storage.conn.lock().unwrap().cache_flush().unwrap();
+            assert_eq!(
+                storage.get_committed_synced_btc_block_height().unwrap(),
+                Some(100)
+            );
+            drop(guard);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_committed_reader_remains_available_during_spilled_savepoint() {
+        let dir = test_data_dir("committed_reader_spill");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        storage.reconcile_snapshot_history_coverage(100).unwrap();
+        storage.update_synced_btc_block_height(100).unwrap();
+
+        // Force dirty pages onto disk before commit, without relying on thread timing.
+        storage
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("PRAGMA cache_size=8; PRAGMA cache_spill=ON;")
+            .unwrap();
+        for commit in [false, true] {
+            let guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
+            for index in 0..64 {
+                storage
+                    .add_new_mint_pass(&make_pass(
+                        31,
+                        index,
+                        script_hash(index as u8),
+                        MinerPassState::Active,
+                        101,
+                    ))
+                    .unwrap();
+            }
+            storage.update_synced_btc_block_height(101).unwrap();
+            storage.conn.lock().unwrap().cache_flush().unwrap();
+
+            // Both RPC publication paths must read the old committed snapshot while
+            // the writer stays open; waiting for that writer cannot satisfy this test.
+            assert_eq!(
+                storage.get_committed_synced_btc_block_height().unwrap(),
+                Some(100)
+            );
+            let progress = storage
+                .get_committed_snapshot_history_progress(100)
+                .unwrap();
+            assert_eq!(progress.synced_height, Some(100));
+            assert_eq!(progress.ready_height, None);
+            assert_eq!(progress.pending_from, Some(100));
+            if commit {
+                guard.commit().unwrap();
+            } else {
+                drop(guard);
+            }
+            assert_eq!(
+                storage.get_committed_synced_btc_block_height().unwrap(),
+                Some(if commit { 101 } else { 100 })
+            );
+            assert_eq!(
+                storage
+                    .get_pass_by_inscription_id(&inscription_id(31, 0))
+                    .unwrap()
+                    .is_some(),
+                commit
+            );
+        }
+        drop(storage);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
