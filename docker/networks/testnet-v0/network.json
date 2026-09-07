@@ -18,7 +18,7 @@
     },
     "genesis_manifest": {
       "path": "artifacts/usdb-genesis.manifest.json",
-      "sha256": "8403fac8188ace492a9e7830dcf68c52370ce4972d50eacace8aa78b8166feee"
+      "sha256": "93f8855c97bbff91659f5a65ef9baf1f2ca785173d4092340d8fda4c1908433a"
     },
     "chain_bootstrap": {
       "path": "artifacts/usdb-chain-bootstrap-config.json",
@@ -26,7 +26,7 @@
     },
     "sourcedao_bootstrap": {
       "path": "artifacts/sourcedao-bootstrap-config.json",
-      "sha256": "2c36df4f6b90bdd89517eb44841066e4778a7edd6173c6711cbfa2234a749163"
+      "sha256": "17b0b074c7dd59e3b83da12dc29daf8820207d8ec000f597f18903b678efcee9"
     },
     "snapshot_trusted_keys": {
       "path": "trust/usdb-mainnet-snapshot-v1.trusted-keys.json",
@@ -43,6 +43,22 @@
     "compose_overlay": {
       "path": "compose.network.yml",
       "sha256": "856c6cb38e915dcadca5b8c7df8d820cc9218c1f32d0bf337922ef96783b9dd8"
+    },
+    "sourcedao_contract_golden": {
+      "path": "artifacts/sourcedao-contract-golden.json",
+      "sha256": "3cb09c90ac11e057b1795624e11c74f6f668aff37e2a631b39dd23e579d8a334"
+    },
+    "sourcedao_bootstrap_source": {
+      "path": "artifacts/sourcedao-bootstrap-source.json",
+      "sha256": "723da81f9cc6d07b71e792b3d70ababfaea232f56b76b1a039b8a4e5f07b9b2a"
+    },
+    "sourcedao_bootstrap_imported": {
+      "path": "artifacts/sourcedao-bootstrap-imported.json",
+      "sha256": "66bebdb717b57442b97f8169db9166a2d91630054be205a40ae38553061faee6"
+    },
+    "sourcedao_bootstrap_freeze": {
+      "path": "artifacts/sourcedao-bootstrap-freeze.json",
+      "sha256": "ec8f1e8288183a429ddcfb74ab54c521a97a6fd6fbc5926a25810653893f962a"
     }
   }
 }

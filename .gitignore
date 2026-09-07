@@ -7,3 +7,4 @@ docker/local/*
 !docker/local/.gitignore
 !docker/local/README.md
 docker/.build-world-sim/
+.sourcedao-freeze-backup-*/

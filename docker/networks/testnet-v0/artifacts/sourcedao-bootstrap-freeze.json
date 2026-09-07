@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-sourcedao-bootstrap-freeze:v1",
+  "network_bundle_id": "usdb-testnet-v0",
+  "chain_id": 202608250,
+  "config_sha256": "17b0b074c7dd59e3b83da12dc29daf8820207d8ec000f597f18903b678efcee9",
+  "config_semantic_sha256": "0c98c88a7db2a7676c9e106abc25e9151d46f4dcd20586d11187559db69c098b",
+  "golden_sha256": "152773adeb93f4cc1ce56faf99d21d51b1629e57ccb4d0004a10581931db8e0f",
+  "provenance": {
+    "sourcedao_bootstrap_source": "723da81f9cc6d07b71e792b3d70ababfaea232f56b76b1a039b8a4e5f07b9b2a",
+    "sourcedao_bootstrap_imported": "66bebdb717b57442b97f8169db9166a2d91630054be205a40ae38553061faee6"
+  },
+  "overrides": [
+    {
+      "field": "cycleMinLength",
+      "before": 60,
+      "after": 604800
+    }
+  ]
+}
