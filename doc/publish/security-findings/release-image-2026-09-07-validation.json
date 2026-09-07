@@ -1,0 +1,49 @@
+{
+  "schema_version": "usdb-local-image-security-validation:v1",
+  "reviewed_on": "2026-09-07",
+  "evidence_kind": "local worktree builds, not published GHCR digests or a new GitHub release qualification",
+  "parent_revision": "312be38456c30b6259726a2b9719feb40f7341ac",
+  "scanner": "Trivy 0.74.0",
+  "fast_ci": "passed",
+  "policy_tests": 25,
+  "rustsec_vulnerabilities": {
+    "workspace": 0,
+    "ord_0_23_3": 0
+  },
+  "images": {
+    "bitcoin": {
+      "local_reference": "usdb-bitcoin-core:security-review-20260907",
+      "local_image_id": "sha256:6aefe39d415d7aa000d7282e7b842fdc7553ce5703cbe5396e316800caa46be0",
+      "report_sha256": "e676528defd629b376d90668ff6cd9f798a1dced8fa966585541f79140bc212c",
+      "os": {
+        "Family": "debian",
+        "Name": "12.15"
+      },
+      "raw_critical": 5,
+      "raw_high": 78,
+      "os_high_critical_equal_reviewed_baseline": true,
+      "language_high_critical": 0,
+      "rust_binary_package_counts": {}
+    },
+    "services": {
+      "local_reference": "usdb-services:security-review-20260907",
+      "local_image_id": "sha256:1177b09d2d62150e4cd6f68bca8730e1a4cc8c4cb2d54b59beca05965c34918e",
+      "report_sha256": "cf1628253b44767edc2bdc21e96192ba356e4ff842c8cf8038ab829c535d7aa0",
+      "os": {
+        "Family": "debian",
+        "Name": "12.15"
+      },
+      "raw_critical": 5,
+      "raw_high": 89,
+      "os_high_critical_equal_reviewed_baseline": true,
+      "language_high_critical": 0,
+      "rust_binary_package_counts": {
+        "opt/ord/bin/ord": 303,
+        "usr/local/bin/balance-history": 297,
+        "usr/local/bin/usdb-control-plane": 223,
+        "usr/local/bin/usdb-indexer": 424,
+        "usr/local/bin/usdb-indexer-checkpoint-tool": 298
+      }
+    }
+  }
+}

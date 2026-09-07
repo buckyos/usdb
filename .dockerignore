@@ -4,6 +4,10 @@
 .VSCodeCounter
 target
 **/target
+**/node_modules
+**/dist
+**/__pycache__
+**/*.pyc
 logs
 *.log
 docker/local

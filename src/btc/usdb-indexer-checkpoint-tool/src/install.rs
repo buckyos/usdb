@@ -22,7 +22,14 @@ use std::time::Duration;
 const INSTALL_JOURNAL_FILE: &str = "paired-checkpoint-install.journal.json";
 const INSTALL_COMPLETE_MARKER_FILE: &str = "paired-checkpoint-install.done.json";
 const RECOVERY_MARKER_FILE: &str = "paired-checkpoint-recovery.done.json";
+#[cfg(not(test))]
 const FAULT_ENV: &str = "USDB_CHECKPOINT_FAIL_AFTER";
+
+#[cfg(test)]
+tokio::task_local! {
+    // A recovery test must not inject failures into concurrently running tests.
+    pub(crate) static TEST_FAULT_STAGE: &'static str;
+}
 
 /// Inputs for a restartable offline installation of both checkpoint artifacts.
 #[derive(Clone, Debug)]
@@ -591,7 +598,13 @@ fn directory_has_entries(path: &Path) -> Result<bool, String> {
 }
 
 fn maybe_fail(stage: &str) -> Result<(), String> {
-    if std::env::var(FAULT_ENV).ok().as_deref() == Some(stage) {
+    #[cfg(not(test))]
+    let injected = std::env::var(FAULT_ENV).ok().as_deref() == Some(stage);
+    #[cfg(test)]
+    let injected = TEST_FAULT_STAGE
+        .try_with(|injected| *injected == stage)
+        .unwrap_or(false);
+    if injected {
         return Err(format!("Injected paired checkpoint failure after {stage}"));
     }
     Ok(())
@@ -602,6 +615,23 @@ mod managed_directory_tests {
     use super::remove_managed_directory;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn injected_failure_does_not_leak_to_another_task() {
+        let (injected, ordinary) = tokio::join!(
+            super::TEST_FAULT_STAGE.scope("indexer_staged", async {
+                tokio::task::yield_now().await;
+                super::maybe_fail("indexer_staged")
+            }),
+            async {
+                tokio::task::yield_now().await;
+                super::maybe_fail("indexer_staged")
+            }
+        );
+        assert!(injected.is_err());
+        assert!(ordinary.is_ok());
+        assert!(super::maybe_fail("indexer_staged").is_ok());
+    }
 
     fn temp_root(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()

@@ -93,6 +93,11 @@ The first phase has these semantics:
   binary built with the canonical release toolchain;
 - Rust audits the canonical workspace lockfile with `cargo-audit`.
 
+The services image also freezes the unchanged Ord source's reviewed dependency
+resolution in `docker/locks/ord-0.23.3.Cargo.lock`; the Rust audit job scans both
+lockfiles. Services and Ord release binaries use `cargo-auditable` so final-image
+scanning can inspect their actual Rust dependency inventories.
+
 CodeQL complements dependency scanning. It does not replace `govulncheck`,
 `cargo-audit`, npm advisory checks, final-image scanning, or Solidity-specific
 analysis.
@@ -132,6 +137,14 @@ Use the following initial policy:
   expiry date;
 - do not use permanent package-wide ignores;
 - do not run forced or unreviewed major-version update commands.
+
+The final-image exception implementation is documented in
+`security-findings/release-image-2026-09-07.md`. Its initial catalog is limited to
+reviewed Debian packages on formal testnet releases, expires after at most 30
+days, and cannot waive Rust/static dependency findings or mainnet findings.
+Raw scan evidence remains intact. A newly available fixed package invalidates
+the existing exception, as do changes to the reviewed package/build/runtime
+scope. Missing binary dependency coverage fails even report-only diagnostics.
 
 Move from report-only to enforcement only after:
 

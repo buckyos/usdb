@@ -7,6 +7,7 @@ on:
       - .github/workflows/dependency-security.yml
       - src/btc/**/Cargo.lock
       - src/btc/**/Cargo.toml
+      - docker/locks/*.Cargo.lock
       - web/**/package-lock.json
       - web/**/package.json
   push:
@@ -17,6 +18,7 @@ on:
       - .github/workflows/dependency-security.yml
       - src/btc/**/Cargo.lock
       - src/btc/**/Cargo.toml
+      - docker/locks/*.Cargo.lock
       - web/**/package-lock.json
       - web/**/package.json
   schedule:
@@ -56,24 +58,27 @@ jobs:
           set -euo pipefail
           report_dir="${RUNNER_TEMP}/dependency-security-rust"
           mkdir -p "$report_dir"
-          report_path="${report_dir}/src_btc_Cargo.json"
-          stderr_path="${report_dir}/src_btc_Cargo.stderr.log"
-          set +e
-          cargo audit --file src/btc/Cargo.lock --json \
-            >"$report_path" 2>"$stderr_path"
-          audit_status=$?
-          set -e
-          if ! jq -e '.vulnerabilities' "$report_path" >/dev/null; then
-            cat "$stderr_path" >&2
-            echo "cargo-audit did not produce a valid workspace report" >&2
-            exit 1
-          fi
-          count="$(jq -r '.vulnerabilities.count // 0' "$report_path")"
           {
             echo "## Rust dependency security"
             echo
-            echo "- \`src/btc/Cargo.lock\`: vulnerabilities=$count, scanner_exit=$audit_status"
           } >>"$GITHUB_STEP_SUMMARY"
+          for lockfile in src/btc/Cargo.lock docker/locks/ord-0.23.3.Cargo.lock; do
+            name="${lockfile//\//_}"
+            report_path="${report_dir}/${name}.json"
+            stderr_path="${report_dir}/${name}.stderr.log"
+            set +e
+            cargo audit --file "$lockfile" --json >"$report_path" 2>"$stderr_path"
+            audit_status=$?
+            set -e
+            if ! jq -e '.vulnerabilities' "$report_path" >/dev/null; then
+              cat "$stderr_path" >&2
+              echo "cargo-audit did not produce a valid report: $lockfile" >&2
+              exit 1
+            fi
+            count="$(jq -r '.vulnerabilities.count // 0' "$report_path")"
+            echo "- \`$lockfile\`: vulnerabilities=$count, scanner_exit=$audit_status" \
+              >>"$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Upload Rust dependency security reports
         if: always()

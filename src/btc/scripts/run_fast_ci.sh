@@ -67,6 +67,7 @@ log "checking balance-history memory profile"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_balance_history_memory_profile.py"
 
 log "checking testnet network and release manifests"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/tests/test_image_security_policy.py"
 shellcheck \
   "$REPO_DIR/docker/scripts/entrypoints/start_bitcoin_core.sh" \
   "$REPO_DIR/docker/scripts/entrypoints/snapshot_loader.sh" \

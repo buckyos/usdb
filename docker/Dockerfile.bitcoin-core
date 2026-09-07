@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim AS verifier
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS verifier
 
 ARG BITCOIN_VERSION=28.1
 ARG BITCOIN_ARCH=x86_64-linux-gnu
@@ -57,7 +57,7 @@ RUN set -eux; \
         "bitcoin-${BITCOIN_VERSION}/share/rpcauth/rpcauth.py" \
         /opt/bitcoin/share/rpcauth/rpcauth.py
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

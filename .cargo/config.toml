@@ -1,0 +1,4 @@
+[env]
+# USDB never uses full-text search. Keep FTS5 out of bundled SQLite, including
+# snapshot/checkpoint tools that open externally distributed database files.
+LIBSQLITE3_FLAGS = { value = "-USQLITE_ENABLE_FTS5", force = true }

@@ -127,6 +127,21 @@ class InstallUsdbNodeTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Release-bound checksum mismatch", result.stderr)
 
+    def test_rejects_links_before_extracting_any_member(self) -> None:
+        for link_type in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+            with self.subTest(link_type=link_type):
+                archive = self.assets / f"{RELEASE_ID}-node-kit.tar.gz"
+                with tarfile.open(archive, "w:gz") as target:
+                    entry = tarfile.TarInfo("usdb-node-kit/link")
+                    entry.type = link_type
+                    entry.linkname = "../../escape"
+                    target.addfile(entry)
+                self.write_checksum(archive)
+                result = self.install()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsafe node kit archive entry", result.stderr)
+                self.assertFalse((self.root / "escape").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

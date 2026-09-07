@@ -109,6 +109,36 @@ jobs:
           version: v0.74.0
           skip-setup-trivy: true
 
+      - name: Classify findings with expiring exceptions
+        shell: bash
+        env:
+          ENFORCEMENT: ${{ inputs.enforcement }}
+          IMAGE_REFERENCE: ${{ inputs.image_reference }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          exception_args=()
+          coverage_args=()
+          catalog=".github/security/image-vulnerability-exceptions.json"
+          if [[ -f "$catalog" ]]; then
+            cp "$catalog" image-security/exceptions.json
+            exception_args=(--exceptions "$catalog")
+          fi
+          if [[ "$IMAGE_REFERENCE" == ghcr.io/buckyos/usdb-services@sha256:* ]]; then
+            for binary in usr/local/bin/balance-history usr/local/bin/usdb-indexer \
+              usr/local/bin/usdb-indexer-checkpoint-tool usr/local/bin/usdb-control-plane opt/ord/bin/ord; do
+              coverage_args+=(--required-rust-binary "$binary")
+            done
+          fi
+          python3 .github/scripts/image_security_policy.py evaluate \
+            --report image-security/trivy-image.json \
+            --image-reference "$IMAGE_REFERENCE" \
+            --source-revision "$SOURCE_REVISION" \
+            --source-ref "$GITHUB_REF" \
+            --enforcement "$ENFORCEMENT" \
+            --output image-security/policy-decision.json \
+            "${exception_args[@]}" "${coverage_args[@]}"
+
       - name: Validate and bind scan evidence
         id: evidence
         shell: bash
@@ -145,12 +175,13 @@ jobs:
           unknown_count="$(count_severity UNKNOWN)"
           report_sha256="$(sha256sum "$report" | cut -d ' ' -f 1)"
           sarif_sha256="$(sha256sum "$sarif" | cut -d ' ' -f 1)"
+          decision_sha256="$(sha256sum image-security/policy-decision.json | cut -d ' ' -f 1)"
           scanner_version="$(trivy --version | sed -n '1p')"
           image_digest="${IMAGE_REFERENCE##*@}"
           generated_at_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
           jq -n \
-            --arg schema_version "usdb-image-vulnerability-report:v1" \
+            --arg schema_version "usdb-image-vulnerability-report:v2" \
             --arg image_reference "$IMAGE_REFERENCE" \
             --arg image_digest "$image_digest" \
             --arg source_repository "$GITHUB_REPOSITORY" \
@@ -161,6 +192,8 @@ jobs:
             --arg generated_at_utc "$generated_at_utc" \
             --arg report_sha256 "$report_sha256" \
             --arg sarif_sha256 "$sarif_sha256" \
+            --arg decision_sha256 "$decision_sha256" \
+            --slurpfile decision image-security/policy-decision.json \
             --arg workflow_run_id "$GITHUB_RUN_ID" \
             --arg workflow_run_attempt "$GITHUB_RUN_ATTEMPT" \
             --argjson critical "$critical_count" \
@@ -186,7 +219,11 @@ jobs:
               policy: {
                 enforcement: $enforcement,
                 blocking_severities: ["CRITICAL", "HIGH"],
-                ignore_unfixed: false
+                ignore_unfixed: false,
+                exceptions_sha256: $decision[0].exceptions_sha256,
+                accepted_count: $decision[0].accepted_count,
+                unresolved_count: $decision[0].blocking_count,
+                result: $decision[0].result
               },
               findings: {
                 critical: $critical,
@@ -197,7 +234,8 @@ jobs:
               },
               reports: {
                 json_sha256: $report_sha256,
-                sarif_sha256: $sarif_sha256
+                sarif_sha256: $sarif_sha256,
+                decision_sha256: $decision_sha256
               },
               workflow: {
                 run_id: $workflow_run_id,
@@ -208,7 +246,10 @@ jobs:
 
           (
             cd image-security
-            sha256sum metadata.json trivy-image.json trivy-image.sarif >SHA256SUMS
+            sha256sum metadata.json trivy-image.json trivy-image.sarif policy-decision.json >SHA256SUMS
+            if [[ -f exceptions.json ]]; then
+              sha256sum exceptions.json >>SHA256SUMS
+            fi
           )
           artifact="${ARTIFACT_NAME}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           {
@@ -227,6 +268,9 @@ jobs:
             echo
             echo "Critical: \`$critical_count\`; High: \`$high_count\`; Medium: \`$medium_count\`; Low: \`$low_count\`; Unknown: \`$unknown_count\`"
             echo
+            jq -r '"Accepted by scoped exceptions: \(.accepted_count); unresolved: \(.blocking_count); policy result: \(.result)"' \
+              image-security/policy-decision.json
+            echo
             echo "Evidence artifact: \`$artifact\`"
           } >>"$GITHUB_STEP_SUMMARY"
 
@@ -241,19 +285,7 @@ jobs:
 
       - name: Enforce High and Critical policy
         shell: bash
-        env:
-          CRITICAL_COUNT: ${{ steps.evidence.outputs.critical_count }}
-          ENFORCEMENT: ${{ inputs.enforcement }}
-          HIGH_COUNT: ${{ steps.evidence.outputs.high_count }}
-          IMAGE_REFERENCE: ${{ inputs.image_reference }}
         run: |
           set -euo pipefail
-          if [[ "$ENFORCEMENT" == "report-only" ]]; then
-            echo "Image findings are report-only for this release lane."
-            exit 0
-          fi
-          if (( CRITICAL_COUNT > 0 || HIGH_COUNT > 0 )); then
-            echo "::error title=Release image vulnerability gate::${IMAGE_REFERENCE} contains ${CRITICAL_COUNT} Critical and ${HIGH_COUNT} High findings"
-            exit 1
-          fi
-          echo "No Critical or High image vulnerabilities were reported."
+          python3 .github/scripts/image_security_policy.py enforce \
+            --decision image-security/policy-decision.json

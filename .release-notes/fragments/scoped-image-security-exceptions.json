@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "scoped-image-security-exceptions",
+  "type": "security",
+  "scopes": ["bitcoin", "deployment", "node-runtime", "release", "security"],
+  "summary": "Repair runtime dependencies and retain strict image gates with expiring reviewed exceptions",
+  "details": [
+    "USDB bundled SQLite excludes unused FTS5, and compatible dependency updates remove the reviewed RustSec vulnerabilities from the USDB workspace and the unchanged Ord 0.23.3 source build.",
+    "USDB services and Ord use fixed dependency lockfiles and cargo-auditable metadata; final-image scans must identify dependency inventories for all five shipped Rust binaries.",
+    "Debian runtime images use the reviewed base digest; local node_modules, dist and Python caches are excluded from Docker contexts to prevent shipping development executables and stale outputs.",
+    "The reviewed Debian High/Critical exceptions expire on 2026-10-07 UTC and apply only to formal testnet tags, exact package versions, linux/amd64, and reviewed build/runtime source fingerprints.",
+    "New or unclassified findings, changed applicability, available package fixes, missing scan coverage, expired exceptions, and invalid evidence still block strict releases. Mainnet does not inherit these exceptions.",
+    "Complete JSON and SARIF findings are retained together with the exception catalog, per-finding decisions, hashes, and raw versus unresolved counts.",
+    "Checkpoint recovery tests isolate injected faults per task to prevent interference with parallel installation tests."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": ["https://github.com/buckyos/usdb/actions/runs/34121165089"]
+}

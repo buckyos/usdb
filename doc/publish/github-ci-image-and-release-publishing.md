@@ -210,6 +210,19 @@ Release Candidate resolver 只选择同一 release tag/source revision 上成功
 完整报告继续资格验证。该阶段先把报告绑定到 producer run，后续 schema 升级再把 scan metadata
 digest 写入 release manifest。
 
+2026-09-07 起，严格门禁按未处置 High/Critical 执行。完整 JSON/SARIF 不过滤；
+`metadata.json` 升级为 `usdb-image-vulnerability-report:v2`，继续保留原始数量，另行记录
+例外目录哈希、接受数量、未处置数量、最终结论及 `policy-decision.json` 哈希。
+证据包同时包含 `exceptions.json`（有登记时）和逐条 `policy-decision.json`，均纳入 `SHA256SUMS`。
+
+`.github/security/image-vulnerability-exceptions.json` 中的本批例外仅适用于正式 testnet tag，
+2026-10-07 UTC 起失效，不覆盖 mainnet 或 Rust/其他语言依赖。匹配条件包括精确 CVE、
+包名、安装版本、severity、Debian 版本、架构及已审查源码/构建/部署文件指纹；出现
+`FixedVersion` 时也不再接受原例外。目录损坏、扫描输入身份不一致和未分类告警仍失败。
+services 报告还必须包含 4 个 USDB Rust 二进制和 Ord 的 `rustbinary` 依赖清单，
+避免缺少静态依赖元数据时被误判为零漏洞。详见
+[`release-image-2026-09-07.md`](security-findings/release-image-2026-09-07.md)。
+
 ### 3.7 CI 资格与可安装候选
 
 资格等级与发布介质是两个维度。三个等级都生成相同的完整 GitHub Release assets，因此都可通过

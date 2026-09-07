@@ -624,15 +624,14 @@ async fn paired_install_resumes_after_each_atomic_publish_boundary() {
         ("after-balance-history", "balance_history_published"),
     ] {
         let options = install_options(&fixture, tag);
-        unsafe { std::env::set_var("USDB_CHECKPOINT_FAIL_AFTER", failure_point) };
-        let error = install_pair_for_test(options.clone(), tag)
+        let error = crate::install::TEST_FAULT_STAGE
+            .scope(failure_point, install_pair_for_test(options.clone(), tag))
             .await
             .unwrap_err();
         assert!(
             error.contains("Injected paired checkpoint failure"),
             "unexpected install error: {error}"
         );
-        unsafe { std::env::remove_var("USDB_CHECKPOINT_FAIL_AFTER") };
         if failure_point == "balance_history_installing" {
             let partial_live = options
                 .balance_history_root

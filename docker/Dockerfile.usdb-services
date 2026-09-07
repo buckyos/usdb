@@ -2,6 +2,10 @@ FROM rust:1.91.0-bookworm AS builder
 
 WORKDIR /workspace/src/btc
 
+COPY .cargo /workspace/.cargo
+
+RUN cargo install cargo-auditable --version 0.7.5 --locked
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         clang \
@@ -11,11 +15,14 @@ RUN apt-get update \
 
 COPY src/btc /workspace/src/btc
 
-RUN cargo build --release -p balance-history -p usdb-indexer -p usdb-indexer-checkpoint-tool -p usdb-control-plane
+RUN cargo auditable build --locked --release -p balance-history -p usdb-indexer -p usdb-indexer-checkpoint-tool -p usdb-control-plane
 
 FROM rust:1.89.0-bookworm AS ord-builder
 
 ARG ORD_VERSION=0.23.3
+ARG ORD_REVISION=ba60f87b530c01b15f6f8645e2ed4ef52f3f9f74
+
+RUN cargo install cargo-auditable --version 0.7.5 --locked
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -25,9 +32,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp
+COPY docker/locks/ord-0.23.3.Cargo.lock /tmp/ord-release.Cargo.lock
 RUN git clone --branch "${ORD_VERSION}" --depth 1 https://github.com/ordinals/ord.git /tmp/ord-src \
     && cd /tmp/ord-src \
-    && cargo build --bin ord --release \
+    && test "$(git rev-parse HEAD)" = "${ORD_REVISION}" \
+    && cp /tmp/ord-release.Cargo.lock Cargo.lock \
+    && cargo auditable build --locked --bin ord --release \
     && mkdir -p /opt/ord/bin \
     && install -m 0755 /tmp/ord-src/target/release/ord /opt/ord/bin/ord
 
@@ -53,7 +63,7 @@ RUN cd usdb-console-app \
     && cd ../usdb-indexer-browser \
     && npm run build
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
