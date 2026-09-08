@@ -119,6 +119,18 @@ class PrepareUsdbHostTests(unittest.TestCase):
         self.assertIn("INFO distribution: debian 12", result.stdout)
         self.assertIn("automatic APT installation is supported", result.stdout)
 
+    def test_check_accepts_ubuntu_26_04_with_kernel_7(self) -> None:
+        self.write_os_release("ubuntu", "26.04", "resolute")
+
+        result = self.run_script(
+            "check", extra_env={"USDB_HOST_KERNEL_RELEASE": "7.0.0-30-generic"}
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("INFO distribution: ubuntu 26.04 (resolute)", result.stdout)
+        self.assertIn("PASS kernel: Linux 7.0.0-30-generic", result.stdout)
+        self.assertIn("automatic APT installation is supported", result.stdout)
+
     def test_check_rejects_missing_required_command(self) -> None:
         (self.command_dir / "jq").unlink()
 

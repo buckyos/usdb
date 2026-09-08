@@ -64,7 +64,7 @@ bootstrap 或持续出块。
 
 测试网和正式网共用 [USDB 节点主机软件基线与准备工具](./usdb-node-host-prerequisites.md)。
 `prepare_usdb_host.sh check` 是发行版无关的只读检查；自动 `install` 当前覆盖 Ubuntu
-22.04/24.04 和 Debian 12/13。
+22.04/24.04/26.04 和 Debian 12/13。
 
 在完全空白、尚未安装 Git/curl 的机器上，先从发布协调机传入与 candidate revision 一致的脚本：
 

@@ -37,7 +37,7 @@ Options:
            and requires a new login session before it is effective.
 
 Runtime floor: Linux kernel 5.10 or newer on x86-64.
-Automated install: Ubuntu 22.04/24.04 and Debian 12/13.
+Automated install: Ubuntu 22.04/24.04/26.04 and Debian 12/13.
 The installer never removes conflicting container packages or node data.
 EOF
 }
@@ -94,7 +94,7 @@ kernel_is_supported() {
 
 install_distribution_supported() {
   case "${HOST_OS_ID}:${HOST_OS_VERSION}" in
-    ubuntu:22.04 | ubuntu:24.04 | debian:12 | debian:13)
+    ubuntu:22.04 | ubuntu:24.04 | ubuntu:26.04 | debian:12 | debian:13)
       return 0
       ;;
     *)
@@ -310,7 +310,7 @@ reject_conflicting_docker_packages() {
 install_host() {
   check_platform
   install_distribution_supported || fail \
-    "automatic install supports Ubuntu 22.04/24.04 and Debian 12/13; use check after manual installation"
+    "automatic install supports Ubuntu 22.04/24.04/26.04 and Debian 12/13; use check after manual installation"
   command -v apt-get >/dev/null 2>&1 || fail "apt-get is required"
   command -v dpkg >/dev/null 2>&1 || fail "dpkg is required"
   command -v dpkg-query >/dev/null 2>&1 || fail "dpkg-query is required"

@@ -24,8 +24,12 @@ Ubuntu 24.04 是当前优先验证的运维基线，但不是协议或运行时�
 
 当前自动安装只覆盖以下经过明确编码的 APT 系发行版：
 
-- Ubuntu 22.04、24.04；
+- Ubuntu 22.04、24.04、26.04；
 - Debian 12、13。
+
+Ubuntu 26.04（包括 26.04.1）使用 Docker 官方 `resolute` 软件源；
+[Docker 官方安装文档](https://docs.docker.com/engine/install/ubuntu/)已列出该 LTS 版本。
+自动安装支持不等同于完整节点部署验收，Ubuntu 24.04 仍是优先验证的运维基线。
 
 其他发行版先使用原生包管理器安装 Docker Engine、Compose plugin、Git、Python 3、curl 和 jq，
 再运行同一个 `check`。不要为了通过检查而修改 `/etc/os-release` 或伪装发行版。
