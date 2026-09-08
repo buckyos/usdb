@@ -216,8 +216,40 @@ usdb-public check
 ## 7. 发布与维护
 
 仓库内独立 CI 为 `usdb-public-ci.yml`，发布为 `usdb-public-release.yml`。
-经明确发布批准后，创建并推送 annotated `usdb-public-vX.Y.Z` tag，流水线执行测试、构建网关、
-将镜像 digest 冻结进独立包，创建 GitHub draft release 供审阅。不会触发节点 rN 发布链。
+统一使用 Go 仓库的 `scripts/usdb/prepare_release.py tag` 管理标签，工具按 release ID 自动选择发布范围：
+
+| release ID | 检查和创建 tag 的范围 |
+| --- | --- |
+| `usdb-testnet-v0-rN` / `usdb-mainnet-vN-rN` | 原有三仓兼容锁检查，在 USDB、Go 两仓创建同名 tag |
+| `usdb-public-vX.Y.Z`（可带 `-rc.1` 等小写预发布后缀） | 只检查 USDB，在 USDB 创建一个 tag |
+
+Public 发布前先提交并 push 目标 USDB `master`，等待该提交的 Public CI 通过。然后在包含最新版工具的
+Go checkout 执行；标准 sibling 目录自动定位相邻的 USDB：
+
+```bash
+cd /path/to/go-ethereum
+
+# 预检：刷新 USDB origin，检查发布输入，不创建 tag。
+python3 scripts/usdb/prepare_release.py tag --release-id usdb-public-v0.1.0
+
+# 确认版本和输出的 usdb_revision 后，创建并推送唯一的 USDB annotated tag。
+python3 scripts/usdb/prepare_release.py tag \
+  --release-id usdb-public-v0.1.0 --create --push
+```
+
+Public 路径要求 USDB 工作区干净、位于 `master` 且 HEAD 等于最新 `origin/master`，origin 必须是
+`buckyos/usdb`；同时检查发布入口存在、网络目录与 canonical bundle 一致、标签在本地及远端均未占用。
+它不读取或更新 Go `ci-revisions.json`，不要求 SourceDAO checkout，也不要求 Go 工作区干净或 HEAD 已推送；
+不需要先执行 `sync-lock`。工具预检不会查询 GitHub CI 结果，发布流程会重新执行 Public CI。
+
+`--create` 单独使用只创建本地 tag；若之后要推送，或 `--create --push` 在推送阶段失败，应在 USDB
+目录执行 `git push origin refs/tags/usdb-public-v0.1.0` 续推已有标签。不要重新创建、移动或删除标签。
+只有远端收到匹配的 tag push 才会启动 `USDB Public Services Release`；在 Actions 中手工运行
+Public CI（即使选了节点 rN tag）不会触发发布。Release 当前没有手工 `Run workflow` 入口。
+
+发布流水线执行测试、构建并推送网关、将镜像 digest 冻结进独立包，创建 GitHub draft release 供审阅。
+它不会触发节点 rN 发布链。两类 release 位于同一个 `buckyos/usdb` Releases 页面，以标签前缀区分，
+各有独立条目及附件；草稿经 `Publish release` 发布后，外部用户才能使用一键安装链接。
 打包同时生成 `install-usdb-public-vX.Y.Z.sh` 和脚本 checksum，并在 release 正文附上本版本的一键安装命令。
 当前 draft 的第三方镜像仍是私有预览基线，不能把 draft 构建成功当作公网准入通过。
 
