@@ -87,6 +87,9 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertTrue((output / "docker/scripts/tools/usdb_node.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_mining.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/chain_file_inspection.py").is_file())
+        probe = subprocess.run([sys.executable, str(output / "docker/scripts/tools/check_explorer_rpc.py"), "--help"],
+                               cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(probe.returncode, 0, probe.stderr)
         self.assertTrue((output / "docker/scripts/tools/usdb_sourcedao.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/runtime_compatibility.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/snapshot_distribution.py").is_file())

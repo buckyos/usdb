@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "explorer-readonly-rpc-preflight",
+  "type": "added",
+  "scopes": ["deployment", "node-runtime", "documentation", "testing"],
+  "summary": "Add read-only RPC sampling for public explorer integration planning",
+  "details": [
+    "Validate the selected network bundle and sample standard EVM RPC methods, optional historical balances and an existing transaction receipt at a checked chain head.",
+    "Keep archive and tracing gaps visible without treating basic samples as completed explorer indexing, wallet integration or public endpoint qualification.",
+    "Refuse transaction submission methods, omit RPC URLs from reports, and require explicit opt-in for one bounded transaction trace.",
+    "Document the ordered explorer/RPC, faucet and operator console rollout, including shared-host resource budgeting and USDB-specific block and reward semantics."
+  ],
+  "operator_actions": [
+    "Run check_explorer_rpc.py from the node kit with the installed bundle and an existing transaction hash before preparing an explorer deployment. Inspect optional failures even when basic_rpc_passed is true."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}
