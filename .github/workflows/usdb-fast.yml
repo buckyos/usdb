@@ -32,6 +32,14 @@ jobs:
           python-version: 3.13.7
           check-latest: false
 
+      - name: Check release image source review scope
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 .github/scripts/image_security_policy.py check-scope \
+            --exceptions .github/security/image-vulnerability-exceptions.json \
+            --repository-root .
+
       - name: Install pinned Rust toolchain
         shell: bash
         run: |

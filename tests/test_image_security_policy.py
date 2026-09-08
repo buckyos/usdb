@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import date
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -116,6 +117,70 @@ class ImageSecurityPolicyTests(unittest.TestCase):
         (self.root / "runtime/new-handler.py").write_text("import xml.etree\n")
         self.assertEqual(self.evaluate()["result"], "fail")
 
+    def test_scope_diagnostics_identify_expected_and_actual_inputs(self):
+        expected = self.catalog["profiles"][IMAGE]["source_sha256"]
+        (self.root / "runtime/start.sh").write_text("exec perl\n")
+        decision = self.evaluate()
+        review = decision["source_review"]
+        self.assertFalse(review["matches"])
+        self.assertEqual(review["expected_sha256"], expected)
+        self.assertEqual(review["actual_sha256"], POLICY.source_fingerprint(self.root, ["runtime"]))
+        self.assertNotEqual(review["actual_sha256"], expected)
+        self.assertEqual(decision["blocking_count"], 1)
+
+    def test_scope_preflight_is_read_only_and_writes_failure_evidence(self):
+        catalog = self.root / "exceptions.json"
+        output = self.root / "scope.json"
+        original = json.dumps(self.catalog)
+        catalog.write_text(original)
+        command = [sys.executable, str(SCRIPT), "check-scope", "--exceptions", str(catalog),
+                   "--repository-root", str(self.root), "--output", str(output)]
+        for changed in (False, True):
+            with self.subTest(changed=changed):
+                if changed:
+                    (self.root / "runtime/new-handler.py").write_text("import xml.etree\n")
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(result.returncode, int(changed), result.stderr)
+                self.assertEqual(json.loads(output.read_text())["result"], "fail" if changed else "pass")
+                self.assertIn(IMAGE, result.stdout)
+                self.assertIn("expected_sha256=", result.stdout)
+                self.assertIn("actual_sha256=", result.stdout)
+                self.assertEqual(catalog.read_text(), original)
+                if changed:
+                    self.assertIn("STALE", result.stdout)
+                    self.assertIn("do not auto-refresh", result.stderr)
+
+    def test_scope_preflight_rejects_missing_files_and_empty_profiles(self):
+        (self.root / "runtime/start.sh").unlink()
+        with self.assertRaises(ValueError):
+            POLICY.check_source_reviews(self.catalog, self.root)
+        with self.assertRaisesRegex(ValueError, "requires image profiles"):
+            POLICY.check_source_reviews({"schema_version": POLICY.POLICY_SCHEMA,
+                                         "profiles": {}, "exceptions": []}, self.root)
+
+    def test_fast_gate_rejects_stale_review_before_compilation(self):
+        (self.root / "runtime/start.sh").write_text("changed build input\n")
+        script = self.root / "src/btc/scripts/run_fast_ci.sh"
+        script.parent.mkdir(parents=True)
+        script.write_bytes((ROOT / "src/btc/scripts/run_fast_ci.sh").read_bytes())
+        policy = self.root / ".github/scripts/image_security_policy.py"
+        policy.parent.mkdir(parents=True)
+        policy.write_bytes(SCRIPT.read_bytes())
+        catalog = self.root / ".github/security/image-vulnerability-exceptions.json"
+        catalog.parent.mkdir()
+        catalog.write_text(json.dumps(self.catalog))
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        for name in ("cargo", "rustc", "shellcheck"):
+            stub = bin_dir / name
+            stub.write_text('#!/bin/sh\necho unexpected-compilation >&2\nexit 99\n')
+            stub.chmod(0o755)
+        result = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                                env={**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("STALE", result.stdout)
+        self.assertNotIn("unexpected-compilation", result.stderr)
+
     def test_source_mode_change_invalidates_exception(self):
         (self.root / "runtime/start.sh").chmod(0o755)
         self.assertEqual(self.evaluate()["result"], "fail")
@@ -223,6 +288,9 @@ class ReviewedImageReportsTests(unittest.TestCase):
         for image, critical, high in (("bitcoin", 5, 78), ("services", 5, 89)):
             with self.subTest(image=image):
                 report = POLICY.read_json(ROOT / f"tests/fixtures/image-security/{image}.json")
+                repository = report["ArtifactName"].split("@")[0]
+                review = POLICY.source_review(ROOT, catalog["profiles"][repository])
+                self.assertTrue(review["matches"], POLICY.describe_source_review(repository, review))
                 decision = POLICY.evaluate(report, catalog, image_reference=report["ArtifactName"],
                     source_revision=report["Metadata"]["ImageConfig"]["config"]["Labels"]["org.opencontainers.image.revision"],
                     source_ref="refs/tags/usdb-testnet-v0-r17",

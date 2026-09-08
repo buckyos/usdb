@@ -1,0 +1,15 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "image-security-incremental-review",
+  "type": "fixed",
+  "scopes": ["testing", "release"],
+  "summary": "Renew the reviewed services source scope and diagnose stale image security reviews before compilation",
+  "details": [
+    "Reassess host installation, read-only chain inspection, RPC probes, deployment progress and resource accounting against the existing image exception conditions.",
+    "Retain exact CVE, package, severity and expiry restrictions while refreshing the services source fingerprint after review.",
+    "Add an early read-only source-scope check and include expected and actual fingerprints in policy diagnostics without weakening strict image enforcement."
+  ],
+  "operator_actions": [],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": ["https://github.com/buckyos/usdb/actions/runs/34229204372"]
+}

@@ -1,0 +1,229 @@
+{
+  "schema_version": "usdb-local-image-security-validation:v1",
+  "reviewed_on": "2026-09-08",
+  "evidence_kind": "Local incremental source review and image scans; not an r20 GitHub or GHCR release qualification. Published image identity enforcement remains required.",
+  "baseline_revision": "dd391e3149f34fdc7b17f3911f9de855d8997159",
+  "parent_revision": "c050ab9d9e6edb7ab8e8623d87490027a2278b70",
+  "source_inputs": "Parent revision plus the reviewed Fast CI preflight change; exact source bytes and executable modes are bound by the source_reviews below.",
+  "source_reviews": {
+    "ghcr.io/buckyos/usdb-bitcoin-core": {
+      "expected_sha256": "00b311f9025724294b21ebaded93c5db378aaf0c550afcea90950426977ccf1d",
+      "actual_sha256": "00b311f9025724294b21ebaded93c5db378aaf0c550afcea90950426977ccf1d",
+      "matches": true,
+      "source_paths": [
+        "docker/Dockerfile.bitcoin-core",
+        ".dockerignore",
+        "docker/compose.bitcoin.yml",
+        "docker/scripts/entrypoints/start_bitcoin_core.sh",
+        "docker/scripts/tools/check_bitcoin_readiness.py"
+      ],
+      "review": "doc/publish/security-findings/release-image-2026-09-07.md"
+    },
+    "ghcr.io/buckyos/usdb-services": {
+      "expected_sha256": "22e03618dea5c494f5f3aeae0f1f4fa78f3cab39366040a9f99326d9d92dd704",
+      "actual_sha256": "22e03618dea5c494f5f3aeae0f1f4fa78f3cab39366040a9f99326d9d92dd704",
+      "matches": true,
+      "source_paths": [
+        ".cargo/config.toml",
+        ".dockerignore",
+        "docker/Dockerfile.usdb-services",
+        "docker/locks",
+        "docker/compose.runtime.yml",
+        "docker/scripts",
+        "src/btc",
+        "web"
+      ],
+      "review": "doc/publish/security-findings/release-image-2026-09-08.md"
+    }
+  },
+  "reviewed_changed_files": {
+    "docker/scripts/tools/chain_file_inspection.py": {
+      "sha256": "0609cd2c4e0151dfa7f366c2c09bbfb8b326ac2c8cf77122fa76612bf6086fbd",
+      "executable": false
+    },
+    "docker/scripts/tools/check_explorer_rpc.py": {
+      "sha256": "7fa4092da8178bd089a9169ff9f3fee1edb857d591d2b6545aac684f88e33469",
+      "executable": false
+    },
+    "docker/scripts/tools/prepare_release_node_kit.py": {
+      "sha256": "422f6f2c581545f9705549a89bf8e62a7b09737b48dff039c1a8c018ac3508b4",
+      "executable": false
+    },
+    "docker/scripts/tools/prepare_usdb_host.sh": {
+      "sha256": "3eced9cf1902a9d593115e987fa39000e230cd5a4e270ea608b56f04d9e04ea1",
+      "executable": true
+    },
+    "docker/scripts/tools/resource_policy.py": {
+      "sha256": "6ba5dd00590f3731e7beea5fb39072afab624c8b832cc8e489b48bef5249317a",
+      "executable": false
+    },
+    "docker/scripts/tools/test_prepare_release_node_kit.py": {
+      "sha256": "308a02368625788427f08f89f5015655d289f9939fc3ee51f9e11924d9ba30c8",
+      "executable": false
+    },
+    "docker/scripts/tools/test_prepare_usdb_host.py": {
+      "sha256": "f8f1956591825c79f4f9aa7abd5d8b713ebfbe0e25ed056d92eb04f34bf0ae19",
+      "executable": true
+    },
+    "docker/scripts/tools/test_resource_policy.py": {
+      "sha256": "c6eb2c8f30680fc526cb944160565c8feee33bb5e73daab26c6c25cfbfcabfb0",
+      "executable": false
+    },
+    "docker/scripts/tools/test_usdb_node.py": {
+      "sha256": "c5099e534487442e8a59e02e116fe97e0d5a5c9e1348141c9c6e4d83108c3c32",
+      "executable": false
+    },
+    "docker/scripts/tools/usdb_mining.py": {
+      "sha256": "14f3a985a9c76c47c35917bb27e26546407bd749571bdeefe9e6b373abc41b2b",
+      "executable": false
+    },
+    "docker/scripts/tools/usdb_node.py": {
+      "sha256": "46f970f88bdcae2bff56cf32a34d46b3f6aba46e665b605bd1bc651a44dfac94",
+      "executable": true
+    },
+    "docker/scripts/tools/usdb_sourcedao.py": {
+      "sha256": "7428b051a8b0a68dcbb9cc34517f74c7de3eb45225740df98b4283553bc2de4b",
+      "executable": false
+    },
+    "src/btc/scripts/run_fast_ci.sh": {
+      "sha256": "2743cec559e536e83fdb3cfb9d53ded1b0549110d150877f842205cea99fc5ee",
+      "executable": true
+    }
+  },
+  "policy_tests": 29,
+  "fast_ci": {
+    "result": "passed",
+    "rust_passed": 674,
+    "rust_failed": 0,
+    "rust_ignored": 10,
+    "python_tests": 486,
+    "log_sha256": "13d5b42be043946aa759d85e68460457ca140455ea20804ce32eb94e9dff5b54"
+  },
+  "additional_regressions": [
+    {
+      "suite": "test_host_prepare",
+      "tests": 12,
+      "log_sha256": "29147b6e68e04460a047ef95f59dfd395b7c60bc830190c7c8a3484c4d79e5db"
+    },
+    {
+      "suite": "test_node_mining",
+      "tests": 44,
+      "log_sha256": "776cede52e5f667d8b4cf3f525b09807eafc80a0af542c1fc0216471b2114deb"
+    },
+    {
+      "suite": "test_node_sourcedao",
+      "tests": 20,
+      "log_sha256": "bc7da7f5fa86464b1d09ffe2ec4218c4379ed6a78235f73aa0787c882582cdd0"
+    },
+    {
+      "suite": "test_explorer_rpc",
+      "tests": 8,
+      "log_sha256": "75ff54e727b57e4bd7b88956ed0c92c4b9a416e6f0976707e8fb54aa385ac0bd"
+    },
+    {
+      "suite": "test_resource_policy",
+      "tests": 9,
+      "log_sha256": "5f0635b83af38a6c5d516fcb60dc3fa63c9c6ca4854e51a6a29ca33c92ccef16"
+    },
+    {
+      "suite": "test_resource_controller",
+      "tests": 12,
+      "log_sha256": "843c396d92ffda2f4f34042745fc44e6bea46ac2bea69387f8ba41a6fc2389e0"
+    },
+    {
+      "suite": "test_prepare_release_node_kit",
+      "tests": 1,
+      "log_sha256": "b4ecc486d34a0abc21afd18dfc3b971f6e3224e8b06d5c6d7e0b8904b4486f19"
+    },
+    {
+      "suite": "test_install_usdb_node",
+      "tests": 5,
+      "log_sha256": "0fe6e8bd11ee2ce5d90bba4bd8d43bd8d4eeefa02804e290dfb0590a258d17c5"
+    }
+  ],
+  "scanner": "Trivy 0.74.0",
+  "database_metadata": {
+    "Version": 2,
+    "NextUpdate": "2026-09-09T07:08:01.235696486Z",
+    "UpdatedAt": "2026-09-08T07:08:01.235696926Z",
+    "DownloadedAt": "2026-09-08T18:01:45.123341788Z"
+  },
+  "images": {
+    "bitcoin": {
+      "local_reference": "usdb-bitcoin-core:security-review-20260907",
+      "local_image_id": "sha256:6aefe39d415d7aa000d7282e7b842fdc7553ce5703cbe5396e316800caa46be0",
+      "report_sha256": "81448b7cf106c76a8cb5e63ad8aacd77edddb5f146434ce36db96c1f6bb190fa",
+      "os": {
+        "Family": "debian",
+        "Name": "12.15"
+      },
+      "critical": 5,
+      "high": 78,
+      "new_high_critical": [],
+      "removed_high_critical": [],
+      "rust_binary_packages": {},
+      "baseline_policy_result": "pass",
+      "baseline_accepted": 83,
+      "baseline_blocked": 0,
+      "language_high_critical": 0
+    },
+    "services": {
+      "local_reference": "usdb-services:security-review-20260908",
+      "local_image_id": "sha256:ed03751bd6d633c1c963bcbf5fd0b4073dafc8210bb4700804f3c3b85042afbe",
+      "report_sha256": "39f8307af7829c86a620c136dcfb904af3edbeae0481e0ac237d2f9f6d655f7a",
+      "os": {
+        "Family": "debian",
+        "Name": "12.15"
+      },
+      "critical": 5,
+      "high": 89,
+      "new_high_critical": [],
+      "removed_high_critical": [],
+      "rust_binary_packages": {
+        "opt/ord/bin/ord": 303,
+        "usr/local/bin/balance-history": 297,
+        "usr/local/bin/usdb-control-plane": 223,
+        "usr/local/bin/usdb-indexer": 424,
+        "usr/local/bin/usdb-indexer-checkpoint-tool": 298
+      },
+      "baseline_policy_result": "pass",
+      "baseline_accepted": 94,
+      "baseline_blocked": 0,
+      "language_high_critical": 0
+    }
+  },
+  "runtime_checks": {
+    "matched_source_files": 12,
+    "successful_help_commands": 8,
+    "web_entrypoints": 3,
+    "node_modules_present": false,
+    "report_sha256": "39af4f70cce93a5911d6150a50b9a565062bafc35d41371d91a90a748c02156a"
+  },
+  "docker_signing_key_checks": [
+    {
+      "url": "https://download.docker.com/linux/ubuntu/gpg",
+      "sha256": "1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570",
+      "bytes": 3817,
+      "matches": true
+    },
+    {
+      "url": "https://download.docker.com/linux/debian/gpg",
+      "sha256": "1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570",
+      "bytes": 3817,
+      "matches": true
+    },
+    {
+      "url": "https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/ubuntu/gpg",
+      "sha256": "1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570",
+      "bytes": 3817,
+      "matches": true
+    }
+  ],
+  "exceptions_changed": false,
+  "exceptions_expire_at": "2026-10-07T00:00:00Z",
+  "limitations": [
+    "Baseline classification replay and exact high/critical finding multiset comparison preserve local scan reports without fabricating a GHCR digest.",
+    "Bitcoin reuses the prior reviewed local image because its reviewed source inputs are unchanged.",
+    "The independent public-services release and public-network deployment are outside these image exceptions."
+  ]
+}
