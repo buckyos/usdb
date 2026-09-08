@@ -15,6 +15,7 @@ MIN_HOST_MEMORY_BYTES = 32_000_000_000
 MAX_BITCOIN_DBCACHE_MIB = 16384
 PHASES = ("bitcoin", "overlap", "steady")
 CAP_DEFAULTS = {
+    "USDB_EXTERNAL_MEMORY_BUDGET": "0",
     "USDB_BH_MEMORY_CAP": "64g",
     "USDB_BTC_IBD_MEMORY_CAP": "32g",
     "USDB_BTC_OVERLAP_MEMORY_CAP": "16g",
@@ -112,11 +113,12 @@ class ResourcePlan:
     dbcache_mib: int
     utxo_cache_bytes: int
     balance_cache_bytes: int
+    external_services_bytes: int = 0
 
     @property
     def total_bytes(self) -> int:
         """Reserve all downstream services even before they have started."""
-        return self.reserve_bytes + sum(
+        return self.reserve_bytes + self.external_services_bytes + sum(
             amount for key, amount in self.limits.items()
             if key != "BH_MEMORY_LIMIT" or self.phase != "bitcoin"
         )
@@ -125,6 +127,7 @@ class ResourcePlan:
         """Render all managed settings from this single budget, in exact bytes."""
         bitcoin = self.limits["BTC_MEMORY_LIMIT"]
         return {
+            **({"USDB_EXTERNAL_MEMORY_BUDGET": str(self.external_services_bytes)} if self.external_services_bytes else {}),
             "USDB_RESOURCE_MODE": "auto",
             "USDB_RESOURCE_HOST_MEMORY_BYTES": str(self.host_memory_bytes),
             "USDB_RESOURCE_PHASE": self.phase,
@@ -146,10 +149,17 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
         raise ValueError("automatic resources require at least 32 GB of effective host memory")
     if phase not in PHASES:
         raise ValueError(f"invalid USDB_RESOURCE_PHASE: {phase}")
-    caps = {key: memory_bytes(env.get(key, default), key) for key, default in CAP_DEFAULTS.items()}
+    caps = {key: memory_bytes(env.get(key, default), key) for key, default in CAP_DEFAULTS.items()
+            if key != "USDB_EXTERNAL_MEMORY_BUDGET"}
+    external = external_services_budget(env)
+    reserve = max(4 * GIB, host_memory * 10 // 64)
+    if external and host_memory - external < MIN_HOST_MEMORY_BYTES:
+        raise ValueError("external services must leave at least 32 GB for the node and system")
+    available = host_memory - reserve - external
 
     def share(sixty_fourths: int, cap: int) -> int:
-        return min(host_memory * sixty_fourths // 64, cap) // MIB * MIB
+        # Preserve the physical-host system reserve; reduce service shares only.
+        return min(host_memory * sixty_fourths // 64 * available // (host_memory - reserve), cap) // MIB * MIB
 
     btc_share, cap_key = {
         "bitcoin": (32, "USDB_BTC_IBD_MEMORY_CAP"),
@@ -172,12 +182,18 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
     dbcache = min(MAX_BITCOIN_DBCACHE_MIB,
                   limits["BTC_MEMORY_LIMIT"] * (5 if phase == "bitcoin" else 4) // 8 // MIB)
     plan = ResourcePlan(
-        host_memory, phase, max(4 * GIB, host_memory * 10 // 64), limits,
-        dbcache, cache // 4, cache - cache // 4,
+        host_memory, phase, reserve, limits,
+        dbcache, cache // 4, cache - cache // 4, external,
     )
     if plan.total_bytes > host_memory:
         raise ValueError(f"{phase} resource budget exceeds effective host memory")
     return plan
+
+
+def external_services_budget(env: dict[str, str]) -> int:
+    """Reserve opt-in colocated services outside all node phase allocations."""
+    value = env.get("USDB_EXTERNAL_MEMORY_BUDGET", "0")
+    return 0 if value == "0" else memory_bytes(value, "USDB_EXTERNAL_MEMORY_BUDGET")
 
 
 def validate_cache_budget(env: dict[str, str]) -> None:
@@ -223,5 +239,6 @@ def validate_resource_environment(env: dict[str, str], host_memory: int | None =
         keys = set(SERVICE_MEMORY_KEYS.values())
         total = sum(memory_bytes(settings.get(key, "0"), key) for key in keys)
         reserve = max(4 * GIB, host_memory * 10 // 64)
+        total += external_services_budget(env)
         if total + reserve > host_memory:
             raise ValueError(f"manual service limits plus system reserve exceed effective host memory: {total + reserve} > {host_memory}")

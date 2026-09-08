@@ -9,6 +9,18 @@ import resource_policy as POLICY
 
 
 class ResourcePolicyTests(unittest.TestCase):
+    def test_external_services_reserve_preserves_system_and_every_phase(self):
+        for memory in (67_297_947_648, 64 * POLICY.GIB, 256 * POLICY.GIB):
+            for phase in POLICY.PHASES:
+                baseline = POLICY.build_resource_plan(memory, phase, {})
+                plan = POLICY.build_resource_plan(memory, phase, {"USDB_EXTERNAL_MEMORY_BUDGET": "8g"})
+                self.assertEqual(plan.reserve_bytes, baseline.reserve_bytes)
+                self.assertEqual(plan.external_services_bytes, 8 * POLICY.GIB)
+                self.assertLessEqual(plan.total_bytes, memory)
+                POLICY.validate_resource_environment(plan.environment(), memory)
+        with self.assertRaisesRegex(ValueError, "leave at least"):
+            POLICY.build_resource_plan(32 * POLICY.GIB, "steady", {"USDB_EXTERNAL_MEMORY_BUDGET": "8g"})
+
     def test_small_standard_and_large_hosts_have_safe_all_phases(self):
         expected = {
             32: [(16, 12), (8, 12), (4, 16)],

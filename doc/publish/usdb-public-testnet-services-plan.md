@@ -1,7 +1,9 @@
 # USDB 公共测试网服务推进方案
 
-状态：选型与只读接入检查已完成；浏览器部署、公共 RPC 网关和水龙头仍待实现及上线验收。
-首版按复用现有测试机准备，实际域名由运维人员后续提供。顺序为：浏览器与公共 RPC → 水龙头 → 节点控制中心。
+状态：浏览器与公共 RPC 使用独立 `usdb-public` 工具、配置和发布通道，Nginx 可选；
+默认连接显式指定的上游 RPC，不要求本机安装节点。此前已完成的本机 Blockscout 区块/回执回放与
+页面验收用于兼容性验证；实际 archive 重放、公网上线镜像和钱包验收仍待完成。
+同机共置仅是部署选项，域名由运维人员提供。顺序为浏览器与公共 RPC → 水龙头 → 节点控制中心。
 
 ## 1. 三类入口
 
@@ -25,6 +27,12 @@ network bundle 身份。这里的“测试网”指 USDB 测试网络；其 BTC 
 和 [frontend v2.10.3](https://github.com/blockscout/frontend/releases/tag/v2.10.3)。这些是待验收候选，
 尚未运行组合兼容性测试，也未冻结镜像 digest；不能据此直接发布。正式部署记录要固定 backend、
 frontend、Postgres、反向代理及启用的微服务版本和 digest，保留上游许可及品牌要求。
+
+2026-09-08 实施核验补充：上述候选标签在公开注册表返回 404；实际公开可取的 backend `9.0.2`
+和 frontend `v2.3.5` 已锁定 digest，用于隔离兼容性预览，见 `public-services/assets/images.lock.json`。
+它们**不是公网发布基线**，lock 明确标记 `qualified_for_public_exposure=false`。
+正式上线需要取得或自行构建受维护的版本，完成依赖安全检查和同样的兼容性验收后重新冻结；
+不能把 GitHub 最新 release 存在等同于对应公开镜像已发布。
 
 [Otterscan](https://github.com/otterscan/otterscan) 更依赖 Erigon 及其专用接口。
 当前 USDB 是 Geth fork，不能用普通 Erigon 替换其共识实现，因此不作为本轮首选。
@@ -59,47 +67,38 @@ control-plane 还包含 world-sim 身份、开发签名材料和 mint 执行路�
 基础 RPC 样本通过不代表 Blockscout 已适配，也不代表 MetaMask 发交易、合约部署或公共访问控制已验收。
 本轮共执行 20 项采样，其中历史余额为非必需项且失败；未执行 tracing、交易广播或浏览器端钱包操作。
 
-## 4. 同机部署与资源分配
+## 4. 独立部署与可选同机共置
 
-公共服务使用独立 Compose project、独立数据目录和独立配置，更新它不触发节点 `down/up`。
-建议结构如下，图中的 archive chain 为完整浏览器阶段需要验收的新实例：
+`usdb-public` 与 `usdb-node` 使用不同版本、发布包、配置、数据和操作锁。浏览器的 up/down
+不操作 USDB 节点；默认只连接已部署的历史查询、tracing 和广播 RPC。网络 catalog 仍与 canonical
+network bundle 对照，工具版本不同不代表链的身份改变。
 
 ```mermaid
 flowchart LR
-    User[开发者 / MetaMask] --> Edge[HTTPS 入口]
-    Edge --> Explorer[Blockscout 前端和 API]
-    Edge --> Gateway[公共 RPC 方法网关]
-    Edge --> Faucet[水龙头页面和申请 API]
-    Explorer --> Indexer[Blockscout 索引器 / Postgres]
-    Indexer --> Archive[USDB archive full 实例]
+    User[开发者 / MetaMask] --> Edge[现有入口或可选内置 Nginx]
+    Edge --> Frontend[Blockscout 前端]
+    Edge --> Gateway[公共 RPC 和浏览器 API 网关]
+    Gateway --> Backend[Blockscout 索引器 / Postgres]
+    Backend --> Archive[独立管理的 archive / tracing RPC]
     Gateway --> Archive
-    Faucet --> Signer[限额签名任务]
-    Signer --> Gateway
-    Archive --> Upstream[现有 USDB indexer]
-    Miner[现有 miner 实例] --> Upstream
+    Gateway --> Writer[可单独配置的广播 RPC]
     Operator[节点运维人员] --> Console[受保护的 control-plane]
     Console --> NodeTasks[usdb-node 持久运维任务]
 ```
 
-现有资源策略并非按当下 RSS 分配：steady 的服务及短期任务上限合计约为机器内存的 `53/64`，
-另留 `10/64` 给系统，总计 `63/64`。因此不能直接把“目前 MemAvailable 很大”当成公共服务的
-永久预算。启动公共 stack 前，资源规划器需要显式扣除公共服务预算，保留系统最低余量，
-并同时检查 bitcoin／overlap／steady 三阶段；上限和实际机器内存仍分开记录。
+external 模式不启动 Nginx，输出可引用的路由片段；域名、HTTPS 和其他 www 由现有入口管理。
+bundled 模式使用内置 Nginx，支持已有证书及校验后 reload。前端/API/钱包 URL 从同一个 origin 生成。
 
-同机首轮可按 **8 GiB 公共服务总预算**做压测起点，覆盖浏览器、Postgres、网关和小型 archive
-实例。这是拟议预算，不是已验证的最低配置；应按索引、历史 tracing 和并发查询测试调整。
-32 GiB 节点不自动继承这套同机配置。限流和低索引并发优先保证原 miner、BTC 和 BH 服务运行。
-
-容器通过显式的私有网络访问选定 RPC，数据库不发布公网端口。若接入当前 node Docker network，
-使用其实际网络名与 `usdb-chain:8545`，不通过把宿主机 `8545` 改成 `0.0.0.0` 来解决连通性。
-公开 HTTPS 的 `443`（以及确有需要的 `80`）作为新的入口单独纳入防火墙；原 operator RPC 继续
-保持 loopback，遵循现有 [端口基线](usdb-node-firewall-operations.md)。
+独立机器默认公共服务预算为 6 GiB，建议至少 8 GiB 主机作为预览起点；不包含上游 archive。
+共置时显式配置其他服务预算，并检查实际容器上限及系统余量。节点侧只保留通用的
+`--external-memory-budget`，不识别或控制浏览器服务。具体启动、停止和配置流程见
+[独立部署操作手册](../../public-services/README.md)。
 
 ## 5. 第一阶段：浏览器与钱包 RPC
 
 ### 5.1 两步验收
 
-先做同机私有预览：验证 Blockscout 正确索引真实 USDB 区块、SourceDAO 部署交易、receipt/log、
+先做私有预览：验证 Blockscout 正确索引真实 USDB 区块、SourceDAO 部署交易、receipt/log、
 地址余额和合约代码。使用外部代理提供的浏览器端地址，避免把容器 DNS 写进浏览器配置。
 不启用历史 tracing 时，需要明确关闭对应抓取功能并显示能力缺口，不能把缺失数据展示成零。
 
@@ -194,5 +193,6 @@ python3 docker/scripts/tools/check_explorer_rpc.py \
 私有 tracing 入口。报告不记录 RPC URL，不包含私钥或原始签名交易；依然应区分诊断报告和上线验收。
 返回 0 只表示所选必需样本通过，非必需失败和未测试项仍保留在报告中。
 
-下一实施批次先补公共服务资源预留与同机 archive 接入，再固定 Blockscout Compose 及公共 RPC
-网关，完成私有预览验收；域名到位后进行外部钱包验收和 HTTPS 上线，之后进入水龙头。
+独立部署命令和验收范围见 [Blockscout 与 RPC 运维说明](usdb-blockscout-operations.md)。
+下一部署步骤是单独提供合格的 archive/tracing 上游，通过 usdb-public preflight 后部署浏览器；
+再完成正式镜像、域名、HTTPS 和外部钱包验收，随后进入水龙头。

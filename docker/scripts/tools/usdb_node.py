@@ -887,6 +887,7 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
     for phase in RESOURCE_PHASES:
         plan = build_resource_plan(memory, phase, env)
         plans.append({"phase": phase, "limits": plan.limits,
+                      "external_services_bytes": plan.external_services_bytes,
                       "system_reserve_bytes": plan.reserve_bytes,
                       "budget_bytes": plan.total_bytes,
                       "dbcache_mib": plan.dbcache_mib,
@@ -905,6 +906,7 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
             limits = item["limits"]
             print(f"{item['phase']:<10} Bitcoin={_human_bytes(limits['BTC_MEMORY_LIMIT'])}, "
                   f"balance-history={_human_bytes(limits['BH_MEMORY_LIMIT'])}, "
+                  f"external-services={_human_bytes(item['external_services_bytes'])}, "
                   f"total including reserve={_human_bytes(item['budget_bytes'])}")
 
 
@@ -2025,7 +2027,7 @@ def _resource_container_matches(container: dict[str, Any] | None,
 def _check_running_resource_budget(env: dict[str, str], containers: dict[str, dict[str, Any]]) -> None:
     """Account for actual concurrent containers, including unfinished one-shot jobs."""
     plan = build_resource_plan(int(env["USDB_RESOURCE_HOST_MEMORY_BYTES"]), env["USDB_RESOURCE_PHASE"], env)
-    total = plan.reserve_bytes
+    total = plan.reserve_bytes + plan.external_services_bytes
     for service, container in containers.items():
         if container["state"] not in {"running", "restarting", "paused"}:
             continue
@@ -5107,6 +5109,8 @@ def print_up_result(result: dict[str, Any], *, json_output: bool) -> None:
 
 
 def _add_resource_cap_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--external-memory-budget", dest="USDB_EXTERNAL_MEMORY_BUDGET", default=None,
+                        metavar="BYTES", help="reserve RAM for the other host services in every phase (default 0)")
     for flag, key in (("bh-memory-cap", "USDB_BH_MEMORY_CAP"),
                       ("bitcoin-ibd-memory-cap", "USDB_BTC_IBD_MEMORY_CAP"),
                       ("bitcoin-overlap-memory-cap", "USDB_BTC_OVERLAP_MEMORY_CAP"),

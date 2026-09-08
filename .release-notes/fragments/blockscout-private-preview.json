@@ -1,0 +1,36 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "blockscout-private-preview",
+  "type": "added",
+  "scopes": [
+    "deployment",
+    "node-runtime",
+    "security",
+    "documentation",
+    "testing"
+  ],
+  "summary": "Add standalone Blockscout and bounded public RPC deployment with optional Nginx",
+  "details": [
+    "Provide an independent usdb-public CLI and versioned release kit, connecting explicit upstream RPC endpoints without a node installation or controller dependency.",
+    "Require network identity, canonical checkpoint, historical state and tracing samples across configured upstreams; compare explorer results with a fixed checkpoint and optional independent reference.",
+    "Support external Nginx routing or a bundled ingress with existing HTTPS certificates and checked reload; derive frontend and wallet URLs from one advertised origin.",
+    "Gate RPC by chain/genesis identity, reject privileged and node-signing methods, validate entire batches before forwarding, and bound request sizes, concurrency, rates and log ranges.",
+    "Hide unqualified Ethereum reward and burnt-fee assumptions in the explorer API and UI while preserving actual transaction fees and receipt values.",
+    "Preserve deployment credentials and database identity across backed-up configuration replacements; public up/down never operates upstream nodes.",
+    "Mark the pinned public-registry images as private compatibility preview inputs; actual archive replay, maintained-image qualification, contract verification, public TLS and wallet acceptance remain outstanding.",
+    "Keep a generic external-memory reservation on nodes for optional colocation; independently publish the public gateway by digest and the standalone kit using usdb-public-vX.Y.Z tags.",
+    "Generate a release-bound one-line installer with an embedded archive SHA-256, verified immutable version directories and an atomic CLI activation; preserve existing operator configuration and deployment data."
+  ],
+  "operator_actions": [
+    "Run the selected public-service release installer, then edit its default private configuration to select qualified historical/tracing/broadcast endpoints.",
+    "Choose external or bundled ingress, run preflight and check, and retain private deployment configuration plus consistent database backups.",
+    "Current locked images remain private-preview inputs; complete maintained-image and public-network qualification before exposure."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": []
+}
