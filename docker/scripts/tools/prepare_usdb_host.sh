@@ -6,12 +6,23 @@ minimum_kernel_minor=10
 supported_arch="x86_64"
 os_release_file="${USDB_HOST_OS_RELEASE_FILE:-/etc/os-release}"
 command_dir="${USDB_HOST_COMMAND_DIR:-}"
+apt_sources_dir="${USDB_HOST_APT_SOURCES_DIR:-/etc/apt/sources.list.d}"
 docker_user=""
+docker_mirror="auto"
+# SHA-256 of Docker's public APT signing key, verified against both official
+# Ubuntu/Debian endpoints. Mirror fallback must not introduce a different key.
+docker_key_sha256="1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570"
+docker_packages=(docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)
 temporary_key_file=""
 temporary_source_file=""
+temporary_apt_sources_dir=""
 
 cleanup() {
   rm -f "${temporary_key_file:-}" "${temporary_source_file:-}"
+  if [[ -n "${temporary_apt_sources_dir}" ]]; then
+    rm -f "${temporary_apt_sources_dir}"/*
+    rmdir "${temporary_apt_sources_dir}"
+  fi
 }
 
 trap cleanup EXIT
@@ -20,17 +31,22 @@ usage() {
   cat <<'EOF'
 Usage:
   docker/scripts/tools/prepare_usdb_host.sh check [--docker-user USER]
-  docker/scripts/tools/prepare_usdb_host.sh install [--docker-user USER]
+  docker/scripts/tools/prepare_usdb_host.sh install [--docker-user USER] [--docker-mirror auto|official|tuna]
 
 Actions:
   check    Read-only validation of the Linux kernel, release-image architecture,
            command versions, Docker Compose plugin and Docker daemon access.
            The check works on Linux distributions that expose /etc/os-release.
   install  Install packages on the explicitly supported APT distributions from
-           Docker's official repository, enable Docker, optionally add an
+           Docker's repository or its Tsinghua mirror, enable Docker, optionally add an
            existing user to the docker group, then run the same checks.
 
 Options:
+  --docker-mirror auto|official|tuna
+           Installation source (default: auto). Auto tries Docker's official
+           repository, then the Tsinghua Docker CE mirror if downloads fail.
+           Explicit official/tuna selection disables source fallback.
+           HTTPS, the pinned Docker signing key and APT signatures are checked.
   --docker-user USER
            Verify docker-group membership during check. During install, add the
            existing USER to that group. Membership grants root-level privileges
@@ -39,6 +55,8 @@ Options:
 Runtime floor: Linux kernel 5.10 or newer on x86-64.
 Automated install: Ubuntu 22.04/24.04/26.04 and Debian 12/13.
 The installer never removes conflicting container packages or node data.
+Downloads retry twice. curl connects within 10s and allows 30s per attempt;
+APT uses a 30s connection/data timeout. Package installation is not retried.
 EOF
 }
 
@@ -307,6 +325,106 @@ reject_conflicting_docker_packages() {
   fi
 }
 
+# Retry acquisition inside APT; never rerun dpkg after an installation failure.
+apt_get() {
+  run_root apt-get \
+    -o Acquire::Retries=2 \
+    -o Acquire::http::Timeout=30 \
+    -o Acquire::https::Timeout=30 \
+    "$@"
+}
+
+# Ignore our previous Docker source only for bootstrap. This lets a rerun repair
+# an unreachable source without changing the operator's other APT repositories.
+install_base_packages() {
+  temporary_apt_sources_dir="$(mktemp -d)"
+  chmod 0755 "${temporary_apt_sources_dir}"
+  local source
+  for source in "${apt_sources_dir}"/*.list "${apt_sources_dir}"/*.sources; do
+    [[ -f "${source}" ]] || continue
+    [[ "${source##*/}" != "docker.sources" ]] || continue
+    ln -s "${source}" "${temporary_apt_sources_dir}/${source##*/}"
+  done
+  local source_options=(
+    -o "Dir::Etc::sourceparts=${temporary_apt_sources_dir}"
+    -o APT::Get::List-Cleanup=false
+  )
+  apt_get "${source_options[@]}" update --error-on=any
+  apt_get "${source_options[@]}" install -y ca-certificates curl git python3 jq
+}
+
+# Complete downloads before invoking dpkg so source fallback remains safe.
+download_docker_packages() {
+  local mirror="$1"
+  local repository="https://download.docker.com/linux/${HOST_OS_ID}"
+  if [[ "${mirror}" == "tuna" ]]; then
+    repository="https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/${HOST_OS_ID}"
+  fi
+  echo "INFO Docker repository: source=${mirror} url=${repository} suite=${HOST_OS_CODENAME} retries=2"
+  echo "INFO Docker signing key: downloading ${repository}/gpg"
+  if ! curl -q -fsSL --proto '=https' --proto-redir '=https' \
+    --connect-timeout 10 --max-time 30 \
+    --retry 2 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
+    "${repository}/gpg" -o "${temporary_key_file}"; then
+    echo "WARN Docker repository: source=${mirror} stage=signing-key download failed after retries" >&2
+    return 1
+  fi
+  local key_digest
+  key_digest="$(sha256sum "${temporary_key_file}")" || fail "cannot hash Docker signing key"
+  [[ "${key_digest%% *}" == "${docker_key_sha256}" ]] || \
+    fail "Docker signing key checksum mismatch: source=${mirror}; refusing to trust this key"
+  run_root install -m 0755 -d /etc/apt/keyrings || fail "cannot create APT keyring directory"
+  run_root install -m 0644 "${temporary_key_file}" /etc/apt/keyrings/docker.asc || \
+    fail "cannot install Docker signing key"
+
+  local architecture
+  architecture="$(dpkg --print-architecture)" || fail "cannot read APT architecture"
+  cat >"${temporary_source_file}" <<EOF || fail "cannot write Docker repository configuration"
+Types: deb
+URIs: ${repository}
+Suites: ${HOST_OS_CODENAME}
+Components: stable
+Architectures: ${architecture}
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+  run_root install -m 0644 "${temporary_source_file}" "${apt_sources_dir}/docker.sources" || \
+    fail "cannot configure Docker repository"
+
+  # APT normally treats some failed index fetches as warnings and returns zero.
+  # Require a fresh, successful update before considering this source usable.
+  if ! apt_get update --error-on=any; then
+    echo "WARN Docker repository: source=${mirror} stage=apt-update failed after acquisition retries" >&2
+    return 1
+  fi
+  if ! apt_get install -y --download-only "${docker_packages[@]}"; then
+    echo "WARN Docker repository: source=${mirror} stage=package-download failed after acquisition retries" >&2
+    return 1
+  fi
+}
+
+# Automatic fallback is limited to the two named, HTTPS Docker CE sources.
+install_docker_packages() {
+  local mirrors=("${docker_mirror}")
+  if [[ "${docker_mirror}" == "auto" ]]; then
+    mirrors=(official tuna)
+  fi
+  temporary_key_file="$(mktemp)"
+  temporary_source_file="$(mktemp)"
+  local mirror
+  for mirror in "${mirrors[@]}"; do
+    if [[ "${mirror}" == "tuna" && "${docker_mirror}" == "auto" ]]; then
+      echo "WARN Docker repository: official source failed; falling back to Tsinghua Docker CE mirror (tuna)" >&2
+    fi
+    if download_docker_packages "${mirror}"; then
+      echo "INFO Docker packages: installing downloaded packages from source=${mirror}"
+      apt_get install -y --no-download "${docker_packages[@]}" || \
+        fail "Docker package installation failed after download; resolve the APT/dpkg error before retrying"
+      return 0
+    fi
+  done
+  fail "Docker repository acquisition failed: selection=${docker_mirror}; check network/proxy access and the APT errors above"
+}
+
 install_host() {
   check_platform
   install_distribution_supported || fail \
@@ -314,6 +432,7 @@ install_host() {
   command -v apt-get >/dev/null 2>&1 || fail "apt-get is required"
   command -v dpkg >/dev/null 2>&1 || fail "dpkg is required"
   command -v dpkg-query >/dev/null 2>&1 || fail "dpkg-query is required"
+  command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 
   local preserve_existing_docker=0
   local docker_bin=""
@@ -323,35 +442,12 @@ install_host() {
     reject_conflicting_docker_packages
   fi
 
-  run_root apt-get update
-  run_root apt-get install -y ca-certificates curl git python3 jq
+  install_base_packages
 
   if [[ "${preserve_existing_docker}" == "1" ]]; then
     echo "Docker Engine and Compose plugin are already installed; preserving the existing installation."
   else
-    temporary_key_file="$(mktemp)"
-    temporary_source_file="$(mktemp)"
-
-    run_root install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL "https://download.docker.com/linux/${HOST_OS_ID}/gpg" -o "${temporary_key_file}"
-    run_root install -m 0644 "${temporary_key_file}" /etc/apt/keyrings/docker.asc
-
-    cat >"${temporary_source_file}" <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/${HOST_OS_ID}
-Suites: ${HOST_OS_CODENAME}
-Components: stable
-Architectures: $(dpkg --print-architecture)
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
-    run_root install -m 0644 "${temporary_source_file}" /etc/apt/sources.list.d/docker.sources
-    run_root apt-get update
-    run_root apt-get install -y \
-      docker-ce \
-      docker-ce-cli \
-      containerd.io \
-      docker-buildx-plugin \
-      docker-compose-plugin
+    install_docker_packages
   fi
 
   if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
@@ -385,6 +481,15 @@ while (($# > 0)); do
     --docker-user)
       (($# >= 2)) || fail "--docker-user requires a value"
       docker_user="$2"
+      shift 2
+      ;;
+    --docker-mirror)
+      (($# >= 2)) || fail "--docker-mirror requires a value"
+      docker_mirror="$2"
+      case "${docker_mirror}" in
+        auto | official | tuna) ;;
+        *) fail "invalid Docker mirror: ${docker_mirror}; expected auto, official or tuna" ;;
+      esac
       shift 2
       ;;
     *)

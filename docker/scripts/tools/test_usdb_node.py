@@ -2779,16 +2779,17 @@ class UsdbNodeTests(unittest.TestCase):
 
     def test_prepare_host_only_installs_after_interactive_confirmation(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
-        calls: list[tuple[str, bool]] = []
+        calls: list[tuple[str, bool, str | None]] = []
 
         def record(
             _layout: object,
             action: str,
             *,
             check: bool = True,
+            docker_mirror: str | None = None,
             **_kwargs: object,
         ) -> object:
-            calls.append((action, check))
+            calls.append((action, check, docker_mirror))
             return mock.Mock(returncode=1 if action == "check" else 0)
 
         with (
@@ -2798,11 +2799,36 @@ class UsdbNodeTests(unittest.TestCase):
         ):
             NODE.prepare_host(
                 layout,
-                docker_user="usdb",
+                docker_user="bucky",
+                docker_mirror="tuna",
                 input_fn=lambda _prompt: "yes",
                 output=io.StringIO(),
             )
-        self.assertEqual(calls, [("check", False), ("install", True)])
+        self.assertEqual(calls, [("check", False, None), ("install", True, "tuna")])
+
+    def test_host_install_forwards_mirror_and_operator_to_helper(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        for mirror in ("auto", "official", "tuna"):
+            with self.subTest(mirror=mirror), mock.patch.object(NODE, "run_helper") as helper:
+                options = [] if mirror == "auto" else ["--docker-mirror", mirror]
+                args = NODE.build_parser().parse_args(
+                    ["host", "install", "--docker-user", "bucky", *options]
+                )
+                NODE._execute_command(layout, args)
+                helper.assert_called_once_with(
+                    layout, "prepare_usdb_host.sh",
+                    ["install", "--docker-user", "bucky", "--docker-mirror", mirror],
+                    check=True, output_to_stderr=False,
+                )
+
+    def test_prepare_host_dispatches_selected_mirror(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        args = NODE.build_parser().parse_args(
+            ["prepare-host", "--docker-user", "bucky", "--docker-mirror", "tuna"]
+        )
+        with mock.patch.object(NODE, "prepare_host") as prepare, redirect_stdout(io.StringIO()):
+            NODE._execute_command(layout, args)
+        prepare.assert_called_once_with(layout, docker_user="bucky", docker_mirror="tuna")
 
     def test_doctor_checks_host_runtime_identity_and_firewall(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

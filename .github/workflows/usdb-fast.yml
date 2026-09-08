@@ -38,5 +38,15 @@ jobs:
           set -euo pipefail
           rustup toolchain install 1.91.0 --profile minimal --component clippy --component rustfmt
 
+      - name: Check host preparation and node kit
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          bash -n docker/scripts/tools/prepare_usdb_host.sh
+          python3 docker/scripts/tools/test_prepare_usdb_host.py
+          python3 tests/test_host_prepare.py
+          python3 docker/scripts/tools/test_usdb_node.py
+          python3 docker/scripts/tools/test_prepare_release_node_kit.py
+
       - name: Run Rust fast gate
         run: src/btc/scripts/run_fast_ci.sh

@@ -83,6 +83,10 @@ usdb-node host check
 usdb-node host install
 ```
 
+`prepare-host` 和 `host install` 默认在 Docker 官方源下载重试失败后回退到清华 Docker CE 镜像。
+可用 `--docker-mirror tuna` 直接选择清华源，或 `--docker-mirror official` 禁用回退。
+完整来源、签名校验和重试规则见[主机软件准备工具](./usdb-node-host-prerequisites.md#31-docker-软件源与网络重试)。
+
 如果机器连 release installer 所需的 `curl`/Python 都没有，仍需先使用主机软件基线文档中的独立
 `prepare_usdb_host.sh` bootstrap 路径。
 

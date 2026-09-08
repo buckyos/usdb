@@ -1842,6 +1842,7 @@ def run_host_action(
     action: str,
     *,
     docker_user: str = "",
+    docker_mirror: str = "auto",
     check: bool = True,
     output_to_stderr: bool = False,
 ) -> subprocess.CompletedProcess[str]:
@@ -1850,6 +1851,8 @@ def run_host_action(
     arguments = [action]
     if docker_user:
         arguments.extend(["--docker-user", docker_user])
+    if action == "install":
+        arguments.extend(["--docker-mirror", docker_mirror])
     return run_helper(
         layout,
         "prepare_usdb_host.sh",
@@ -1863,6 +1866,7 @@ def prepare_host(
     layout: ReleaseLayout,
     *,
     docker_user: str,
+    docker_mirror: str = "auto",
     input_fn: Any = input,
     output: Any = sys.stdout,
 ) -> None:
@@ -1878,7 +1882,7 @@ def prepare_host(
         output=output,
     ):
         raise ValueError("host preparation cancelled; no packages were installed")
-    run_host_action(layout, "install", docker_user=docker_user)
+    run_host_action(layout, "install", docker_user=docker_user, docker_mirror=docker_mirror)
 
 
 def run_firewall_action(
@@ -5142,12 +5146,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check host prerequisites and offer explicit installation when needed",
     )
     prepare_host_parser.add_argument("--docker-user", default=default_docker_user())
+    prepare_host_parser.add_argument(
+        "--docker-mirror", choices=("auto", "official", "tuna"), default="auto",
+        help="Docker CE source: auto retries official then falls back to Tsinghua; explicit sources disable fallback",
+    )
 
     host = subparsers.add_parser("host", help="Check or install host prerequisites")
     host_actions = host.add_subparsers(dest="host_action", required=True)
     for action in ("check", "install"):
         host_action = host_actions.add_parser(action)
         host_action.add_argument("--docker-user", default=default_docker_user())
+        if action == "install":
+            host_action.add_argument(
+                "--docker-mirror", choices=("auto", "official", "tuna"), default="auto",
+                help="Docker CE source: auto retries official then falls back to Tsinghua; explicit sources disable fallback",
+            )
 
     setup = subparsers.add_parser(
         "setup",
@@ -5447,11 +5460,14 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
     if args.command in {"setup", "configure"} and args.resource_mode == "auto" and args.bitcoin_profile is not None:
         raise ValueError("--bitcoin-profile requires --resource-mode manual; automatic mode manages all Bitcoin phases")
     if args.command == "prepare-host":
-        prepare_host(layout, docker_user=args.docker_user)
+        prepare_host(layout, docker_user=args.docker_user, docker_mirror=args.docker_mirror)
         print("USDB host prerequisites are ready.")
         print("If Docker group membership changed, start a new login session before doctor/up.")
     elif args.command == "host":
-        run_host_action(layout, args.host_action, docker_user=args.docker_user)
+        run_host_action(
+            layout, args.host_action, docker_user=args.docker_user,
+            docker_mirror=getattr(args, "docker_mirror", "auto"),
+        )
     elif args.command == "setup":
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise ValueError("setup requires an interactive terminal; use configure for automation")
