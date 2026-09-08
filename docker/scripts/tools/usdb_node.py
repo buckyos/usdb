@@ -3827,12 +3827,10 @@ def _chain_component(
                 ("eth_chainId", []),
                 ("eth_getBlockByNumber", ["0x0", False]),
                 ("eth_syncing", []),
-                ("eth_blockNumber", []),
                 ("net_peerCount", []),
             ),
         )
         chain_id = _hex_quantity(results["eth_chainId"], "eth_chainId")
-        block_number = _hex_quantity(results["eth_blockNumber"], "eth_blockNumber")
         peer_count = _hex_quantity(results["net_peerCount"], "net_peerCount")
         genesis = results["eth_getBlockByNumber"]
         if not isinstance(genesis, dict) or not isinstance(genesis.get("hash"), str):
@@ -3845,25 +3843,35 @@ def _chain_component(
                 "BLOCKED",
                 "chain identity differs from the release manifest",
             )
+        # Read height and hash from the same block object, including same-height reorgs.
+        # Use a separate batch because the batch helper keys results by RPC method.
+        latest = _json_rpc_batch(
+            _host_rpc_url(env, "USDB_HTTP_BIND_ADDRESS", "USDB_HTTP_BIND_PORT", 8545),
+            (("eth_getBlockByNumber", ["latest", False]),),
+        )["eth_getBlockByNumber"]
+        if not isinstance(latest, dict) or re.fullmatch(r"0x[0-9a-fA-F]{64}", str(latest.get("hash"))) is None:
+            raise ValueError("USDB chain latest block is unavailable or has an invalid hash")
+        block_number = _hex_quantity(latest.get("number"), "latest block number")
+        head = {"number": block_number, "hash": latest["hash"].lower()}
         syncing = results["eth_syncing"]
         if syncing is False:
-            return _component_progress(
+            return {**_component_progress(
                 "usdb_chain",
                 "READY",
                 f"block={block_number}, peers={peer_count}",
                 current=block_number,
-            )
+            ), "head": head}
         if not isinstance(syncing, dict):
             raise ValueError("eth_syncing returned an invalid result")
         current = _hex_quantity(syncing.get("currentBlock"), "eth_syncing.currentBlock")
         highest = _hex_quantity(syncing.get("highestBlock"), "eth_syncing.highestBlock")
-        return _component_progress(
+        return {**_component_progress(
             "usdb_chain",
             "SYNCING",
             f"peers={peer_count}",
             current=current,
             total=highest,
-        )
+        ), "head": head}
     except ValueError as error:
         return _component_progress("usdb_chain", "STARTING", str(error))
 
@@ -4203,6 +4211,14 @@ def render_node_progress(
         if len(detail) > available:
             detail = detail[: max(0, available - 3)] + "..."
         lines.append(prefix + detail)
+        head = component.get("head")
+        if component["id"] == "usdb_chain" and isinstance(head, dict):
+            head_prefix = f"  Latest block    #{head['number']} hash="
+            block_hash = head["hash"]
+            room = max(20, width - len(head_prefix))
+            if len(block_hash) > room:
+                block_hash = block_hash[:room - 11] + "..." + block_hash[-8:]
+            lines.append(head_prefix + block_hash)
     mining = report.get("mining")
     if isinstance(mining, dict):
         configured = mining.get("configured", {})

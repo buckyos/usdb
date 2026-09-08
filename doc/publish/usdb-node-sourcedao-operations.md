@@ -42,6 +42,56 @@ RPC 自动取 `node.env` 的 `USDB_HTTP_BIND_ADDRESS` / `USDB_HTTP_BIND_PORT`，
 `finalized`，不会仅凭状态文件存在显示成功。RPC 观察失败会明确显示，正在运行的任务仍继续观察。
 `SUCCEEDED` 表示最近一次任务完成；`validate` 的报告另行记录固定区块的严格验证证据。
 
+## 怎样判断部署进度
+
+`check` 和 `status` 的文本输出分别列出任务结果、`Deployment` 阶段、DAO 初始化标记和
+Dividend 完成标记。`finalized=False` 本身只说明 Dividend 尚未完成 bootstrap：
+
+| Deployment | 含义 |
+| --- | --- |
+| `NOT_STARTED` | DAO 尚未初始化，本机没有已记录的部署进度，也没有运行中的 bootstrap 任务 |
+| `STARTING` | 本机已启动 bootstrap，正在做预检或准备首笔交易 |
+| `DEPLOYING` | bootstrap 正在运行，DAO 已初始化或已有交易记录 |
+| `FINALIZING` | journal 已记录 `Dividend.finalizeBootstrap` 交易，正在等待回执 |
+| `INCOMPLETE` | DAO 已初始化或存在恢复记录，但没有运行中的本机 bootstrap 任务；结合任务错误检查原记录 |
+| `FINALIZED` | 最新链上观察显示 Dividend 完成标记已设置；仍需确认 bootstrap 任务成功，再执行 export 和 validate |
+| `UNKNOWN` | 缺少新鲜链上观察，或本机记录不可读／身份不匹配；不能据此判断未开始或已完成 |
+
+例如，`SourceDAO | bootstrap | RUNNING` 和 `Deployment: FINALIZED` 可以同时出现：完成交易
+已上链，但工具还在做最后核对、落盘或退出。`SourceDAO | validate | SUCCEEDED` 则表示最近的
+严格验证任务成功，不是另一次部署。`check` 的 `CHECKED` 表示预检已执行，需继续看阶段和阻塞项。
+
+有匹配的私有 journal 时，面板显示已确认交易数、待回执交易的具体操作名、nonce、交易哈希，
+以及最近一次确认的操作和区块高度。比如 `Step: Acquired` 表示模块阶段，
+`Waiting: Acquired.deployProxy` 才是当前待确认的具体交易。这些信息只从 journal 中提取白名单
+元数据，不展示已签名交易字节。`confirmed` 指 journal 已记录回执，观察命令不会重新验证每笔
+历史交易的主链归属；`awaiting_receipt` 也不证明交易已进入矿工的交易池，记录可能刚刚持久化、
+尚未广播。断线恢复和严格验收仍由原工具处理。
+
+支持 ANSI 的终端中，`status --watch` 原地刷新固定面板，长文件路径在结束后显示。
+重定向到文件或不支持刷新的终端中，每次观察都有时间戳和分隔线，路径只在首末帧打印。
+`--json` 保留结构化输出，新增 `deployment` 和经过白名单筛选的交易进度，不插入终端控制符。
+Ctrl-C 会恢复终端并保留最后一次观察结果，后台任务继续执行。
+
+节点总览 `usdb-node status --watch` 另列最新 USDB 区块高度和哈希。高度与哈希取自同一次
+`eth_getBlockByNumber("latest")` 响应，同高度发生重组时也会更新哈希。宽度不足时仅缩短文本
+面板中的哈希，`status --progress-json` 的 chain 组件 `head` 保留完整值；它不是最终性证明。
+
+## 部署交易与出块的关系
+
+当前完整初始化共 **22 笔交易**：DAO 与 Dividend 初始化 2 笔，DAO 绑定 Dividend 1 笔，
+6 个模块各自部署实现合约、部署并初始化代理、写入 DAO 绑定，共 18 笔，最后
+`Dividend.finalizeBootstrap` 1 笔。
+
+当前工具串行提交：先持久化已签交易，广播并等待 1 个确认的成功回执，核对回执所在区块，
+然后才开始下一笔。因而新部署通常至少跨 22 个出块高度；合约读取、代码核对、状态落盘等
+只读或本地步骤不需要新区块，一次模块阶段也可能包含 3 笔交易。重试会复用已完成的交易。
+
+链本身支持一个区块容纳多笔交易，但当前工具没有批量流水线。未来可以按依赖关系批量提交
+独立模块的部署，并在初始化、模块绑定和最终确认之间保留核对点；这需要配套处理连续 nonce、
+交易未确认或失败后的恢复，以及区块 gas 容量。不要在现有串行任务运行时另起脚本并发使用
+同一个 Bootstrap Admin，以免触发未知 pending nonce 或交易替换保护。
+
 ## 各命令的用途
 
 | 命令 | 解决的问题 | 主要输入和输出 | 是否使用私钥／写链 |

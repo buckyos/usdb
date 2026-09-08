@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-deployment-progress-details",
+  "type": "changed",
+  "scopes": ["sourcedao", "node-runtime", "documentation", "testing"],
+  "summary": "Clarify SourceDAO deployment phases and show the latest USDB block hash",
+  "details": [
+    "Separate unstarted, starting, deploying, finalizing, incomplete and on-chain finalized SourceDAO phases from the latest local task outcome, with explicit unknown observations.",
+    "Show pending transaction names, nonces and hashes plus recorded receipt progress through a whitelist that excludes signed transaction bytes. Journal counts do not replace canonical receipt validation.",
+    "Refresh SourceDAO watch in a terminal panel, preserve the final observation, and separate plain output frames with timestamps while printing long paths only at the boundaries.",
+    "Read the latest chain height and hash from one block response and show the hash on its own progress line, including same-height head changes.",
+    "Document the existing sequential 22-transaction bootstrap ceremony and its receipt waits; transaction submission and recovery rules remain unchanged."
+  ],
+  "operator_actions": [
+    "Use the updated node kit and reopen sourcedao check/status or node status --watch to see detailed observations. Running deployments can continue with their original tools image."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

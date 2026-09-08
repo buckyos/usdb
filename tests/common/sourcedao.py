@@ -29,7 +29,9 @@ class SourceDaoFixture:
         self.calls = []
         self.failure = None
         self.live = {"schema_version": "sourcedao-bootstrap-check:v1", **{k: v for k, v in self.ctx["binding"].items() if k != "image"},
-                     "finalized": False, "blockers": [], "checkpoint": {"number": 15}, "bootstrap_admin": "admin", "ready_for_bootstrap": True}
+                     "initialized": False, "finalized": False, "blockers": [],
+                     "checkpoint": {"number": 15, "hash": "0x" + "ab" * 32},
+                     "bootstrap_admin": "admin", "ready_for_bootstrap": True}
         self.stack.enter_context(mock.patch.object(DAO, "docker", side_effect=self.docker))
         return self
 
@@ -76,6 +78,21 @@ class SourceDaoFixture:
             identity = {k: v for k, v in self.ctx["binding"].items() if k not in {"image", "network"}}
             DAO.node._atomic_write_private(self.ctx["state"], json.dumps({"status": "completed", "ceremony_identity": identity}))
             self.live["finalized"] = True
+
+    def progress(self, pending="Acquired.deployImplementation"):
+        """Write realistic private snapshots with signed bytes that must never enter the UI."""
+        identity = {k: v for k, v in self.ctx["binding"].items() if k not in {"image", "network"}}
+        state = {"status": "running", "ceremony_identity": identity, "current_step": "Acquired",
+                 "message": "Checking or deploying Acquired"}
+        entries = [{"name": "Dao.initialize", "nonce": 0, "tx_hash": "0x" + "11" * 32,
+                    "block_number": 10, "block_hash": "0x" + "22" * 32,
+                    "raw_transaction": "SIGNED_TRANSACTION_SENTINEL"},
+                   {"name": pending, "nonce": 1, "tx_hash": "0x" + "33" * 32,
+                    "raw_transaction": "SIGNED_TRANSACTION_SENTINEL"}]
+        journal = {"schema_version": "sourcedao-bootstrap-journal:v1", "identity": identity, "transactions": entries}
+        DAO.node._atomic_write_private(self.ctx["state"], json.dumps(state))
+        DAO.node._atomic_write_private(self.ctx["state"].with_name("state.json.transactions.json"), json.dumps(journal))
+        self.live["initialized"] = True
 
     def stale_lock(self, task_id):
         path = self.ctx["state"].with_name("state.json.lock")

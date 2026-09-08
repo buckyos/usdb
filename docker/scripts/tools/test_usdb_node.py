@@ -1310,19 +1310,50 @@ class UsdbNodeTests(unittest.TestCase):
             "eth_blockNumber": "0x32",
             "net_peerCount": "0x3",
         }
-        with mock.patch.object(NODE, "_json_rpc_batch", return_value=results):
+        latest = {"eth_getBlockByNumber": {"number": "0x32", "hash": "0x" + "ab" * 32}}
+        with mock.patch.object(NODE, "_json_rpc_batch", side_effect=[results, latest]):
             component = NODE._chain_component(layout, {}, running)
 
         self.assertEqual(component["state"], "SYNCING")
         self.assertEqual(component["current"], 50)
         self.assertEqual(component["total"], 100)
         self.assertEqual(component["progress_percent"], 50.0)
+        self.assertEqual(component["head"], {"number": 50, "hash": "0x" + "ab" * 32})
 
         tampered = dict(results)
         tampered["eth_chainId"] = hex(layout.network_identity["chain_id"] + 1)
         with mock.patch.object(NODE, "_json_rpc_batch", return_value=tampered):
             component = NODE._chain_component(layout, {}, running)
         self.assertEqual(component["state"], "BLOCKED")
+
+    def test_chain_head_tracks_same_height_reorg_and_rejects_incomplete_blocks(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        running = {"state": "running", "health": "healthy", "exit_code": None}
+        identity = {"eth_chainId": hex(layout.network_identity["chain_id"]),
+                    "eth_getBlockByNumber": {"hash": layout.network_identity["genesis_block_hash"]},
+                    "eth_syncing": False, "net_peerCount": "0x0"}
+        for block_hash in ("0x" + "aa" * 32, "0x" + "bb" * 32):
+            latest = {"eth_getBlockByNumber": {"number": "0x43", "hash": block_hash}}
+            with mock.patch.object(NODE, "_json_rpc_batch", side_effect=[identity, latest]) as rpc:
+                component = NODE._chain_component(layout, {}, running)
+            self.assertEqual(component["state"], "READY")
+            self.assertEqual(component["current"], 67)
+            self.assertEqual(component["head"], {"number": 67, "hash": block_hash})
+            self.assertEqual(rpc.call_args_list[-1].args[1], (("eth_getBlockByNumber", ["latest", False]),))
+            report = {"release_id": "test", "observed_at": "now", "overall_state": "READY", "components": [component]}
+            rendered = NODE.render_node_progress(report, width=120)
+            self.assertIn(block_hash, rendered)
+            narrow = NODE.render_node_progress(report, width=80)
+            head_line = next(line for line in narrow.splitlines() if "Latest block" in line)
+            self.assertIn(block_hash[-8:], head_line)
+            self.assertLessEqual(len(head_line), 80)
+        for latest in (None, {"number": "0x43", "hash": "invalid"}, {"hash": "0x" + "cc" * 32}):
+            with mock.patch.object(NODE, "_json_rpc_batch", side_effect=[identity, {"eth_getBlockByNumber": latest}]):
+                component = NODE._chain_component(layout, {}, running)
+            self.assertEqual(component["state"], "STARTING")
+            self.assertNotIn("head", component)
+        with mock.patch.object(NODE, "_json_rpc_batch", side_effect=[identity, ValueError("RPC timeout")]):
+            self.assertEqual(NODE._chain_component(layout, {}, running)["state"], "STARTING")
 
     def test_progress_view_cross_checks_all_running_components(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -1380,7 +1411,8 @@ class UsdbNodeTests(unittest.TestCase):
             mock.patch.object(NODE, "_collect_compose_services", return_value=services),
             mock.patch.object(NODE, "_bitcoin_startup_progress", return_value=bitcoin),
             mock.patch.object(NODE, "_read_service_readiness", side_effect=readiness),
-            mock.patch.object(NODE, "_json_rpc_batch", return_value=chain_results),
+            mock.patch.object(NODE, "_json_rpc_batch", side_effect=[chain_results,
+                {"eth_getBlockByNumber": {"number": "0x1", "hash": "0x" + "ab" * 32}}]),
         ):
             report = NODE.collect_node_progress(layout)
 

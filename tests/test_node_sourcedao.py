@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Accept release-bound managed SourceDAO operations and interruption recovery."""
 import json
+import io
 from pathlib import Path
 import sys
 import unittest
@@ -12,6 +13,117 @@ from common.sourcedao import SourceDaoFixture
 
 
 class SourceDaoTests(unittest.TestCase):
+    def test_check_distinguishes_unstarted_starting_deploying_and_finalized(self):
+        with SourceDaoFixture() as f:
+            def phase():
+                return DAO.check(f.layout, f.ctx, details=True)["deployment"]["phase"]
+            self.assertEqual(phase(), "NOT_STARTED")
+            self.assertFalse(f.ctx["state"].exists())
+            f.start()
+            self.assertEqual(phase(), "STARTING")
+            f.progress()
+            self.assertEqual(phase(), "DEPLOYING")
+            f.progress(pending="Dividend.finalizeBootstrap")
+            self.assertEqual(phase(), "FINALIZING")
+            f.live["finalized"] = True
+            self.assertEqual(phase(), "FINALIZED")
+            self.assertEqual(DAO.status(f.layout)["outcome"], "RUNNING")
+
+    def test_unmanaged_or_interrupted_deployment_never_looks_unstarted(self):
+        with SourceDaoFixture() as f:
+            f.live["initialized"] = True
+            self.assertEqual(DAO.check(f.layout, f.ctx, details=True)["deployment"]["phase"], "INCOMPLETE")
+            f.start()
+            f.progress()
+            f.finish(exit_code=1, completed=False)
+            report = DAO.check(f.layout, f.ctx, details=True)
+            self.assertEqual(report["deployment"]["phase"], "INCOMPLETE")
+            self.assertEqual(report["local_task"]["outcome"], "FAILED")
+            f.container = None
+            self.assertEqual(DAO.status(f.layout)["deployment"]["phase"], "INCOMPLETE")
+
+    def test_progress_whitelists_receipts_and_keeps_private_records_unchanged(self):
+        with SourceDaoFixture() as f:
+            f.start()
+            f.progress()
+            journal = f.ctx["state"].with_name("state.json.transactions.json")
+            before = journal.read_bytes()
+            report = DAO.status(f.layout)
+            text = DAO.render(report)
+            self.assertEqual(report["transactions"]["confirmed"], 1)
+            self.assertIn("Waiting: Acquired.deployImplementation", text)
+            self.assertIn("Last confirmed: Dao.initialize | block=10", text)
+            self.assertIn("0x" + "33" * 32, text)
+            self.assertNotIn("SIGNED_TRANSACTION_SENTINEL", json.dumps(report))
+            self.assertNotIn("raw_transaction", json.dumps(report))
+            self.assertEqual(journal.read_bytes(), before)
+
+    def test_failed_progress_read_or_rpc_does_not_claim_completion_or_stop_task(self):
+        with SourceDaoFixture() as f:
+            f.start()
+            f.progress()
+            journal = f.ctx["state"].with_name("state.json.transactions.json")
+            data = json.loads(journal.read_text())
+            data["identity"]["genesis_hash"] = "0x" + "ff" * 32
+            DAO.node._atomic_write_private(journal, json.dumps(data))
+            report = DAO.status(f.layout)
+            self.assertEqual(report["outcome"], "RUNNING")
+            self.assertEqual(report["deployment"]["phase"], "UNKNOWN")
+            self.assertIn("identity", report["progress_error"])
+            f.progress()
+            f.failure = ["run"]
+            report = DAO.status(f.layout)
+            self.assertEqual(report["outcome"], "RUNNING")
+            self.assertEqual(report["deployment"]["phase"], "UNKNOWN")
+            self.assertEqual(report["transactions"]["confirmed"], 1)
+            self.assertIn("observation_error", report)
+
+    def test_watch_refreshes_tty_separates_plain_frames_and_preserves_json(self):
+        for mode in ("tty", "plain", "json"):
+            with self.subTest(mode=mode), SourceDaoFixture() as f:
+                f.start()
+                f.progress()
+                running = DAO.status(f.layout)
+                f.finish()
+                complete = DAO.status(f.layout)
+                output = io.StringIO()
+                args = DAO.node.build_parser().parse_args(["sourcedao", "status", "--watch"] + (["--json"] if mode == "json" else []))
+                with mock.patch.object(DAO.sys, "stdout", output), mock.patch.object(output, "isatty", return_value=mode == "tty"), \
+                        mock.patch.dict(DAO.os.environ, {"TERM": "xterm"}), mock.patch.object(DAO.time, "sleep"), \
+                        mock.patch.object(DAO, "status", side_effect=[running, running, complete]):
+                    self.assertEqual(DAO.execute(f.layout, args), 0)
+                content = output.getvalue()
+                if mode == "tty":
+                    self.assertEqual(content.count(DAO.node.ALT_SCREEN_ENTER), 1)
+                    self.assertEqual(content.count(DAO.node.ALT_SCREEN_EXIT), 1)
+                    self.assertEqual(content.count(DAO.node.SCREEN_CLEAR), 3)
+                    self.assertIn("SUCCEEDED", content.split(DAO.node.ALT_SCREEN_EXIT)[-1])
+                elif mode == "plain":
+                    self.assertNotIn("\x1b", content)
+                    self.assertEqual(len([line for line in content.splitlines() if line and set(line) == {"="}]), 3)
+                    self.assertEqual(content.count("Recovery and output paths:"), 2)
+                else:
+                    self.assertNotIn("\x1b", content)
+                    self.assertNotIn("====", content)
+                    decoder = json.JSONDecoder()
+                    values = []
+                    while content.strip():
+                        value, end = decoder.raw_decode(content.lstrip())
+                        values.append(value)
+                        content = content.lstrip()[end:]
+                    self.assertEqual([value["outcome"] for value in values], ["RUNNING", "RUNNING", "SUCCEEDED"])
+
+    def test_interrupted_watch_restores_terminal_and_leaves_container_running(self):
+        with SourceDaoFixture() as f:
+            f.start()
+            output = io.StringIO()
+            args = DAO.node.build_parser().parse_args(["sourcedao", "status", "--watch"])
+            with mock.patch.object(DAO.sys, "stdout", output), mock.patch.object(output, "isatty", return_value=True), \
+                    mock.patch.dict(DAO.os.environ, {"TERM": "xterm"}), mock.patch.object(DAO.time, "sleep", side_effect=KeyboardInterrupt):
+                self.assertEqual(DAO.execute(f.layout, args), 130)
+            self.assertEqual(output.getvalue().count(DAO.node.ALT_SCREEN_EXIT), 1)
+            self.assertEqual(f.container["State"]["Status"], "running")
+
     def test_cli_and_check_need_no_key_or_private_mount(self):
         parser = DAO.node.build_parser()
         for action in ("check", "status", "export", "validate"):

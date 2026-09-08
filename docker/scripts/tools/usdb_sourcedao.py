@@ -9,8 +9,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
+import sys
+import textwrap
 import time
 import uuid
 
@@ -138,7 +141,7 @@ def base_arguments(layout, ctx: dict) -> list[str]:
             *mount(layout.bundle_dir, "/release")]
 
 
-def check(layout, ctx: dict) -> dict:
+def check(layout, ctx: dict, *, details: bool = False) -> dict:
     ensure_image(ctx)
     output = docker(["run", "--rm", *base_arguments(layout, ctx), ctx["binding"]["image"],
                      "check", "--bundle-dir", "/release", "--rpc-url", ctx["rpc"]], timeout=90)
@@ -148,6 +151,15 @@ def check(layout, ctx: dict) -> dict:
     for key in ("chain_id", "genesis_hash", "config_sha256", "golden_sha256"):
         if value.get(key) != ctx["binding"][key]:
             raise ValueError(f"SourceDAO live check identity mismatch: {key}")
+    if details:
+        # Local evidence supplements the pinned chain observation; it never changes preflight gates.
+        try:
+            local = status(layout, live=False, ctx=ctx)
+            value["deployment"] = deployment_progress(local, value)
+            value["local_task"] = {key: local[key] for key in ("action", "outcome", "task_id", "error") if key in local}
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            value["deployment"] = {"phase": "UNKNOWN", "detail": f"Local progress unavailable: {error}"}
+        value.update(observed_at=node.datetime.now(node.timezone.utc).isoformat(), release_id=layout.release_id)
     return value
 
 
@@ -268,17 +280,75 @@ def start(layout, action: str, *, key: Path | None = None) -> dict:
         return task
 
 
-def status(layout, *, live: bool = True) -> dict:
+def journal_progress(ctx: dict) -> dict:
+    """Expose only receipt metadata from the private journal, never signed transaction bytes."""
+    path = ctx["state"].with_name("state.json.transactions.json")
+    report = {"recorded": 0, "confirmed": 0, "pending": [], "last_confirmed": None}
+    if not path.is_file():
+        return report
+    journal = node._load_json(path)
+    if (journal.get("schema_version") != "sourcedao-bootstrap-journal:v1" or not isinstance(journal.get("identity"), dict) or
+            any(journal.get("identity", {}).get(key) != ctx["binding"][key]
+                for key in ("chain_id", "genesis_hash", "config_sha256", "golden_sha256")) or
+            not isinstance(journal.get("transactions"), list)):
+        raise ValueError("Progress journal identity differs from the selected ceremony")
+    for entry in journal["transactions"]:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or
+                re.fullmatch(r"0x[0-9a-fA-F]{64}", str(entry.get("tx_hash"))) is None or
+                type(entry.get("nonce")) is not int or entry["nonce"] < 0):
+            raise ValueError("Invalid transaction metadata in progress journal")
+        item = {key: entry[key] for key in ("name", "tx_hash", "nonce")}
+        report["recorded"] += 1
+        if entry.get("block_hash") is not None:
+            if (re.fullmatch(r"0x[0-9a-fA-F]{64}", str(entry["block_hash"])) is None or
+                    type(entry.get("block_number")) is not int or entry["block_number"] < 0):
+                raise ValueError("Invalid receipt metadata in progress journal")
+            item.update(block_number=entry["block_number"], block_hash=entry["block_hash"])
+            report["confirmed"] += 1
+            report["last_confirmed"] = item
+        else:
+            report["pending"].append(item)
+    return report
+
+
+def deployment_progress(local: dict, chain: dict | None) -> dict:
+    """Distinguish chain completion, active deployment and retained incomplete work."""
+    transactions = local.get("transactions", {})
+    pending = transactions.get("pending", [])
+    active = local.get("action") == "bootstrap" and local["outcome"] in {"RUNNING", "STARTING"}
+    if chain is None:
+        phase, detail = "UNKNOWN", "No fresh chain observation; task and journal progress remain available"
+    elif chain.get("finalized") is True:
+        phase, detail = "FINALIZED", "Dividend bootstrap marker is set; export and strict validation are separate steps"
+    elif local.get("progress_error"):
+        phase, detail = "UNKNOWN", local["progress_error"]
+    elif active:
+        phase = ("FINALIZING" if any(tx["name"] == "Dividend.finalizeBootstrap" for tx in pending) else
+                 "DEPLOYING" if chain.get("initialized") or transactions.get("recorded") else "STARTING")
+        detail = "Waiting for a journal transaction receipt" if pending else "Bootstrap task is checking or preparing the next step"
+    elif chain.get("initialized") or transactions.get("recorded") or local.get("bootstrap_status"):
+        phase, detail = "INCOMPLETE", "Deployment is incomplete and no local bootstrap task is running; preserve its recovery records"
+    elif chain.get("initialized") is False and local.get("outcome") != "DIFFERENT_RELEASE":
+        phase, detail = "NOT_STARTED", "DAO is not initialized and no local deployment progress is recorded"
+    else:
+        phase, detail = "UNKNOWN", "Insufficient matching evidence to determine deployment progress"
+    return {"phase": phase, "detail": detail, "transactions": transactions,
+            **{key: local[key] for key in ("current_step", "bootstrap_status", "step_message", "last_error") if local.get(key)}}
+
+
+def status(layout, *, live: bool = True, ctx: dict | None = None) -> dict:
     """Report process outcome separately from fresh chain readiness and public validation."""
-    ctx = context(layout)
+    ctx = ctx if ctx is not None else context(layout)
     task = read_task(layout)
     info = inspect_task(layout, task)
     result = {"schema_version": SCHEMA, "release_id": layout.release_id, "outcome": "NOT_STARTED",
+              "observed_at": node.datetime.now(node.timezone.utc).isoformat(),
               "state_file": str(ctx["state"]), "public_state": str(ctx["public_state"]), "validation": str(ctx["validation"])}
     if task:
         result.update(action=task["action"], task_id=task["task_id"], task_release_id=task["release_id"])
         if task["binding"] != ctx["binding"]:
             result.update(outcome="DIFFERENT_RELEASE", error="The retained task belongs to different tools or frozen inputs")
+            result["deployment"] = deployment_progress(result, None)
             return result
         if info is None:
             result.update(outcome="INTERRUPTED", error="Task container is missing; recovery files were preserved")
@@ -294,11 +364,18 @@ def status(layout, *, live: bool = True) -> dict:
         identity = state.get("ceremony_identity", {})
         if any(identity.get(key) != ctx["binding"][key] for key in ("chain_id", "genesis_hash", "config_sha256", "golden_sha256")):
             raise ValueError("Private bootstrap state identity differs from the selected release")
-        result.update(bootstrap_status=state.get("status"), current_step=state.get("current_step"))
+        result.update(bootstrap_status=state.get("status"), current_step=state.get("current_step"),
+                      step_message=state.get("message"), last_error=state.get("last_error"))
         if task and task["action"] == "bootstrap" and result["outcome"] == "SUCCEEDED" and state.get("status") != "completed":
             result.update(outcome="FAILED", error="Container exited without completed bootstrap state")
     elif task and task["action"] == "bootstrap" and result["outcome"] == "SUCCEEDED":
         result.update(outcome="FAILED", error="Container exited without bootstrap state")
+    # Public verification must continue to work after private recovery records are archived.
+    if not task or task["action"] == "bootstrap":
+        try:
+            result["transactions"] = journal_progress(ctx)
+        except (ValueError, OSError) as error:
+            result["progress_error"] = f"Journal progress unavailable: {error}"
     if task and task["action"] in {"export", "validate"} and result["outcome"] == "SUCCEEDED":
         output = ctx["public_state"] if task["action"] == "export" else ctx["validation"]
         if not output.is_file():
@@ -319,22 +396,62 @@ def status(layout, *, live: bool = True) -> dict:
             result.update(observation_error=str(error))
             if result["outcome"] not in {"RUNNING", "STARTING"}:
                 result.update(outcome="UNAVAILABLE", error=str(error))
+    result["deployment"] = deployment_progress(result, result.get("chain"))
     return result
 
 
-def display(value: dict, *, as_json: bool) -> None:
-    if as_json:
-        print(json.dumps(value, indent=2, sort_keys=True), flush=True)
-        return
-    print(f"SourceDAO | {value.get('action', 'check')} | {value.get('outcome', 'CHECKED')}", flush=True)
+def render(value: dict, *, include_paths: bool = True, width: int = 120) -> str:
+    """Keep task outcome, chain marker and transaction progress on separate labeled lines."""
+    action = value.get("action", "status" if "outcome" in value else "check")
+    lines = [f"SourceDAO | {action} | {value.get('outcome', 'CHECKED')}"]
+    lines.append(f"Observed {value.get('observed_at', 'unavailable')} | release={value.get('release_id', 'unknown')}")
     chain = value.get("chain", value)
+    progress = value.get("deployment", {})
+    if progress:
+        lines.append(f"Deployment: {progress['phase']} | {progress['detail']}")
     if "checkpoint" in chain:
-        print(f"  block={chain['checkpoint']['number']} finalized={chain['finalized']} admin={chain['bootstrap_admin']}")
+        lines.append(f"Chain: block={chain['checkpoint']['number']} | dao_initialized={chain.get('initialized', 'unknown')} | "
+                     f"dividend_finalized={chain['finalized']}")
+        if chain["checkpoint"].get("hash"):
+            lines.append(f"Block hash: {chain['checkpoint']['hash']}")
+        lines.append(f"Admin: {chain['bootstrap_admin']} | balance_wei={chain.get('admin_balance_wei', 'unknown')}")
+        if chain.get("fee_split_block") is not None:
+            remaining = max(0, int(chain["fee_split_block"]) - chain["checkpoint"]["number"])
+            lines.append(f"Dividend fee split: block={chain['fee_split_block']} | blocks_remaining={remaining}")
         for blocker in chain["blockers"]:
-            print(f"  blocked: {blocker}")
-    for key in ("current_step", "error", "observation_error", "state_file", "public_state", "validation"):
+            lines.append(f"Blocked: {blocker}")
+    local_task = value.get("local_task")
+    if local_task:
+        lines.append(f"Local task: {local_task.get('action', 'none')} | {local_task['outcome']}")
+        if local_task.get("error"):
+            lines.append(f"Task error: {local_task['error']}")
+    transactions = progress.get("transactions", {})
+    if transactions:
+        lines.append("")
+        lines.append(f"Transactions (journal): confirmed={transactions['confirmed']} | awaiting_receipt={len(transactions['pending'])}")
+        for tx in transactions["pending"]:
+            lines.extend([f"Waiting: {tx['name']} | nonce={tx['nonce']}", f"  tx={tx['tx_hash']}"])
+        last = transactions.get("last_confirmed")
+        if last:
+            lines.extend([f"Last confirmed: {last['name']} | block={last['block_number']}", f"  tx={last['tx_hash']}"])
+    for key, label in (("current_step", "Step"), ("step_message", "Step detail"), ("last_error", "Step error")):
+        if progress.get(key):
+            lines.append(f"{label}: {progress[key]}")
+    for key in ("error", "observation_error", "progress_error"):
         if value.get(key):
-            print(f"  {key}: {value[key]}", flush=True)
+            lines.append(f"{key}: {value[key]}")
+    if include_paths and value.get("state_file"):
+        lines.append("")
+        lines.append("Recovery and output paths:")
+        for key in ("state_file", "public_state", "validation"):
+            lines.append(f"  {key}: {value[key]}")
+    return "\n".join(part for line in lines for part in (textwrap.wrap(line, width=max(40, width),
+                     subsequent_indent="  ", replace_whitespace=False) or [""]))
+
+
+def display(value: dict, *, as_json: bool) -> None:
+    print(json.dumps(value, indent=2, sort_keys=True) if as_json else
+          render(value, width=shutil.get_terminal_size(fallback=(120, 24)).columns), flush=True)
 
 
 def add_parser(subparsers):
@@ -343,11 +460,13 @@ def add_parser(subparsers):
     actions = parser.add_subparsers(dest="sourcedao_action", required=True)
     descriptions = {
         "check": ("Inspect chain identity, predeploys and bootstrap prerequisites",
-                  "Read-only preflight; no key or deployment state is needed. This does not replace strict validation."),
+                  "Read-only preflight with deployment phase and optional local receipt progress; no key or deployment state is needed. "
+                  "Journal counts are observations, not freshly verified canonical receipts. This does not replace strict validation."),
         "bootstrap": ("Deploy or resume the frozen SourceDAO ceremony",
                       "Requires the frozen Bootstrap Admin key. Runs detached; preserve private state and the signed journal for recovery."),
-        "status": ("Observe the latest task, live finalization marker and output paths",
-                   "SUCCEEDED refers to the latest task. The live finalized marker is not PoW finality or a full validation report."),
+        "status": ("Observe task outcome, deployment phase and receipt progress",
+                   "Watch refreshes a TTY panel or emits timestamped plain frames. SUCCEEDED refers to the latest task. "
+                   "The live finalized marker is not PoW finality or a full validation report."),
         "export": ("Export public deployment evidence from completed private recovery records",
                    "Requires completed private state and its signed transaction journal. Does not read chain RPC or need a key. "
                    "Writes a whitelisted public state for validate/acceptance; preserves private inputs and refuses different existing output. "
@@ -372,7 +491,7 @@ def add_parser(subparsers):
 def execute(layout, args: argparse.Namespace) -> int:
     action = args.sourcedao_action
     if action == "check":
-        value = check(layout, context(layout))
+        value = check(layout, context(layout), details=True)
         display(value, as_json=args.json)
         return 1 if value["blockers"] else 0
     if action in {"bootstrap", "export", "validate"}:
@@ -386,14 +505,31 @@ def execute(layout, args: argparse.Namespace) -> int:
     interval = getattr(args, "interval", 10)
     if interval <= 0:
         raise ValueError("SourceDAO watch interval must be positive")
+    dashboard = node.TerminalProgressDisplay(sys.stdout, enabled=watching and not args.json)
+    dashboard.start()
+    first, value = True, None
     try:
         while True:
             value = status(layout, live=action not in {"export", "validate"})
-            display(value, as_json=args.json)
-            if not watching or value["outcome"] not in {"RUNNING", "STARTING"}:
+            done = not watching or value["outcome"] not in {"RUNNING", "STARTING"}
+            if args.json:
+                display(value, as_json=True)
+            else:
+                width = shutil.get_terminal_size(fallback=(120, 24)).columns
+                if watching and not dashboard.live:
+                    print("\n" + "=" * min(width, 100), flush=True)
+                paths = not watching or (not dashboard.live and (first or done))
+                dashboard.render(render(value, include_paths=paths, width=width))
+            first = False
+            if done:
                 return 0 if value["outcome"] in {"SUCCEEDED", "NOT_STARTED"} else 1
             time.sleep(interval)
     except KeyboardInterrupt:
         if not args.json:
+            dashboard.close()
             print("Observation stopped; the Docker task continues. Use sourcedao status to reconnect.")
         return 130
+    finally:
+        dashboard.close()
+        if dashboard.live and value is not None:
+            display(value, as_json=False)
