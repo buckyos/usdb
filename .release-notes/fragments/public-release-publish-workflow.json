@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "public-release-publish-workflow",
+  "type": "added",
+  "scopes": ["release", "documentation", "testing"],
+  "summary": "Add a separate public-service publish workflow for verified draft assets",
+  "details": [
+    "Dispatch the publisher from master with an existing public release tag, including older drafts that do not contain the new workflow.",
+    "Verify the annotated tag, successful tag build, complete release assets, checksums, clean source identity and release-bound installer before promotion.",
+    "Revalidate the approved asset fingerprint through the existing usdb-release environment, publish as a pre-release without taking Latest, and verify all anonymous downloads.",
+    "Preserve original assets and notes on publication and retries; clarify that draft installation URLs return HTTP 404 until the Publish workflow runs."
+  ],
+  "operator_actions": [
+    "After the public tag build succeeds, run USDB Public Services Publish from master with the existing release_id; allow master if the usdb-release environment restricts deployment refs."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

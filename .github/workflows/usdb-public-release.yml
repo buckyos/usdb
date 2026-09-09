@@ -83,7 +83,15 @@ jobs:
           tag = os.environ['RELEASE_TAG']
           command = f'bash <(curl -fsSL https://github.com/buckyos/usdb/releases/download/{tag}/install-{tag}.sh)'
           notes = Path('public-services/RELEASE_NOTES.md').read_text()
-          Path('public-release-notes.md').write_text(notes + '\n## 安装本版本\n\n```bash\n' + command + '\n```\n')
+          Path('public-release-notes.md').write_text(notes + '\n## 安装本版本\n\n'
+              '草稿阶段下载链接不可用（HTTP 404）。维护者须先运行 `USDB Public Services Publish`，'
+              '选择 `master` 并填写本版本 tag；发布为 Pre-release 后以下命令才可用。\n\n```bash\n'
+              + command + '\n```\n')
           PY
           gh release create "$RELEASE_TAG" dist-public/* --verify-tag --draft \
             --title "$RELEASE_TAG" --notes-file public-release-notes.md
+          {
+            echo "### Public release draft: $RELEASE_TAG"
+            echo 'Build and asset upload completed; public download URLs still return HTTP 404.'
+            echo 'Next: run USDB Public Services Publish from master with this release tag.'
+          } >>"$GITHUB_STEP_SUMMARY"

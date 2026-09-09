@@ -123,7 +123,11 @@ python3 scripts/usdb/prepare_release.py tag \
 该分支只对 USDB 做 clean/published HEAD、origin、发布入口、网络目录和标签未占用检查，
 只创建并推送 USDB 的 annotated tag，不读取或更新 Go compatibility lock、不访问 SourceDAO，
 无需执行 `sync-lock`。它触发独立 `USDB Public Services Release`，先运行 Public CI，再构建镜像、
-安装包与安装脚本，最终创建同一仓库 Releases 页面中的独立草稿。完整流程及续推说明见
+安装包与安装脚本，最终创建同一仓库 Releases 页面中的独立草稿。随后手工运行
+`usdb-public-publish.yml`（从 `master` 运行，`release_id` 填目标 Public tag），校验已有构建及附件，
+经过 `usdb-release` environment 后发布为 Pre-release，并验证匿名下载；草稿阶段安装 URL
+返回 HTTP 404。该流程保留原始资产，不占用 Latest，也支持不含 Publish workflow 的旧 tag。
+完整流程及续推说明见
 [Public 发布与维护](../../public-services/README.md#7-发布与维护)。
 
 ### 3.2 USDB services

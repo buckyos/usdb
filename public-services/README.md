@@ -215,7 +215,9 @@ usdb-public check
 
 ## 7. 发布与维护
 
-仓库内独立 CI 为 `usdb-public-ci.yml`，发布为 `usdb-public-release.yml`。
+仓库内独立 CI 为 `usdb-public-ci.yml`，构建草稿为 `usdb-public-release.yml`，
+手动发布为 `usdb-public-publish.yml`。与节点的 Build/Candidate → Publish 分阶段设计对应，
+Public 使用自己的 tag、构建记录和附件，不依赖节点 candidate manifest。
 统一使用 Go 仓库的 `scripts/usdb/prepare_release.py tag` 管理标签，工具按 release ID 自动选择发布范围：
 
 | release ID | 检查和创建 tag 的范围 |
@@ -245,13 +247,37 @@ Public 路径要求 USDB 工作区干净、位于 `master` 且 HEAD 等于最新
 `--create` 单独使用只创建本地 tag；若之后要推送，或 `--create --push` 在推送阶段失败，应在 USDB
 目录执行 `git push origin refs/tags/usdb-public-v0.1.0` 续推已有标签。不要重新创建、移动或删除标签。
 只有远端收到匹配的 tag push 才会启动 `USDB Public Services Release`；在 Actions 中手工运行
-Public CI（即使选了节点 rN tag）不会触发发布。Release 当前没有手工 `Run workflow` 入口。
+Public CI（即使选了节点 rN tag）不会触发构建。构建 workflow 没有手工 `Run workflow` 入口。
 
 发布流水线执行测试、构建并推送网关、将镜像 digest 冻结进独立包，创建 GitHub draft release 供审阅。
 它不会触发节点 rN 发布链。两类 release 位于同一个 `buckyos/usdb` Releases 页面，以标签前缀区分，
-各有独立条目及附件；草稿经 `Publish release` 发布后，外部用户才能使用一键安装链接。
+各有独立条目及附件；草稿阶段公开下载 URL 返回 HTTP 404，构建成功仅表示附件已准备好。
 打包同时生成 `install-usdb-public-vX.Y.Z.sh` 和脚本 checksum，并在 release 正文附上本版本的一键安装命令。
 当前 draft 的第三方镜像仍是私有预览基线，不能把 draft 构建成功当作公网准入通过。
+
+构建成功后，在 Actions 选择 **USDB Public Services Publish (select release tag)**，点击
+**Run workflow**，`Use workflow from` 保持 **master**，`release_id` 填写已有的
+`usdb-public-vX.Y.Z`。等价命令为：
+
+```bash
+gh workflow run usdb-public-publish.yml --repo buckyos/usdb --ref master \
+  -f release_id=usdb-public-v0.1.0
+```
+
+该 workflow 需先进入远端 `master` 才会显示入口。与节点 Publish 从目标 tag 运行不同，Public
+从 `master` 固定本次 publisher revision，并通过输入选择待发布的 immutable tag；这样也能处理
+不含新 workflow 的旧 `v0.1.0` 草稿，无需移动 tag 或重新打包。
+
+Preflight 检查 annotated tag 属于 `master` 历史、对应 tag/revision 的 Release build 成功、四个
+附件完整且 GitHub digest/两个 checksum 一致，再校验包内 clean source revision、逐文件源码、
+冻结的第三方镜像配置及安装脚本的源码、archive hash 和下载 URL。Publish job 沿用节点的
+`usdb-release` environment 及其已配置的保护规则；若该 environment 限制部署 ref，需要允许
+publisher 的 `master`。等待审批后会重新校验 tag、构建记录、正文及附件指纹。
+
+Publish 只将已有草稿标为 **Pre-release**，不占用仓库的 Latest，不重建、不重传、不覆盖附件，
+也不改变包内公网准入状态。发布后匿名下载四个正式 URL 并核对摘要，通过后才报告成功。
+如果已经发布但下载检查失败，保留已发布资产并报告失败；网络恢复后可重跑同一 Publish，
+只验证已有版本。要修改源码或附件，应创建新版本 tag。
 
 本地打包命令：
 

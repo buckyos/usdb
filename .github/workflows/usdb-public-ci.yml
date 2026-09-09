@@ -4,10 +4,10 @@ on:
   workflow_call:
   workflow_dispatch:
   pull_request:
-    paths: ["public-services/**", "tools/public-rpc-gateway/**", "tests/test_public_services.py", "tests/test_public_installer.py", "tests/test_public_ingress.py", "tests/common/public_services.py", "tests/common/public_installer.py", "docker/networks/testnet-v0/**", ".github/workflows/usdb-public-*.yml"]
+    paths: ["public-services/**", "tools/public-rpc-gateway/**", "tests/test_public_services.py", "tests/test_public_installer.py", "tests/test_public_ingress.py", "tests/test_public_release_publish.py", "tests/common/public_services.py", "tests/common/public_installer.py", "tests/common/public_release.py", "docker/networks/testnet-v0/**", ".github/workflows/usdb-public-*.yml"]
   push:
     branches: [master]
-    paths: ["public-services/**", "tools/public-rpc-gateway/**", "tests/test_public_services.py", "tests/test_public_installer.py", "tests/test_public_ingress.py", "tests/common/public_services.py", "tests/common/public_installer.py", "docker/networks/testnet-v0/**", ".github/workflows/usdb-public-*.yml"]
+    paths: ["public-services/**", "tools/public-rpc-gateway/**", "tests/test_public_services.py", "tests/test_public_installer.py", "tests/test_public_ingress.py", "tests/test_public_release_publish.py", "tests/common/public_services.py", "tests/common/public_installer.py", "tests/common/public_release.py", "docker/networks/testnet-v0/**", ".github/workflows/usdb-public-*.yml"]
 
 permissions:
   contents: read
@@ -37,6 +37,7 @@ jobs:
         run: |
           python3 tests/test_public_services.py
           python3 tests/test_public_installer.py
+          python3 tests/test_public_release_publish.py
           python3 public-services/package_release.py --check-network
           public-services/usdb-public --help
       - name: Exercise optional Nginx routing, HTTPS and reload in isolated containers
