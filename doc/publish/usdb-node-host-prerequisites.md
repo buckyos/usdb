@@ -15,12 +15,18 @@ Ubuntu 24.04 是当前优先验证的运维基线，但不是协议或运行时�
 | Kernel | Linux 5.10 或更高 | 采用仍广泛使用的 LTS 内核代际作为项目运维下限 |
 | 架构 | x86-64/amd64 | 当前 services、chain、Bitcoin 三张发布镜像只构建 `linux/amd64` |
 | Cgroup | v1 或 v2 | Docker memory limit 和 balance-history cgroup-aware cache 都需要有效层级 |
-| Docker | Engine daemon 可访问 | 节点全部通过 digest-pinned Linux containers 运行 |
-| Compose | `docker compose` plugin | runtime 使用 Compose overlay 和分阶段服务编排 |
+| Docker | Linux rootful Engine **28.0.0 或更高**，daemon 可访问 | 所有节点统一采用支持 IPv6 bridge/NAT 的运行时基线，不支持 rootless 或 Docker Desktop |
+| Compose | `docker compose` plugin **2.33.1 或更高** | runtime 使用 Compose overlay；双栈网络需要 `gw_priority` |
 | 运维命令 | Git、Python 3、curl、jq | checkout、bundle 校验、readiness 与 RPC 检查所需 |
 
 发行版名称不参与共识，也不是硬门槛。`check` 可在任何满足上述条件并提供 `/etc/os-release`
 的 Linux 发行版运行。
+
+以上版本下限适用于所有节点角色、网络和 P2P 地址族，包括仅使用 IPv4 的现有节点。
+Engine 按实际 daemon/server 版本检查，仅升级 Docker CLI 不满足要求；Compose 按数字版本比较，
+例如 Compose 5.x 也高于此下限。采用稳定版本，预发布版本不作为部署基线。
+`host check`、`doctor` 和 `up` 的 controller 预检共享该检查，低版本不能通过选择 IPv4 绕过。
+后续发布文档引用本表作为最低要求；具体 release 仍需记录实际验收版本及结果。
 
 当前自动安装只覆盖以下经过明确编码的 APT 系发行版：
 
@@ -62,7 +68,7 @@ docker/scripts/tools/prepare_usdb_host.sh check --docker-user usdb
 
 - distribution 信息、Linux kernel 和架构；
 - Docker CLI、Compose、Git、Python、curl、jq 的实际版本；
-- Docker daemon、Linux engine 类型和 cgroup v1/v2；
+- Docker daemon 实际版本、rootful Linux engine 类型和 cgroup v1/v2；
 - 可选运行用户的 `docker` 组成员关系。
 
 底层自动安装：
@@ -74,6 +80,8 @@ sudo docker/scripts/tools/prepare_usdb_host.sh install --docker-user usdb
 安装器默认先使用 Docker 官方 APT repository，下载失败后回退到清华 Docker CE 镜像。若 Docker Engine 和 Compose 已经完整存在，则保留现有
 安装；若发现 `docker.io`、`podman-docker`、`containerd` 或 `runc` 等冲突包，则在任何包安装前
 停止并给出人工处理提示。它不会自动卸载容器软件，也不会删除 `/var/lib/docker` 或节点数据。
+保留现有安装不等于版本合格：现有 Docker/Compose 低于下限时，最终检查仍会失败，并提示管理员
+主动升级后复检。升级前评估正在运行的容器和 Docker 重启影响；工具不会隐式升级现有 Docker。
 
 `install` 安装仓库当时提供的 stable Docker 版本，不把具体 Docker patch version 写入网络身份。
 每次 release 应归档 `check` 输出；正式网上线可在 release checklist 中进一步冻结已验证版本。

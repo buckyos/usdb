@@ -3,6 +3,8 @@ set -euo pipefail
 
 minimum_kernel_major=5
 minimum_kernel_minor=10
+minimum_docker_version="28.0.0"
+minimum_compose_version="2.33.1"
 supported_arch="x86_64"
 os_release_file="${USDB_HOST_OS_RELEASE_FILE:-/etc/os-release}"
 command_dir="${USDB_HOST_COMMAND_DIR:-}"
@@ -53,6 +55,8 @@ Options:
            and requires a new login session before it is effective.
 
 Runtime floor: Linux kernel 5.10 or newer on x86-64.
+All P2P profiles require rootful Linux Docker Engine >= 28.0.0 and
+Docker Compose plugin >= 2.33.1. Rootless and Docker Desktop are unsupported.
 Automated install: Ubuntu 22.04/24.04/26.04 and Debian 12/13.
 The installer never removes conflicting container packages or node data.
 Downloads retry twice. curl connects within 10s and allows 30s per attempt;
@@ -165,6 +169,37 @@ print_version() {
   echo "PASS ${label}: ${output}"
 }
 
+# Compare numeric release components; do not mistake a newer CLI for the daemon.
+check_minimum_version() {
+  local label="$1" actual="$2" minimum="$3"
+  local major minor patch required_major required_minor required_patch
+  if [[ ! "${actual}" =~ ^v?([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})([+-][0-9A-Za-z.+~-]+)?$ ]]; then
+    echo "FAIL ${label}: cannot parse version '${actual}'; expected >= ${minimum}" >&2
+    return 1
+  fi
+  major=$((10#${BASH_REMATCH[1]}))
+  minor=$((10#${BASH_REMATCH[2]}))
+  patch=$((10#${BASH_REMATCH[3]}))
+  IFS='.' read -r required_major required_minor required_patch <<<"${minimum}"
+  if [[ "${actual}" =~ -(alpha|beta|rc|dev|pre) ]] || ! ((
+      major > required_major ||
+      (major == required_major && minor > required_minor) ||
+      (major == required_major && minor == required_minor && patch >= required_patch))); then
+    echo "FAIL ${label}: expected stable version >= ${minimum}, got ${actual}; upgrade explicitly and rerun host check" >&2
+    return 1
+  fi
+  echo "PASS ${label}: ${actual} (minimum ${minimum})"
+}
+
+check_compose_version() {
+  local output
+  if ! output="$("$1" compose version --short 2>/dev/null)"; then
+    echo "FAIL Docker Compose plugin: version command failed" >&2
+    return 1
+  fi
+  check_minimum_version "Docker Compose plugin" "${output}" "${minimum_compose_version}"
+}
+
 check_required_tools() {
   local failures=0
   local docker_bin=""
@@ -175,7 +210,7 @@ check_required_tools() {
 
   if docker_bin="$(resolve_command docker)"; then
     print_version "Docker Engine CLI" "${docker_bin}" --version || failures=$((failures + 1))
-    print_version "Docker Compose plugin" "${docker_bin}" compose version || failures=$((failures + 1))
+    check_compose_version "${docker_bin}" || failures=$((failures + 1))
   else
     echo "FAIL Docker Engine CLI: docker is missing" >&2
     echo "FAIL Docker Compose plugin: docker is missing" >&2
@@ -226,7 +261,7 @@ check_docker_runtime() {
   docker_bin="$(resolve_command docker)" || return 1
 
   local runtime_info=""
-  local info_format='{{.ServerVersion}}|{{.CgroupVersion}}|{{.OSType}}'
+  local info_format='{{.ServerVersion}}|{{.CgroupVersion}}|{{.OSType}}|{{join .SecurityOptions ","}}|{{.OperatingSystem}}'
   local access_mode="current user"
   if runtime_info="$("${docker_bin}" info --format "${info_format}" 2>/dev/null)"; then
     :
@@ -244,9 +279,15 @@ check_docker_runtime() {
   local server_version=""
   local cgroup_version=""
   local os_type=""
-  IFS='|' read -r server_version cgroup_version os_type <<<"${runtime_info}"
+  local security_options="" operating_system=""
+  IFS='|' read -r server_version cgroup_version os_type security_options operating_system <<<"${runtime_info}"
   if [[ -z "${server_version}" || "${os_type}" != "linux" ]]; then
     echo "FAIL Docker daemon: expected a local Linux engine, got ${runtime_info}" >&2
+    return 1
+  fi
+  check_minimum_version "Docker Engine server" "${server_version}" "${minimum_docker_version}" || return 1
+  if [[ "${security_options}" == *rootless* || "${operating_system,,}" == *docker\ desktop* ]]; then
+    echo "FAIL Docker runtime: rootful Linux Docker Engine is required; rootless and Docker Desktop are unsupported" >&2
     return 1
   fi
   if [[ "${cgroup_version}" != "1" && "${cgroup_version}" != "2" ]]; then

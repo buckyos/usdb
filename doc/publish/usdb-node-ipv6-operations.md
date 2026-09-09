@@ -17,10 +17,11 @@
 `ipv6` 控制 P2P 端口的发布方式，并提供 IPv6 出站路径；它不禁止所有 IPv4 出站连接。仅提供 IPv6
 上游网络的主机仍需能够下载 release、镜像和 snapshot，并访问 Bitcoin 网络，这不由 P2P 设置保证。
 
-IPv6 模式的要求：
+所有节点的软件基线及 IPv6 模式的附加要求：
 
-- Linux rootful Docker Engine **28.0.0 或更高**，Compose **2.33.1 或更高**。这是本方案的最低版本检查；
-  不会自动升级 Docker，也不支持 rootless/Desktop 网络替代此配置。
+- Linux rootful Docker Engine **28.0.0 或更高**，Compose **2.33.1 或更高**，也是 IPv4 节点的
+  [通用软件基线](./usdb-node-host-prerequisites.md)。`host check/doctor/up` 都执行检查；自动选择 IPv4
+  不会免除该要求。不会自动升级现有 Docker，也不支持 rootless/Desktop 网络替代此配置。
 - 宿主机已分配稳定 IPv6 地址并有默认路由。自动选择排除临时、过期、尚在 DAD 检查中及 Docker bridge
   地址。多地址主机建议显式指定 `--advertise-ipv6`。
 - Docker 允许 IPv6 bridge 和相应的转发/NAT 规则；主机、路由器及云安全组允许所需 TCP/UDP 流量。
@@ -74,6 +75,31 @@ TCP 和 UDP 对外端口不同的场景使用 `--advertise-port 41303 --advertis
 正在运行的 chain 会短暂停止并重建，保留链数据、node key、Seed 列表和已授权矿工身份。
 chain 尚未运行时只保存配置，之后 `up` 启动。`APPLIED` 不表示已经连接到其他节点。
 
+### 2.1 两台现有测试节点的升级选择
+
+先按[同 bundle 升级流程](./usdb-release-node-kit-and-deployment.md)部署配套 node kit 和 chain 镜像，
+完成 `activate-release`、`controller install` 和 `up`。已存在 `node.env` 时不能重跑 `setup`；
+升级本身保留旧 IPv4 配置，不会自动切到双栈。在两台节点各执行一次：
+
+```bash
+usdb-node host check
+usdb-node peers configure --ip-family auto
+usdb-node peers status --watch
+```
+
+检查选择结果中的 `family=dual`；`auto` 在 IPv6 地址、路由或 RA 配置不满足时会说明原因并保存 IPv4，
+不会在条件恢复后自动重选。确定必须双栈时用 `--ip-family dual`，使条件不足直接报错。
+公网 IPv4 位于路由器或使用非默认外部端口时，须同时指定前文的 `--advertise-*` 参数。
+
+- 首节点已处于 mining：P2P 切换只重建 chain，期间短暂停止出块；保留 miner 地址、首节点授权、
+  node key 和已有链数据，不需要重新 `mining enable --first-node`。
+- 第二节点仍在 Bitcoin syncing：现在即可提交 P2P 配置和首节点 seed，controller 会应用并继续上游同步。
+  chain 会在原有上游门禁满足后使用新配置启动；不需要清空或重新同步 Bitcoin。
+- `peers configure` 不隐式启动原本停止的节点；若升级流程停在 `down` 后，还需要 `up`。
+
+模式应用后再执行 `peers network --json` 和 `peers enode --family ipv6`。chain 尚未启动时显示
+`WAITING` 是正常的，此时无法获取运行中的容器或节点身份来生成可分享地址。
+
 公布地址仅用于生成可分享的 enode，不覆盖 `USDB_NAT`，也不保证 Geth 的 ENR 同时公布两个地址族。
 Geth 本次修复会在收到不同地址族的 ENR 时保留已验证的联系地址，避免 IPv6 Seed 被 IPv4 地址替换；
 仍执行记录签名、节点身份和地址校验。同一公钥多个端点之间的自动故障切换尚未实现。
@@ -124,6 +150,25 @@ usdb-node peers add "$SEED_IPV6_ENODE"
 usdb-node peers status --watch
 usdb-node peers network --json
 ```
+
+`peers add` 的成功只表示 seed 语法有效且已保存/排队，**不包含同步可达性探测**。
+公钥、IP/域名或端口格式错误会立即报错；格式正确但离线、被防火墙拦截的地址仍可保存，以支持上游同步
+期间配置 seed。controller 的 `APPLIED` 仅证明配置已应用。chain 启动后没有连接时显示 `WAITING_FOR_PEERS`；
+chain 尚未启动时，状态通常是 `OBSERVATION_UNAVAILABLE`，不能由此判断首节点不可达。
+
+可选的快速 TCP 检查（第二台宿主机已安装 `nc` 时）：
+
+```bash
+# SEED_IPV6 为首节点 IPv6，不带方括号；端口为其实际对外 TCP 端口
+nc -6 -vz -w 5 "$SEED_IPV6" 31303
+
+# chain 启动后，核对真实连接的远端地址；enode 的公布地址不是连接证据
+usdb-node peers status --json | jq '.connected[] | {id, remote: .network.remoteAddress}'
+```
+
+TCP 检查失败需检查路由、防火墙和监听端口；成功仅证明这条宿主机 TCP 路径可达，不代表容器出站、
+UDP discovery、RLPx 身份握手或同网同步已经通过。最终以第二节点连接到目标 node ID、
+`remoteAddress` 为首节点 IPv6 且链同步推进作为入网证据。
 
 停止中的节点仍需 `up`。验收时记录双方的 chain ID、genesis、node ID、候选 enode 和真实 `connected`
 的 remoteAddress。确认连接通过 IPv6、链高度持续同步，并核对共同高度的区块 hash。

@@ -1,5 +1,9 @@
 # USDB Docker 部署说明
 
+节点部署统一使用 Linux rootful Docker Engine **>= 28.0.0** 和 Compose plugin **>= 2.33.1**，
+IPv4、IPv6 和双栈均适用。内核、架构及只读检查入口见
+[主机软件基线](../doc/publish/usdb-node-host-prerequisites.md)。
+
 这个目录承载了 `usdb` 当前的 Docker 化部署骨架。  
 建议把本文件作为理解整套本地/开发/冷启动机制的总入口。
 

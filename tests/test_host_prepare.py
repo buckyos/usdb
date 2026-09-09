@@ -109,8 +109,9 @@ class HostPrepareInstallTests(unittest.TestCase):
                 [[ -f "$USDB_TEST_ROOT/docker-installed" ]] || exit 1
                 case "$*" in
                   --version) echo 'Docker version 29.0.0' ;;
-                  'compose version') echo 'Docker Compose version v2.40.0' ;;
-                  'info --format '*) echo '29.0.0|2|linux' ;;
+                  'compose version') echo "Docker Compose version v$USDB_TEST_COMPOSE_VERSION" ;;
+                  'compose version --short') echo "$USDB_TEST_COMPOSE_VERSION" ;;
+                  'info --format '*) echo "$USDB_TEST_ENGINE_VERSION|2|$USDB_TEST_DOCKER_OS|$USDB_TEST_SECURITY_OPTIONS|$USDB_TEST_DOCKER_DISTRIBUTION" ;;
                   *) exit 2 ;;
                 esac
             ''',
@@ -136,6 +137,9 @@ class HostPrepareInstallTests(unittest.TestCase):
         self, os_id: str = "ubuntu", version: str = "26.04", codename: str = "resolute",
         *, conflict: bool = False, mirror: str = "auto", failure: str = "",
         fail_source: str = "official", existing_docker: bool = False,
+        engine_version: str = "29.0.0", compose_version: str = "2.40.0",
+        security_options: str = "name=seccomp,profile=builtin", docker_os: str = "linux",
+        docker_distribution: str = "Debian GNU/Linux 12", action: str = "install",
     ) -> subprocess.CompletedProcess[str]:
         os_release = self.root / "os-release"
         os_release.write_text(
@@ -147,7 +151,7 @@ class HostPrepareInstallTests(unittest.TestCase):
         if existing_docker:
             (self.root / "docker-installed").touch()
         return subprocess.run(
-            [str(self.bin / "bash"), str(SCRIPT), "install", "--docker-mirror", mirror],
+            [str(self.bin / "bash"), str(SCRIPT), action, "--docker-mirror", mirror],
             env={
                 **os.environ,
                 "PATH": str(self.bin),
@@ -157,6 +161,11 @@ class HostPrepareInstallTests(unittest.TestCase):
                 "USDB_TEST_FAILURE": failure,
                 "USDB_TEST_FAIL_SOURCE": fail_source,
                 "USDB_TEST_KEY_FIXTURE": str(KEY_FIXTURE),
+                "USDB_TEST_ENGINE_VERSION": engine_version,
+                "USDB_TEST_COMPOSE_VERSION": compose_version,
+                "USDB_TEST_SECURITY_OPTIONS": security_options,
+                "USDB_TEST_DOCKER_OS": docker_os,
+                "USDB_TEST_DOCKER_DISTRIBUTION": docker_distribution,
                 "USDB_HOST_OS_RELEASE_FILE": str(os_release),
                 "USDB_HOST_APT_SOURCES_DIR": str(self.apt_sources),
                 "USDB_HOST_ARCH": "x86_64",
@@ -169,6 +178,43 @@ class HostPrepareInstallTests(unittest.TestCase):
             capture_output=True,
             timeout=10,
         )
+
+    def test_host_check_enforces_runtime_baseline_without_mutations(self) -> None:
+        # Check the server, even when the CLI is already new. No P2P config is
+        # supplied: this baseline also applies to legacy and IPv4 nodes.
+        for options, error in (
+            ({"engine_version": "28.0.0", "compose_version": "2.33.1"}, ""),
+            ({"engine_version": "29.5.3", "compose_version": "v5.5.1"}, ""),
+            ({"engine_version": "28.0.0+dfsg1", "compose_version": "2.33.1"}, ""),
+            ({"engine_version": "27.5.1"}, "Docker Engine server"),
+            ({"compose_version": "2.33.0"}, "Docker Compose plugin"),
+            ({"compose_version": "2.9.9"}, "Docker Compose plugin"),
+            ({"engine_version": "28.0.0-rc.1"}, "expected stable version"),
+            ({"engine_version": "unknown"}, "cannot parse version"),
+            ({"compose_version": "2.33"}, "cannot parse version"),
+            ({"security_options": "name=seccomp,profile=builtin,name=rootless"}, "rootful Linux"),
+            ({"docker_os": "windows"}, "expected a local Linux engine"),
+            ({"docker_distribution": "Docker Desktop"}, "Docker Desktop are unsupported"),
+        ):
+            with self.subTest(options=options):
+                result = self.run_install(action="check", existing_docker=True, **options)
+                if error:
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn(error, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("Host prerequisite check passed.", result.stdout)
+                for name in ("apt-calls", "curl-calls", "systemctl-calls"):
+                    self.assertFalse((self.root / name).exists(), name)
+
+    def test_install_preserves_old_docker_but_fails_post_install_check(self) -> None:
+        result = self.run_install(existing_docker=True, engine_version="20.10.24")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("preserving the existing installation", result.stdout)
+        self.assertIn("upgrade explicitly and rerun host check", result.stderr)
+        self.assertNotIn("docker-ce", (self.root / "apt-calls").read_text())
+        self.assertFalse((self.root / "curl-calls").exists())
 
     def test_install_uses_native_docker_repository_for_each_supported_release(self) -> None:
         for os_id, version, codename in (

@@ -68,6 +68,9 @@ mainnet 或需要先审阅脚本时，下载 `install-<release_id>.sh` 及其 ch
 
 首次配置使用交互向导：
 
+主机统一要求 Linux rootful Docker Engine **>= 28.0.0**、Compose plugin **>= 2.33.1**，
+包括 IPv4 节点。完整内核、架构、版本和安装边界见[主机软件基线](./usdb-node-host-prerequisites.md)。
+
 ```bash
 export PATH="${HOME}/.local/bin:${PATH}"
 usdb-node prepare-host
@@ -176,7 +179,7 @@ bundle index origin、network/catalog 不匹配、磁盘文件异常或 balance-
 
 `doctor` 是一次性、只读的启动前检查，不是后台健康监控服务。它会检查：
 
-- Linux kernel/架构、Docker/Compose、Git、Python、curl、jq 和 Docker daemon/user access；
+- Linux kernel/架构、rootful Docker Engine >= 28.0.0、Compose >= 2.33.1、Git、Python、curl、jq 和 Docker daemon/user access；
 - release manifest、network bundle 和节点私有配置是否相互一致；
 - `node.env` 的路径、RPC credential、安全 bind address 和角色配置是否有效；
 - 三张 image 是否仍是当前已安装 release 冻结的 digest。

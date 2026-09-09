@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-docker-runtime-baseline",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime", "documentation", "testing"],
+  "summary": "Require Docker Engine 28 and Compose 2.33.1 for every node",
+  "details": [
+    "Host checks, doctor and controller startup preflight require stable rootful Linux Docker Engine >=28.0.0 and Docker Compose plugin >=2.33.1 for every P2P profile, including existing IPv4 nodes.",
+    "Validate the actual daemon version independently of the CLI, compare version components numerically, and reject rootless and Docker Desktop runtimes.",
+    "The host installer preserves an existing Docker installation but fails its final check if that installation is too old; operators must upgrade explicitly. No node data or network identity changes are required.",
+    "Document existing miner and syncing joiner upgrades, explicit versus automatic family selection, and the distinction between saving a seed and verifying a live IPv6 peer connection."
+  ],
+  "operator_actions": [
+    "Run usdb-node host check before deployment. Upgrade any Docker or Compose installation below the minimum after reviewing container restart impact, then rerun the check."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

@@ -63,11 +63,11 @@ class PrepareUsdbHostTests(unittest.TestCase):
                     ;;
                   compose)
                     [[ "${{2:-}}" == version ]]
-                    echo 'Docker Compose version v2.40.0'
+                    echo '2.40.0'
                     exit {compose_status}
                     ;;
                   info)
-                    echo '29.0.0|{cgroup_version}|linux'
+                    echo '29.0.0|{cgroup_version}|linux|name=seccomp,profile=builtin|Debian GNU/Linux 12'
                     exit {daemon_status}
                     ;;
                   *)
