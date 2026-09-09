@@ -1,0 +1,19 @@
+# Only chain joins this dual-stack bridge. Keep the shared data-service network intact.
+services:
+  usdb-chain:
+    ports:
+      - "[::]:${USDB_P2P_BIND_PORT:-31303}:31303/tcp"
+      - "[::]:${USDB_P2P_BIND_PORT:-31303}:31303/udp"
+    networks:
+      usdb-runtime: {}
+      usdb-p2p:
+        gw_priority: 1
+
+networks:
+  usdb-p2p:
+    name: ${USDB_DOCKER_NETWORK:?USDB_DOCKER_NETWORK is required}-p2p-v6
+    driver: bridge
+    enable_ipv6: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv6: nat
+      com.docker.network.bridge.enable_ip_masquerade: "true"

@@ -84,6 +84,9 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         layout = BUILDER.load_release_layout(output)
         self.assertEqual(layout.release_id, "usdb-testnet-v0-r1")
         self.assertTrue((output / "docker/compose.runtime.yml").is_file())
+        self.assertTrue((output / "docker/compose.p2p-dual.yml").is_file())
+        self.assertTrue((output / "docker/compose.p2p-ipv6.yml").is_file())
+        self.assertTrue((output / "docker/scripts/tools/usdb_p2p.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_node.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_mining.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_peers.py").is_file())
@@ -104,6 +107,11 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
                                   "peers", "status", "--help"], cwd=self.root, capture_output=True, text=True)
         self.assertEqual(command.returncode, 0, command.stderr)
         self.assertIn("--watch", command.stdout)
+        command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
+                                  "peers", "configure", "--help"], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(command.returncode, 0, command.stderr)
+        self.assertIn("--ip-family", command.stdout)
+        self.assertIn("--advertise-ipv6", command.stdout)
 
         with self.assertRaisesRegex(ValueError, "refusing to replace"):
             BUILDER.build_node_kit(

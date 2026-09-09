@@ -109,13 +109,33 @@ check_readiness() {
 compose() {
   export USDB_NETWORK_ARTIFACTS_DIR="${bundle_dir}/artifacts"
   export BH_SNAPSHOT_TRUST_HOST_DIR="${bundle_dir}/trust"
+  local family
+  local -a transport_files=()
+  family="$(node_env_value USDB_P2P_IP_FAMILY)"
+  case "${family:-ipv4}" in
+    ipv4) ;;
+    ipv6|dual)
+      transport_files+=(-f "${docker_dir}/compose.p2p-dual.yml")
+      if [[ "${family}" == "ipv6" ]]; then
+        transport_files+=(-f "${docker_dir}/compose.p2p-ipv6.yml")
+      fi
+      ;;
+    *) echo "Invalid USDB_P2P_IP_FAMILY=${family}" >&2; return 1 ;;
+  esac
   docker compose \
     --project-name "${project_name}" \
     --env-file "${bundle_dir}/network.env" \
     --env-file "${node_env}" \
     -f "${docker_dir}/compose.runtime.yml" \
     -f "${bundle_dir}/compose.network.yml" \
+    "${transport_files[@]}" \
     "$@"
+}
+
+check_p2p_transport() {
+  if [[ "$(node_env_value USDB_P2P_IP_FAMILY)" == "ipv6" || "$(node_env_value USDB_P2P_IP_FAMILY)" == "dual" ]]; then
+    python3 "${script_dir}/usdb_p2p.py" check --node-env "${node_env}"
+  fi
 }
 
 restore_runtime_restart_policy() {
@@ -289,6 +309,7 @@ case "${action}" in
     ;;
   up-chain)
     require_node_env
+    check_p2p_transport
     command -v docker >/dev/null 2>&1 || {
       echo "docker is required" >&2
       exit 1
@@ -338,6 +359,7 @@ case "${action}" in
     ;;
   recreate-chain)
     require_node_env
+    check_p2p_transport
     validate_bundle --node-env "${node_env}" --require-runtime --require-bitcoin-runtime
     if [[ "$(node_env_value USDB_NODE_ROLE)" == "miner" ]]; then
       python3 "${script_dir}/usdb_node.py" --node-env "${node_env}" mining validate-start

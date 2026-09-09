@@ -18,6 +18,8 @@ from sourcedao_release import copy_public_bundle
 NODE_KIT_FILES = (
     "docker/compose.bitcoin.yml",
     "docker/compose.runtime.yml",
+    "docker/compose.p2p-dual.yml",
+    "docker/compose.p2p-ipv6.yml",
     "docker/scripts/tools/check_json_rpc_readiness.py",
     "docker/scripts/tools/check_explorer_rpc.py",
     "docker/scripts/tools/chain_file_inspection.py",
@@ -35,6 +37,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/usdb_node.py",
     "docker/scripts/tools/usdb_mining.py",
     "docker/scripts/tools/usdb_peers.py",
+    "docker/scripts/tools/usdb_p2p.py",
     "docker/scripts/tools/usdb_sourcedao.py",
     "docker/scripts/tools/validate_network_bundle.py",
 )

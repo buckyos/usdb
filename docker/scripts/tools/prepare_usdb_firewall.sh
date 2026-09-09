@@ -7,6 +7,8 @@ node_env=""
 ssh_port=""
 bitcoin_p2p_mode="private"
 confirmed=0
+p2p_family=ipv4
+ufw_defaults="${USDB_FIREWALL_UFW_DEFAULTS:-/etc/default/ufw}"
 
 usage() {
   cat <<'EOF'
@@ -125,6 +127,16 @@ validate_node_bindings() {
   require_env_value "BTC_P2P_BIND_PORT" "8333"
   require_env_value "USDB_P2P_BIND_ADDRESS" "0.0.0.0"
   require_env_value "USDB_P2P_BIND_PORT" "31303"
+  p2p_family="$(awk -F= '$1 == "USDB_P2P_IP_FAMILY" {print $2}' "${node_env}")"
+  p2p_family="${p2p_family:-ipv4}"
+  case "${p2p_family}" in
+    ipv4) ;;
+    ipv6|dual)
+      grep -Eq '^IPV6=yes([[:space:]]*(#.*)?)?$' "${ufw_defaults}" || fail \
+        "IPv6 P2P requires IPV6=yes in ${ufw_defaults}; enable UFW IPv6 support before applying this profile"
+      ;;
+    *) fail "invalid USDB_P2P_IP_FAMILY=${p2p_family}" ;;
+  esac
 
   if [[ "${bitcoin_p2p_mode}" == "private" ]]; then
     require_env_value "BTC_P2P_BIND_ADDRESS" "127.0.0.1"
@@ -165,6 +177,17 @@ has_allow_rule() {
   ' <<<"${status}"
 }
 
+has_ipv6_allow_rule() {
+  awk -v endpoint="$2" '
+    $1 == endpoint && $2 == "(v6)" && $3 == "ALLOW" {found=1}
+    END {exit(found ? 0 : 1)}
+  ' <<<"$1"
+}
+
+has_any_allow_rule() {
+  has_allow_rule "$1" "$2" "$3" || has_ipv6_allow_rule "$1" "$2/$3"
+}
+
 validate_ufw_status() {
   local status="$1"
   local failures=0
@@ -191,6 +214,10 @@ validate_ufw_status() {
       echo "FAIL UFW allow: missing ${endpoint}" >&2
       failures=$((failures + 1))
     fi
+    if [[ "${p2p_family}" != "ipv4" ]] && ! has_ipv6_allow_rule "${status}" "${endpoint}"; then
+      echo "FAIL UFW IPv6 allow: missing ${endpoint} (v6)" >&2
+      failures=$((failures + 1))
+    fi
   done
 
   if [[ "${bitcoin_p2p_mode}" == "public" ]]; then
@@ -200,7 +227,7 @@ validate_ufw_status() {
       echo "FAIL UFW allow: missing 8333/tcp for public Bitcoin P2P" >&2
       failures=$((failures + 1))
     fi
-  elif has_allow_rule "${status}" "8333" "tcp"; then
+  elif has_any_allow_rule "${status}" "8333" "tcp"; then
     echo "FAIL UFW allow: 8333/tcp must not be allowed in private Bitcoin P2P mode" >&2
     failures=$((failures + 1))
   else
@@ -209,7 +236,7 @@ validate_ufw_status() {
 
   local port
   for port in 8332 8545 8546 28010 28020 28040; do
-    if has_allow_rule "${status}" "${port}" "tcp"; then
+    if has_any_allow_rule "${status}" "${port}" "tcp"; then
       echo "FAIL UFW policy: sensitive port ${port}/tcp is explicitly allowed" >&2
       failures=$((failures + 1))
     fi
@@ -262,7 +289,7 @@ apply_firewall() {
   else
     local status
     status="$(ufw_status "${ufw_bin}" 2>/dev/null || true)"
-    if has_allow_rule "${status}" "8333" "tcp"; then
+    if has_any_allow_rule "${status}" "8333" "tcp"; then
       run_root "${ufw_bin}" --force delete allow "8333/tcp"
     fi
   fi

@@ -102,7 +102,9 @@ def fingerprint(env: dict[str, str]) -> str:
 
 def authorization_config(env: dict[str, str]) -> dict[str, str]:
     """Keep an applied identity valid across compatible image/resource upgrades."""
-    return {key: env.get(key, "") for key in ("USDB_BOOTNODES", "USDB_NAT", "USDB_CHAIN_EXTRA_ARGS")}
+    import usdb_p2p
+    keys = ("USDB_BOOTNODES", "USDB_NAT", "USDB_CHAIN_EXTRA_ARGS", *(key for key in usdb_p2p.KEYS if key in env))
+    return {key: env.get(key, "") for key in keys}
 
 
 def _read_chain_files(layout: node.ReleaseLayout, env, action: str) -> dict:
@@ -208,7 +210,7 @@ def inspect_chain(layout: node.ReleaseLayout, *, processes=True):
               "image": config["Image"], "memory": host.get("Memory", 0),
               "nano_cpus": host.get("NanoCpus", 0), "cpu_quota": host.get("CpuQuota", 0),
               "cpu_period": host.get("CpuPeriod", 0), "cpuset": host.get("CpusetCpus", ""),
-              "environment": {k: env.get(k, "") for k in (*ROLE_KEYS, "USDB_BOOTNODES", "USDB_CHAIN_EXTRA_ARGS")},
+              "environment": {k: env.get(k, "") for k in (*ROLE_KEYS, "USDB_BOOTNODES", "USDB_CHAIN_EXTRA_ARGS", "USDB_P2P_IP_FAMILY")},
               "argv": []}
     if processes and report["state"] == "running":
         script = ("import glob,json,os; "
@@ -244,6 +246,8 @@ def runtime_matches(layout: node.ReleaseLayout, env, runtime):
     if any(runtime["environment"].get(k) != v for k, v in configured.items()):
         return False
     if runtime["environment"].get("USDB_BOOTNODES", "") != env.get("USDB_BOOTNODES", ""):
+        return False
+    if (runtime["environment"].get("USDB_P2P_IP_FAMILY") or "ipv4") != env.get("USDB_P2P_IP_FAMILY", "ipv4"):
         return False
     flags = flag_values(runtime.get("argv", []))
     if not flags:

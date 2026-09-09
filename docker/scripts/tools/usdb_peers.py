@@ -17,6 +17,7 @@ import uuid
 
 import usdb_node as node
 import usdb_mining as mining
+import usdb_p2p as p2p
 
 SCHEMA = "usdb-node-peers:v1"
 PHASES = {"QUEUED", "CONFIGURING", "STOPPING", "STARTING", "APPLIED"}
@@ -100,6 +101,12 @@ def read_state(layout):
     if (not all(isinstance(endpoint, str) for endpoint in value["target"])
             or parse_seeds(",".join(value["target"])) != value["target"]):
         raise ValueError("PEER_JOURNAL_INVALID: noncanonical seed list")
+    updates = value.get("transport_updates", {})
+    if (not isinstance(updates, dict) or (updates and set(updates) != set(p2p.KEYS))
+            or any(not isinstance(entry, str) for entry in updates.values())):
+        raise ValueError("PEER_JOURNAL_INVALID: invalid transport updates")
+    if updates:
+        p2p.validate(updates)
     if value["phase"] not in {"QUEUED", "APPLIED"} and not all(
             key in value for key in ("before", "after", "role", "mining_before", "mining_after", "restart")):
         raise ValueError("PEER_JOURNAL_INVALID: missing application checkpoint")
@@ -155,9 +162,13 @@ def membership(layout, env, *, syncing, peer_count, node_id=None):
     return "READY", "CONNECTED", "connected; local chain reports no active synchronization"
 
 
-def submit(layout, action, enode=None):
+def submit(layout, action, enode=None, *, transport_updates=None):
     """Queue edits without changing the active config under another operation."""
     endpoint = normalize_enode(enode) if enode is not None else None
+    if transport_updates is not None:
+        if set(transport_updates) != set(p2p.KEYS):
+            raise ValueError("incomplete P2P transport configuration")
+        p2p.validate(transport_updates)
     node._require_controller_unit(layout)
     with intent_lock(layout):
         env = node.read_env(layout.node_env)
@@ -172,9 +183,15 @@ def submit(layout, action, enode=None):
                 operation["phase"] = "STOPPING"
             operation.pop("error", None)
         else:
-            if old and old["phase"] not in {"QUEUED", "APPLIED"}:
+            replacing_transport = (action == "configure" and old.get("error")
+                                   and old.get("phase") in {"STOPPING", "STARTING"})
+            if replacing_transport and (old["binding"] != binding(layout, env) or mining.fingerprint(env) != old["after"]):
+                raise ValueError("PEER_CONFIG_CHANGED: cannot replace a transport operation after external drift")
+            if old and old["phase"] not in {"QUEUED", "APPLIED"} and not replacing_transport:
                 raise ValueError("PEER_OPERATION_BUSY: use peers apply to finish the current change before editing again")
             seeds = old["target"][:] if old.get("phase") == "QUEUED" else parse_seeds(env.get("USDB_BOOTNODES", ""))
+            transport = transport_updates if transport_updates is not None else (
+                old.get("transport_updates", {}) if old.get("phase") == "QUEUED" else {})
             before = seeds[:]
             if action == "add" and endpoint not in seeds:
                 seeds.append(endpoint)
@@ -182,15 +199,16 @@ def submit(layout, action, enode=None):
                 seeds.remove(endpoint)
             if len(seeds) > MAX_SEEDS:
                 raise ValueError(f"INVALID_PEER_SOURCE: at most {MAX_SEEDS} seed endpoints are supported")
-            if before == seeds and not pending(layout):
+            if before == seeds and all(env.get(k, "") == v for k, v in transport.items()) and not pending(layout):
                 return {"outcome": "unchanged", "target": seeds}
             if old.get("phase") == "QUEUED":
                 if old["binding"] != binding(layout, env) or old["original_seeds"] != env.get("USDB_BOOTNODES", ""):
                     raise ValueError("PEER_CONFIG_CHANGED: configuration changed outside the pending peer operation")
             operation = {"operation_id": uuid.uuid4().hex, "phase": "QUEUED", "target": seeds,
                          "original_seeds": env.get("USDB_BOOTNODES", ""), "binding": binding(layout, env),
-                         "resume_bootstrap": (old.get("phase") == "QUEUED" and old.get("resume_bootstrap", False)) or
+                         "resume_bootstrap": (old.get("phase") != "APPLIED" and old.get("resume_bootstrap", False)) or
                              node.controller_active_state(layout) in {"active", "activating"}}
+            operation["transport_updates"] = transport
         write_state(layout, operation)
     # The controller consumes a peer-only request without implicitly bringing up
     # a stopped node. An already running bootstrap resumes after applying it.
@@ -260,7 +278,9 @@ def run_operation(layout):
                         raise ValueError("MINING_AUTHORIZATION_REQUIRED: peer edits cannot authorize a miner")
                     if not operation["target"] and not remembered_first_node(layout, env):
                         raise ValueError("LAST_MINER_SEED: disable mining before removing the last joiner seed")
-                updated = {**env, "USDB_BOOTNODES": ",".join(operation["target"])}
+                updated = {**env, **operation.get("transport_updates", {}), "USDB_BOOTNODES": ",".join(operation["target"])}
+                if operation.get("transport_updates"):
+                    p2p.check_host(updated)
                 operation.update(before=mining.fingerprint(env), after=mining.fingerprint(updated),
                                  role=mining.role_config(env), mining_before=receipt)
                 rebound = dict(receipt)
@@ -281,12 +301,16 @@ def run_operation(layout):
                 if comparable(receipt) not in (comparable(operation["mining_before"]), comparable(operation["mining_after"])):
                     raise ValueError("MINING_OPERATION_CHANGED: refusing to overwrite a different mining receipt")
                 node._atomic_write_private(layout.node_env, node.upsert_env(layout.node_env.read_text(),
-                    {"USDB_BOOTNODES": ",".join(operation["target"])}))
+                    {**operation.get("transport_updates", {}), "USDB_BOOTNODES": ",".join(operation["target"])}))
                 if operation["mining_after"]:
                     mining.write_state(layout, operation["mining_after"])
                 _phase(layout, operation, "STOPPING" if operation["restart"] else "APPLIED")
             if operation["phase"] == "STOPPING":
                 mining.validate_start(layout)
+                if operation.get("transport_updates"):
+                    p2p.check_host(node.read_env(layout.node_env))
+                    if node.configured_firewall_mode(layout) == "managed":
+                        node.run_firewall_action(layout, "check", output_to_stderr=True)
                 operation["stopped_container_id"] = mining.inspect_chain(layout, processes=False).get("id")
                 mining._stop(layout)
                 _phase(layout, operation, "STARTING")
@@ -294,16 +318,24 @@ def run_operation(layout):
                 env = node.read_env(layout.node_env)
                 runtime = mining.inspect_chain(layout)
                 flags = mining.flag_values(runtime.get("argv", []))
-                if mining.runtime_matches(layout, env, runtime) and flags.get("--bootnodes") == env["USDB_BOOTNODES"]:
+                matches = mining.runtime_matches(layout, env, runtime) and flags.get("--bootnodes") == env["USDB_BOOTNODES"]
+                transport_matches = (not operation.get("transport_updates") or
+                                     p2p.transport_ready(env, p2p.container_view(layout)))
+                matches = matches and transport_matches
+                if matches:
                     _phase(layout, operation, "APPLIED")
                     return 0
                 target_container = (runtime.get("image") == layout.images["USDB_CHAIN_IMAGE"] and
                                     runtime.get("environment", {}).get("USDB_BOOTNODES", "") == env["USDB_BOOTNODES"] and
                                     all(runtime.get("environment", {}).get(k) == v for k, v in operation["role"].items()))
+                if operation.get("transport_updates"):
+                    target_container = target_container and runtime.get("environment", {}).get("USDB_P2P_IP_FAMILY", "ipv4") == env["USDB_P2P_IP_FAMILY"]
                 old_container = runtime.get("id") == operation.get("stopped_container_id")
                 if target_container and not old_container and (runtime["state"] in {"dead", "restarting"} or runtime.get("exit_code")):
                     raise ValueError(f"CHAIN_START_FAILED: {runtime['state']}; inspect chain logs")
                 if target_container and runtime["state"] == "running" and flags:
+                    if not transport_matches:
+                        raise ValueError("P2P_TRANSPORT_MISMATCH: running container lacks the requested TCP/UDP bindings or IPv6 endpoint")
                     raise ValueError("CHAIN_ARGUMENT_MISMATCH: running geth does not match the requested seeds/role")
                 if old_container or not target_container or runtime["state"] in {"absent", "exited"}:
                     mining.validate_start(layout)
@@ -356,7 +388,10 @@ def add_parser(subparsers):
                     "add": "Persist a seed and submit controller application",
                     "remove": "Remove a seed endpoint (does not ban a peer)",
                     "status": "Observe application, membership and live peers",
-                    "apply": "Retry an unfinished seed application"}
+                    "apply": "Retry an unfinished seed application",
+                    "configure": "Select P2P address family and advertised addresses",
+                    "enode": "Show IPv4/IPv6 enode candidates and actual container transport",
+                    "network": "Inspect host and container P2P configuration"}
     for name, description in descriptions.items():
         command = actions.add_parser(name, help=description, description=description)
         if name in {"add", "remove"}:
@@ -365,6 +400,10 @@ def add_parser(subparsers):
         if name == "status":
             command.add_argument("--watch", action="store_true")
             command.add_argument("--refresh-secs", type=float, default=5)
+        if name == "configure":
+            p2p.add_options(command)
+        if name == "enode":
+            command.add_argument("--family", choices=("all", "ipv4", "ipv6"), default="all")
 
 
 def render_report(report, *, connected):
@@ -386,6 +425,35 @@ def render_report(report, *, connected):
 
 def execute(layout, args):
     """Submit durable changes or attach a read-only status display."""
+    if args.peers_action == "configure":
+        updates, reason = p2p.select(**p2p.options(args))
+        report = submit(layout, "configure", transport_updates=updates)
+        report["selection_reason"] = reason
+        print(json.dumps(report, indent=2) if args.json else
+              f"P2P family={updates['USDB_P2P_IP_FAMILY']}: {reason}; {report['outcome']}; observe peers network / peers status")
+        return 0
+    if args.peers_action in {"enode", "network"}:
+        report = p2p.endpoint_report(layout)
+        if getattr(args, "family", "all") != "all":
+            report["endpoints"] = [entry for entry in report["endpoints"] if entry["family"] == args.family]
+            if not report["endpoints"] and not report.get("error"):
+                report.update(state="WAITING", error=f"P2P_ADDRESS_UNAVAILABLE: no {args.family} enode candidate")
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(f"P2P | {report['state']} | family={report['family']} | public reachability unverified")
+            if report.get("desired_family"):
+                print(f"  Pending family: {report['desired_family']}; phase={report['operation']['phase']}")
+            for entry in report["endpoints"]:
+                print(f"  {entry['family']}: {entry['enode']}")
+            if not report["endpoints"]:
+                print("  No advertised address available; use peers configure --advertise-ipv4/--advertise-ipv6")
+            if report.get("error"):
+                print(f"  {report['error']}")
+            if args.peers_action == "network":
+                print(json.dumps({key: report.get(key) for key in ("host", "container")}, indent=2))
+            print(report["guidance"])
+        return 0 if report["state"] == "CONFIGURED" else 1
     if args.peers_action in {"add", "remove", "apply"}:
         report = submit(layout, args.peers_action, getattr(args, "enode", None))
         print(json.dumps(report, indent=2) if args.json else

@@ -813,8 +813,10 @@ def validate_node_env(
             "USDB_MINER_ADDRESS must be a non-zero EVM address",
         )
 
-    require(env.get("USDB_P2P_BIND_ADDRESS") == "0.0.0.0", "testnet-v0 P2P must bind public IPv4")
+    require(env.get("USDB_P2P_BIND_ADDRESS") == "0.0.0.0", "testnet-v0 base P2P binding must be 0.0.0.0; select IPv6 publication with peers configure")
     require(env.get("USDB_P2P_BIND_PORT", "31303") == "31303", "testnet-v0 P2P bind port must be 31303")
+    from usdb_p2p import validate as validate_p2p
+    validate_p2p(env)
     for key in (
         "USDB_HTTP_BIND_ADDRESS",
         "USDB_WS_BIND_ADDRESS",

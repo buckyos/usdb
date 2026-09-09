@@ -1,0 +1,27 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-ipv6-dual-stack-p2p",
+  "type": "added",
+  "scopes": ["deployment", "node-runtime", "documentation", "testing"],
+  "summary": "Configure IPv6 and dual-stack chain networking with explicit endpoint evidence",
+  "details": [
+    "Resolve setup auto selection once, or explicitly choose IPv4, IPv6 P2P publication or dual stack. Existing configurations retain IPv4 until an operator selects a new profile.",
+    "Attach only chain to an additional IPv6-enabled NAT bridge with explicit gateway priority, publish both TCP and UDP, and retain loopback-only operator APIs and the existing shared data-service network.",
+    "Apply transport edits through the durable peer operation, preserving seeds, data, node key and bound mining authorization. Check host IPv6, Docker support and managed firewall before stopping the old chain; reject mismatched container publication before reporting applied.",
+    "Show family-specific enode candidates separately from actual container configuration, with public reachability explicitly unverified. Advertised addresses do not replace the Geth NAT setting or guarantee multi-endpoint discovery/failover.",
+    "The paired go-ethereum change preserves a contacted endpoint when a validated ENR prefers another address family, while retaining signature and identity checks. Real Docker 29 acceptance covers signed UDP pong and RLPx TCP through host-published ports, profile recreation, identity preservation and internal IPv4 links; external two-host validation remains required.",
+    "Require accept_ra=2 on interfaces supplying RA default routes before enabling IPv6: Docker forwarding otherwise suppresses router advertisements and the host route expires. Auto mode reports the condition and falls back to IPv4; explicit IPv6 fails before network creation."
+  ],
+  "operator_actions": [
+    "Deploy the paired node kit and chain image. IPv6 profiles require rootful Linux Docker Engine >=28.0.0, Compose >=2.33.1, stable host IPv6, default routing and TCP/UDP ingress rules.",
+    "Use peers configure --ip-family dual or ipv6, with explicit advertised addresses/ports where needed; observe peers status and peers network. Share candidates with peers enode and verify from another node before relying on public reachability.",
+    "For an RA-derived IPv6 default route, have the host administrator persist accept_ra=2 on the actual external interface before selecting IPv6. The node tool checks but does not modify host sysctls."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": []
+}

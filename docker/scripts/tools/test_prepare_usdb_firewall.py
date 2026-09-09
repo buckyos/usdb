@@ -148,6 +148,35 @@ class PrepareUsdbFirewallTests(unittest.TestCase):
         self.assertIn("PASS Bitcoin P2P binding: loopback-only", result.stdout)
         self.assertIn("Firewall check passed", result.stdout)
 
+    def test_ipv6_requires_enabled_ufw_and_both_transport_rules(self) -> None:
+        self.node_env.write_text(self.node_env.read_text() + "USDB_P2P_IP_FAMILY=dual\n")
+        defaults = self.root / "ufw-defaults"
+        defaults.write_text("IPV6=no\n")
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"USDB_FIREWALL_UFW_DEFAULTS": str(defaults)}):
+            result = self.run_script("apply", confirm=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("IPV6=yes", result.stderr)
+            self.assertFalse(self.call_log.exists())
+            defaults.write_text("IPV6=yes\n")
+            result = self.run_script("check")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("31303/udp (v6)", result.stderr)
+            self.status_file.write_text(self.status_file.read_text() +
+                "22/tcp (v6) ALLOW IN Anywhere (v6)\n31303/tcp (v6) ALLOW IN Anywhere (v6)\n31303/udp (v6) ALLOW IN Anywhere (v6)\n")
+            self.assertEqual(self.run_script("check").returncode, 0)
+            complete_status = self.status_file.read_text()
+            self.status_file.write_text("\n".join(line for line in complete_status.splitlines()
+                                                if not (line.startswith("31303/tcp") and "(v6)" not in line)) + "\n")
+            result = self.run_script("check")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("FAIL UFW allow: missing 31303/tcp", result.stderr)
+            self.status_file.write_text(complete_status)
+            self.status_file.write_text(self.status_file.read_text() + "8545/tcp (v6) ALLOW IN Anywhere (v6)\n")
+            result = self.run_script("check")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("sensitive port 8545", result.stderr)
+
     def test_check_resolves_ufw_when_login_path_omits_sbin(self) -> None:
         system_sbin = self.root / "system-sbin"
         system_sbin.mkdir()

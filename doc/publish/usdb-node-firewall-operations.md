@@ -51,12 +51,17 @@ deny 规则：
 
 1. `node.env` 必须把 operator API 固定到 `127.0.0.1`；
 2. 默认私有 Bitcoin P2P 必须设置 `BTC_P2P_BIND_ADDRESS=127.0.0.1`；
-3. USDB P2P 设置 `USDB_P2P_BIND_ADDRESS=0.0.0.0`；
+3. USDB P2P 基础设置保持 `USDB_P2P_BIND_ADDRESS=0.0.0.0`，IPv6/双栈通过独立 Compose 配置选择发布地址族；
 4. managed 模式下 UFW 使用默认拒绝入站，只放行 SSH、USDB P2P 和可选 Bitcoin P2P；
 5. 云安全组或机房 ACL 使用相同允许列表。
 
 `prepare_usdb_firewall.sh` 会先检查上述 bind 地址，再检查或修改 UFW。这样即使 Docker 的转发规则
 不经过 UFW，敏感容器端口也只发布到 loopback。
+
+IPv6/双栈要求 UFW 的 `IPV6=yes` 和对应的 SSH/P2P IPv6 allow 规则；仅有 IPv4 规则不会通过检查。
+两种地址族的敏感 RPC allow 都会被拒绝。运行节点切换地址族时，检查在停止旧 chain 之前执行，失败后
+可修复规则并 `peers apply`。容器网络、对外 enode 和两机验收见
+[IPv6 与双栈运维](./usdb-node-ipv6-operations.md)。
 
 ## 4. 默认私有 Bitcoin P2P
 

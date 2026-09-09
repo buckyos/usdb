@@ -1060,6 +1060,7 @@ def configure_node(
     bitcoin_resource_profile: str = DEFAULT_BITCOIN_RESOURCE_PROFILE,
     resource_management: str = "manual",
     resource_caps: dict[str, str] | None = None,
+    p2p_options: dict[str, Any] | None = None,
 ) -> Path:
     if layout.node_env.exists():
         raise ValueError(
@@ -1071,6 +1072,11 @@ def configure_node(
     _require_role(role, miner_address, miner_threads)
     import usdb_peers
     bootnodes = ",".join(usdb_peers.parse_seeds(bootnodes))
+    p2p_updates = {}
+    if p2p_options is not None:
+        import usdb_p2p
+        p2p_updates, reason = usdb_p2p.select(**p2p_options)
+        print(f"P2P family={p2p_updates['USDB_P2P_IP_FAMILY']}: {reason}", file=sys.stderr)
     if bitcoin_p2p not in {"private", "public"}:
         raise ValueError("bitcoin P2P mode must be private or public")
     _require_firewall_mode(firewall_mode)
@@ -1124,6 +1130,7 @@ def configure_node(
             "USDB_NODE_ROLE": role,
             "USDB_BOOTNODES": bootnodes,
             "USDB_NAT": nat,
+            **p2p_updates,
             "USDB_MINER_ADDRESS": miner_address,
             "USDB_MINER_THREADS": str(miner_threads),
         }
@@ -1246,6 +1253,7 @@ def setup_node(
     bitcoin_resource_profile: str = DEFAULT_BITCOIN_RESOURCE_PROFILE,
     resource_management: str = "manual",
     resource_caps: dict[str, str] | None = None,
+    p2p_options: dict[str, Any] | None = None,
 ) -> SetupResult:
     if layout.node_env.exists():
         raise ValueError(
@@ -1392,6 +1400,7 @@ def setup_node(
         raise ValueError("setup cancelled; no configuration was written")
     path = configure_node(
         layout,
+        p2p_options=p2p_options,
         data_root=data_root,
         role=role,
         miner_address=miner_address,
@@ -2020,6 +2029,8 @@ def doctor(
         require_snapshot_artifacts=not pending_snapshot,
     )
     _validate_node_release_images(layout)
+    import usdb_p2p
+    usdb_p2p.check_host(env)
     run_helper(
         layout,
         "run_testnet_runtime.sh",
@@ -5322,6 +5333,8 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--resource-mode", choices=("auto", "manual"), default="auto",
                        help="controller-managed whole-node budgets (default) or fixed operator settings")
     _add_resource_cap_arguments(setup)
+    import usdb_p2p
+    usdb_p2p.add_options(setup, setup=True)
 
     configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
     configure.add_argument("--data-root", type=Path, default=Path.home() / ".usdb")
@@ -5330,6 +5343,7 @@ def build_parser() -> argparse.ArgumentParser:
     configure.add_argument("--miner-threads", type=int, default=1)
     configure.add_argument("--bootnodes", default="")
     configure.add_argument("--nat", default="")
+    usdb_p2p.add_options(configure, setup=True)
     configure.add_argument(
         "--bitcoin-rpc-user",
         help="advanced override; defaults to a bundle- and host-scoped username",
@@ -5621,8 +5635,10 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             raise ValueError("setup requires an interactive terminal; use configure for automation")
         if not args.no_controller:
             _controller_install_context()
+        import usdb_p2p
         result = setup_node(layout, bitcoin_resource_profile=args.bitcoin_profile or AUTO_BITCOIN_RESOURCE_PROFILE,
-                            resource_management=args.resource_mode, resource_caps=_resource_caps_from_args(args))
+                            resource_management=args.resource_mode, resource_caps=_resource_caps_from_args(args),
+                            p2p_options=usdb_p2p.options(args))
         print(f"Configured {layout.release_id} node: {result.node_env}")
         if result.apply_firewall:
             print(
@@ -5664,6 +5680,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             print("Run usdb-node doctor, then usdb-node up.")
         _warn_pending_docker_session()
     elif args.command == "configure":
+        import usdb_p2p
         path = configure_node(
             layout,
             data_root=args.data_root,
@@ -5671,6 +5688,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             miner_address=args.miner_address,
             miner_threads=args.miner_threads,
             bootnodes=args.bootnodes,
+            p2p_options=usdb_p2p.options(args),
             nat=args.nat,
             bitcoin_rpc_user=args.bitcoin_rpc_user,
             bitcoin_p2p=args.bitcoin_p2p,

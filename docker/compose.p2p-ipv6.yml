@@ -1,0 +1,8 @@
+# IPv6 P2P publication; local operator APIs and data-service links remain IPv4.
+services:
+  usdb-chain:
+    ports: !override
+      - "${USDB_HTTP_BIND_ADDRESS:-127.0.0.1}:${USDB_HTTP_BIND_PORT:-8545}:8545"
+      - "${USDB_WS_BIND_ADDRESS:-127.0.0.1}:${USDB_WS_BIND_PORT:-8546}:8546"
+      - "[::]:${USDB_P2P_BIND_PORT:-31303}:31303/tcp"
+      - "[::]:${USDB_P2P_BIND_PORT:-31303}:31303/udp"
