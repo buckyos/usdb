@@ -171,6 +171,33 @@ class PrepareUsdbHostTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("expected 5.10 or newer", result.stderr)
 
+    def test_check_distinguishes_account_membership_from_session_access(self) -> None:
+        self.write_docker(compose_ok=True, daemon_ok=False)
+        for effective_groups in ("bucky", "bucky docker"):
+            with self.subTest(effective_groups=effective_groups):
+                self.write_command("id", f"""
+case "$*" in
+  -un) echo bucky ;;
+  -u) echo 1000 ;;
+  '-nG bucky') echo 'bucky docker' ;;
+  -nG) echo '{effective_groups}' ;;
+  bucky) exit 0 ;;
+  *) exit 2 ;;
+esac
+""")
+                result = self.run_script(
+                    "check", "--docker-user", "bucky",
+                    extra_env={"PATH": f"{self.command_dir}:{os.defpath}"},
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("bucky belongs to the docker group", result.stdout)
+                if effective_groups == "bucky":
+                    self.assertIn("FAIL Docker access", result.stderr)
+                    self.assertIn("newgrp docker", result.stderr)
+                else:
+                    self.assertIn("FAIL Docker daemon", result.stderr)
+                    self.assertNotIn("newgrp docker", result.stderr)
+
     def test_check_rejects_non_amd64_release_host(self) -> None:
         result = self.run_script("check", extra_env={"USDB_HOST_ARCH": "aarch64"})
 

@@ -674,7 +674,10 @@ def validate_node_env(
     require_bitcoin_runtime: bool = False,
     expected_data_paths: dict[str, Path] | None = None,
     expected_compatibility_id: str | None = None,
+    *,
+    require_snapshot_artifacts: bool = True,
 ) -> None:
+    """Validate configuration; only a bootstrap preflight may defer snapshot files."""
     env = read_env(path)
     index_origin_height = network_index_origin_height(network)
     validate_image_ref(
@@ -906,7 +909,7 @@ def validate_node_env(
             )
         else:
             checkpoint_manifest_path = checkpoint_container_path(checkpoint_manifest)
-    if require_runtime and snapshot_mode in {"balance-history", "paired-checkpoint"}:
+    if require_runtime and require_snapshot_artifacts and snapshot_mode in {"balance-history", "paired-checkpoint"}:
         balance_history_runtime_manifest = validate_runtime_snapshot(
             snapshot_dir,
             snapshot_file_path,

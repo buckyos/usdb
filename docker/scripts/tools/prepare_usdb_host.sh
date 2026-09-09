@@ -213,6 +213,13 @@ check_required_tools() {
   ((failures == 0))
 }
 
+# Account groups can change while an existing login still holds its old groups.
+docker_session_pending() {
+  [[ -n "${docker_user}" && "$(id -un)" == "${docker_user}" && "$(id -u)" != "0" ]] || return 1
+  id -nG "${docker_user}" | tr ' ' '\n' | grep -Fxq docker || return 1
+  ! id -nG | tr ' ' '\n' | grep -Fxq docker
+}
+
 check_docker_runtime() {
   local allow_root_fallback="${1:-0}"
   local docker_bin
@@ -226,7 +233,11 @@ check_docker_runtime() {
   elif [[ "${allow_root_fallback}" == "1" ]] && runtime_info="$(run_root "${docker_bin}" info --format "${info_format}" 2>/dev/null)"; then
     access_mode="elevated privileges"
   else
-    echo "FAIL Docker daemon: daemon is stopped or the current user cannot access its socket" >&2
+    if docker_session_pending; then
+      echo "FAIL Docker access: docker group membership is not active in this session" >&2
+    else
+      echo "FAIL Docker daemon: daemon is stopped or the current user cannot access its socket" >&2
+    fi
     return 1
   fi
 
@@ -263,6 +274,9 @@ check_docker_user() {
   }
   if id -nG "${docker_user}" | tr ' ' '\n' | grep -Fxq docker; then
     echo "PASS Docker user: ${docker_user} belongs to the docker group"
+    if docker_session_pending; then
+      echo "WARN Docker session: before doctor/up, log out and back in, or run 'newgrp docker' and continue in the new shell. Use 'exit' to leave it; other existing sessions remain unchanged." >&2
+    fi
   else
     echo "FAIL Docker user: ${docker_user} is not in the docker group" >&2
     return 1

@@ -180,13 +180,23 @@ bundle index origin、network/catalog 不匹配、磁盘文件异常或 balance-
 - release manifest、network bundle 和节点私有配置是否相互一致；
 - `node.env` 的路径、RPC credential、安全 bind address 和角色配置是否有效；
 - 三张 image 是否仍是当前已安装 release 冻结的 digest。
+- 快照配置及本地文件；首次部署已选中本 release 批准的快照、但尚未下载或仍在断点续传时，显示
+  `PENDING Snapshot` 并提示执行 `usdb-node up`，不因此使预检失败。该例外只适用于尚未初始化的
+  balance-history 数据库，且快照选择、release record 和受信密钥目录必须有效。其他快照仍执行文件校验。
 - 可选 registry 的 release selection、active pointer、安装 record、文件大小和 manifest digest；pending 或
   replacement failure 以辅助 warning 展示，不阻断核心节点。
 - 始终检查安全 bind address；managed 模式额外检查 UFW active/default/rules，external 模式明确跳过 UFW。
 
-`doctor` 不拉取 image、不启动或停止容器，也不修改 `node.env`。首次配置后单独执行它，便于在开放防火墙或
-开始长时间 Bitcoin IBD 前尽早发现问题；`usdb-node up` 也会先执行同一组检查，因此正常启动不依赖运维人员
-预先手工运行 `doctor`。服务启动后的当前状态使用 `usdb-node status`，持续运行期间依赖 Docker healthcheck、
+`doctor` 不下载快照或 image、不启动或停止容器，也不修改 `node.env`。Docker image 尚未缓存是首次部署的
+正常状态，输出会说明 `up` 自动拉取镜像；image digest 与 release 不一致仍然报错。`PENDING Snapshot`
+和预检通过表示配置可以交给 `up` 准备，不能作为快照已安装或服务已就绪的证明。
+
+首次配置后单独执行 `doctor`，便于在开始长时间下载或 Bitcoin IBD 前尽早发现问题；`usdb-node up` 会先
+下载并验证选中的快照，随后在实际启动前严格检查快照文件、主机、配置等前提，再拉取所需 image。
+因此正常启动不依赖运维人员预先手工运行 `doctor`。`prepare-host/setup` 若提示 Docker 组权限尚未生效，
+需重新登录，或执行 `newgrp docker` 后在新 shell 中运行 `doctor/up`，详见
+[主机依赖准备](./usdb-node-host-prerequisites.md#4-全新机器引导)。
+服务启动后的当前状态使用 `usdb-node status`，持续运行期间依赖 Docker healthcheck、
 restart policy 和各服务自身的 readiness/consensus gate，不能把 `doctor` 当作监控探针。managed 模式读取
 UFW 状态可能请求 sudo；external 模式的上游或宿主机防火墙不在工具检查范围内，必须独立复核。
 

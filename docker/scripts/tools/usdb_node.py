@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import getpass
+import grp
 import hashlib
 import json
 import os
@@ -925,6 +926,34 @@ def default_docker_user() -> str:
     return "" if os.geteuid() == 0 else getpass.getuser()
 
 
+def _docker_session_pending() -> bool:
+    """Compare account membership with the groups inherited by this process."""
+    if os.geteuid() == 0:
+        return False
+    try:
+        docker_gid = grp.getgrnam("docker").gr_gid
+    except KeyError:
+        return False
+    account = pwd.getpwuid(os.getuid())
+    return (
+        docker_gid in os.getgrouplist(account.pw_name, account.pw_gid)
+        and docker_gid not in {*os.getgroups(), os.getegid()}
+    )
+
+
+def _warn_pending_docker_session() -> bool:
+    """Explain how the operator can refresh a session after host installation."""
+    if not _docker_session_pending():
+        return False
+    print(
+        "WARN Docker session: your account belongs to the docker group, but this "
+        "terminal has not acquired it. Before doctor/up, log out and back in, or "
+        "run 'newgrp docker' and continue in the new shell. "
+        "Use 'exit' to leave that shell; other existing sessions remain unchanged."
+    )
+    return True
+
+
 def default_bitcoin_rpc_user(layout: ReleaseLayout, hostname: str | None = None) -> str:
     host = hostname if hostname is not None else socket.gethostname()
     normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", host).strip("-._") or "node"
@@ -995,6 +1024,7 @@ def _validate_node_config(
     *,
     require_runtime: bool,
     require_bitcoin_runtime: bool,
+    require_snapshot_artifacts: bool = True,
 ) -> None:
     network = validate_network_bundle(layout.bundle_dir)
     env = read_env(layout.node_env)
@@ -1007,6 +1037,7 @@ def _validate_node_config(
         require_bitcoin_runtime,
         expected_paths,
         layout.runtime_compatibility["compatibility_id"],
+        require_snapshot_artifacts=require_snapshot_artifacts,
     )
 
 
@@ -1935,20 +1966,51 @@ def run_firewall_action(
     )
 
 
-def doctor(layout: ReleaseLayout, *, output_to_stderr: bool = False) -> None:
+def _pending_bootstrap_snapshot(layout: ReleaseLayout, env: dict[str, str]) -> bool:
+    """Allow only an approved, not yet installed snapshot on an uninitialized node."""
+    if env.get("SNAPSHOT_MODE") != "balance-history":
+        return False
+    status = _snapshot_lifecycle_status(layout, env)
+    if status["state"] != "incomplete":
+        return False
+    database = Path(env.get("BH_DATA_HOST_DIR", "")) / "db"
+    if database.is_symlink() or (database.exists() and (
+        not database.is_dir() or any(database.iterdir())
+    )):
+        return False
+    record = _approved_snapshot_record(layout)
+    expected = _snapshot_env_updates(record, layout.snapshot["record"]["url"])
+    # The installer selects these fields together; it must not silently repair
+    # a mismatched selection after doctor has reported a valid configuration.
+    if any(env.get(key, "") != value for key, value in expected.items()):
+        return False
+    _snapshot_trusted_keys(layout)
+    return True
+
+
+def doctor(
+    layout: ReleaseLayout,
+    *,
+    output_to_stderr: bool = False,
+    allow_pending_snapshot: bool = False,
+) -> None:
+    """Check startup strictly; the standalone CLI may defer approved downloads."""
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run configure first")
-    validate_resource_environment(read_env(layout.node_env), effective_memory_bytes())
+    env = read_env(layout.node_env)
+    validate_resource_environment(env, effective_memory_bytes())
     run_host_action(
         layout,
         "check",
         docker_user=default_docker_user(),
         output_to_stderr=output_to_stderr,
     )
+    pending_snapshot = allow_pending_snapshot and _pending_bootstrap_snapshot(layout, env)
     _validate_node_config(
         layout,
         require_runtime=True,
         require_bitcoin_runtime=True,
+        require_snapshot_artifacts=not pending_snapshot,
     )
     _validate_node_release_images(layout)
     run_helper(
@@ -1959,6 +2021,19 @@ def doctor(layout: ReleaseLayout, *, output_to_stderr: bool = False) -> None:
     )
     registry = _script_registry_doctor_status(layout, read_env(layout.node_env))
     output = sys.stderr if output_to_stderr else sys.stdout
+    if pending_snapshot:
+        print(
+            "PENDING Snapshot: the release-approved balance-history snapshot is selected "
+            "but not yet installed. Run usdb-node up to download/resume and verify it "
+            "before startup. This is expected after setup.",
+            file=output,
+        )
+    if allow_pending_snapshot:
+        print(
+            "INFO Docker images: release digests are valid; usdb-node up pulls required "
+            "images automatically. Local image availability is not required for this preflight.",
+            file=output,
+        )
     print(
         f"Script registry {registry['state'].upper()}: {registry['summary']}",
         file=output,
@@ -1968,7 +2043,8 @@ def doctor(layout: ReleaseLayout, *, output_to_stderr: bool = False) -> None:
     else:
         print(
             "Host firewall mode is external; skipped UFW inspection. "
-            "Container bind-address validation still passed."
+            "Container bind-address validation still passed.",
+            file=output,
         )
 
 
@@ -2753,7 +2829,7 @@ def _snapshot_lifecycle_status(
     release_id = record["snapshot_release_id"]
     destination = root / release_id
     staging = root / f".{release_id}.core.installing"
-    if destination.exists():
+    if destination.exists() or destination.is_symlink():
         if not destination.is_dir() or destination.is_symlink():
             return {
                 "state": "invalid",
@@ -2793,7 +2869,7 @@ def _snapshot_lifecycle_status(
             "expected_bytes": expected_bytes,
         }
 
-    if staging.exists():
+    if staging.exists() or staging.is_symlink():
         if not staging.is_dir() or staging.is_symlink():
             return {
                 "state": "invalid",
@@ -5461,8 +5537,10 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         raise ValueError("--bitcoin-profile requires --resource-mode manual; automatic mode manages all Bitcoin phases")
     if args.command == "prepare-host":
         prepare_host(layout, docker_user=args.docker_user, docker_mirror=args.docker_mirror)
-        print("USDB host prerequisites are ready.")
-        print("If Docker group membership changed, start a new login session before doctor/up.")
+        if _warn_pending_docker_session():
+            print("USDB host packages are ready; refresh this session for Docker access.")
+        else:
+            print("USDB host prerequisites are ready.")
     elif args.command == "host":
         run_host_action(
             layout, args.host_action, docker_user=args.docker_user,
@@ -5514,6 +5592,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
                 raise
             print(f"Installed and enabled USDB bootstrap controller: {path.name}")
             print("Run usdb-node doctor, then usdb-node up.")
+        _warn_pending_docker_session()
     elif args.command == "configure":
         path = configure_node(
             layout,
@@ -5579,7 +5658,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         activate_release(layout)
         print(f"Activated release images in private node config: {layout.release_id}")
     elif args.command == "doctor":
-        doctor(layout)
+        doctor(layout, allow_pending_snapshot=True)
         print(f"USDB node preflight passed: {layout.release_id}")
     elif args.command == "snapshot":
         if args.snapshot_action == "install":

@@ -142,6 +142,24 @@ id usdb >/dev/null 2>&1 || useradd --create-home --shell /bin/bash usdb
 /tmp/prepare_usdb_host.sh check --docker-user usdb
 ```
 
+`usdb` 是推荐的专用账号名称，也可以使用 `bucky` 等已有普通账号；`usdb-node prepare-host`
+默认使用当前用户。加入 Docker 组只会更新账号配置，已经打开的终端不会自动获得该组权限。
+`prepare-host` 和 `setup` 完成时会检查当前进程的实际用户组；账号已加入但当前终端尚未生效时，
+会显示 `WARN Docker session`。此时 `doctor` 仍会失败，并明确提示 Docker 组权限尚未生效。
+
+如果希望保留当前 SSH 连接，可以在该普通用户的终端执行：
+
+```bash
+newgrp docker
+usdb-node doctor
+usdb-node up
+```
+
+`newgrp docker` 打开一个取得 Docker 组权限的新 shell，后续命令需在其中执行；`exit` 会返回原 shell，
+其他已打开的会话也不会被刷新。脚本不能修改调用它的父 shell 的用户组，因此不会自动替用户切换 shell。
+如果账号尚未加入 Docker 组，应先完成 `prepare-host` 安装；如果组权限已经生效但 daemon 仍不可访问，
+则需要检查 Docker 服务和 socket。
+
 复检通过后才能 clone 固定 revision、写入 node-local secret，并进入对应网络的部署手册。
 
 ## 5. 防火墙准备

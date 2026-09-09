@@ -2453,6 +2453,7 @@ class UsdbNodeTests(unittest.TestCase):
         with (
             mock.patch.object(NODE, "_controller_install_context"),
             mock.patch.object(NODE, "setup_node", return_value=setup_result),
+            mock.patch.object(NODE, "_docker_session_pending", return_value=True),
             mock.patch.object(NODE, "install_snapshot_release") as install_snapshot,
             mock.patch.object(
                 NODE,
@@ -2471,6 +2472,8 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIn("bootstrap controller will download", output.getvalue())
         self.assertIn("Installed and enabled", output.getvalue())
         self.assertIn("usdb-node doctor, then usdb-node up", output.getvalue())
+        self.assertIn("WARN Docker session", output.getvalue())
+        self.assertIn("newgrp docker", output.getvalue())
 
     def test_setup_no_controller_writes_config_without_touching_systemd(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -2863,6 +2866,146 @@ class UsdbNodeTests(unittest.TestCase):
             output_to_stderr=False,
         )
         firewall.assert_called_once_with(layout, "check", output_to_stderr=False)
+
+    def test_docker_session_warning_requires_membership_missing_from_process(self) -> None:
+        for account_groups, groups, primary_gid, pending in (
+            ([1000, 987], [1000], 1000, True),
+            ([1000, 987], [1000, 987], 1000, False),
+            ([1000, 987], [1000], 987, False),  # newgrp may change the primary GID.
+            ([1000], [1000], 1000, False),
+        ):
+            with self.subTest(account_groups=account_groups, groups=groups, primary_gid=primary_gid):
+                output = io.StringIO()
+                with (
+                    mock.patch.object(NODE.os, "geteuid", return_value=1000),
+                    mock.patch.object(NODE.grp, "getgrnam", return_value=mock.Mock(gr_gid=987)),
+                    mock.patch.object(NODE.os, "getgrouplist", return_value=account_groups),
+                    mock.patch.object(NODE.os, "getgroups", return_value=groups),
+                    mock.patch.object(NODE.os, "getegid", return_value=primary_gid),
+                    redirect_stdout(output),
+                ):
+                    self.assertEqual(NODE._warn_pending_docker_session(), pending)
+                self.assertEqual("WARN Docker session" in output.getvalue(), pending)
+
+    def test_doctor_cli_reports_pending_snapshot_without_installing_it(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "pending-doctor")
+        record = NODE.select_snapshot_release(layout)
+        original_env = layout.node_env.read_bytes()
+        env = NODE.read_env(layout.node_env)
+        staging = Path(env["BH_SNAPSHOT_HOST_DIR"]) / f".{record['snapshot_release_id']}.core.installing"
+        for resumable in (False, True):
+            with self.subTest(resumable=resumable):
+                if resumable:
+                    staging.mkdir()
+                output = io.StringIO()
+                with (
+                    mock.patch.object(NODE, "run_host_action"),
+                    mock.patch.object(NODE, "run_helper") as helper,
+                    mock.patch.object(NODE, "install_snapshot_artifact") as install,
+                    redirect_stdout(output),
+                ):
+                    result = NODE._execute_command(layout, NODE.build_parser().parse_args(["doctor"]))
+                self.assertEqual(result, 0)
+                self.assertIn("PENDING Snapshot", output.getvalue())
+                self.assertIn("usdb-node up to download/resume", output.getvalue())
+                self.assertIn("images automatically", output.getvalue())
+                self.assertIn("preflight passed", output.getvalue())
+                install.assert_not_called()
+                helper.assert_called_once_with(
+                    layout, "run_testnet_runtime.sh", ["validate-node"], output_to_stderr=False,
+                )
+                self.assertEqual(layout.node_env.read_bytes(), original_env)
+
+    def test_pending_snapshot_does_not_relax_other_preflight_requirements(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "invalid-pending-doctor")
+        NODE.select_snapshot_release(layout)
+        original_env = layout.node_env.read_text()
+        for updates, error in (
+            ({"BTC_RPC_PASSWORD": "wrong-password"}, "rpcauth does not match"),
+            ({"BH_SNAPSHOT_TRUST_MODE": "unsigned"}, "must use signed trust"),
+            ({"USDB_SERVICES_IMAGE": "ghcr.io/buckyos/usdb-services@sha256:" + "f" * 64}, "activate-release"),
+            ({"BH_SNAPSHOT_FILE": "/snapshots/unapproved.db",
+              "BH_SNAPSHOT_MANIFEST": "/snapshots/unapproved.manifest.json"}, "required snapshot artifact"),
+        ):
+            with self.subTest(updates=updates):
+                NODE._atomic_write_private(layout.node_env, NODE.render_env(original_env, updates))
+                with (
+                    mock.patch.object(NODE, "run_host_action"),
+                    mock.patch.object(NODE, "run_helper") as helper,
+                    self.assertRaisesRegex(ValueError, error),
+                ):
+                    NODE.doctor(layout, allow_pending_snapshot=True)
+                helper.assert_not_called()
+
+    def test_doctor_rejects_missing_snapshot_after_database_initialization(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "initialized-doctor")
+        NODE.select_snapshot_release(layout)
+        env = NODE.read_env(layout.node_env)
+        database = Path(env["BH_DATA_HOST_DIR"]) / "db"
+        database.mkdir()
+        (database / "CURRENT").write_text("initialized")
+        with (
+            mock.patch.object(NODE, "run_host_action"),
+            self.assertRaisesRegex(ValueError, "required snapshot artifact"),
+        ):
+            NODE.doctor(layout, allow_pending_snapshot=True)
+
+    def test_doctor_rejects_broken_final_snapshot_instead_of_reporting_pending(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "broken-snapshot-doctor")
+        record = NODE.select_snapshot_release(layout)
+        env = NODE.read_env(layout.node_env)
+        destination = Path(env["BH_SNAPSHOT_HOST_DIR"]) / record["snapshot_release_id"]
+        for symlink in (False, True):
+            with self.subTest(symlink=symlink):
+                if symlink:
+                    destination.rmdir()
+                    destination.symlink_to(destination.with_name("missing-target"), target_is_directory=True)
+                else:
+                    destination.mkdir()
+                self.assertEqual(NODE._snapshot_lifecycle_status(layout, env)["state"], "invalid")
+                with (
+                    mock.patch.object(NODE, "run_host_action"),
+                    self.assertRaisesRegex(ValueError, "required snapshot artifact"),
+                ):
+                    NODE.doctor(layout, allow_pending_snapshot=True)
+
+    def test_startup_requires_snapshot_files_before_pulling_or_starting(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "strict-startup")
+        NODE.select_snapshot_release(layout)
+        with (
+            mock.patch.object(NODE, "run_host_action"),
+            mock.patch.object(NODE, "run_helper") as helper,
+            self.assertRaisesRegex(ValueError, "required snapshot artifact"),
+        ):
+            NODE._start_node(
+                layout, sync_timeout_secs=10, pull=True,
+                output_to_stderr=False, progress_monitor=mock.Mock(enabled=False),
+            )
+        helper.assert_not_called()
+
+    def test_doctor_still_validates_manifest_when_snapshot_files_are_present(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "installed-doctor")
+        NODE.select_snapshot_release(layout)
+        env = NODE.read_env(layout.node_env)
+        installed = self._installed_snapshot_fixture(Path(env["USDB_DATA_ROOT"]))
+        with (
+            mock.patch.object(NODE, "run_host_action"),
+            mock.patch.object(NODE, "run_helper"),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            NODE.doctor(layout, allow_pending_snapshot=True)
+            self.assertNotIn("PENDING Snapshot", output.getvalue())
+            manifest = json.loads(installed.manifest_file.read_text())
+            manifest["file_name"] = "wrong.db"
+            installed.manifest_file.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "manifest file_name mismatch"):
+                NODE.doctor(layout, allow_pending_snapshot=True)
 
     def test_doctor_skips_ufw_for_external_firewall_mode(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

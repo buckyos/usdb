@@ -495,6 +495,31 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         path = self.write_node_env()
         self.validate_node_env(path, True)
 
+    def test_deferred_snapshot_keeps_runtime_directory_and_rpc_checks(self) -> None:
+        path = self.write_node_env(
+            SNAPSHOT_MODE="balance-history",
+            BH_SNAPSHOT_FILE="/snapshots/pending.db",
+            BH_SNAPSHOT_MANIFEST="/snapshots/pending.manifest.json",
+        )
+        self.write_rpcauth()
+        VALIDATOR.validate_node_env(
+            path, self.network, True, True, require_snapshot_artifacts=False,
+        )
+        with self.assertRaisesRegex(ValueError, "snapshot host directory does not exist"):
+            VALIDATOR.validate_node_env(path, self.network, True, True)
+        data_dir = Path(VALIDATOR.read_env(path)["USDB_INDEXER_DATA_HOST_DIR"])
+        data_dir.rmdir()
+        with self.assertRaisesRegex(ValueError, "persistent data directory does not exist"):
+            VALIDATOR.validate_node_env(
+                path, self.network, True, True, require_snapshot_artifacts=False,
+            )
+        data_dir.mkdir()
+        (self.root / "bitcoin-rpcauth").unlink()
+        with self.assertRaisesRegex(ValueError, "rpcauth"):
+            VALIDATOR.validate_node_env(
+                path, self.network, True, True, require_snapshot_artifacts=False,
+            )
+
     def test_runtime_requires_signed_snapshot_set_when_enabled(self) -> None:
         snapshot_file, snapshot_manifest = self.write_snapshot_artifacts(
             963800,
