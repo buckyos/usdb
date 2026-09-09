@@ -1,13 +1,14 @@
-name: USDB Public Services Publish (select release tag)
+name: Legacy Public Services Publish (v0.1.0 only)
 run-name: Publish ${{ inputs.release_id }}
 
 on:
   workflow_dispatch:
     inputs:
       release_id:
-        description: Existing public release tag (usdb-public-vX.Y.Z)
+        description: "Legacy tag only: usdb-public-v0.1.0"
         required: true
-        type: string
+        type: choice
+        options: [usdb-public-v0.1.0]
 
 permissions:
   actions: read
@@ -36,13 +37,14 @@ jobs:
             echo "::error::Select master in 'Use workflow from', then enter the public release tag."
             exit 1
           }
-          [[ "$RELEASE_ID" =~ ^usdb-public-v[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$ ]] || {
-            echo "::error::Expected a usdb-public-vX.Y.Z release tag."
+          [[ "$RELEASE_ID" == usdb-public-v0.1.0 ]] || {
+            echo "::error::New explorer releases are built in buckyos/usdb-explorer."
             exit 1
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: 0b946e03c71f70e6dfe0bb1bc44d9e6b3ce803ec
+          path: legacy
           fetch-depth: 0
           persist-credentials: false
       - name: Resolve tag build and verify original assets
@@ -51,7 +53,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PYTHONDONTWRITEBYTECODE: "1"
           RELEASE_ID: ${{ inputs.release_id }}
-        run: python3 public-services/publish_release.py preflight --release-id "$RELEASE_ID"
+        run: python3 legacy/public-services/publish_release.py preflight --repository-root legacy --release-id "$RELEASE_ID"
 
   publish:
     name: Approve and publish public pre-release
@@ -67,7 +69,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: 0b946e03c71f70e6dfe0bb1bc44d9e6b3ce803ec
+          path: legacy
           fetch-depth: 0
           persist-credentials: false
       - name: Reverify, publish existing assets and check anonymous downloads
@@ -78,5 +81,5 @@ jobs:
           RELEASE_ID: ${{ inputs.release_id }}
           EXPECTED_FINGERPRINT: ${{ needs.preflight.outputs.fingerprint }}
         run: |
-          python3 public-services/publish_release.py publish --release-id "$RELEASE_ID" \
+          python3 legacy/public-services/publish_release.py publish --repository-root legacy --release-id "$RELEASE_ID" \
             --expected-fingerprint "$EXPECTED_FINGERPRINT"

@@ -1,0 +1,27 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "extract-usdb-explorer",
+  "type": "changed",
+  "scopes": [
+    "release",
+    "documentation",
+    "testing"
+  ],
+  "summary": "Move explorer services and releases into the independent usdb-explorer repository",
+  "details": [
+    "Move browser deployment, the RPC gateway and their tests to usdb-explorer, with independent semantic-version tags and CI.",
+    "Export pinned USDB network identity and RPC requirements instead of importing a sibling node checkout during explorer builds.",
+    "Preserve the legacy v0.1.0 assets and a pinned legacy publisher; reject new public tag preparation in the node release tool.",
+    "Keep legacy CLI compatibility, configuration and deployment schemas, storage paths, credentials and volume identity during the first explorer upgrade."
+  ],
+  "operator_actions": [
+    "Use buckyos/usdb-explorer for future browser builds and releases; existing node release tags and compatibility locks remain independent."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

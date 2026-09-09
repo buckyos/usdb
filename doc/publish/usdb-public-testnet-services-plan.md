@@ -1,5 +1,9 @@
 # USDB 公共测试网服务推进方案
 
+维护边界更新：浏览器/RPC 产品代码与后续实施记录已迁入
+[USDB Explorer](https://github.com/buckyos/usdb-explorer)。本文保留此前验收和节点侧职责记录；
+部署命令以新工程手册为准。
+
 状态：浏览器与公共 RPC 使用独立 `usdb-public` 工具、配置和发布通道，Nginx 可选；
 默认连接显式指定的上游 RPC，不要求本机安装节点。此前已完成的本机 Blockscout 区块/回执回放与
 页面验收用于兼容性验证；实际 archive 重放、公网上线镜像和钱包验收仍待完成。
@@ -92,7 +96,7 @@ bundled 模式使用内置 Nginx，支持已有证书及校验后 reload。前�
 独立机器默认公共服务预算为 6 GiB，建议至少 8 GiB 主机作为预览起点；不包含上游 archive。
 共置时显式配置其他服务预算，并检查实际容器上限及系统余量。节点侧只保留通用的
 `--external-memory-budget`，不识别或控制浏览器服务。具体启动、停止和配置流程见
-[独立部署操作手册](../../public-services/README.md)。
+[独立部署操作手册](https://github.com/buckyos/usdb-explorer/blob/main/explorer/README.md)。
 
 ## 5. 第一阶段：浏览器与钱包 RPC
 

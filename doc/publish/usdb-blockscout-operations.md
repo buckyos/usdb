@@ -1,15 +1,10 @@
-# USDB Blockscout 与公共 RPC 运维入口
+# USDB Explorer 部署入口
 
-浏览器与公共 RPC 已改为独立的 `usdb-public` 发布包，不再作为 `usdb-node` 的子命令或 node-kit 的组成部分。
+浏览器、Blockscout 集成、公共 RPC gateway 和相关安装升级流程现由独立工程
+[USDB Explorer](https://github.com/buckyos/usdb-explorer)维护。
 
-完整的中文配置、Nginx、HTTPS、验收、独立升级及备份说明见：
+- [独立部署操作手册](https://github.com/buckyos/usdb-explorer/blob/main/explorer/README.md)
+- [旧发布与安装兼容说明](../../public-services/README.md)
+- [USDB 导出的网络与 RPC 契约](../interfaces/explorer-rpc-v1.md)
 
-- [独立部署操作手册](../../public-services/README.md)
-- [配置样例](../../public-services/config.example.json)
-- [公共测试网整体推进方案](usdb-public-testnet-services-plan.md)
-
-独立机器只需准备合格的上游历史查询/tracing RPC，不需要先安装或启停 USDB 节点。
-现有服务器可选择 external 模式对接已有 Nginx；专用服务器可选择 bundled 模式。
-之前未发布的 `usdb-node public-services` 预览草案不再作为操作流程。
-
-当前第三方镜像仍为私有兼容性预览，完整 archive 与公网验收尚未完成，具体边界见操作手册。
+USDB 节点提供明确配置的历史读取、tracing 和广播 RPC；节点运维和浏览器生命周期分别管理。

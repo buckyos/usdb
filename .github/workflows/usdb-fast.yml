@@ -53,6 +53,7 @@ jobs:
           bash -n docker/scripts/tools/prepare_usdb_host.sh
           python3 docker/scripts/tools/test_prepare_usdb_host.py
           python3 tests/test_host_prepare.py
+          python3 tests/test_explorer_contract_export.py
           python3 docker/scripts/tools/test_validate_network_bundle.py
           python3 docker/scripts/tools/test_usdb_node.py
           python3 docker/scripts/tools/test_prepare_release_node_kit.py

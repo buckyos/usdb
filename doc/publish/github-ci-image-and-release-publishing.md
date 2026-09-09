@@ -111,24 +111,14 @@ python3 scripts/usdb/prepare_release.py tag \
 已成功而 Go tag push 失败，必须修复问题后继续 push 已创建的同一 Go tag，不能删除、移动或重建
 已经发布的 release tag。`--no-fetch` 仅供明确需要使用现有 remote-tracking refs 的离线检查。
 
-独立浏览器和公共 RPC 使用同一工具的 Public 分支，命令为：
+独立浏览器与公共 RPC 已迁到 [USDB Explorer](https://github.com/buckyos/usdb-explorer)，
+在该仓库使用 `python3 scripts/prepare_release.py --version X.Y.Z` 准备 `vX.Y.Z` tag，
+独立运行 `ci.yml` → `release-build.yml` → `release-publish.yml`。节点的跨仓 tag 和
+compatibility lock 不参与 Explorer 发版。
 
-```bash
-# 在 go-ethereum 目录执行；目标 USDB master 须先提交并推送。
-python3 scripts/usdb/prepare_release.py tag --release-id usdb-public-v0.1.0
-python3 scripts/usdb/prepare_release.py tag \
-  --release-id usdb-public-v0.1.0 --create --push
-```
-
-该分支只对 USDB 做 clean/published HEAD、origin、发布入口、网络目录和标签未占用检查，
-只创建并推送 USDB 的 annotated tag，不读取或更新 Go compatibility lock、不访问 SourceDAO，
-无需执行 `sync-lock`。它触发独立 `USDB Public Services Release`，先运行 Public CI，再构建镜像、
-安装包与安装脚本，最终创建同一仓库 Releases 页面中的独立草稿。随后手工运行
-`usdb-public-publish.yml`（从 `master` 运行，`release_id` 填目标 Public tag），校验已有构建及附件，
-经过 `usdb-release` environment 后发布为 Pre-release，并验证匿名下载；草稿阶段安装 URL
-返回 HTTP 404。该流程保留原始资产，不占用 Latest，也支持不含 Publish workflow 的旧 tag。
-完整流程及续推说明见
-[Public 发布与维护](../../public-services/README.md#7-发布与维护)。
+本仓库只保留 `usdb-public-v0.1.0` 的历史资产及手工 Publish 入口（`usdb-public-publish.yml`）。
+它从固定的迁移前 commit 运行原 publisher，不包含新的浏览器构建流程。历史 tag 和附件不变。
+网络资料由 [Explorer 契约导出工具](../interfaces/explorer-rpc-v1.md)提供。
 
 ### 3.2 USDB services
 
