@@ -116,8 +116,9 @@ python3 scripts/usdb/prepare_release.py tag \
 独立运行 `ci.yml` → `release-build.yml` → `release-publish.yml`。节点的跨仓 tag 和
 compatibility lock 不参与 Explorer 发版。
 
-本仓库只保留 `usdb-public-v0.1.0` 的历史资产及手工 Publish 入口（`usdb-public-publish.yml`）。
-它从固定的迁移前 commit 运行原 publisher，不包含新的浏览器构建流程。历史 tag 和附件不变。
+本仓库的旧 Public build/Publish workflow 已退役，后续只在 Explorer 仓库发布。
+`usdb-public-v0.1.0` 的 tag、未发布草稿及附件仅作为历史记录保留，不安排发布或迁移资产。
+草稿附件仍不能匿名下载；部署应使用 Explorer 后续发布的安装包。
 网络资料由 [Explorer 契约导出工具](../interfaces/explorer-rpc-v1.md)提供。
 
 ### 3.2 USDB services

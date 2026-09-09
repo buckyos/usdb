@@ -1,0 +1,21 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "retire-legacy-public-workflows",
+  "type": "removed",
+  "scopes": ["release", "documentation"],
+  "summary": "Retire the legacy Public build and publication workflows after the Explorer migration",
+  "details": [
+    "Remove the old Public build placeholder and pinned legacy publisher from the node repository.",
+    "Preserve the usdb-public-v0.1.0 tag, unpublished draft and original assets as historical records; future explorer releases are owned by buckyos/usdb-explorer."
+  ],
+  "operator_actions": [
+    "Use the usdb-explorer repository for future explorer releases and installation packages; the retained legacy draft remains unavailable for anonymous download."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": ["https://github.com/buckyos/usdb-explorer"]
+}
