@@ -126,6 +126,9 @@ reward address 的私钥不需要放入节点、Compose 或命令行；SourceDAO
 不替代重组、恢复或协议门禁。全新目录或新网络 generation 不继承旧声明。
 
 发现流程应明确为：运维提供同网 seed/enode → 发现并建立连接 → 确认网络身份/同步状态 → 启用 miner。
+持久 Seed 现可通过 `usdb-node peers add/remove` 管理，`peers status --watch` 分别观察配置应用与实际连接。
+当前 enable 仍要求预检先通过；“提前提交 intent、先以 full 追平再自动挖矿”属于后续阶段，见
+[节点入网与 Seed 管理计划](./usdb-node-peer-discovery-plan.md)。
 种子发现不能保证与种子本身永久直连；也不能只凭 `eth_syncing=false` 或无 peers 的 genesis 声称已追平网络。
 首节点上线后提供可分享的 enode，后续节点持久保存它作为引导来源。
 node key 必须随数据目录保留，NAT 下要核对实际可达的外部地址以及 `31303/TCP+UDP` 映射，
@@ -216,7 +219,8 @@ node key 必须随数据目录保留，NAT 下要核对实际可达的外部地�
 UI 显示 last local seal 与 chain head 两个独立观测，不承诺固定时间内必定出块。
 
 状态查询超时保留带 STALE 的最后显示值，同时将本次观测标为不可用。旧观测不参与任何启用门禁。
-正常 `status` 增加 mining 信息；full 节点的 mining=DISABLED 不降低节点本身的运行 READY 状态。
+正常 `status` 增加 mining 信息；full 节点的 mining=DISABLED 本身不降低运行状态。
+入网状态独立判断：无 Seed、无连接时为 `AWAITING_PEERS`，进度面板会给出具体等待原因。
 
 ## 6. 首节点与 SourceDAO 边界
 

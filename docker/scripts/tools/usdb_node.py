@@ -412,6 +412,8 @@ def down_node(layout: ReleaseLayout, *, keep_bitcoin: bool) -> None:
         run_helper(layout, "run_testnet_runtime.sh", ["down"])
         if not keep_bitcoin:
             run_helper(layout, "run_testnet_bitcoin.sh", ["down"])
+        import usdb_peers
+        usdb_peers.pause_bootstrap(layout)
 
 
 def show_controller_unit(layout: ReleaseLayout) -> int:
@@ -1067,6 +1069,8 @@ def configure_node(
     if role == "miner":
         raise ValueError("Configure a full node first; use usdb-node mining enable after upstream and chain initialization")
     _require_role(role, miner_address, miner_threads)
+    import usdb_peers
+    bootnodes = ",".join(usdb_peers.parse_seeds(bootnodes))
     if bitcoin_p2p not in {"private", "public"}:
         raise ValueError("bitcoin P2P mode must be private or public")
     _require_firewall_mode(firewall_mode)
@@ -1314,7 +1318,10 @@ def setup_node(
     print("Enable mining after the full node is ready with usdb-node mining enable --address ADDRESS.", file=output)
     bootnodes = ""
     if role != "bootnode":
-        bootnodes = _prompt("Bootnode enode(s), comma separated; optional", input_fn=input_fn)
+        bootnodes = _prompt("Seed enode(s), comma separated; may be added later with usdb-node peers add", input_fn=input_fn)
+        if not bootnodes:
+            print("No seed configured: upstream sync can proceed; network membership will remain SEED_REQUIRED. "
+                  "Only the network founder uses mining enable --first-node.", file=output)
     bitcoin_public = _prompt_yes_no(
         "Accept inbound Bitcoin peers on TCP/8333",
         default=False,
@@ -3895,6 +3902,14 @@ def _chain_component(
     env: dict[str, str],
     service: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    import usdb_peers
+    try:
+        operation = usdb_peers.read_state(layout)
+    except (OSError, ValueError) as error:
+        return _component_progress("usdb_chain", "BLOCKED", f"Cannot read peer operation: {error}")
+    if operation and operation["phase"] != "APPLIED":
+        return _component_progress("usdb_chain", "BLOCKED" if operation.get("error") else "STARTING",
+            operation.get("error", f"applying seed configuration; phase={operation['phase']}"))
     container_state = _failed_container_component(
         "usdb_chain",
         service,
@@ -3937,12 +3952,13 @@ def _chain_component(
         head = {"number": block_number, "hash": latest["hash"].lower()}
         syncing = results["eth_syncing"]
         if syncing is False:
+            state, reason, detail = usdb_peers.membership(layout, env, syncing=syncing, peer_count=peer_count)
             return {**_component_progress(
                 "usdb_chain",
-                "READY",
-                f"block={block_number}, peers={peer_count}",
+                state,
+                f"block={block_number}, peers={peer_count}; {reason}: {detail}",
                 current=block_number,
-            ), "head": head}
+            ), "head": head, "membership": reason}
         if not isinstance(syncing, dict):
             raise ValueError("eth_syncing returned an invalid result")
         current = _hex_quantity(syncing.get("currentBlock"), "eth_syncing.currentBlock")
@@ -4539,6 +4555,13 @@ def print_progress_status(
 
 
 STATUS_RECOVERY: dict[str, dict[str, Any]] = {
+    "AWAITING_PEERS": {
+        "next_actions": ["usdb-node peers status", "usdb-node peers add ENODE"],
+        "up_mode": "manual",
+        "up_summary": "Data services are running; network membership still needs a seed or peer connection.",
+        "guidance": ["Keep the full node running and configure a reachable same-network seed. "
+                     "Only the network founder uses mining enable --first-node."],
+    },
     "UNCONFIGURED": {
         "up_mode": "manual",
         "up_summary": "up cannot invent operator-owned node configuration",
@@ -4783,6 +4806,12 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
             ),
         )
     checks["runtime"] = runtime
+    import usdb_peers
+    if usdb_peers.pending(layout):
+        operation = usdb_peers.read_state(layout)
+        checks["peers"] = {"state": operation["phase"],
+                           "summary": operation.get("error", "Applying persistent seed configuration")}
+        return _finish_node_status(report, "BLOCKED" if operation.get("error") else "STARTING")
     mining = _mining_status(layout) if runtime["state"] == "ready" else None
     if mining is not None:
         checks["mining"] = {**mining, "summary": mining.get("detail", "Runtime mining configuration observed")}
@@ -4816,6 +4845,17 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 checks["resources"] = {"state": "unavailable", "summary": str(error)}
                 return _finish_node_status(report, "BLOCKED")
+        if mining is not None and isinstance(mining.get("chain"), dict):
+            chain = mining["chain"]
+            try:
+                state, reason, detail = usdb_peers.membership(layout, env, syncing=chain["syncing"],
+                    peer_count=chain["peers"], node_id=chain["node_id"])
+                checks["network_membership"] = {"state": state, "reason": reason, "summary": detail}
+                if state != "READY":
+                    return _finish_node_status(report, "AWAITING_PEERS")
+            except (OSError, ValueError) as error:
+                checks["network_membership"] = {"state": "unknown", "summary": str(error)}
+                return _finish_node_status(report, "AWAITING_PEERS")
         return _finish_node_status(report, "READY")
     elif runtime_state == "degraded":
         return _finish_node_status(report, "DEGRADED")
@@ -4902,6 +4942,15 @@ def up_node(
     enable_progress: bool = False,
 ) -> tuple[dict[str, Any], int]:
     import usdb_mining
+    import usdb_peers
+    if not dry_run and usdb_peers.pending(layout) and not usdb_mining.pending(layout):
+        with node_operation_lock(layout, "peers"):
+            code = usdb_peers.run_operation(layout)
+        if code:
+            return {"schema_version": NODE_UP_SCHEMA_VERSION, "release_id": layout.release_id,
+                    "network_bundle_id": layout.bundle_id, "initial_state": "STARTING",
+                    "outcome": "peers_pending_or_blocked", "completed_actions": ["peers"],
+                    "status": collect_node_status(layout)}, code
     if not dry_run and usdb_mining.pending(layout):
         with node_operation_lock(layout, "mining"):
             code = usdb_mining.run_operation(layout)
@@ -5009,9 +5058,16 @@ def run_bootstrap_controller(
 ) -> int:
     """Run the non-interactive, non-activating up state machine for systemd."""
     import usdb_mining
+    import usdb_peers
     if usdb_mining.pending(layout):
         with node_operation_lock(layout, "mining"):
-            return usdb_mining.run_operation(layout)
+            code = usdb_mining.run_operation(layout)
+        return 1 if code == 0 and usdb_peers.pending(layout) else code
+    if usdb_peers.pending(layout):
+        with node_operation_lock(layout, "peers"):
+            code = usdb_peers.run_operation(layout)
+        if code or not usdb_peers.read_state(layout).get("resume_bootstrap"):
+            return code
     result, return_code = up_node(
         layout,
         dry_run=False,
@@ -5022,6 +5078,9 @@ def run_bootstrap_controller(
         enable_progress=False,
     )
     print_up_result(result, json_output=False)
+    # An operator can enqueue seed edits while the long bootstrap owns the lock.
+    if usdb_peers.pending(layout):
+        return 1
     if return_code == 0:
         return 0
     if result["outcome"] in {
@@ -5051,7 +5110,10 @@ def submit_up_to_controller(
         )
 
     import usdb_mining
-    if usdb_mining.pending(layout):
+    import usdb_peers
+    if usdb_peers.pending(layout):
+        usdb_peers.request_bootstrap(layout)
+    if usdb_mining.pending(layout) or usdb_peers.pending(layout):
         unit = start_controller_unit(layout)
         return {"schema_version": NODE_UP_SCHEMA_VERSION, "release_id": layout.release_id,
                 "network_bundle_id": layout.bundle_id, "initial_state": "STARTING",
@@ -5214,6 +5276,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     import usdb_mining
     usdb_mining.add_parser(subparsers)
+    import usdb_peers
+    usdb_peers.add_parser(subparsers)
     import usdb_sourcedao
     usdb_sourcedao.add_parser(subparsers)
 
@@ -5523,6 +5587,9 @@ def _operation_name(args: argparse.Namespace) -> str | None:
 
 
 def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
+    if args.command == "peers":
+        import usdb_peers
+        return usdb_peers.execute(layout, args)
     if args.command == "sourcedao":
         import usdb_sourcedao
         return usdb_sourcedao.execute(layout, args)
@@ -5531,6 +5598,9 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         return usdb_mining.execute(layout, args)
     if args.command in {"set-role", "set-resource-policy", "set-bitcoin-profile", "set-firewall-mode", "activate-release", "snapshot"}:
         import usdb_mining
+        import usdb_peers
+        if usdb_peers.pending(layout):
+            raise ValueError("A peer operation is pending; finish it with usdb-node peers apply before changing node configuration")
         if usdb_mining.pending(layout):
             raise ValueError("A mining operation is pending; finish it or use mining disable before changing node configuration")
     if args.command in {"setup", "configure"} and args.resource_mode == "auto" and args.bitcoin_profile is not None:
@@ -5786,7 +5856,7 @@ def main() -> int:
         with operation_context:
             return _execute_command(layout, args)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        if args.command in {"up", "mining", "sourcedao"} and getattr(args, "json", False):
+        if args.command in {"up", "mining", "sourcedao", "peers"} and getattr(args, "json", False):
             print(
                 json.dumps(
                     {

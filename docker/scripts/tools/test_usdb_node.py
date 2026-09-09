@@ -28,6 +28,8 @@ SPEC.loader.exec_module(NODE)
 
 REPOSITORY_ROOT = MODULE_PATH.parents[3]
 SOURCE_BUNDLE = REPOSITORY_ROOT / "docker/networks/testnet-v0"
+sys.path.insert(0, str(REPOSITORY_ROOT / "tests"))
+from common.enode import V4 as VALID_SEED
 
 
 class UsdbNodeTests(unittest.TestCase):
@@ -174,7 +176,7 @@ class UsdbNodeTests(unittest.TestCase):
             [
                 str(data_root),
                 "full",
-                "enode://example",
+                VALID_SEED,
                 "n",
                 "n",
                 "n",
@@ -194,7 +196,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(env["USDB_NODE_ROLE"], "full")
         self.assertEqual(env["USDB_MINER_ADDRESS"], "")
         self.assertEqual(env["USDB_MINER_THREADS"], "1")
-        self.assertEqual(env["USDB_BOOTNODES"], "enode://example")
+        self.assertEqual(env["USDB_BOOTNODES"], VALID_SEED)
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
         self.assertEqual(env["USDB_FIREWALL_MODE"], "external")
         self.assertEqual(env["USDB_OPERATOR_SSH_PORT"], "22")
@@ -1336,7 +1338,8 @@ class UsdbNodeTests(unittest.TestCase):
             latest = {"eth_getBlockByNumber": {"number": "0x43", "hash": block_hash}}
             with mock.patch.object(NODE, "_json_rpc_batch", side_effect=[identity, latest]) as rpc:
                 component = NODE._chain_component(layout, {}, running)
-            self.assertEqual(component["state"], "READY")
+            self.assertEqual(component["state"], "WAITING")
+            self.assertEqual(component["membership"], "SEED_REQUIRED")
             self.assertEqual(component["current"], 67)
             self.assertEqual(component["head"], {"number": 67, "hash": block_hash})
             self.assertEqual(rpc.call_args_list[-1].args[1], (("eth_getBlockByNumber", ["latest", False]),))
@@ -1421,7 +1424,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(report["overall_state"], "SYNCING")
         self.assertEqual(
             [component["state"] for component in report["components"]],
-            ["SKIPPED", "SKIPPED", "READY", "SYNCING", "READY", "READY"],
+            ["SKIPPED", "SKIPPED", "READY", "SYNCING", "READY", "WAITING"],
         )
         bitcoin_component = next(
             item for item in report["components"] if item["id"] == "bitcoin"
@@ -1996,6 +1999,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_status_ready_runs_readiness_after_all_core_services_are_running(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         self.configure_full_node(layout, "ready-status-data")
+        self.node_env.write_text(NODE.upsert_env(self.node_env.read_text(), {"USDB_BOOTNODES": VALID_SEED}))
         calls: list[tuple[str, tuple[str, ...]]] = []
         bitcoin = [{"Service": "btc-node", "State": "running", "Health": "healthy"}]
         runtime = [
@@ -2018,7 +2022,8 @@ class UsdbNodeTests(unittest.TestCase):
             return mock.Mock(returncode=0, stdout=output, stderr="")
 
         with mock.patch.object(NODE, "run_helper", side_effect=ready), mock.patch.object(
-            NODE, "_mining_status", return_value={"state": "DISABLED", "applied": True}
+            NODE, "_mining_status", return_value={"state": "DISABLED", "applied": True,
+                "chain": {"syncing": False, "peers": 1, "node_id": "aa" * 32}}
         ):
             report = NODE.collect_node_status(layout)
 
@@ -2033,6 +2038,17 @@ class UsdbNodeTests(unittest.TestCase):
                 ("run_testnet_runtime.sh", ("indexer-status",)),
             ],
         )
+
+        for seeds, peers, reason in (("", 0, "SEED_REQUIRED"), (VALID_SEED, 0, "WAITING_FOR_PEERS")):
+            self.node_env.write_text(NODE.upsert_env(self.node_env.read_text(), {"USDB_BOOTNODES": seeds}))
+            with mock.patch.object(NODE, "run_helper", side_effect=ready), mock.patch.object(
+                NODE, "_mining_status", return_value={"state": "DISABLED", "applied": True,
+                    "chain": {"syncing": False, "peers": peers, "node_id": "aa" * 32}}
+            ):
+                report = NODE.collect_node_status(layout)
+            self.assertEqual(report["overall_state"], "AWAITING_PEERS")
+            self.assertEqual(report["checks"]["network_membership"]["reason"], reason)
+            self.assertIsNone(NODE._up_action(report, False))
 
     def test_resource_recovery_does_not_mask_an_unexpected_service_failure(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -3072,7 +3088,7 @@ class UsdbNodeTests(unittest.TestCase):
             role="full",
             miner_address="",
             miner_threads=1,
-            bootnodes="enode://example",
+            bootnodes=VALID_SEED,
             nat="",
             bitcoin_rpc_user="node-a",
             bitcoin_p2p="private",
@@ -3097,7 +3113,7 @@ class UsdbNodeTests(unittest.TestCase):
             self.assertEqual(updated[key], value)
         self.assertEqual(updated["USDB_FIREWALL_MODE"], "managed")
         self.assertEqual(updated["BTC_RPC_PASSWORD"], original["BTC_RPC_PASSWORD"])
-        self.assertEqual(updated["USDB_BOOTNODES"], "enode://example")
+        self.assertEqual(updated["USDB_BOOTNODES"], VALID_SEED)
 
         incompatible = dict(layout.runtime_compatibility)
         incompatible["compatibility_id"] = "8" * 64

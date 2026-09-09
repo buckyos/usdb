@@ -391,21 +391,9 @@ def chain_view(layout: node.ReleaseLayout):
 
 
 def parse_seeds(value):
-    seeds = []
-    for entry in value.split(","):
-        if not entry.strip():
-            continue
-        parsed = urlsplit(entry.strip())
-        try:
-            valid = (parsed.scheme == "enode" and re.fullmatch(r"[0-9a-fA-F]{128}", parsed.username or "")
-                     and parsed.hostname and parsed.port and not parsed.password and not parsed.fragment
-                     and not parsed.path and (not parsed.query or re.fullmatch(r"discport=[0-9]+", parsed.query)))
-        except ValueError:
-            valid = False
-        if not valid:
-            raise ValueError("INVALID_PEER_SOURCE: USDB_BOOTNODES must contain comma-separated enode URLs")
-        seeds.append(entry.strip())
-    return seeds
+    """Use the same seed validation for setup, peer edits, and mining gates."""
+    import usdb_peers
+    return usdb_peers.parse_seeds(value)
 
 
 def peer_check(layout: node.ReleaseLayout, env, chain, data_binding, first_node):
@@ -496,6 +484,7 @@ def _same_target(operation, target):
 
 def submit(layout: node.ReleaseLayout, *, address=None, threads=1, first_node=False, expect_pass=None, disable=False,
            yes=False, json_output=False):
+    import usdb_peers
     target = {"USDB_NODE_ROLE": "full" if disable else "miner",
               "USDB_MINER_ADDRESS": "" if disable else address_check(layout, address),
               "USDB_MINER_THREADS": "1" if disable else str(threads)}
@@ -507,6 +496,8 @@ def submit(layout: node.ReleaseLayout, *, address=None, threads=1, first_node=Fa
         # Attaching is read-only and must work while the controller owns the lock.
         node.start_controller_unit(layout)
         return {**existing, "outcome": "controller_submitted"}
+    if not disable and usdb_peers.pending(layout):
+        raise ValueError("PEER_OPERATION_PENDING: wait for peers status to show APPLIED before enabling mining")
     if disable and not yes:
         if not sys.stdin.isatty():
             raise ValueError("CONFIRMATION_REQUIRED: non-interactive disable requires --yes")
@@ -519,6 +510,8 @@ def submit(layout: node.ReleaseLayout, *, address=None, threads=1, first_node=Fa
     if disable:
         node.stop_controller_unit(layout)
     with node.node_operation_lock(layout, "mining-disable" if disable else "mining-enable"):
+        if disable:
+            usdb_peers.defer_after_disable(layout)
         operation = read_state(layout)
         if operation and operation.get("phase") not in TERMINAL and not disable:
             if not _same_target(operation, target):

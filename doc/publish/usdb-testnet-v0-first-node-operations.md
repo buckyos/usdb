@@ -269,6 +269,9 @@ core snapshot、optional script registry 与独立 `auxiliary_state`。
 SSH 中断不会停止 controller 或删除数据。`usdb-node controller status` 与
 `usdb-node controller logs --follow` 分别查询后台编排状态和 journal；重新执行 `up` 会附加或从
 Bitcoin/balance-history 的现有同步状态继续。controller 到达 `READY` 后退出，长期容器由 Docker 维持。
+数据服务已启动但尚未入网时，`status` 显示 `AWAITING_PEERS`，controller 也可结束本轮编排并保留服务。
+加入节点通过 `usdb-node peers add ENODE` 补充同网引导来源，再用 `peers status --watch` 观察连接；
+首节点按第 9 节明确执行 `mining enable --first-node`。详见[Seed 管理与入网计划](./usdb-node-peer-discovery-plan.md)。
 SourceDAO bootstrap 仍保持独立，因为 Bootstrap Admin 私钥不能进入 node kit 或 Compose。设计与故障边界见
 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
 

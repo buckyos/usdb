@@ -9,10 +9,10 @@ from unittest import mock
 
 import usdb_node as NODE
 import usdb_mining as MINING
+from common.enode import V4 as SEED
 
 ADDRESS = "0x4ddc71108239dbb30aa288b93ab1d18539ec863a"
 PASS_ID = "1f" * 32 + "i0"
-SEED = "enode://" + "12" * 64 + "@8.8.8.8:31303"
 
 
 class MiningFixture:

@@ -56,6 +56,7 @@ jobs:
           python3 docker/scripts/tools/test_validate_network_bundle.py
           python3 docker/scripts/tools/test_usdb_node.py
           python3 docker/scripts/tools/test_prepare_release_node_kit.py
+          python3 tests/test_node_peers.py
 
       - name: Run Rust fast gate
         run: src/btc/scripts/run_fast_ci.sh

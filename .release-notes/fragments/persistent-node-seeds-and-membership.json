@@ -1,0 +1,25 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "persistent-node-seeds-and-membership",
+  "type": "added",
+  "scopes": ["deployment", "node-runtime", "documentation", "testing"],
+  "summary": "Manage persistent node seeds and distinguish chain health from network membership",
+  "details": [
+    "Add peers list/add/remove/status/apply to the node kit with shared enode validation for IPv4, bracketed IPv6 and DNS, preserving distinct endpoints for one node identity.",
+    "Queue seed edits during bootstrap or an existing mining transition; apply with a durable journal and recreate only an already running chain, preserving upstream services, chain data and existing mining authorization.",
+    "Recover partial configuration/authorization writes, reject external drift, and require explicit apply to retry a failed target container. Down preserves seed intent without implicitly resuming services.",
+    "Report SEED_REQUIRED or WAITING_FOR_PEERS instead of claiming readiness from an idle genesis; retain the acknowledged first-node exception only for its bound data and node identity.",
+    "IPv6 container networking, endpoint failover and early mining intent with automatic synchronization gates remain subsequent phases. Basic CONNECTED status is not a common-height hash verification or mining authorization."
+  ],
+  "operator_actions": [
+    "After installing the updated node kit, use peers add ENODE for joiners missing a persistent seed, then peers status --watch to observe application and connection. Seed changes on running nodes briefly restart only chain.",
+    "Resolve any peer operation error before peers apply. Wait for application and existing mining preflight gates before mining enable; use --first-node only for the acknowledged network founder."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": []
+}

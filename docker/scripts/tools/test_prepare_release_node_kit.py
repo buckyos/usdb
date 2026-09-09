@@ -86,6 +86,7 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertTrue((output / "docker/compose.runtime.yml").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_node.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_mining.py").is_file())
+        self.assertTrue((output / "docker/scripts/tools/usdb_peers.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/chain_file_inspection.py").is_file())
         probe = subprocess.run([sys.executable, str(output / "docker/scripts/tools/check_explorer_rpc.py"), "--help"],
                                cwd=self.root, capture_output=True, text=True)
@@ -99,6 +100,10 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
                                   "mining", "check", "--help"], cwd=self.root, capture_output=True, text=True)
         self.assertEqual(command.returncode, 0, command.stderr)
         self.assertIn("--first-node", command.stdout)
+        command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
+                                  "peers", "status", "--help"], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(command.returncode, 0, command.stderr)
+        self.assertIn("--watch", command.stdout)
 
         with self.assertRaisesRegex(ValueError, "refusing to replace"):
             BUILDER.build_node_kit(

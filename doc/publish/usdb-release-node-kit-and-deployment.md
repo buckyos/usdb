@@ -523,6 +523,12 @@ Bitcoin RPC 返回 warmup 错误时，进度面板会从本次 `debug.log` 启�
 
 ## 5. 矿工和 Joiner
 
+持久引导来源使用 `usdb-node peers list/add/remove/status/apply` 管理，支持在上游同步期间补充 Seed。
+运行中的变更由现有 controller 只重建 chain；未启动时仅写配置。未配置 Seed 的普通节点会显示
+`SEED_REQUIRED` / `AWAITING_PEERS`，不再因本地 `eth_syncing=false` 误报已经入网。
+命令、故障恢复和 IPv6 / 延后启用矿工的实施顺序见
+[节点入网与 Seed 管理](./usdb-node-peer-discovery-plan.md)。
+
 切换矿工角色：
 
 ```bash
