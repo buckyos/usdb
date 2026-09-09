@@ -63,7 +63,7 @@ jobs:
           tag="${image}:bitcoin-28.1-git-${revision}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           scan_enforcement="report-only"
           if [[ "$GITHUB_REF_TYPE" == "tag" &&
-                "$GITHUB_REF_NAME" =~ ^usdb-(testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$ ]]; then
+                "$GITHUB_REF_NAME" =~ ^usdb-mainnet-v[0-9]+-r[1-9][0-9]*$ ]]; then
             scan_enforcement="strict"
           fi
           {

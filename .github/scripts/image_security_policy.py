@@ -20,6 +20,10 @@ TESTNET_RE = re.compile(r"refs/tags/usdb-testnet-v[0-9]+-r[1-9][0-9]*")
 POLICY_SCHEMA = "usdb-image-exceptions:v1"
 
 
+class SourceScopeChanged(ValueError):
+    """Previously reviewed files disappeared or no longer have a hashable layout."""
+
+
 def require(condition: bool, message: str) -> None:
     """Reject incomplete evidence and ambiguous exception configuration."""
     if not condition:
@@ -60,18 +64,21 @@ def source_fingerprint(root: Path, paths: list[str]) -> str:
         parts = Path(path).parts
         require(parts and not Path(path).is_absolute() and ".." not in parts,
                 f"Invalid reviewed source path: {path}")
-        require((root / path).exists(), f"Reviewed source path is missing: {path}")
+    for path in paths:
+        if not (root / path).exists():
+            raise SourceScopeChanged(f"Reviewed source path is missing: {path}")
     files = subprocess.run(
         ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
          "--exclude-standard", "--", *paths],
         check=True, capture_output=True,
     ).stdout.split(b"\0")
     digest = hashlib.sha256()
-    require(any(files), "Reviewed source selection is empty")
+    if not any(files):
+        raise SourceScopeChanged("Reviewed source selection is empty")
     for name in sorted(set(files) - {b""}):
         path = root / name.decode("utf-8")
-        require(path.is_file() and not path.is_symlink(),
-                f"Reviewed source is missing or not a regular file: {path}")
+        if not path.is_file() or path.is_symlink():
+            raise SourceScopeChanged(f"Reviewed source is missing or not a regular file: {path}")
         executable = b"x" if path.stat().st_mode & 0o111 else b"-"
         digest.update(name + b"\0" + executable + b"\0")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
@@ -139,14 +146,19 @@ def validate_policy(policy: dict) -> None:
 
 def source_review(root: Path, profile: dict) -> dict:
     """Expose the exact review mismatch without changing or renewing exceptions."""
-    actual = source_fingerprint(root, profile["source_paths"])
+    try:
+        actual = source_fingerprint(root, profile["source_paths"])
+    except SourceScopeChanged as error:
+        return {"expected_sha256": profile["source_sha256"], "actual_sha256": None,
+                "matches": False, "source_paths": profile["source_paths"],
+                "review": profile["review"], "error": str(error)}
     return {"expected_sha256": profile["source_sha256"], "actual_sha256": actual,
             "matches": actual == profile["source_sha256"],
             "source_paths": profile["source_paths"], "review": profile["review"]}
 
 
 def check_source_reviews(policy: dict, root: Path) -> dict:
-    """Fail before compilation when a recorded source review needs renewal."""
+    """Record scope drift for an explicit review or strict release preflight."""
     validate_policy(policy)
     require(bool(policy["profiles"]), "Source review preflight requires image profiles")
     profiles = {image: source_review(root, profile)
@@ -161,7 +173,7 @@ def describe_source_review(image: str, review: dict) -> str:
             f"  expected_sha256={review['expected_sha256']}\n"
             f"  actual_sha256={review['actual_sha256']}\n"
             f"  reviewed_paths={json.dumps(review['source_paths'])}\n"
-            f"  review={review['review']}")
+            f"  review={review['review']}" + (f"\n  error={review['error']}" if "error" in review else ""))
 
 
 def evaluate(report: dict, policy: dict, *, image_reference: str, source_revision: str,
@@ -269,14 +281,16 @@ def main() -> int:
     fingerprint = sub.add_parser("fingerprint", help="Print source fingerprint for a reviewed scope")
     fingerprint.add_argument("--repository-root", type=Path, default=Path.cwd())
     fingerprint.add_argument("paths", nargs="+")
-    scope = sub.add_parser("check-scope", help="Check recorded source reviews before expensive release builds")
+    scope = sub.add_parser("check-scope", help="Check recorded source reviews without renewing them")
     scope.add_argument("--exceptions", type=Path, required=True)
     scope.add_argument("--repository-root", type=Path, default=Path.cwd())
     scope.add_argument("--output", type=Path)
+    scope.add_argument("--enforcement", choices=("strict", "report-only"), default="strict")
     args = parser.parse_args()
     try:
         if args.command == "check-scope":
             result = check_source_reviews(read_json(args.exceptions), args.repository_root)
+            result["enforcement"] = args.enforcement
             if args.output:
                 args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
             for image, review in result["profiles"].items():
@@ -284,7 +298,9 @@ def main() -> int:
             if result["result"] != "pass":
                 print("Reviewed source inputs changed. Review reachability and mitigations before updating "
                       "the catalog; do not auto-refresh fingerprints or extend expiry dates.", file=sys.stderr)
-            return int(result["result"] != "pass")
+            if args.enforcement == "report-only":
+                print("Source scope mode: report-only; stale reviews are recorded, not renewed.")
+            return int(args.enforcement == "strict" and result["result"] != "pass")
         if args.command == "fingerprint":
             print(source_fingerprint(args.repository_root, args.paths))
             return 0
@@ -309,7 +325,7 @@ def main() -> int:
         decision["exceptions_sha256"] = sha256(args.exceptions) if args.exceptions else None
         args.output.write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
         if decision["source_review"] and not decision["source_review"]["matches"]:
-            print(describe_source_review(image_reference.split("@")[0], decision["source_review"]))
+            print(describe_source_review(args.image_reference.split("@")[0], decision["source_review"]))
         print(f"Policy evaluated: accepted={decision['accepted_count']}; "
               f"unresolved={decision['blocking_count']}; result={decision['result']}")
         return 0

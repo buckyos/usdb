@@ -33,6 +33,7 @@ jobs:
           check-latest: false
 
       - name: Check release image source review scope
+        if: startsWith(github.ref, 'refs/tags/usdb-mainnet-')
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |

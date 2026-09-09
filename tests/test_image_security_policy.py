@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github/scripts/image_security_policy.py"
@@ -136,29 +137,35 @@ class ImageSecurityPolicyTests(unittest.TestCase):
         command = [sys.executable, str(SCRIPT), "check-scope", "--exceptions", str(catalog),
                    "--repository-root", str(self.root), "--output", str(output)]
         for changed in (False, True):
-            with self.subTest(changed=changed):
-                if changed:
-                    (self.root / "runtime/new-handler.py").write_text("import xml.etree\n")
-                result = subprocess.run(command, capture_output=True, text=True)
-                self.assertEqual(result.returncode, int(changed), result.stderr)
-                self.assertEqual(json.loads(output.read_text())["result"], "fail" if changed else "pass")
-                self.assertIn(IMAGE, result.stdout)
-                self.assertIn("expected_sha256=", result.stdout)
-                self.assertIn("actual_sha256=", result.stdout)
-                self.assertEqual(catalog.read_text(), original)
-                if changed:
-                    self.assertIn("STALE", result.stdout)
-                    self.assertIn("do not auto-refresh", result.stderr)
+            if changed:
+                (self.root / "runtime/new-handler.py").write_text("import xml.etree\n")
+            for mode in ("strict", "report-only"):
+                with self.subTest(changed=changed, mode=mode):
+                    result = subprocess.run(command + ["--enforcement", mode],
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, int(changed and mode == "strict"), result.stderr)
+                    evidence = json.loads(output.read_text())
+                    self.assertEqual(evidence["result"], "fail" if changed else "pass")
+                    self.assertEqual(evidence["enforcement"], mode)
+                    self.assertIn(IMAGE, result.stdout)
+                    self.assertIn("expected_sha256=", result.stdout)
+                    self.assertIn("actual_sha256=", result.stdout)
+                    self.assertEqual(catalog.read_text(), original)
+                    if changed:
+                        self.assertIn("STALE", result.stdout)
+                        self.assertIn("do not auto-refresh", result.stderr)
+        self.assertEqual(subprocess.run(command, capture_output=True).returncode, 1)
 
-    def test_scope_preflight_rejects_missing_files_and_empty_profiles(self):
+    def test_scope_preflight_records_deleted_files_and_rejects_empty_profiles(self):
         (self.root / "runtime/start.sh").unlink()
-        with self.assertRaises(ValueError):
-            POLICY.check_source_reviews(self.catalog, self.root)
+        evidence = POLICY.check_source_reviews(self.catalog, self.root)
+        self.assertEqual(evidence["result"], "fail")
+        self.assertIn("error", evidence["profiles"][IMAGE])
         with self.assertRaisesRegex(ValueError, "requires image profiles"):
             POLICY.check_source_reviews({"schema_version": POLICY.POLICY_SCHEMA,
                                          "profiles": {}, "exceptions": []}, self.root)
 
-    def test_fast_gate_rejects_stale_review_before_compilation(self):
+    def test_fast_gate_reaches_compilation_with_stale_review(self):
         (self.root / "runtime/start.sh").write_text("changed build input\n")
         script = self.root / "src/btc/scripts/run_fast_ci.sh"
         script.parent.mkdir(parents=True)
@@ -173,22 +180,38 @@ class ImageSecurityPolicyTests(unittest.TestCase):
         bin_dir.mkdir()
         for name in ("cargo", "rustc", "shellcheck"):
             stub = bin_dir / name
-            stub.write_text('#!/bin/sh\necho unexpected-compilation >&2\nexit 99\n')
+            stub.write_text('#!/bin/sh\necho reached-toolchain >&2\nexit 99\n')
             stub.chmod(0o755)
         result = subprocess.run(["bash", str(script)], capture_output=True, text=True,
                                 env={**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]})
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("STALE", result.stdout)
-        self.assertNotIn("unexpected-compilation", result.stderr)
+        self.assertEqual(result.returncode, 99, result.stdout + result.stderr)
+        self.assertNotIn("STALE", result.stdout)
+        self.assertIn("reached-toolchain", result.stderr)
 
     def test_source_mode_change_invalidates_exception(self):
         (self.root / "runtime/start.sh").chmod(0o755)
         self.assertEqual(self.evaluate()["result"], "fail")
 
     def test_missing_reviewed_source_fails_closed(self):
+        subprocess.run(["git", "-C", str(self.root), "add", "runtime/start.sh"], check=True)
         (self.root / "runtime/start.sh").unlink()
-        with self.assertRaises(ValueError):
-            self.evaluate()
+        decision = self.evaluate()
+        self.assertEqual(decision["result"], "fail")
+        self.assertIsNone(decision["source_review"]["actual_sha256"])
+        diagnostic = self.evaluate(enforcement="report-only")
+        self.assertEqual(diagnostic["result"], "pass")
+        self.assertEqual(diagnostic["blocking_count"], 1)
+        self.assertIn("error", diagnostic["source_review"])
+
+    def test_deleted_source_path_is_stale_but_unsafe_catalog_paths_are_errors(self):
+        (self.root / "runtime/start.sh").unlink()
+        (self.root / "runtime").rmdir()
+        decision = self.evaluate(enforcement="report-only")
+        self.assertEqual(decision["result"], "pass")
+        self.assertFalse(decision["source_review"]["matches"])
+        self.catalog["profiles"][IMAGE]["source_paths"].append("../outside")
+        with self.assertRaisesRegex(ValueError, "Invalid reviewed source path"):
+            self.evaluate(enforcement="report-only")
 
     def test_os_exception_cannot_cover_static_or_language_dependency(self):
         target = self.report["Results"][0]
@@ -219,6 +242,43 @@ class ImageSecurityPolicyTests(unittest.TestCase):
         decision = self.evaluate(enforcement="report-only")
         self.assertEqual(decision["result"], "pass")
         self.assertEqual(decision["blocking_count"], 1)
+
+    def test_stale_scope_cli_reports_findings_before_optional_enforcement(self):
+        (self.root / "runtime/start.sh").write_text("changed build input\n")
+        report = self.root / "report.json"
+        catalog = self.root / "catalog.json"
+        output = self.root / "decision.json"
+        report.write_text(json.dumps(self.report))
+        catalog.write_text(json.dumps(self.catalog))
+        for mode in ("strict", "report-only"):
+            with self.subTest(mode=mode):
+                result = subprocess.run([sys.executable, str(SCRIPT), "evaluate",
+                    "--report", str(report), "--exceptions", str(catalog),
+                    "--image-reference", REFERENCE, "--source-revision", "3" * 40,
+                    "--source-ref", "refs/tags/usdb-testnet-v0-r22", "--enforcement", mode,
+                    "--repository-root", str(self.root), "--output", str(output)],
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("STALE", result.stdout)
+                decision = json.loads(output.read_text())
+                self.assertFalse(decision["source_review"]["matches"])
+                self.assertEqual(decision["blocking_count"], 1)
+                self.assertEqual(decision["accepted_count"], 0)
+                self.assertIn("reviewed source/build/deployment inputs changed",
+                              decision["blocking"][0]["reasons"])
+                enforced = subprocess.run([sys.executable, str(SCRIPT), "enforce",
+                                           "--decision", str(output)], capture_output=True)
+                self.assertEqual(enforced.returncode, int(mode == "strict"))
+
+    def test_scope_report_only_rejects_malformed_catalog(self):
+        catalog = self.root / "catalog.json"
+        self.catalog["exceptions"][0]["owner"] = ""
+        catalog.write_text(json.dumps(self.catalog))
+        result = subprocess.run([sys.executable, str(SCRIPT), "check-scope",
+            "--exceptions", str(catalog), "--repository-root", str(self.root),
+            "--enforcement", "report-only"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Missing exception owner", result.stderr)
 
     def test_clean_report_passes_with_expired_unused_exceptions(self):
         self.report["Results"][0]["Vulnerabilities"] = []
@@ -283,22 +343,74 @@ class ImageSecurityPolicyTests(unittest.TestCase):
 
 
 class ReviewedImageReportsTests(unittest.TestCase):
-    def test_all_reviewed_os_findings_are_classified(self):
+    def test_historical_os_findings_require_the_recorded_review_scope(self):
         catalog = POLICY.read_json(ROOT / ".github/security/image-vulnerability-exceptions.json")
         for image, critical, high in (("bitcoin", 5, 78), ("services", 5, 89)):
             with self.subTest(image=image):
                 report = POLICY.read_json(ROOT / f"tests/fixtures/image-security/{image}.json")
                 repository = report["ArtifactName"].split("@")[0]
-                review = POLICY.source_review(ROOT, catalog["profiles"][repository])
-                self.assertTrue(review["matches"], POLICY.describe_source_review(repository, review))
-                decision = POLICY.evaluate(report, catalog, image_reference=report["ArtifactName"],
-                    source_revision=report["Metadata"]["ImageConfig"]["config"]["Labels"]["org.opencontainers.image.revision"],
-                    source_ref="refs/tags/usdb-testnet-v0-r17",
-                    enforcement="strict", root=ROOT, today=TODAY)
-                self.assertEqual(decision["raw_counts"]["CRITICAL"], critical)
-                self.assertEqual(decision["raw_counts"]["HIGH"], high)
-                self.assertEqual(decision["blocking"], [])
-                self.assertEqual(decision["accepted_count"], critical + high)
+                profile = catalog["profiles"][repository]
+                self.assertEqual(report["ArtifactName"], profile["baseline_image"])
+                # Historical reports test classification at their review date, not current release eligibility.
+                # Real source hashing is covered by the isolated filesystem tests above and explicit review CI.
+                for matches in (True, False):
+                    with self.subTest(matches=matches), patch.object(POLICY, "source_fingerprint",
+                            return_value=profile["source_sha256"] if matches else "0" * 64):
+                        decision = POLICY.evaluate(report, catalog, image_reference=report["ArtifactName"],
+                            source_revision=report["Metadata"]["ImageConfig"]["config"]["Labels"]["org.opencontainers.image.revision"],
+                            source_ref="refs/tags/usdb-testnet-v0-r17",
+                            enforcement="strict", root=ROOT, today=TODAY)
+                    self.assertEqual(decision["raw_counts"]["CRITICAL"], critical)
+                    self.assertEqual(decision["raw_counts"]["HIGH"], high)
+                    self.assertEqual(decision["accepted_count"], critical + high if matches else 0)
+                    self.assertEqual(decision["blocking_count"], 0 if matches else critical + high)
+                    self.assertEqual(decision["result"], "pass" if matches else "fail")
+
+
+class ReleaseSecurityWorkflowTests(unittest.TestCase):
+    def test_manual_batch_requires_exact_image_repositories_and_digests(self):
+        workflow = (ROOT / ".github/workflows/release-security-review.yml").read_text()
+        validation = workflow.split("        run: |\n", 1)[1].split("\n  scope:", 1)[0]
+        services = REFERENCE
+        bitcoin = REFERENCE.replace("usdb-services", "usdb-bitcoin-core")
+        for services_ref, bitcoin_ref, mode, expected in (
+                (services, bitcoin, "report-only", 0),
+                (services, bitcoin, "strict", 0),
+                (services.replace("@sha256:", ":"), bitcoin, "strict", 1),
+                (services, services, "report-only", 1),
+                (services, bitcoin, "disabled", 1)):
+            with self.subTest(services=services_ref, bitcoin=bitcoin_ref, mode=mode):
+                with tempfile.TemporaryDirectory(prefix="usdb-review-workflow-") as directory:
+                    output = Path(directory) / "output"
+                    result = subprocess.run(["bash", "-c", validation], cwd=ROOT,
+                        env={**os.environ, "SERVICES_IMAGE": services_ref, "BITCOIN_IMAGE": bitcoin_ref,
+                             "ENFORCEMENT": mode, "GITHUB_OUTPUT": str(output)},
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    if expected == 0:
+                        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                                                           text=True).strip()
+                        self.assertEqual(output.read_text().strip(), "revision=" + revision)
+                    else:
+                        self.assertFalse(output.exists())
+
+    def test_image_producers_only_enforce_mainnet_releases(self):
+        for image in ("services", "bitcoin"):
+            workflow = (ROOT / f".github/workflows/usdb-{image}-image.yml").read_text()
+            # Execute the producer's actual policy selection without building or publishing an image.
+            selection = workflow.split('          scan_enforcement="report-only"\n', 1)[1].split(
+                "          {\n", 1)[0]
+            for ref_type, ref_name, expected in (
+                    ("branch", "master", "report-only"),
+                    ("tag", "usdb-testnet-v0-r22", "report-only"),
+                    ("tag", "usdb-mainnet-v1-r1", "strict")):
+                with self.subTest(image=image, ref=ref_name):
+                    result = subprocess.run(["bash", "-c", 'set -euo pipefail\n'
+                        'scan_enforcement="report-only"\n' + selection + 'echo "$scan_enforcement"\n'],
+                        env={**os.environ, "GITHUB_REF_TYPE": ref_type, "GITHUB_REF_NAME": ref_name},
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), expected)
 
 
 if __name__ == "__main__":

@@ -206,18 +206,18 @@ ghcr.io/buckyos/usdb-bitcoin-core@sha256:<64-char-digest>
 
 | Image | `testnet` tag | `mainnet` tag | 说明 |
 | --- | --- | --- | --- |
-| `usdb-services` | High/Critical 阻断 | High/Critical 阻断 | USDB Rust runtime 和发布依赖严格处理 |
-| `usdb-bitcoin-core` | High/Critical 阻断 | High/Critical 阻断 | Bitcoin runtime/base image 严格处理 |
-| `usdb-chain` | report-only | High/Critical 阻断 | 测试网先保留 ETHW 继承基线，不以未完成归因的历史包告警阻断 |
+| `usdb-services` | report-only | High/Critical 阻断 | 测试阶段按需进行批次复审，正式主网严格处理 |
+| `usdb-bitcoin-core` | report-only | High/Critical 阻断 | 测试阶段保留完整报告，正式主网严格处理 |
+| `usdb-chain` | report-only | High/Critical 阻断 | 测试网保留 ETHW 继承基线及后续变化报告 |
 
-人工 dispatch 用于诊断，三类 image 均为 report-only。report-only 只放宽 finding count，不放宽
-scanner 和证据有效性。`usdb-chain` 的测试网例外不覆盖 Go 中 USDB 增量；该增量仍由 Fast、
-cross-repository golden、CodeQL 和阶段 C 共识差分审计严格处理。
+测试网 tag 和普通分支的 image dispatch 均为 report-only；选择 mainnet tag 时仍严格执行。
+report-only 只放宽未处置 finding 的阻断，不放宽 scanner 和证据有效性。Fast、cross-repository
+golden、CodeQL 和共识差分测试继续运行，不以审查指纹变化要求每个测试版都先完成人工复审。
+Fast 仅在 mainnet release 保留编译前的严格 `check-scope`；本地 Fast 不检查当前源码的审查资格。
 
 Release Candidate resolver 只选择同一 release tag/source revision 上成功的 image-producing run，
-因此 services/Bitcoin 的严格扫描失败会阻止测试网 candidate 选中该镜像；chain 测试网可以携带
-完整报告继续资格验证。该阶段先把报告绑定到 producer run，后续 schema 升级再把 scan metadata
-digest 写入 release manifest。
+测试网可以携带未处置告警及失效审查记录继续资格验证；扫描器或证据错误仍阻止 candidate 选取。
+该阶段先把报告绑定到 producer run，后续 schema 升级再把 scan metadata digest 写入 release manifest。
 
 2026-09-07 起，严格门禁按未处置 High/Critical 执行。完整 JSON/SARIF 不过滤；
 `metadata.json` 升级为 `usdb-image-vulnerability-report:v2`，继续保留原始数量，另行记录
@@ -227,10 +227,31 @@ digest 写入 release manifest。
 `.github/security/image-vulnerability-exceptions.json` 中的本批例外仅适用于正式 testnet tag，
 2026-10-07 UTC 起失效，不覆盖 mainnet 或 Rust/其他语言依赖。匹配条件包括精确 CVE、
 包名、安装版本、severity、Debian 版本、架构及已审查源码/构建/部署文件指纹；出现
-`FixedVersion` 时也不再接受原例外。目录损坏、扫描输入身份不一致和未分类告警仍失败。
+`FixedVersion` 时也不再接受原例外。源码增删改会将相关项记录为未处置，不自动更新指纹或延长例外。
+未分类、过期或失效项仅在 strict 模式阻断；目录损坏、扫描输入身份不一致始终失败。
 services 报告还必须包含 4 个 USDB Rust 二进制和 Ord 的 `rustbinary` 依赖清单，
 避免缺少静态依赖元数据时被误判为零漏洞。详见
 [`release-image-2026-09-07.md`](security-findings/release-image-2026-09-07.md)。
+
+#### 按需进行批次安全复审
+
+在 Actions 手工运行 `Release Security Review`（`release-security-review.yml`）：
+
+1. 选择包含该 workflow 的目标 release tag，并填写该 tag 构建的 services 和 Bitcoin 两个完整
+   `ghcr.io/buckyos/...@sha256:...` 引用；它们可从镜像构建 summary 或 release manifest 取得。
+2. 默认 `report-only`，并行收集源码审查范围检查及两个镜像的新 Trivy JSON/SARIF、逐条分类和
+   digest-bound metadata。源码指纹失效不会阻止镜像扫描收集证据。
+3. 人工对照上次 review 的源码差分、新增/修复漏洞、可达性和部署缓解条件，决定修复或更新例外。
+   workflow 只收集和校验证据，不代替人工安全审核，也不修改指纹、例外内容或有效期。
+4. 稳定候选需要严格核验时，选择 `strict`；失效源码范围或未处置 High/Critical 会使此次独立
+   审核失败，不影响已经完成的测试版构建。更新 review 后，以新 tag 及其对应镜像再次验证。
+
+该入口不编译、不重新发布镜像，也不触发 release 发布。两个镜像必须对应所选 ref 的同一源码
+revision；引用错误或缺失 Rust binary 依赖覆盖仍报错。也可以选择普通分支收集诊断，但现有
+testnet 专用例外不会在分支上生效。`report-only` 成功表示证据收集完成，不表示安全审核通过。
+
+普通 Fast 中的历史扫描 fixture 测试只验证固定报告在审查当日的分类逻辑，并覆盖指纹失配拒绝；
+不会将历史镜像报告当成当前工作树已经通过安全复审的证据。
 
 ### 3.7 CI 资格与可安装候选
 

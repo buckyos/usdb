@@ -1,0 +1,112 @@
+name: Release Security Review
+run-name: Release security review ${{ github.ref_name }} (${{ inputs.enforcement }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      services_image:
+        description: Immutable ghcr.io/buckyos/usdb-services@sha256 digest built from the selected ref
+        required: true
+        type: string
+      bitcoin_image:
+        description: Immutable ghcr.io/buckyos/usdb-bitcoin-core@sha256 digest built from the selected ref
+        required: true
+        type: string
+      enforcement:
+        description: Report-only collects review evidence; strict also blocks unresolved findings and stale scope
+        required: true
+        type: choice
+        default: report-only
+        options:
+          - report-only
+          - strict
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  identity:
+    name: Resolve review source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      revision: ${{ steps.source.outputs.revision }}
+    steps:
+      - name: Check out selected review ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate review inputs
+        id: source
+        shell: bash
+        env:
+          SERVICES_IMAGE: ${{ inputs.services_image }}
+          BITCOIN_IMAGE: ${{ inputs.bitcoin_image }}
+          ENFORCEMENT: ${{ inputs.enforcement }}
+        run: |
+          set -euo pipefail
+          [[ "$SERVICES_IMAGE" =~ ^ghcr\.io/buckyos/usdb-services@sha256:[0-9a-f]{64}$ ]] || {
+            echo "review requires an immutable usdb-services GHCR digest" >&2
+            exit 1
+          }
+          [[ "$BITCOIN_IMAGE" =~ ^ghcr\.io/buckyos/usdb-bitcoin-core@sha256:[0-9a-f]{64}$ ]] || {
+            echo "review requires an immutable usdb-bitcoin-core GHCR digest" >&2
+            exit 1
+          }
+          case "$ENFORCEMENT" in
+            strict|report-only) ;;
+            *) echo "invalid review enforcement: $ENFORCEMENT" >&2; exit 1 ;;
+          esac
+          echo "revision=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+
+  scope:
+    name: Review source scope
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out review source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.identity.outputs.revision }}
+
+      - name: Check source scope without renewing exceptions
+        env:
+          ENFORCEMENT: ${{ inputs.enforcement }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 .github/scripts/image_security_policy.py check-scope \
+            --exceptions .github/security/image-vulnerability-exceptions.json \
+            --repository-root . --enforcement "$ENFORCEMENT" --output source-review.json
+
+      - name: Upload source review evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: image-source-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: source-review.json
+          if-no-files-found: error
+          retention-days: 30
+
+  services:
+    name: Review services image
+    needs: identity
+    uses: ./.github/workflows/release-image-security.yml
+    with:
+      artifact_name: usdb-services-review
+      enforcement: ${{ inputs.enforcement }}
+      image_reference: ${{ inputs.services_image }}
+      source_revision: ${{ needs.identity.outputs.revision }}
+
+  bitcoin:
+    name: Review Bitcoin Core image
+    needs: identity
+    uses: ./.github/workflows/release-image-security.yml
+    with:
+      artifact_name: usdb-bitcoin-review
+      enforcement: ${{ inputs.enforcement }}
+      image_reference: ${{ inputs.bitcoin_image }}
+      source_revision: ${{ needs.identity.outputs.revision }}

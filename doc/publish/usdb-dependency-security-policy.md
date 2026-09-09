@@ -127,6 +127,13 @@ findings.
 
 Use the following initial policy:
 
+During testnet iteration, automated final-image scans are report-only: source
+scope drift and unresolved findings remain visible without requiring a new
+manual review for every release. Run `Release Security Review` on demand to
+collect a batch of source-scope and digest-bound image evidence, or choose its
+strict mode for a stable candidate. Mainnet release checks remain strict. The
+following rules guide manual review and strict release qualification:
+
 - block a release for reachable Critical or High findings in runtime,
   consensus, P2P, RPC, signing, bootstrap, or release construction;
 - treat Critical or High build-chain findings as release blockers unless the
@@ -145,6 +152,10 @@ days, and cannot waive Rust/static dependency findings or mainnet findings.
 Raw scan evidence remains intact. A newly available fixed package invalidates
 the existing exception, as do changes to the reviewed package/build/runtime
 scope. Missing binary dependency coverage fails even report-only diagnostics.
+Ordinary Fast CI tests policy behavior against isolated source fixtures and
+historical reports; it does not require the current worktree to match an old
+review. Mainnet Fast retains the source-scope preflight. Report-only mode never
+renews a fingerprint or exception expiry and is not a security approval.
 
 Move from report-only to enforcement only after:
 

@@ -23,10 +23,6 @@ for command in cargo rustc shellcheck python3; do
 done
 
 cd "$BTC_DIR"
-log "checking release image source review scope"
-env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/.github/scripts/image_security_policy.py" check-scope \
-  --exceptions "$REPO_DIR/.github/security/image-vulnerability-exceptions.json" \
-  --repository-root "$REPO_DIR"
 log "toolchains: $(rustc --version); $(cargo --version); $(python3 --version 2>&1)"
 log "checking Rust formatting and Clippy"
 cargo fmt --manifest-path "$MANIFEST" --all -- --check

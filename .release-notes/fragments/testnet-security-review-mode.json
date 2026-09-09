@@ -1,0 +1,16 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "testnet-security-review-mode",
+  "type": "changed",
+  "scopes": ["testing", "release"],
+  "summary": "Use report-only image security scans during testnet iteration and review release batches on demand",
+  "details": [
+    "Keep complete digest-bound scan evidence while recording stale source reviews and unresolved findings without blocking testnet releases.",
+    "Separate historical policy regression tests from current-source review eligibility and retain strict mainnet release gates.",
+    "Add a manual source-scope and services/Bitcoin image review workflow with report-only and strict modes, without renewing exceptions automatically.",
+    "Fix stale-scope diagnostic output and retain deleted reviewed files as explicit scope mismatches."
+  ],
+  "operator_actions": [],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}
