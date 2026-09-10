@@ -1361,7 +1361,8 @@ class UsdbNodeTests(unittest.TestCase):
     def test_progress_view_cross_checks_all_running_components(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         self.configure_full_node(layout, "progress-view-data")
-        running = {"state": "running", "health": "healthy", "exit_code": None}
+        running = {"state": "running", "health": "healthy", "exit_code": None,
+                   "started_at": "2026-09-08T00:00:00Z"}
         services = {
             "btc-node": running,
             "balance-history": running,
@@ -1430,6 +1431,9 @@ class UsdbNodeTests(unittest.TestCase):
             item for item in report["components"] if item["id"] == "bitcoin"
         )
         self.assertIn("profile=balanced-32g", bitcoin_component["detail"])
+        self.assertEqual(bitcoin_component["verification_progress"], 1.0)
+        self.assertEqual(bitcoin_component["service_elapsed_secs"],
+                         NODE.service_elapsed(running["started_at"], report["observed_at"]))
 
     def test_progress_view_explains_bitcoin_height_is_unavailable_before_rpc(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

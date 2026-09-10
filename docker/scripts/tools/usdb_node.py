@@ -75,6 +75,7 @@ from resource_policy import (  # noqa: E402
     resource_mode,
     validate_resource_environment,
 )
+from node_progress_timing import ProgressTiming, service_elapsed  # noqa: E402
 
 
 RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
@@ -3199,6 +3200,7 @@ def _collect_compose_services(
     layout: ReleaseLayout,
     *,
     command_timeout_secs: float | None = None,
+    include_started_at: bool = False,
 ) -> dict[str, dict[str, Any]]:
     commands = (
         ("run_testnet_bitcoin.sh", ["ps", "--all", "--format", "json"]),
@@ -3206,6 +3208,7 @@ def _collect_compose_services(
     )
     services: dict[str, dict[str, Any]] = {}
     inspect_ids: dict[str, str] = {}
+    timing_ids: dict[str, str] = {}
     for helper, arguments in commands:
         result = run_helper(
             layout,
@@ -3221,8 +3224,12 @@ def _collect_compose_services(
             service, status = _normalize_compose_service(item)
             services[service] = status
             # Compose can report Created/ExitCode=0 after an OCI exec failure.
-            # Inspect only stopped/starting containers, without reading their environment.
+            # Startup diagnostics inspect stopped/starting containers; the progress
+            # view can separately request start times without reading environment.
             identifier = item.get("ID")
+            if (include_started_at and status["state"] == "running" and isinstance(identifier, str)
+                    and re.fullmatch(r"[0-9a-f]{12,64}", identifier)):
+                timing_ids[identifier] = service
             if status["state"] in {"created", "exited", "dead", "restarting"} and identifier:
                 if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{12,64}", identifier):
                     raise ValueError("Docker Compose returned an invalid container ID")
@@ -3247,6 +3254,22 @@ def _collect_compose_services(
                 )
         except subprocess.CalledProcessError as error:
             raise ValueError("Docker container startup state could not be read") from error
+    if timing_ids:
+        # Optional timing metadata must not turn an otherwise valid probe into
+        # a readiness failure. Query only StartedAt, never container credentials.
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format", "{{json .State.StartedAt}}", *timing_ids],
+                check=True, capture_output=True, text=True,
+                timeout=command_timeout_secs if command_timeout_secs is not None else 8,
+            )
+            starts = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+            if len(starts) == len(timing_ids):
+                for service, started_at in zip(timing_ids.values(), starts):
+                    if isinstance(started_at, str):
+                        services[service]["started_at"] = started_at
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
     return services
 
 
@@ -3815,13 +3838,15 @@ def _indexed_service_component(
     if isinstance(blockers, list) and blockers:
         detail_parts.append("blockers=" + ",".join(str(item) for item in blockers))
     state = "READY" if readiness["consensus_ready"] else "SYNCING"
-    return _component_progress(
+    component = _component_progress(
         component_id,
         state,
         "; ".join(detail_parts) or "readiness state received",
         current=current_value,
         total=total_value,
     )
+    component["progress_phase"] = phase
+    return component
 
 
 def _balance_history_component(
@@ -4046,7 +4071,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         }
 
     try:
-        services = _collect_compose_services(layout, command_timeout_secs=8)
+        services = _collect_compose_services(layout, command_timeout_secs=8, include_started_at=True)
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         snapshot_component = _snapshot_component(snapshot_lifecycle, env, None)
         registry_component = _script_registry_component(layout, env, None)
@@ -4130,6 +4155,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
                         else None
                     ),
                 )
+                bitcoin_component["verification_progress"] = verification
 
     balance_service = services.get("balance-history")
     balance_readiness: dict[str, Any] | None = None
@@ -4260,6 +4286,14 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             overall = "BLOCKED"
         elif mining.get("observation_unavailable") and overall == "READY":
             overall = "WAITING"
+    for component in components:
+        service_name = {"bitcoin": "btc-node", "balance_history": "balance-history",
+                        "usdb_indexer": "usdb-indexer", "usdb_chain": "usdb-chain"}.get(component["id"])
+        service = services.get(service_name, {})
+        started_at = service.get("started_at")
+        elapsed = service_elapsed(started_at, observed_at)
+        if service.get("state") == "running" and elapsed is not None:
+            component.update(service_started_at=started_at, service_elapsed_secs=elapsed)
     return {
         "schema_version": NODE_PROGRESS_SCHEMA_VERSION,
         "release_id": layout.release_id,
@@ -4300,6 +4334,8 @@ def render_node_progress(
         f"controller={report.get('controller_state', 'unknown')}"
         + (f" | resources={resource_phase}" if resource_phase else ""),
     ]
+    if "observation_elapsed_secs" in report:
+        lines.append(f"Watching: {_duration_text(report['observation_elapsed_secs'])} | ETA~ is an estimate for each current stage")
     bar_width = 24
     for component in report["components"]:
         percent = component.get("progress_percent")
@@ -4330,6 +4366,14 @@ def render_node_progress(
         if len(detail) > available:
             detail = detail[: max(0, available - 3)] + "..."
         lines.append(prefix + detail)
+        timing = component.get("timing")
+        if timing:
+            elapsed_label = "Process elapsed" if timing["elapsed_source"] == "process" else "Observed elapsed"
+            eta = (f"~{_duration_text(timing['eta_secs'])}" if timing["eta_secs"] is not None
+                   else f"-- ({timing['eta_state']})")
+            lines.append(f"  {elapsed_label}={_duration_text(timing['elapsed_secs'])} | ETA={eta}")
+        elif "service_elapsed_secs" in component:
+            lines.append(f"  Process elapsed={_duration_text(component['service_elapsed_secs'])}")
         head = component.get("head")
         if component["id"] == "usdb_chain" and isinstance(head, dict):
             head_prefix = f"  Latest block    #{head['number']} hash="
@@ -4396,6 +4440,7 @@ class NodeProgressHistory:
             raise ValueError("maximum stale progress age must be positive")
         self.max_stale_age_secs = max_stale_age_secs
         self._last_good: dict[str, tuple[float, str, dict[str, Any]]] = {}
+        self._timing = ProgressTiming()
 
     @staticmethod
     def _has_progress(component: dict[str, Any]) -> bool:
@@ -4445,7 +4490,7 @@ class NodeProgressHistory:
 
         merged = dict(report)
         merged["components"] = components
-        return merged
+        return self._timing.apply(merged, now)
 
 
 class NodeProgressMonitor:

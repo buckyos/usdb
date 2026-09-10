@@ -353,6 +353,25 @@ Indexer 行优先显示 readiness 返回的已提交高度与当前上游稳定�
 RPC 超时表示这次观测不可用，不能据此推断已提交高度归零。`up` 附加 controller 的面板与 `status --watch`
 使用相同的短暂超时缓存；单次 `--progress-json` 则始终输出当次真实观测。
 
+持续观察面板还显示耗时和预计剩余时间，时间信息独立成行，避免在窄终端中被详情截断：
+
+```text
+  Process elapsed=32:15:06 | ETA=~21:40:00
+```
+
+`Process elapsed` 来自当前容器进程的 Docker `StartedAt`，重新连接面板仍可读取，进程重启后重新计时；
+它不是从首次部署开始累计的同步耗时。无法读取启动时间时显示 `Observed elapsed`，只计本次观察期间。
+面板顶部 `Watching` 也表示本次观察时长。单次 `--progress-json` 在可用时附带
+`service_started_at/service_elapsed_secs`，不会凭一次观测生成速率或 ETA。
+
+ETA 使用最多最近 5 分钟、128 个有效样本，至少有 3 个样本且跨度达到 30 秒后才显示。
+Bitcoin 按 Core 返回的验证工作进度估算；其他追块服务按自身已提交进度和当前目标估算，
+目标持续增长时使用实际缩小的差距。它只估算当前服务/阶段，不代表整个节点就绪时间。
+刚开始显示 `sampling`；RPC 不可用、连续 60 秒无推进、目标追不上或进度完成但 readiness 尚未通过时，
+分别显示 `unavailable/stalled/not-catching-up/waiting-readiness`，ETA 保持 `--`。
+资源阶段、服务进程、同步子阶段切换或进度回退会重新采样，旧值不参与估算；快照导入已有的任务和阶段耗时、
+阶段 ETA 保持原有口径。所有耗时/ETA 仅影响显示，不参与 readiness 或资源切换判定。
+
 chain 启动前还有 `usdb-chain-init` 和 `paired-checkpoint-recovery` 两个一次性检查。
 面板会对未运行的容器补读 Docker `State`，因为 OCI 入口执行失败时，Compose 可能仍显示
 `created` 和 `ExitCode=0`。入口错误、非零退出码和 control-plane 启动失败在 chain 行显示

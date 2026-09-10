@@ -30,6 +30,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/release_manifest.py",
     "docker/scripts/tools/runtime_compatibility.py",
     "docker/scripts/tools/resource_policy.py",
+    "docker/scripts/tools/node_progress_timing.py",
     "docker/scripts/tools/run_testnet_bitcoin.sh",
     "docker/scripts/tools/run_testnet_runtime.sh",
     "docker/scripts/tools/snapshot_distribution.py",
