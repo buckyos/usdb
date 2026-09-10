@@ -49,7 +49,7 @@ snapshot 绑定。已经从旧整体 snapshot 导入 RocksDB 的节点仍需要�
 
 | 阶段 | Bitcoin 比例 | Bitcoin 默认封顶 | balance-history 比例 | BH 默认封顶 |
 | --- | ---: | ---: | ---: | ---: |
-| `bitcoin` | 50% | 32 GiB | 暂不启动；预生成交叠配置 | 64 GiB |
+| `bitcoin` | 80% | 32 GiB | 暂不启动；预生成交叠配置 | 64 GiB |
 | `overlap` | 25% | 16 GiB | 37.5% | 64 GiB |
 | `steady` | 12.5% | 8 GiB | 50% | 64 GiB |
 
@@ -57,11 +57,18 @@ snapshot 绑定。已经从旧整体 snapshot 导入 RocksDB 的节点仍需要�
 
 | 有效主机内存 | 独立阶段 BTC | 交叠阶段 BTC / BH | 稳态阶段 BTC / BH |
 | --- | ---: | ---: | ---: |
-| 32 GiB | 16 GiB | 8 / 12 GiB | 4 / 16 GiB |
+| 32 GiB | 约 25.6 GiB | 8 / 12 GiB | 4 / 16 GiB |
 | 64 GiB | 32 GiB | 16 / 24 GiB | 8 / 32 GiB |
 | 256 GiB | 32 GiB | 16 / 64 GiB | 8 / 64 GiB |
 
 实际 `MemTotal` 比标称 64 GiB 小时，额度随之降低，不向上套用标称档位。
+例如有效内存约 30.6 GiB 的主机，独立阶段 Bitcoin 约分配 24.5 GiB。
+80% 仍受 `USDB_BTC_IBD_MEMORY_CAP` 约束；默认封顶保持 32 GiB，因此 64 GiB 及更大主机
+若需超过 32 GiB，必须显式提高该封顶值。配置外部服务预留时，服务比例仍按扣除预留后的预算缩放。
+
+已经写入旧 50% 配额的自动配置需要在升级后重新计算：正常执行 `usdb-node down`，再执行
+`usdb-node set-resource-policy --mode auto`，随后按上述 release 激活流程运行 `doctor/up`。
+该操作保留已有数据和用户配置的封顶值；仅安装新 node kit 不会更新正在运行的容器额度。
 
 管理员可通过 setup/configure/set-resource-policy 的参数指定封顶值：
 
@@ -73,8 +80,10 @@ snapshot 绑定。已经从旧整体 snapshot 导入 RocksDB 的节点仍需要�
 | `--bitcoin-steady-memory-cap` | `USDB_BTC_STEADY_MEMORY_CAP` | `8g` |
 
 其他服务按 64 GiB 基准同比缩放并分别封顶：indexer 4 GiB、chain 5 GiB、control-plane
-1 GiB、registry installer 2 GiB、paired-checkpoint verification 1 GiB。即使它们尚未启动，
-计划仍保留其额度；chain-init 与 chain 顺序运行，共用这一预算槽位。系统预留为有效内存的
+1 GiB、registry installer 2 GiB、paired-checkpoint verification 1 GiB。`bitcoin` 阶段只计入
+Bitcoin、系统和显式声明的外部服务预算；下游额度预先生成，但这个阶段禁止其他节点服务或安装容器运行。
+进入 `overlap/steady` 后，即使下游尚未启动，计划也会保留其额度；chain-init 与 chain 顺序运行，
+共用这一预算槽位。系统预留为有效内存的
 15.625%，且不低于 4 GiB。包含预留的 64 GiB 交叠/稳态计划合计为 63 GiB。
 
 snapshot-loader 与 balance-history 顺序运行，使用相同额度。实际容器检查仍按同时运行的
@@ -86,7 +95,9 @@ balance-history 应用缓存合计为其容器额度的 **62.5%**，其中 UTXO 
 例如 32 GiB 容器分配 UTXO 5 GiB、余额 15 GiB。`BH_SYNC_MAX_MEMORY_PERCENT=80` 是主动
 缩减缓存的触发阈值，容器内其余空间留给 RocksDB、批处理、文件缓存和分配器开销。
 
-Bitcoin 独立同步阶段 dbcache 按其容器额度的 62.5% 计算；交叠/稳态阶段为 50%，并统一封顶到
+Bitcoin 独立同步阶段 dbcache 保留原有预算：先按有效主机内存的 50%（受 IBD 封顶及外部服务预留约束）
+计算旧容器额度，再取其 62.5%。容器新增的空间留给文件缓存和其他开销，避免增大 dbcache 后再次挤压
+文件缓存；约 30.6 GiB 主机上的 dbcache 仍为约 9.6 GiB。交叠/稳态阶段为对应容器额度的 50%，并统一封顶到
 当前固定的 [Bitcoin Core 28.1 支持的 16 GiB](https://github.com/bitcoin/bitcoin/blob/v28.1/src/txdb.h#L25-L28)。Bitcoin 的
 memory+swap 上限仅额外允许最多 2 GiB 或容器额度的八分之一，BH 额外允许 2 GiB。
 
@@ -103,6 +114,7 @@ UTXO cache + balance cache <= BH memory limit × (pressure threshold - 10) / 100
 
 1. 启动 Bitcoin，周期性读取完整 readiness 和数据启动锚点。锚点仍为 snapshot 高度
    （无 snapshot 时为 index origin）加 stable lag，并校验配置的 BTC block hash。
+   启用独立追块的 80% 额度前，先确认没有运行、重启中或暂停的下游容器；若发现并发实例，报告错误并保留现场。
 2. 数据锚点成立且 Bitcoin 尚未完全追平时，持久化 `overlap` 切换意图，正常停止 Bitcoin，
    等待刷盘退出后写入新配置并启动。核对实际容器 memory、memory+swap、image、dbcache
    与 profile，并重新通过数据锚点检查后，才启动 snapshot-loader。

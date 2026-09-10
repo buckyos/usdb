@@ -117,10 +117,10 @@ class ResourcePlan:
 
     @property
     def total_bytes(self) -> int:
-        """Reserve all downstream services even before they have started."""
+        """Budget Bitcoin alone during IBD; reserve downstream services after handoff."""
         return self.reserve_bytes + self.external_services_bytes + sum(
             amount for key, amount in self.limits.items()
-            if key != "BH_MEMORY_LIMIT" or self.phase != "bitcoin"
+            if self.phase != "bitcoin" or key == "BTC_MEMORY_LIMIT"
         )
 
     def environment(self) -> dict[str, str]:
@@ -157,9 +157,9 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
         raise ValueError("external services must leave at least 32 GB for the node and system")
     available = host_memory - reserve - external
 
-    def share(sixty_fourths: int, cap: int) -> int:
+    def share(numerator: int, cap: int, denominator: int = 64) -> int:
         # Preserve the physical-host system reserve; reduce service shares only.
-        return min(host_memory * sixty_fourths // 64 * available // (host_memory - reserve), cap) // MIB * MIB
+        return min(host_memory * numerator // denominator * available // (host_memory - reserve), cap) // MIB * MIB
 
     btc_share, cap_key = {
         "bitcoin": (32, "USDB_BTC_IBD_MEMORY_CAP"),
@@ -175,12 +175,17 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
         "BH_SCRIPT_REGISTRY_MEMORY_LIMIT": share(2, 2 * GIB),
         "USDB_CHECKPOINT_VERIFY_MEMORY_LIMIT": share(1, GIB),
     }
+    # Keep the previous dbcache allowance: the IBD boost is headroom for file
+    # cache and other allocations, not an equal increase in application cache.
+    bitcoin_cache_limit = limits["BTC_MEMORY_LIMIT"]
+    if phase == "bitcoin":
+        limits["BTC_MEMORY_LIMIT"] = share(4, caps[cap_key], 5)
     if limits["BTC_MEMORY_LIMIT"] < 2 * GIB or limits["BH_MEMORY_LIMIT"] < 4 * GIB:
         raise ValueError("resource caps must allow at least 2 GiB for Bitcoin and 4 GiB for balance-history")
     cache = limits["BH_MEMORY_LIMIT"] * 5 // 8
-    # Boost uses 62.5%; overlap/steady keep dbcache to half of the Bitcoin ceiling.
+    # IBD retains its legacy cache size; later phases use half their container limit.
     dbcache = min(MAX_BITCOIN_DBCACHE_MIB,
-                  limits["BTC_MEMORY_LIMIT"] * (5 if phase == "bitcoin" else 4) // 8 // MIB)
+                  bitcoin_cache_limit * (5 if phase == "bitcoin" else 4) // 8 // MIB)
     plan = ResourcePlan(
         host_memory, phase, reserve, limits,
         dbcache, cache // 4, cache - cache // 4, external,
@@ -233,7 +238,8 @@ def validate_resource_environment(env: dict[str, str], host_memory: int | None =
         expected = build_resource_plan(memory, phase, env).environment()
         for key, value in expected.items():
             if env.get(key) != value:
-                raise ValueError(f"{key} does not match the automatic resource plan; use manual mode for custom allocations")
+                raise ValueError(f"{key} does not match the automatic resource plan; stop the node and run "
+                                 "set-resource-policy --mode auto to recalculate, or use manual mode for custom allocations")
     elif host_memory is not None:
         settings = {**MANUAL_DEFAULTS, **env}
         keys = set(SERVICE_MEMORY_KEYS.values())

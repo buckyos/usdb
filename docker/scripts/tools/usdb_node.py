@@ -2129,6 +2129,9 @@ def _check_running_resource_budget(env: dict[str, str], containers: dict[str, di
     for service, container in containers.items():
         if container["state"] not in {"running", "restarting", "paused"}:
             continue
+        if plan.phase == "bitcoin" and service != "btc-node":
+            raise ValueError(f"{service} is active during the exclusive Bitcoin memory phase; "
+                             "downstream services require overlap or steady resources")
         limit = container["memory"]
         if limit <= 0 or limit > plan.limits[SERVICE_MEMORY_KEYS[service]]:
             raise ValueError(f"{service} has an unbounded or stale container memory limit; resource transition is incomplete")
@@ -2154,6 +2157,13 @@ def _transition_resources(layout: ReleaseLayout, target: str, *, output_to_stder
     plan = build_resource_plan(int(env["USDB_RESOURCE_HOST_MEMORY_BYTES"]), target, env)
     desired = {**env, **plan.environment()}
     observed = _resource_containers(layout)
+    if target == "bitcoin":
+        # Reject unexpected concurrent jobs before changing config or starting
+        # a boosted container, including when recovering an interrupted start.
+        _check_running_resource_budget(desired, {
+            **observed,
+            "btc-node": {"state": "running", "memory": plan.limits["BTC_MEMORY_LIMIT"]},
+        })
     state = _read_resource_state(layout)
     plan_id = _resource_plan_id(env, target)
     if state.get("pending"):

@@ -24,9 +24,10 @@ class ResourceControllerTests(unittest.TestCase):
         self.containers = {}
         self.crash = None
         self.tick = 0
+        self.memory = 64 * POLICY.GIB
         self.write_phase("bitcoin")
         self.containers["btc-node"] = self.container("btc-node")
-        for patcher in [mock.patch.object(NODE, "effective_memory_bytes", return_value=64 * POLICY.GIB),
+        for patcher in [mock.patch.object(NODE, "effective_memory_bytes", side_effect=lambda: self.memory),
                         mock.patch.object(NODE, "_resource_containers", side_effect=lambda layout: copy.deepcopy(self.containers)),
                         mock.patch.object(NODE, "run_helper", side_effect=self.helper),
                         mock.patch.object(NODE, "_print_startup_phase")]:
@@ -34,7 +35,7 @@ class ResourceControllerTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def write_phase(self, phase):
-        env = {**POLICY.build_resource_plan(64 * POLICY.GIB, phase, {}).environment(),
+        env = {**POLICY.build_resource_plan(self.memory, phase, {}).environment(),
                "USDB_BITCOIN_IMAGE": "bitcoin@sha256:1", "USDB_SERVICES_IMAGE": "services@sha256:2"}
         self.layout.node_env.write_text("".join(f"{key}={value}\n" for key, value in env.items()))
 
@@ -145,6 +146,27 @@ class ResourceControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "concurrent"):
             NODE._check_running_resource_budget(env, containers)
 
+    def test_bitcoin_boost_rejects_active_downstream_before_any_mutation(self):
+        original = self.layout.node_env.read_bytes()
+        for service in POLICY.SERVICE_MEMORY_KEYS:
+            if service == "btc-node":
+                continue
+            for state in ("running", "restarting", "paused"):
+                with self.subTest(service=service, state=state):
+                    self.containers = {"btc-node": self.container("btc-node"),
+                                       service: {**self.container(service), "state": state}}
+                    with self.assertRaisesRegex(ValueError, "exclusive Bitcoin memory phase"):
+                        self.transition("bitcoin")
+                    self.assertEqual(self.events, [])
+                    self.assertEqual(self.layout.node_env.read_bytes(), original)
+                    self.assertFalse(NODE._resource_state_path(self.layout).exists())
+
+    def test_bitcoin_boost_allows_completed_downstream_containers(self):
+        self.containers["snapshot-loader"] = {**self.container("snapshot-loader"), "state": "exited"}
+        self.transition("bitcoin")
+        self.assertEqual(self.events, [])
+        self.assertFalse(NODE._read_resource_state(self.layout)["pending"])
+
     def test_progress_waits_for_final_handoff_without_hiding_real_failures(self):
         self.layout.release_id = "test-release"
         services = {name: {"state": "running"} for name in NODE.CORE_RUNTIME_SERVICES}
@@ -235,6 +257,27 @@ class ResourceControllerTests(unittest.TestCase):
         self.run_startup_model(already_synced=True)
         self.assertNotIn(("start", "overlap"), self.events)
         self.assertIn(("start", "steady"), self.events)
+
+    def test_boosted_small_host_releases_memory_before_each_downstream_stage(self):
+        self.memory = 32 * POLICY.GIB
+        self.write_phase("bitcoin")
+        self.containers = {"btc-node": self.container("btc-node")}
+        self.assertEqual(self.containers["btc-node"]["memory"], 26214 * POLICY.MIB)
+        original = self.helper
+        observed_allocations = []
+
+        def checked(*args, **kwargs):
+            result = original(*args, **kwargs)
+            env = NODE.read_env(self.layout.node_env)
+            NODE._check_running_resource_budget(env, self.containers)
+            if args[2][0] == "start":
+                observed_allocations.append(self.containers["btc-node"]["memory"])
+            return result
+
+        with mock.patch.object(NODE, "run_helper", side_effect=checked):
+            self.run_startup_model()
+        self.assertEqual(observed_allocations, [8 * POLICY.GIB, 4 * POLICY.GIB])
+        self.assertEqual(NODE.read_env(self.layout.node_env)["USDB_RESOURCE_PHASE"], "steady")
 
 
 if __name__ == "__main__":

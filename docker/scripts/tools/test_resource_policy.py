@@ -23,7 +23,7 @@ class ResourcePolicyTests(unittest.TestCase):
 
     def test_small_standard_and_large_hosts_have_safe_all_phases(self):
         expected = {
-            32: [(16, 12), (8, 12), (4, 16)],
+            32: [(25.6, 12), (8, 12), (4, 16)],
             64: [(32, 24), (16, 24), (8, 32)],
             256: [(32, 64), (16, 64), (8, 64)],
         }
@@ -31,7 +31,7 @@ class ResourcePolicyTests(unittest.TestCase):
             for phase, (bitcoin, balance) in zip(POLICY.PHASES, phases):
                 with self.subTest(gib=gib, phase=phase):
                     plan = POLICY.build_resource_plan(gib * POLICY.GIB, phase, {})
-                    self.assertEqual(plan.limits["BTC_MEMORY_LIMIT"], bitcoin * POLICY.GIB)
+                    self.assertEqual(plan.limits["BTC_MEMORY_LIMIT"], int(bitcoin * 1024) * POLICY.MIB)
                     self.assertEqual(plan.limits["BH_MEMORY_LIMIT"], balance * POLICY.GIB)
                     self.assertLessEqual(plan.total_bytes, gib * POLICY.GIB)
                     POLICY.validate_resource_environment(plan.environment(), gib * POLICY.GIB)
@@ -50,6 +50,37 @@ class ResourcePolicyTests(unittest.TestCase):
         self.assertEqual(plan.utxo_cache_bytes, 5 * POLICY.GIB)
         self.assertEqual(plan.balance_cache_bytes, 15 * POLICY.GIB)
         self.assertEqual(plan.environment()["BH_SYNC_MAX_MEMORY_PERCENT"], "80")
+
+    def test_bitcoin_boost_keeps_cache_and_system_headroom(self):
+        # The diagnosed node has about 30.6 GiB of effective RAM.
+        memory = 32_866_566_144
+        plan = POLICY.build_resource_plan(memory, "bitcoin", {})
+        self.assertEqual(plan.limits["BTC_MEMORY_LIMIT"], 26_293_043_200)
+        self.assertEqual(plan.dbcache_mib, 9795)
+        self.assertEqual(plan.total_bytes, plan.reserve_bytes + plan.limits["BTC_MEMORY_LIMIT"])
+        self.assertLessEqual(plan.total_bytes, memory)
+        self.assertGreater(plan.limits["BTC_MEMORY_LIMIT"] - plan.dbcache_mib * POLICY.MIB,
+                           14 * POLICY.GIB)
+
+    def test_bitcoin_boost_respects_custom_caps_and_external_reserve(self):
+        for memory in (32_000_000_000, 32 * POLICY.GIB, 64 * POLICY.GIB, 256 * POLICY.GIB):
+            for external in ("0", "8g"):
+                if external != "0" and memory - 8 * POLICY.GIB < POLICY.MIN_HOST_MEMORY_BYTES:
+                    continue
+                for cap in ("8g", "128g"):
+                    env = {"USDB_BTC_IBD_MEMORY_CAP": cap, "USDB_EXTERNAL_MEMORY_BUDGET": external}
+                    with self.subTest(memory=memory, external=external, cap=cap):
+                        plan = POLICY.build_resource_plan(memory, "bitcoin", env)
+                        self.assertLessEqual(plan.limits["BTC_MEMORY_LIMIT"], memory * 4 // 5)
+                        self.assertLessEqual(plan.limits["BTC_MEMORY_LIMIT"], POLICY.memory_bytes(cap, "cap"))
+                        self.assertLessEqual(plan.total_bytes, memory)
+                        POLICY.validate_resource_environment({**env, **plan.environment()}, memory)
+
+    def test_old_bitcoin_plan_requires_explicit_recalculation(self):
+        env = POLICY.build_resource_plan(32 * POLICY.GIB, "bitcoin", {}).environment()
+        env["BTC_MEMORY_LIMIT"] = str(16 * POLICY.GIB)
+        with self.assertRaisesRegex(ValueError, "set-resource-policy --mode auto"):
+            POLICY.validate_resource_environment(env, 32 * POLICY.GIB)
 
     def test_bitcoin_cache_respects_the_pinned_core_limit_on_large_hosts(self):
         for phase in POLICY.PHASES:
