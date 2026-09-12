@@ -2,6 +2,7 @@
 name = "balance-history"
 version = "0.1.0"
 edition = "2024"
+default-run = "balance-history"
 
 [dependencies]
 usdb-util = { path = "../usdb-util" }

@@ -27,6 +27,11 @@
 
 ## 快照与恢复
 
+- [AssumeUTXO 验证与重构大纲](./balance-history-assumeutxo-validation-and-refactor-plan.md)
+- [Bitcoin Core 31.1 / AssumeUTXO 第一轮验证记录](./bitcoin-core-31.1-assumeutxo-validation-2026-09-12.md)
+- [AssumeUTXO P4 导入、重放及全量对比操作](./balance-history-assumeutxo-p4-operations.md)
+- [AssumeUTXO P4 主网验证复核记录](./balance-history-assumeutxo-p4-validation-2026-09-12.md)
+- [AssumeUTXO P5 语义验收记录与复验操作](./balance-history-assumeutxo-p5-validation-2026-09-12.md)
 - [拆分快照全量对拍与 Electrs 抽样操作](./balance-history-split-snapshot-audit-operations.md)
 - [balance-history-snapshot-signing.md](./balance-history-snapshot-signing.md)
 - [balance-history-exact-height-snapshot-tool-design.md](./balance-history-exact-height-snapshot-tool-design.md)

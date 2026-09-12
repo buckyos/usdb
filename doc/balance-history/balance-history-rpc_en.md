@@ -118,6 +118,11 @@ The response also includes `script_registry`, a display-only diagnostic summary:
 - base, core snapshot, artifact, and expected-count fields identify the active immutable sidecar.
 - `policy`: machine-readable semantics. The current policy means the registry is a non-consensus seen-script cache populated by indexing and snapshot import.
 
+The experimental AssumeUTXO import uses the existing `post_snapshot_only` mode with
+`complete_coverage=false`. Its base height/hash identify the Core snapshot. The overlay can
+resolve live baseline output scripts and later observations, but misses remain `unresolved`
+because older spent-only scripts may be absent. No historical core/sidecar artifact identity is claimed.
+
 ### 5) `get_snapshot_info`
 
 Returns metadata for the current stable snapshot.

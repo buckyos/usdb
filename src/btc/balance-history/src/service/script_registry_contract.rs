@@ -212,7 +212,8 @@ pub enum ScriptRegistryCoverageMode {
     FullReplay,
     /// SQLite covers the snapshot base and RocksDB covers later observations.
     SnapshotPlusSidecar,
-    /// RocksDB only covers observations made after snapshot installation.
+    /// Only the local snapshot-era overlay is available; historical completeness is unknown.
+    /// An AssumeUTXO overlay may additionally resolve scripts of live baseline outputs.
     PostSnapshotOnly,
 }
 
@@ -238,7 +239,7 @@ pub struct ScriptRegistryReadiness {
     pub capabilities: ScriptRegistryCapabilities,
     /// Approximate number of mappings in the writable RocksDB overlay.
     pub overlay_estimated_count: Option<u64>,
-    /// Inclusive historical height expected from or covered by the sidecar.
+    /// Snapshot baseline for a sidecar or an AssumeUTXO import, when present.
     pub base_height: Option<u32>,
     /// Canonical BTC block hash paired with base_height.
     pub base_block_hash: Option<String>,

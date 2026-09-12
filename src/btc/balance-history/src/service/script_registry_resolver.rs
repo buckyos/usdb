@@ -470,6 +470,57 @@ impl ScriptRegistryResolver {
                 None
             }
         };
+        // An AssumeUTXO import has its own provenance, not the core-snapshot install marker.
+        // Live UTXOs cannot reconstruct scripts whose outputs were all spent before the baseline.
+        match self.db.get_assumeutxo_import_state() {
+            Ok(Some(import)) => {
+                return ScriptRegistryReadiness {
+                    state: if import.complete {
+                        ScriptRegistryState::Disabled
+                    } else {
+                        ScriptRegistryState::Failed
+                    },
+                    // Reuse the existing conservative coverage contract. Positive baseline
+                    // lookups are valid, but misses cannot prove historical absence.
+                    coverage_mode: ScriptRegistryCoverageMode::PostSnapshotOnly,
+                    capabilities: ScriptRegistryCapabilities {
+                        script_registry_lookup: import.complete,
+                        script_registry_complete_coverage: false,
+                    },
+                    overlay_estimated_count,
+                    base_height: Some(import.identity.base_height),
+                    base_block_hash: Some(import.identity.base_hash),
+                    core_snapshot_id: None,
+                    registry_artifact_id: None,
+                    expected_count: None,
+                    policy: SCRIPT_REGISTRY_POLICY.to_string(),
+                    last_error: (!import.complete)
+                        .then(|| "AssumeUTXO import is incomplete".to_string()),
+                };
+            }
+            Err(error) => {
+                log::error!("Cannot determine AssumeUTXO registry coverage: {error}");
+                return ScriptRegistryReadiness {
+                    state: ScriptRegistryState::Failed,
+                    coverage_mode: ScriptRegistryCoverageMode::PostSnapshotOnly,
+                    capabilities: ScriptRegistryCapabilities {
+                        script_registry_lookup: true,
+                        script_registry_complete_coverage: false,
+                    },
+                    overlay_estimated_count,
+                    base_height: None,
+                    base_block_hash: None,
+                    core_snapshot_id: None,
+                    registry_artifact_id: None,
+                    expected_count: None,
+                    policy: SCRIPT_REGISTRY_POLICY.to_string(),
+                    last_error: Some(format!(
+                        "Cannot determine AssumeUTXO registry coverage: {error}"
+                    )),
+                };
+            }
+            Ok(None) => {}
+        }
         let snapshot_provenance = self.db.get_snapshot_install_provenance().ok().flatten();
         let cache = match self.cache.lock() {
             Ok(cache) => cache,

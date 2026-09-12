@@ -3532,6 +3532,13 @@ mod tests {
 
     mod economic_scale;
 
+    mod assumeutxo_p5 {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tests/assumeutxo_downstream.rs"
+        ));
+    }
+
     fn test_root_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3835,8 +3842,23 @@ mod tests {
         synced_height: u32,
         genesis_block_height: u32,
     ) -> (UsdbIndexerRpcServer, PathBuf) {
+        build_server_with_genesis_and_network(
+            tag,
+            synced_height,
+            genesis_block_height,
+            IndexerConfig::default().bitcoin.network(),
+        )
+    }
+
+    fn build_server_with_genesis_and_network(
+        tag: &str,
+        synced_height: u32,
+        genesis_block_height: u32,
+        network: Network,
+    ) -> (UsdbIndexerRpcServer, PathBuf) {
         let root_dir = test_root_dir(tag);
         let mut config_file = IndexerConfig::default();
+        config_file.bitcoin.network = network;
         config_file.usdb.genesis_block_height = genesis_block_height;
         std::fs::write(
             root_dir.join("config.json"),

@@ -202,6 +202,10 @@ block commit、snapshot/state-ref 和 script registry 查询返回结构化
   checkpoint、artifact 和精确 manifest 数量；
 - `policy`：机器可读语义策略。当前策略表示 registry 是由索引和 snapshot 导入填充的非共识 seen-script cache。
 
+AssumeUTXO 实验导入库沿用 `post_snapshot_only` 和 `complete_coverage=false`，
+`base_height/base_block_hash` 指向 Core 快照基线。overlay 可解析基线活 UTXO 的脚本及后续观察到的脚本，
+但无法证明更早历史脚本不存在，因此 miss 返回 `unresolved`；不声明旧 core/sidecar 的 artifact 身份。
+
 ### 5) `get_snapshot_info`
 
 返回当前 stable snapshot 元数据。

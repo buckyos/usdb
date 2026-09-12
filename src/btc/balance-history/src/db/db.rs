@@ -21,6 +21,10 @@ use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef, UTXOVa
 mod legacy_compare;
 pub use legacy_compare::*;
 
+#[path = "assumeutxo.rs"]
+mod assumeutxo;
+pub use assumeutxo::*;
+
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
 pub const META_CF: &str = "meta";
@@ -2116,7 +2120,12 @@ impl BalanceHistoryDB {
                 }
                 Ok((balance_floor, history_floor))
             }
-            (None, None) if self.get_snapshot_install_provenance()?.is_none() => Ok((0, 0)),
+            (None, None)
+                if self.get_snapshot_install_provenance()?.is_none()
+                    && self.get_assumeutxo_import_state()?.is_none() =>
+            {
+                Ok((0, 0))
+            }
             (balance_floor, history_floor) => {
                 let msg = format!(
                     "Incomplete or invalid query retention metadata: balance_query_floor={:?}, history_query_floor={:?}",

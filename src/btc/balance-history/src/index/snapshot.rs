@@ -353,6 +353,18 @@ impl SnapshotIndexer {
 
     /// Rejects imported sources and non-current heights before creating either artifact.
     fn validate_export_target(&self, target_block_height: u32) -> Result<(), String> {
+        // AssumeUTXO imports have neither pre-baseline commits nor complete script history.
+        // They must not be exported under the existing full-replay artifact contract.
+        if let Some(import) = self.db.get_assumeutxo_import_state()? {
+            let msg = format!(
+                "Split snapshot export requires a full-replay RocksDB source: root_dir={}, target_block_height={}, assumeutxo_base_height={}; AssumeUTXO sources are unsupported",
+                self.config.root_dir.display(),
+                target_block_height,
+                import.identity.base_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
         let provenance = self.db.get_snapshot_install_provenance().map_err(|error| {
             let msg = format!(
                 "Failed to validate split snapshot export source: root_dir={}, target_block_height={}, error={}",

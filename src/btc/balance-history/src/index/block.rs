@@ -823,6 +823,14 @@ impl BatchBlockPreloader {
             if let Some(utxo) = item {
                 result.push(Arc::new(utxo));
             } else {
+                if self.db.get_assumeutxo_base_height()?.is_some() {
+                    let msg = format!(
+                        "Missing UTXO in complete AssumeUTXO state: outpoint={}; historical RPC fallback is forbidden",
+                        outpoints[i]
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
                 // Load from rpc
                 let (script, amount) = self.btc_client.get_utxo(&outpoints[i])?;
                 let entry = UTXOValue {

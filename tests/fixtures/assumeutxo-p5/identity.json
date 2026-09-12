@@ -1,0 +1,7 @@
+{
+  "network": "regtest",
+  "base_height": 101,
+  "base_hash": "278d63ec090f0c913450e3424a90f81f34d7c0b244133ce1adcc000768932ad8",
+  "file_sha256": "66dc45fbb32f2f9c6194c483301c71b750e61f3aa74a79ba0f1ddf545b2d5233",
+  "hash_serialized_3": "47614dcc0705c06bced1cfc4ae6e75fb6528b4cb8e5040a5b67e041a655617dd"
+}
