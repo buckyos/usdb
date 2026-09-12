@@ -218,6 +218,9 @@ services:
       USDB_GENESIS_FILE: /network/usdb-genesis.json
       USDB_GENESIS_MANIFEST_FILE: /network/usdb-genesis.manifest.json
       USDB_NODE_ROLE: ${USDB_NODE_ROLE:-full}
+      # Empty preserves legacy EXTRA_ARGS gcmode; the runtime defaults to full.
+      USDB_CHAIN_GCMODE: ${USDB_CHAIN_GCMODE:-}
+      USDB_CHAIN_TRACING: ${USDB_CHAIN_TRACING:-0}
       USDB_INDEXER_RPC_URL: http://usdb-indexer:28020
       USDB_INDEXER_QUERY_TIMEOUT: ${USDB_INDEXER_QUERY_TIMEOUT:-5s}
       USDB_DEEP_REORG_GUARD_ENABLED: ${USDB_DEEP_REORG_GUARD_ENABLED:-0}

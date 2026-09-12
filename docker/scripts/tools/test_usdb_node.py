@@ -106,6 +106,57 @@ class UsdbNodeTests(unittest.TestCase):
             bitcoin_p2p="private",
         )
 
+    def test_query_mode_preserves_identity_and_supports_partial_updates(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "query-node")
+        original = NODE.read_env(self.node_env)
+        with mock.patch.object(NODE, "_collect_compose_services", return_value={}):
+            NODE.set_query_mode(layout, state_mode="archive", tracing="on")
+            configured = NODE.read_env(self.node_env)
+            self.assertEqual(configured["USDB_CHAIN_GCMODE"], "archive")
+            self.assertEqual(configured["USDB_CHAIN_TRACING"], "1")
+            for key, value in original.items():
+                if key not in {"USDB_CHAIN_GCMODE", "USDB_CHAIN_TRACING"}:
+                    self.assertEqual(configured[key], value, key)
+            NODE.set_query_mode(layout, state_mode=None, tracing="off")
+            self.assertEqual(NODE.chain_query_settings(NODE.read_env(self.node_env))[:2], ("archive", "0"))
+        self.assertEqual(stat.S_IMODE(self.node_env.stat().st_mode), 0o600)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            NODE.print_query_mode(layout, json_output=True)
+        self.assertEqual(json.loads(output.getvalue())["historical_coverage"], "unverified")
+
+    def test_query_mode_requires_stopped_node_and_rolls_back_validation_failure(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "query-rollback")
+        original = self.node_env.read_bytes()
+        with mock.patch.object(NODE, "_collect_compose_services", return_value={"usdb-chain": {"state": "running"}}):
+            with self.assertRaisesRegex(ValueError, "stop the node"):
+                NODE.set_query_mode(layout, state_mode="archive", tracing="on")
+        self.assertEqual(self.node_env.read_bytes(), original)
+        with mock.patch.object(NODE, "_collect_compose_services", return_value={}):
+            with self.assertRaisesRegex(ValueError, "USDB_CHAIN_GCMODE"):
+                NODE.set_query_mode(layout, state_mode="invalid", tracing="on")
+            self.assertEqual(self.node_env.read_bytes(), original)
+            with self.assertRaisesRegex(ValueError, "requires --state-mode"):
+                NODE.set_query_mode(layout, state_mode=None, tracing=None)
+
+    def test_query_mode_migrates_legacy_archive_and_obeys_operation_lock(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "legacy-query")
+        self.node_env.write_text(self.node_env.read_text().replace("USDB_CHAIN_GCMODE=full\n", "")
+                                 + "USDB_CHAIN_EXTRA_ARGS=--cache 512 --gcmode=archive\n")
+        with mock.patch.object(NODE, "_collect_compose_services", return_value={}):
+            NODE.set_query_mode(layout, state_mode=None, tracing="on")
+        env = NODE.read_env(self.node_env)
+        self.assertEqual(env["USDB_CHAIN_GCMODE"], "archive")
+        self.assertEqual(env["USDB_CHAIN_EXTRA_ARGS"], "--cache 512")
+        args = NODE.build_parser().parse_args(["set-query-mode", "--state-mode", "archive", "--tracing", "on"])
+        self.assertEqual(NODE._operation_name(args), "set-query-mode")
+        with mock.patch("usdb_peers.pending", return_value=True):
+            with self.assertRaisesRegex(ValueError, "peer operation is pending"):
+                NODE._execute_command(layout, args)
+
     def test_configure_derives_release_images_paths_and_private_credentials(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "node-data"
@@ -141,6 +192,8 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(env["USDB_FIREWALL_MODE"], "external")
         self.assertEqual(env["USDB_OPERATOR_SSH_PORT"], "22")
         self.assertEqual(env["USDB_NODE_ROLE"], "full")
+        self.assertEqual(env["USDB_CHAIN_GCMODE"], "full")
+        self.assertEqual(env["USDB_CHAIN_TRACING"], "0")
         self.assertEqual(env["USDB_NAT"], "extip:203.0.113.10")
         self.assertEqual(stat.S_IMODE(node_env.stat().st_mode), 0o600)
         rpcauth = NODE.network_secure_dir(data_root, layout.bundle_id) / "bitcoin-mainnet-rpcauth"
@@ -177,6 +230,7 @@ class UsdbNodeTests(unittest.TestCase):
                 str(data_root),
                 "full",
                 VALID_SEED,
+                "",
                 "n",
                 "n",
                 "n",
@@ -197,6 +251,9 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(env["USDB_MINER_ADDRESS"], "")
         self.assertEqual(env["USDB_MINER_THREADS"], "1")
         self.assertEqual(env["USDB_BOOTNODES"], VALID_SEED)
+        self.assertEqual(env["USDB_CHAIN_GCMODE"], "full")
+        self.assertEqual(env["USDB_CHAIN_TRACING"], "0")
+        self.assertIn("Explorer support: disabled (full state mode, tracing off)", output.getvalue())
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
         self.assertEqual(env["USDB_FIREWALL_MODE"], "external")
         self.assertEqual(env["USDB_OPERATOR_SSH_PORT"], "22")
@@ -208,6 +265,45 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIn("Release-approved balance-history snapshot", output.getvalue())
         self.assertIn("Required/recommended: 1.5 TiB / 2.0 TiB", output.getvalue())
         self.assertIn("Selected: balanced-32g", output.getvalue())
+
+    def test_setup_enables_full_explorer_support_in_initial_configuration(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "explorer-setup"
+        answers = iter([str(data_root), "full", "", "y", "n", "n", "n", "y"])
+        prompts = []
+
+        def answer(prompt: str) -> str:
+            prompts.append(prompt)
+            return next(answers)
+
+        output = io.StringIO()
+        result = NODE.setup_node(layout, input_fn=answer, output=output)
+        env = NODE.read_env(result.node_env)
+        self.assertEqual(env["USDB_CHAIN_GCMODE"], "archive")
+        self.assertEqual(env["USDB_CHAIN_TRACING"], "1")
+        self.assertEqual(env["USDB_NODE_ROLE"], "full")
+        self.assertEqual(env["USDB_HTTP_BIND_ADDRESS"], "127.0.0.1")
+        self.assertIn("Provide full Explorer support (archive + private tracing) [y/N]: ", prompts)
+        self.assertIn("Explorer support: archive + private HTTP tracing", output.getvalue())
+        self.assertIn("does not restore pruned history", output.getvalue())
+        self.assertIn("deploy usdb-explorer separately", output.getvalue())
+
+    def test_setup_explorer_validation_failure_removes_initial_config_and_credentials(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "explorer-setup-failure"
+        answers = iter([str(data_root), "full", "", "y", "n", "n", "n", "y"])
+
+        def fail_validation(_layout: object, **_kwargs: object) -> None:
+            env = NODE.read_env(self.node_env)
+            self.assertEqual(env["USDB_CHAIN_GCMODE"], "archive")
+            self.assertEqual(env["USDB_CHAIN_TRACING"], "1")
+            raise ValueError("query setup validation failed")
+
+        with mock.patch.object(NODE, "_validate_node_config", side_effect=fail_validation):
+            with self.assertRaisesRegex(ValueError, "query setup validation failed"):
+                NODE.setup_node(layout, input_fn=lambda _prompt: next(answers), output=io.StringIO())
+        self.assertFalse(self.node_env.exists())
+        self.assertFalse((NODE.network_secure_dir(data_root, layout.bundle_id) / "bitcoin-mainnet-rpcauth").exists())
 
     def test_bitcoin_resource_profile_auto_selects_and_enforces_host_memory(self) -> None:
         selected, resources = NODE.resolve_bitcoin_resource_profile(
@@ -361,7 +457,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_cancellation_writes_no_config_or_credentials(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "cancelled-data"
-        answers = iter([str(data_root), "full", "", "n", "n", "n", "n"])
+        answers = iter([str(data_root), "full", "", "y", "n", "n", "n", "n"])
         with self.assertRaisesRegex(ValueError, "setup cancelled"):
             NODE.setup_node(
                 layout,
@@ -395,7 +491,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_can_select_the_release_approved_snapshot(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "snapshot-setup-data"
-        answers = iter([str(data_root), "full", "", "n", "n", "y", "y"])
+        answers = iter([str(data_root), "full", "", "n", "n", "n", "y", "y"])
         with mock.patch.object(
             NODE,
             "_disk_free_bytes",
@@ -416,7 +512,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_can_select_managed_ufw(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "managed-firewall-data"
-        answers = iter([str(data_root), "full", "", "n", "y", "22", "n", "y"])
+        answers = iter([str(data_root), "full", "", "n", "n", "y", "22", "n", "y"])
 
         result = NODE.setup_node(
             layout,

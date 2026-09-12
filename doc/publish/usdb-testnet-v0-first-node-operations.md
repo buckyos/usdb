@@ -211,6 +211,10 @@ bundle ID 与 hostname 派生，password 自动生成。SSH server port 从当�
 询问，只有 managed UFW 才要求确认后写入规则。只有角色、miner 地址、bootnode、managed SSH port 无法正确
 检测和确实需要开放 Bitcoin 入站时才需修改默认值。专用数据盘可在向导中选择 `/data/usdb`。
 
+向导还会询问是否提供完整 Explorer 功能，默认 `n`。专用查询服务器选择 `y` 后，同时开启
+archive 与私有 HTTP tracing，节点角色保持不变；该选项不安装 Explorer，也不会补回已裁剪的历史。
+最终写入前会显示选择结果，更多边界见[查询节点配置](usdb-node-query-mode.md)。
+
 release 内已固定 BTC height `963800` 的官方 balance-history snapshot。`setup` 会显示 snapshot ID、下载量、
 建议剩余空间和当前磁盘空间，并询问是否使用；选择后只把批准记录写入 `node.env`。后续 `up` 通过 systemd
 controller 执行可断点续传的 artifact 下载与校验，不需要填写 URL 或 S3 凭证，也不依赖当前 SSH 会话。
@@ -444,6 +448,10 @@ docker/scripts/tools/run_testnet_runtime.sh up-chain
 - blockers 为空。
 
 ## 9. 启动索引器和 USDB 链
+
+如果此服务器承担 Explorer 查询职责，在首次同步链之前按
+[专用查询节点配置](usdb-node-query-mode.md) 显式启用 archive 和私有 tracing，并预留 Explorer 内存。
+普通 full/miner 节点不需要启用这两个选项；同机 RPC 地址可达不等于已经具备历史查询能力。
 
 首次先保持 `USDB_NODE_ROLE=full`：
 

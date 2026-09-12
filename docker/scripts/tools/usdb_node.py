@@ -62,6 +62,7 @@ from validate_network_bundle import (  # noqa: E402
     BITCOIN_RESOURCE_PROFILES,
     DEFAULT_BITCOIN_RESOURCE_PROFILE,
     btc_registry_stable_lag_blocks,
+    chain_query_settings,
     read_env,
     validate_network_bundle,
     validate_node_env,
@@ -883,6 +884,46 @@ def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) 
     _resource_state_path(layout).unlink(missing_ok=True)
 
 
+def set_query_mode(layout: ReleaseLayout, *, state_mode: str | None, tracing: str | None) -> None:
+    """Change history retention and private HTTP tracing without changing node identity."""
+    if not layout.node_env.is_file():
+        raise ValueError("node is not configured; run configure first")
+    if state_mode is None and tracing is None:
+        raise ValueError("set-query-mode requires --state-mode or --tracing")
+    if any(item.get("state") not in {"exited", "dead", "created"}
+           for item in _collect_compose_services(layout).values()):
+        raise ValueError("stop the node with usdb-node down before changing its query mode")
+    original = layout.node_env.read_text(encoding="utf-8")
+    env = read_env(layout.node_env)
+    current_mode, current_tracing, remaining = chain_query_settings(env)
+    if tracing not in {None, "on", "off"}:
+        raise ValueError("tracing must be on or off")
+    updates = {"USDB_CHAIN_GCMODE": state_mode if state_mode is not None else current_mode,
+               "USDB_CHAIN_TRACING": current_tracing if tracing is None else str(int(tracing == "on"))}
+    if "USDB_CHAIN_EXTRA_ARGS" in env:
+        updates["USDB_CHAIN_EXTRA_ARGS"] = " ".join(remaining)
+    try:
+        _atomic_write_private(layout.node_env, upsert_env(original, updates))
+        _validate_node_config(layout, require_runtime=False, require_bitcoin_runtime=True)
+    except BaseException:
+        _atomic_write_private(layout.node_env, original)
+        raise
+
+
+def print_query_mode(layout: ReleaseLayout, *, json_output: bool) -> None:
+    """Report configured policy without claiming verified historical coverage."""
+    env = read_env(layout.node_env)
+    mode, tracing, _ = chain_query_settings(env)
+    report = {"role": env.get("USDB_NODE_ROLE", "full"), "state_mode": mode,
+              "private_http_tracing": tracing == "1", "historical_coverage": "unverified"}
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(f"Configured query mode: role={report['role']}, state={mode}, "
+              f"private HTTP tracing={'on' if tracing == '1' else 'off'}")
+        print("Historical coverage is unverified. Archive retains future states; it does not restore pruned history.")
+
+
 def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
     """Preview all phases without changing configured or running resources."""
     env = read_env(layout.node_env) if layout.node_env.is_file() else {}
@@ -1062,7 +1103,9 @@ def configure_node(
     resource_management: str = "manual",
     resource_caps: dict[str, str] | None = None,
     p2p_options: dict[str, Any] | None = None,
+    explorer_queries: bool = False,
 ) -> Path:
+    """Create node configuration, optionally enabling both full Explorer RPC capabilities."""
     if layout.node_env.exists():
         raise ValueError(
             f"refusing to replace existing node configuration: {layout.node_env}; "
@@ -1086,6 +1129,8 @@ def configure_node(
         bitcoin_resource_profile if resource_management == "manual" else DEFAULT_BITCOIN_RESOURCE_PROFILE
     )
     resource_updates = _resource_policy_updates(resource_management, resource_caps or {})
+    query_updates = {"USDB_CHAIN_GCMODE": "archive" if explorer_queries else "full",
+                     "USDB_CHAIN_TRACING": "1" if explorer_queries else "0"}
     _validate_data_root_capacity(data_root)
     root = data_root.expanduser().resolve()
     secure_dir = network_secure_dir(root, layout.bundle_id)
@@ -1144,7 +1189,9 @@ def configure_node(
             )
         content = render_env(template_path.read_text(encoding="utf-8"),
                              {key: value for key, value in updates.items() if key not in resource_updates})
-        content = upsert_env(content, resource_updates)
+        # Commit query policy together with the initial configuration, including
+        # when an older bundle template does not yet contain these local fields.
+        content = upsert_env(content, {**resource_updates, **query_updates})
         _atomic_write_private(layout.node_env, content)
         _validate_node_config(
             layout,
@@ -1331,6 +1378,15 @@ def setup_node(
         if not bootnodes:
             print("No seed configured: upstream sync can proceed; network membership will remain SEED_REQUIRED. "
                   "Only the network founder uses mining enable --first-node.", file=output)
+    explorer_queries = _prompt_yes_no(
+        "Provide full Explorer support (archive + private tracing)",
+        default=False,
+        input_fn=input_fn,
+        output=output,
+    )
+    if explorer_queries:
+        print("Archive retains historical states and uses more disk; it does not restore pruned history.", file=output)
+        print("This enables private node RPC capabilities only; deploy usdb-explorer separately.", file=output)
     bitcoin_public = _prompt_yes_no(
         "Accept inbound Bitcoin peers on TCP/8333",
         default=False,
@@ -1387,6 +1443,8 @@ def setup_node(
     print("", file=output)
     print(f"Data root: {data_root.expanduser().resolve()}", file=output)
     print(f"Role: {role}", file=output)
+    print("Explorer support: " + ("archive + private HTTP tracing" if explorer_queries
+                                 else "disabled (full state mode, tracing off)"), file=output)
     print("USDB P2P: public TCP/UDP 31303", file=output)
     print(f"Bitcoin P2P: {'public' if bitcoin_public else 'private'}", file=output)
     print(f"Host firewall: {firewall_mode}", file=output)
@@ -1416,6 +1474,7 @@ def setup_node(
         bitcoin_resource_profile=bitcoin_profile,
         resource_management=resource_management,
         resource_caps=resource_caps,
+        explorer_queries=explorer_queries,
     )
     return SetupResult(
         node_env=path,
@@ -5416,6 +5475,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_resource_cap_arguments(resource_policy)
     resource_preview = subparsers.add_parser("resources", help="Preview proportional resource budgets and caps for every phase")
     resource_preview.add_argument("--json", action="store_true")
+    query_mode = subparsers.add_parser("set-query-mode", help="Change history retention and private HTTP tracing while the node is stopped")
+    query_mode.add_argument("--state-mode", choices=("full", "archive"))
+    query_mode.add_argument("--tracing", choices=("on", "off"))
+    query_preview = subparsers.add_parser("query-mode", help="Show configured query policy; does not verify historical coverage")
+    query_preview.add_argument("--json", action="store_true")
     configure.add_argument(
         "--firewall-mode",
         choices=FIREWALL_MODES,
@@ -5647,6 +5711,7 @@ def _operation_name(args: argparse.Namespace) -> str | None:
         "set-firewall-mode",
         "set-bitcoin-profile",
         "set-resource-policy",
+        "set-query-mode",
         "activate-release",
         "snapshot",
         "firewall",
@@ -5665,7 +5730,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
     if args.command == "mining":
         import usdb_mining
         return usdb_mining.execute(layout, args)
-    if args.command in {"set-role", "set-resource-policy", "set-bitcoin-profile", "set-firewall-mode", "activate-release", "snapshot"}:
+    if args.command in {"set-role", "set-query-mode", "set-resource-policy", "set-bitcoin-profile", "set-firewall-mode", "activate-release", "snapshot"}:
         import usdb_mining
         import usdb_peers
         if usdb_peers.pending(layout):
@@ -5764,6 +5829,12 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         print_resource_plan(layout, json_output=False)
     elif args.command == "resources":
         print_resource_plan(layout, json_output=args.json)
+    elif args.command == "set-query-mode":
+        set_query_mode(layout, state_mode=args.state_mode, tracing=args.tracing)
+        print_query_mode(layout, json_output=False)
+        print("Run usdb-node up to apply the configuration. Full history requires genesis replay or a complete archive backup.")
+    elif args.command == "query-mode":
+        print_query_mode(layout, json_output=args.json)
     elif args.command == "set-role":
         set_role(
             layout,

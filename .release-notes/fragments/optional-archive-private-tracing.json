@@ -1,0 +1,28 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "optional-archive-private-tracing",
+  "type": "added",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Support optional archive retention and private HTTP tracing on dedicated query nodes",
+  "details": [
+    "Add stopped-node set-query-mode and read-only query-mode commands. History retention and tracing are independent of full/miner role; ordinary nodes retain full GC mode with tracing disabled.",
+    "Offer full Explorer support in interactive setup, defaulting to no. Selecting yes writes archive retention and private HTTP tracing together with the initial node configuration; it does not install Explorer or restore pruned history.",
+    "Pass the selected policy through Compose to the USDB chain entrypoint. Debug is opt-in on HTTP only, host RPC publication remains loopback-only, EXTRA_ARGS cannot override HTTP or WS policy, and blank namespace lists cannot expose every API.",
+    "Preserve node identity, credentials and data paths; migrate compatible legacy gcmode arguments and reject conflicting or duplicate settings.",
+    "Archive activation does not restore pruned history or certify historical coverage. Full coverage requires genesis replay or a verified complete archive backup, with the corresponding USDB indexer history.",
+    "Document dedicated full-role query servers, colocated Explorer memory reservations and mainnet qualification boundaries. This change does not activate a mainnet network bundle."
+  ],
+  "operator_actions": [
+    "Install a paired release containing both the updated node kit and chain image before opting in.",
+    "On a new query server, select full Explorer support in usdb-node setup. For an already configured node, stop it and run usdb-node set-query-mode --state-mode archive --tracing on. Start the node and verify upstream history and tracing with Explorer preflight.",
+    "For previously pruned nodes, retain the original data and provision a separate complete archive before relying on early historical queries; do not delete existing chain data.",
+    "Reserve the actual Explorer container memory budget in the node resource policy before colocating services; keep node RPC ports private."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": []
+}

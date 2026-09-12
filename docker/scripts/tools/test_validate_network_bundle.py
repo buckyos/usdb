@@ -21,6 +21,32 @@ import runtime_compatibility as RUNTIME
 
 
 class NetworkBundleValidatorTests(unittest.TestCase):
+    def test_query_mode_defaults_and_legacy_flags(self) -> None:
+        self.assertEqual(VALIDATOR.chain_query_settings({}), ("full", "0", []))
+        for flag in ("--gcmode archive", "--gcmode=archive"):
+            with self.subTest(flag=flag):
+                self.assertEqual(VALIDATOR.chain_query_settings({"USDB_CHAIN_EXTRA_ARGS": flag + " --cache 512"}),
+                                 ("archive", "0", ["--cache", "512"]))
+
+    def test_query_mode_rejects_conflicts_and_rpc_bypasses(self) -> None:
+        invalid = [
+            {"USDB_CHAIN_GCMODE": "snap"}, {"USDB_CHAIN_TRACING": "true"},
+            {"USDB_CHAIN_GCMODE": "full", "USDB_CHAIN_EXTRA_ARGS": "--gcmode archive"},
+            {"USDB_CHAIN_EXTRA_ARGS": "--gcmode"},
+            {"USDB_CHAIN_EXTRA_ARGS": "--gcmode=archive --gcmode full"},
+            {"USDB_CHAIN_EXTRA_ARGS": "--ws.api eth,debug"},
+            {"USDB_CHAIN_EXTRA_ARGS": "--http.api=eth,debug"},
+        ]
+        for env in invalid:
+            with self.subTest(env=env), self.assertRaises(ValueError):
+                VALIDATOR.chain_query_settings(env)
+
+    def test_archive_tracing_still_requires_loopback_http_binding(self) -> None:
+        path = self.write_node_env(USDB_CHAIN_GCMODE="archive", USDB_CHAIN_TRACING="1",
+                                   USDB_HTTP_BIND_ADDRESS="0.0.0.0")
+        with self.assertRaisesRegex(ValueError, "USDB_HTTP_BIND_ADDRESS must be loopback-only"):
+            self.validate_node_env(path, False)
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory(prefix="usdb-network-bundle-test-")
         self.root = Path(self.temp_dir.name)

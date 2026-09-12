@@ -69,6 +69,30 @@ KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS = frozenset(
 PERSISTENT_DATA_PATHS = LEGACY_PERSISTENT_DATA_PATHS
 
 
+def chain_query_settings(env: dict[str, str]) -> tuple[str, str, list[str]]:
+    """Resolve local query policy, retaining legacy gcmode arguments on upgrade."""
+    mode = env.get("USDB_CHAIN_GCMODE", "")
+    tracing = env.get("USDB_CHAIN_TRACING", "0")
+    require(mode in {"", "full", "archive"}, "USDB_CHAIN_GCMODE must be full or archive")
+    require(tracing in {"0", "1"}, "USDB_CHAIN_TRACING must be 0 or 1")
+    # Match the runtime's whitespace-separated EXTRA_ARGS contract, not shell quoting.
+    arguments = iter(env.get("USDB_CHAIN_EXTRA_ARGS", "").split())
+    remaining = []
+    legacy_mode = None
+    for argument in arguments:
+        if argument == "--gcmode" or argument.startswith("--gcmode="):
+            require(legacy_mode is None, "USDB_CHAIN_EXTRA_ARGS contains duplicate --gcmode")
+            legacy_mode = next(arguments, "") if argument == "--gcmode" else argument.split("=", 1)[1]
+            require(legacy_mode in {"full", "archive"}, "--gcmode must be full or archive")
+        else:
+            require(not argument.startswith(("--http", "--ws")),
+                    "USDB_CHAIN_EXTRA_ARGS cannot override managed RPC settings")
+            remaining.append(argument)
+    require(not mode or legacy_mode is None or mode == legacy_mode,
+            "USDB_CHAIN_GCMODE conflicts with legacy --gcmode; remove the legacy argument")
+    return mode or legacy_mode or "full", tracing, remaining
+
+
 def strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     value: dict[str, Any] = {}
     for key, item in pairs:
@@ -804,6 +828,7 @@ def validate_node_env(
 
     role = env.get("USDB_NODE_ROLE", "full")
     require(role in {"bootnode", "full", "miner"}, "unsupported USDB_NODE_ROLE")
+    chain_query_settings(env)
     if role == "miner":
         miner_address = env.get("USDB_MINER_ADDRESS", "")
         require(bool(miner_address), "miner role requires USDB_MINER_ADDRESS")
