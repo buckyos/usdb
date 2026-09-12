@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(about = "Resumable AssumeUTXO import/replay validation prototype")]
 struct Cli {
-    /// Absolute dedicated output workspace (required except for scan).
+    /// Absolute dedicated output workspace (required except for scan and origin-commit).
     #[arg(long, global = true)]
     root_dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -19,6 +19,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Calculate the proposed business-origin commit read-only; no old snapshots or RPC are used.
+    OriginCommit {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        network: bitcoincore_rpc::bitcoin::Network,
+        #[arg(long)]
+        height: u32,
+        #[arg(long)]
+        block_hash: bitcoincore_rpc::bitcoin::BlockHash,
+    },
     /// Verify the entire source file and Core logical UTXO commitment without creating a database.
     Scan {
         #[arg(long)]
@@ -69,6 +80,22 @@ fn identity(path: &PathBuf) -> Result<SnapshotIdentity, String> {
 }
 
 fn run(cli: Cli) -> Result<(), String> {
+    if let Command::OriginCommit {
+        state_dir,
+        network,
+        height,
+        block_hash,
+    } = cli.command
+    {
+        let result = balance_history::bootstrap::inspect_bootstrap_origin(
+            &state_dir, network, height, block_hash,
+        )?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
     if let Command::Scan {
         snapshot,
         identity: file,
@@ -152,7 +179,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 root.join("p5-semantics-result.json").display()
             );
         }
-        Command::Scan { .. } | Command::Status => unreachable!(),
+        Command::Scan { .. } | Command::Status | Command::OriginCommit { .. } => unreachable!(),
     }
     Ok(())
 }

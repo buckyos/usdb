@@ -32,6 +32,7 @@
 - [AssumeUTXO P4 导入、重放及全量对比操作](./balance-history-assumeutxo-p4-operations.md)
 - [AssumeUTXO P4 主网验证复核记录](./balance-history-assumeutxo-p4-validation-2026-09-12.md)
 - [AssumeUTXO P5 语义验收记录与复验操作](./balance-history-assumeutxo-p5-validation-2026-09-12.md)
+- [AssumeUTXO P6 生产 bootstrap 设计与分步实施](./balance-history-assumeutxo-p6-bootstrap-design.md)
 - [拆分快照全量对拍与 Electrs 抽样操作](./balance-history-split-snapshot-audit-operations.md)
 - [balance-history-snapshot-signing.md](./balance-history-snapshot-signing.md)
 - [balance-history-exact-height-snapshot-tool-design.md](./balance-history-exact-height-snapshot-tool-design.md)

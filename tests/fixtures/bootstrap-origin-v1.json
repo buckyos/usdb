@@ -1,0 +1,22 @@
+{
+  "identity": {
+    "schema_version": "balance-history-bootstrap-origin:v1",
+    "commit_protocol_version": "2.0.0",
+    "network": "regtest",
+    "origin_height": 103,
+    "origin_block_hash": "00379c26dc6c0f6f4a892a5263c77ee5b85c7e28eb6a34b3bfd1257f7aab0e1c",
+    "data_model_version": "balance-history-data-model:bip30-generations-core-unspendable-v2",
+    "utxos": {
+      "rows": 3,
+      "total_sats": 12,
+      "sha256": "9403e2d280a86dff090990ccadfa5b75aa093c1e6bed63558701ed7606036e33"
+    },
+    "balances": {
+      "rows": 2,
+      "total_sats": 12,
+      "sha256": "7e7ce7e2bcf7356e8e1d20646c9551ab134b4adc26c063e46f5fc2c85e23a8d2"
+    }
+  },
+  "encoded_hex": "0000002362616c616e63652d686973746f72792d626f6f7473747261702d6f726967696e3a763100000005322e302e300000004062616c616e63652d686973746f72792d646174612d6d6f64656c3a62697033302d67656e65726174696f6e732d636f72652d756e7370656e6461626c652d763206226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000000671c0eab7a7f25d1bfb3346aeb287e5cb8e57ec763522a894a6f0f6cdc269c37000000000000000003000000000000000c9403e2d280a86dff090990ccadfa5b75aa093c1e6bed63558701ed7606036e330000000000000002000000000000000c7e7ce7e2bcf7356e8e1d20646c9551ab134b4adc26c063e46f5fc2c85e23a8d2",
+  "origin_commit": "e2bb3760e24e5ef768ff6831b66882eff230adbebe754dd2dfcae6bddcb4fbd8"
+}

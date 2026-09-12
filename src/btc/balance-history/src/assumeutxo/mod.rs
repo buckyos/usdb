@@ -433,3 +433,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../../../../../tests/assumeutxo_semantics.rs"]
 mod semantics_tests;
+
+#[cfg(test)]
+#[path = "../../../../../tests/assumeutxo_origin.rs"]
+mod origin_tests;

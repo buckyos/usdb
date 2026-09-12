@@ -8,6 +8,7 @@
 - 本次完成：源码/上游机制核对、宿主机盘点、本大纲，以及31.1独立二进制验证、regtest冒烟、935000快照加载与恢复、前台追平及同锚点全量UTXO对拍。
 - 首轮结果：Bitcoin前台验证通过，后台未完成，实验节点已正常停止并保留数据；见[第一轮实测记录](./bitcoin-core-31.1-assumeutxo-validation-2026-09-12.md)。
 - P4进展：主网935000导入、重放至963800和全量UTXO/非零余额/逐块commit对比均通过，6项小规模测试通过。原cookie故障已恢复；见[主网复核记录](./balance-history-assumeutxo-p4-validation-2026-09-12.md)及[操作步骤](./balance-history-assumeutxo-p4-operations.md)。
+- P4/P5 验证批次已提交为 `ce94958`。随后确认取消旧 commit 兼容要求；P6.1 已新增独立起点承诺计算与小规模验收，见[P6设计](./balance-history-assumeutxo-p6-bootstrap-design.md)。
 - 尚未执行：镜像构建、现有服务升级及balance-history运行时重构。
 
 目标是验证并实现：从 Bitcoin Core 支持的 `935000` UTXO 快照恢复完整 UTXO 与脚本余额，
@@ -22,10 +23,12 @@
 1. 首先准备 **Bitcoin Core 31.1 的独立版本环境**。无需先替换现有 28.1 主网节点；旧节点可继续作为全量历史对照源。
 2. 在新目录启动 31.1，下载并加载 935000 快照，是第一轮 Bitcoin 侧验证的主路径。
 3. 现有数据目录的 28.1→31.1 升级是独立兼容性验证，可在新版本冒烟验证后安排，不是快照导入实验的前置依赖。
-4. 首轮只替换数据初始化路径，保留现有余额与 commit 算法。兼容旧 commit 链时，需要额外核验的小型 USDB 锚点。
+4. P4/P5 首轮保留现有余额与 commit 算法，并使用旧 USDB 小锚点作等价性验证。P6 已确认无需兼容旧 commit：在业务起点963800定义新的状态承诺，取消旧小锚点依赖。
 5. 不将“31.1 启动成功”“loadtxoutset 成功”“前台追平”“后台验证完成”“USDB consensus-ready”合并成一个结论。
 6. 935000 是导入基线，963800 是服务起点，二者不得混用。未来更换快照时，基线必须不晚于需要恢复的最早状态高度。
 7. 用户已确认目标节点按全块磁盘要求部署：采用 `prune=0`，遵循官方后台历史验证；不设计跳过后台验证或自动裁剪旧块的默认方案。
+8. 新生产 bootstrap 取消历史 core/script-registry 两类 snapshot 的依赖，以 Bitcoin UTXO 快照加后续重放建立状态。旧文件作为既有验收证据保留，不自动删除。
+9. LocalLoader 保留用于加速，并作为 P6.3 独立适配基线起步、双 cursor 文件追加、乱序和 canonical 链选择；不随旧快照入口一并删除。
 
 ## 3. 当前基线与容量
 
@@ -108,7 +111,7 @@ mempool 为空等。正式执行脚本按 31.1 实际 RPC 错误处理，不放�
 | P3 | 现有 28.1 数据目录升级兼容验证 | 原数据复用与现有消费者回归通过 | 待安排；不阻塞 P2 |
 | P4 | balance-history 最小导入/重放原型 | 935000 UTXO+余额基线、小锚点、重放到963800 | 通过：主网导入、重放、三项全量投影对比一致 |
 | P5 | balance-history 语义等价验证 | 全量状态、逐块 commit、历史边界、重启/reorg 验收通过 | 离线语义与独立regtest通过；主网28,801条commit/1,024个查询样本及下游承诺链路通过，整套在线端到端留待P6/P7；见[P5记录](./balance-history-assumeutxo-p5-validation-2026-09-12.md) |
-| P6 | 整套节点快速启动与依赖改造 | 不依赖全量 txindex 完成即可达成实际 USDB 就绪 | 目标采用prune=0；其余待设计/实现 |
+| P6 | 整套节点快速启动与依赖改造 | 不依赖旧 USDB snapshot/commit 锚点及全量 txindex 完成即可达成实际 USDB 就绪 | P6.1 起点承诺编码/只读计算已实现并通过小规模测试；生产接入与 LocalLoader 独立步骤待实现，见[P6设计](./balance-history-assumeutxo-p6-bootstrap-design.md) |
 | P7 | 镜像、安装器和发布集成 | 新鲜安装与升级实测、证据归档、发布身份更新完成 | 待执行 |
 
 P1 的隔离环境可先服务 P2；生产默认镜像和现有节点切换在对应兼容性验证后进行。
@@ -188,6 +191,8 @@ RPC 只绑定 loopback，使用独立 cookie；端口在执行前检查，不能
 
 ### P4：balance-history 最小原型
 
+以下保留 P4/P5 原有验证步骤。P6 生产方案已取消旧 commit 兼容及小锚点要求，不再把步骤4的 reference core 当作部署前置输入。
+
 1. 新增独立 bootstrap 导入入口，流式解析已验证的 Bitcoin 快照。核验网络、基线/hash、格式、记录完整性和内容身份，
    记录 Core 验证所对应的精确输入文件；不能把下载文件 SHA-256 当成 Core 的 UTXO 承诺。
 2. 解码完整 Coin 字段后校验，再投影为本项目 `outpoint -> (script_hash, value)`；聚合每个脚本的完整余额。
@@ -227,17 +232,18 @@ RPC 只绑定 loopback，使用独立 cookie；端口在执行前检查，不能
 
 现有 core snapshot 可作为参考输入，但要绑定其文件 hash、生成版本及来源；文件签名/完整性不能单独证明它的语义。
 测试预期区分“余额与 commit 等价”及“基线前元数据无法恢复”，明确可接受差异，不能把所有行不等都归为预期差异。
-若需要重新定义 RPC 或 commit 契约，先停止兼容性结论，再提交单独的语义/版本设计。
+P5 结论限定于旧 commit 契约；P6 新 commit 与 RPC/下游版本接入按单独设计和新验收处理。
 
 ### P6/P7：整套节点重构与交付
 
+- 按[P6分步设计](./balance-history-assumeutxo-p6-bootstrap-design.md)依次落实起点承诺、原生bootstrap、LocalLoader、indexer/readiness及整套验收；不把只读工具已通过等同于生产流程已切换。
 - 替换 indexer 的历史 prevout 金额与 reveal transaction 查询来源；处理消费者落后时 UTXO 已被花费的情况。
   当前 live-UTXO RPC 和有限 undo 窗口不能自动覆盖所有历史查询。
 - 区块采用 `prune=0` 完整保留；另行设计 prevout/undo 的可用性与缺块、落后、重启恢复，不能把保留全块等同于 txindex 已追平。
 - 将前台可用、后台验证进度、balance-history 就绪和 indexer 共识就绪分别公开；不只删除旧 readiness 检查。
 - 调整资源政策、候选镜像与 release digest、node-kit 配置、bootstrap 来源选择、provenance、诊断和恢复流程。
 - 在不依赖旧本机全量节点的环境中跑完整冷启动，确认缺省路径不再暗中等待全量 txindex。
-- 保留旧 core snapshot 作为验证参考/可选启动方式，是否继续发布由测得的时间、空间与运维成本决定。
+- 新生产入口取消旧 core/registry snapshot 与旧 commit 锚点依赖；保留已有验证文件和证据，不再把继续发布两类旧快照作为新节点启动要求。
 - 发布前完成独立 regtest、相同锚点主网对拍及安装/升级验证；只有代码或镜像构建通过不能标记发布就绪。
 
 ## 6. 证据与性能记录
@@ -255,7 +261,7 @@ RPC 只绑定 loopback，使用独立 cookie；端口在执行前检查，不能
 
 ## 7. 下一批具体工作
 
-1. [P5离线语义与regtest验收已通过](./balance-history-assumeutxo-p5-validation-2026-09-12.md)，保留当前963800实验状态作为参考；下一阶段从独立小锚点、生产bootstrap及indexer历史查询/readiness设计开始，整套在线端到端另行验收。
+1. [P5离线语义与regtest验收已通过](./balance-history-assumeutxo-p5-validation-2026-09-12.md)，保留当前963800实验状态作为参考；P6.1 已实现独立起点承诺计算，下一步 P6.2 接入不依赖旧快照/小锚点的生产 bootstrap。主网只读承诺全量扫描按[P6操作](./balance-history-assumeutxo-p6-bootstrap-design.md#6-p61-只读主网计算操作待人工安排)另行安排，整套在线端到端仍待验收。
 2. P6采用prune=0，纳入刷盘期间RPC超时、内存及完整区块空间开销；当前已裁剪的P2实验节点仍不作为完整重放区块源。
 3. 原目录升级P3单独安排；镜像集成需处理31.1实际发布签名与现有固定三签名组合的差异，并核算导入额外内存，不能只修改版本和dbcache。
 

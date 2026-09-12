@@ -25,6 +25,9 @@ pub use legacy_compare::*;
 mod assumeutxo;
 pub use assumeutxo::*;
 
+#[path = "bootstrap.rs"]
+mod bootstrap;
+
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
 pub const META_CF: &str = "meta";

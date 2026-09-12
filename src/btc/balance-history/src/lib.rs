@@ -3,6 +3,7 @@
 
 pub mod assumeutxo;
 pub mod bench;
+pub mod bootstrap;
 pub mod btc;
 pub mod cache;
 pub mod config;
