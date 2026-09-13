@@ -4,6 +4,11 @@ set -euo pipefail
 output_path="${1:-${USDB_INDEXER_ROOT_DIR:-/data/usdb-indexer}/config.json}"
 root_dir="${USDB_INDEXER_ROOT_DIR:-/data/usdb-indexer}"
 
+if [[ "${SNAPSHOT_MODE:-none}" == "assumeutxo" ]]; then
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  exec python3 "${script_dir}/../tools/assumeutxo_bootstrap.py" render-indexer --output "${output_path}"
+fi
+
 mkdir -p "${root_dir}" "$(dirname "${output_path}")"
 
 emit_btc_auth_json() {

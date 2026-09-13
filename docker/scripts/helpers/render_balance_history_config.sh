@@ -4,6 +4,11 @@ set -euo pipefail
 output_path="${1:-${BH_ROOT_DIR:-/data/balance-history}/config.toml}"
 root_dir="${BH_ROOT_DIR:-/data/balance-history}"
 
+if [[ "${SNAPSHOT_MODE:-none}" == "assumeutxo" ]]; then
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  exec python3 "${script_dir}/../tools/assumeutxo_bootstrap.py" render --output "${output_path}"
+fi
+
 mkdir -p "${root_dir}" "$(dirname "${output_path}")"
 
 btc_auth_mode="${BTC_AUTH_MODE:-cookie}"

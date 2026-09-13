@@ -20,7 +20,7 @@ P6.1 已提交为 `cdf4f7c`；P6.2 检查点批次已提交为 `a897975`，实�
 当前已实现 P6.1 独立状态摘要/只读计算，以及 P6.2 检查点驱动的原生导入、重放、封存、服务启动和 RPC 接入。
 P6.3 已提交为 `8103550`，实现与 Core 并行的导入/逐段重放及本地取块，见[P6.3 验收与操作](./balance-history-assumeutxo-p63-operations.md)。
 P6.4 已提交为 `7f52ee2`，接入按消费块查询历史输入、块内定位 reveal 及 readiness，见[P6.4 验收与操作](./balance-history-assumeutxo-p64-operations.md)。
-P6.5 修复了重组后旧轮询snapshot覆盖新历史锚点的竞态；独立 Core/BH/indexer 整套验收连续三轮通过，含真实mint/转移、逐块commit对拍、缺块/undo及强制中断恢复、重组和查询下界，见[P6.5 验收与主网步骤](./balance-history-assumeutxo-p65-operations.md)。
+P6.5 已提交为 `22cf06c`，修复了重组后旧轮询snapshot覆盖新历史锚点的竞态；独立 Core/BH/indexer 整套验收连续三轮通过，含真实mint/转移、逐块commit对拍、缺块/undo及强制中断恢复、重组和查询下界，见[P6.5 验收与主网步骤](./balance-history-assumeutxo-p65-operations.md)。
 本轮检查点兼容验收结果见 P6.2 操作文档；之前 v2 种子的实测不作为当前 commit 兼容证据。主网原生重导入、同锚点服务复核和本地读取性能待安排；部署默认切换属于P7。
 现有 P4 `import/replay` 继续按旧验证协议使用 reference core；不能把新增计算入口等同于已经移除生产依赖。
 
@@ -34,7 +34,8 @@ P6.5 修复了重组后旧轮询snapshot覆盖新历史锚点的竞态；独立 
 | P6.4 | indexer 历史 prevout/reveal 查询与 readiness | 不依赖全量 txindex 追平；落后消费者和历史已花费输出仍正确；不把 Core 前台可用等同于整套就绪 | 已实现；326项indexer回归通过，真实Core关闭txindex/落后2050块的输入、reveal及同块转移验证通过；整套服务交付留待P6.5/P7 |
 | P6.5 | 整套端到端验收与运维步骤 | 独立 regtest、主网相同锚点复核、冷启动/恢复/资源证据完整 | 独立Core/BH/indexer整套验收通过；主网原生重导入、同锚点复核及性能长任务待操作人员安排 |
 
-P7 再完成 Bitcoin 31.1 镜像、node-kit、安装/升级与发布身份集成。原数据目录升级 P3 独立安排。
+P7 已开始服务配置与入口接入，可与主网长任务并行，见[P7 部署改造计划](./balance-history-assumeutxo-p7-deployment-plan.md)。
+Bitcoin 31.1 镜像、node-kit、安装/升级与发布身份集成仍待完成。原数据目录升级 P3 独立安排。
 
 ## 3. 同一条历史 commit 链
 

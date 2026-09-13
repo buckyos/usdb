@@ -2,6 +2,11 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${SNAPSHOT_MODE:-none}" == "assumeutxo" ]]; then
+  python3 "${script_dir}/../tools/assumeutxo_bootstrap.py" validate
+  echo "Native bootstrap records observed scripts; legacy registry sidecar installation is disabled"
+  exit 0
+fi
 root_dir="${BH_ROOT_DIR:-/data/balance-history}"
 sidecar_root="${root_dir}/auxiliary/script-registry"
 bases_root="${sidecar_root}/bases"

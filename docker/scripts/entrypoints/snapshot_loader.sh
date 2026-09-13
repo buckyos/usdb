@@ -2,6 +2,11 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${SNAPSHOT_MODE:-none}" == "assumeutxo" ]]; then
+  python3 "${script_dir}/../tools/assumeutxo_bootstrap.py" validate
+  echo "Native bootstrap is owned by balance-history; legacy snapshot installation is disabled"
+  exit 0
+fi
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../helpers/snapshot_marker.sh
 source "${script_dir}/../helpers/snapshot_marker.sh"

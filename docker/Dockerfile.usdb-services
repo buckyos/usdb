@@ -81,6 +81,7 @@ COPY --from=builder /workspace/src/btc/target/release/usdb-indexer-checkpoint-to
 COPY --from=builder /workspace/src/btc/target/release/usdb-control-plane /usr/local/bin/usdb-control-plane
 COPY --from=ord-builder /opt/ord/bin/ord /opt/ord/bin/ord
 COPY docker/scripts /opt/usdb/docker/scripts
+COPY src/btc/balance-history/src/bootstrap/checkpoints /opt/usdb/docker/scripts/data/assumeutxo
 COPY web /opt/usdb/web
 COPY --from=web-builder /workspace/web/usdb-console-app/dist /opt/usdb/web/usdb-console-app/dist
 COPY --from=web-builder /workspace/web/balance-history-browser/dist /opt/usdb/web/balance-history-browser/dist

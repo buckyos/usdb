@@ -16,8 +16,13 @@ wait_url() {
   "${script_dir}/../helpers/wait_for_tcp.sh" "${host}" "${port}" "${timeout_secs}"
 }
 
-wait_url "${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}" "${WAIT_FOR_BH_TIMEOUT_SECS:-120}"
-wait_url "${BTC_RPC_URL:-http://btc-node:8332}" "${WAIT_FOR_BTC_TIMEOUT_SECS:-120}"
+if [[ "${SNAPSHOT_MODE:-none}" == "assumeutxo" ]]; then
+  # The service reports readiness and retries upstream reads while native BH is still private.
+  echo "Starting indexer alongside native bootstrap; consensus readiness is managed by the service"
+else
+  wait_url "${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}" "${WAIT_FOR_BH_TIMEOUT_SECS:-120}"
+  wait_url "${BTC_RPC_URL:-http://btc-node:8332}" "${WAIT_FOR_BTC_TIMEOUT_SECS:-120}"
+fi
 
 if [[ "${INSCRIPTION_SOURCE:-bitcoind}" == "ord" ]]; then
   wait_url "${ORD_RPC_URL:-http://ord-server:28030}" "${WAIT_FOR_ORD_TIMEOUT_SECS:-120}"

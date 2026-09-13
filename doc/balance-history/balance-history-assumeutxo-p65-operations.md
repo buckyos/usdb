@@ -4,6 +4,7 @@
 
 **独立 regtest 的 Core → 原生 balance-history → indexer 链路验收通过。主网原生重导入、相同锚点复核与性能记录尚待执行，因此 P6.5 尚未全部验收完成。**
 本批修复了整套复验发现的 indexer 重组锚点覆盖竞态；commit算法、数据库格式、镜像和部署默认gate保持原契约。
+本批已提交为 `22cf06c`。部署改造已另行进入[P7 入口接入与后续计划](./balance-history-assumeutxo-p7-deployment-plan.md)，可与本手册主网长任务并行。
 服务基于P6.4提交及本节修复构建，测试用交易生成入口仅在测试构建中启用。
 
 ## 1. 实际运行的链路

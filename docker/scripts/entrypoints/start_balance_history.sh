@@ -29,9 +29,13 @@ if [[ "${snapshot_mode}" == "balance-history" || "${snapshot_mode}" == "paired-c
     echo "SNAPSHOT_MODE=${snapshot_mode} requires a matching snapshot install marker at ${marker_path}" >&2
     exit 1
   fi
-elif [[ "${snapshot_mode}" != "none" ]]; then
+elif [[ "${snapshot_mode}" != "none" && "${snapshot_mode}" != "assumeutxo" ]]; then
   echo "Unsupported SNAPSHOT_MODE=${snapshot_mode}" >&2
   exit 1
+fi
+
+if [[ "${snapshot_mode}" == "assumeutxo" ]]; then
+  echo "Starting native balance-history bootstrap: base_height=${BH_ASSUMEUTXO_BASE_HEIGHT:-935000}, origin_height=${USDB_GENESIS_BLOCK_HEIGHT}"
 fi
 
 if [[ -n "${BH_EXTRA_ARGS:-}" ]]; then
