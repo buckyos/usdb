@@ -1639,6 +1639,9 @@ impl UsdbIndexerRpcServer {
         };
 
         let mut blockers = Vec::new();
+        if runtime.block_processing_pending_height.is_some() {
+            blockers.push(ReadinessBlocker::BlockProcessingPending);
+        }
         if !runtime.rpc_alive {
             blockers.push(ReadinessBlocker::RpcNotListening);
         }
@@ -1703,6 +1706,7 @@ impl UsdbIndexerRpcServer {
             synced_block_height: synced_height,
             snapshot_history_ready_height: history.ready_height,
             snapshot_history_pending_from: history.pending_from,
+            block_processing_pending_height: runtime.block_processing_pending_height,
             balance_history_stable_height: observed_upstream_height,
             upstream_snapshot_id: upstream_snapshot
                 .as_ref()
@@ -4132,6 +4136,20 @@ mod tests {
         assert!(readiness.local_state_commit.is_some());
         assert!(readiness.system_state_id.is_some());
         assert!(readiness.blockers.is_empty());
+
+        // A failed historical-data attempt must block consensus even if observed heights match.
+        server.status.set_block_processing_pending_height(Some(121));
+        let blocked = server.get_readiness().unwrap();
+        assert!(blocked.query_ready);
+        assert!(!blocked.consensus_ready);
+        assert_eq!(blocked.block_processing_pending_height, Some(121));
+        assert!(
+            blocked
+                .blockers
+                .contains(&ReadinessBlocker::BlockProcessingPending)
+        );
+        server.status.set_block_processing_pending_height(None);
+        assert!(server.get_readiness().unwrap().consensus_ready);
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

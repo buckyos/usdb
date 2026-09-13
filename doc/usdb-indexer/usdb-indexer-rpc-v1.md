@@ -332,6 +332,9 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 
 返回服务存活、本地查询与下游共识三层 readiness，以及当前采用的状态 identity。新增字段：
 
+- `block_processing_pending_height`：未提交或最近失败的块高度；非空时增加 `BlockProcessingPending` blocker，
+  保持 `consensus_ready=false`，普通查询仍可读取已提交状态。成功提交或完成核对后确认无需继续处理时清除；
+  该字段覆盖历史 block/undo 数据不足以及其他块处理失败，不是 txindex 或 Core 后台验证进度。
 - `upstream_reorg_epoch`：当前 usdb-indexer DB 已采用的 stable-state reorg 累计次数；
 - 只在 upstream-reorg 专用 rollback 与 durable recovery marker 的同一事务中递增；
 - 普通本地 rollback、restart 和 replacement branch replay 不会清零或重复递增；

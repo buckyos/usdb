@@ -43,6 +43,8 @@ pub struct RuntimeReadinessStatus {
     /// This lets readiness drop immediately during drain/teardown instead of
     /// waiting for the RPC listener to disappear.
     pub shutdown_requested: bool,
+    /// A block is being processed or its last attempt failed; cleared only after durable commit.
+    pub block_processing_pending_height: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -141,6 +143,14 @@ impl StatusManager {
             self.output.println(&msg);
         }
         runtime.upstream_reorg_recovery_pending = pending;
+    }
+
+    /// Keep consensus readiness closed through data failures and retries, until the block commits.
+    pub fn set_block_processing_pending_height(&self, height: Option<u32>) {
+        self.runtime_readiness
+            .lock()
+            .unwrap()
+            .block_processing_pending_height = height;
     }
 
     pub fn set_shutdown_requested(&self, shutdown_requested: bool) {

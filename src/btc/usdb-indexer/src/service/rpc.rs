@@ -523,6 +523,8 @@ impl From<&EconomicExternalState> for ConsensusQueryContext {
 /// Machine-readable blockers that keep usdb-indexer from a stricter ready state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ReadinessBlocker {
+    /// A block has not committed, including unavailable historical block/undo data or a failed retry.
+    BlockProcessingPending,
     /// RPC listener is not yet serving requests, so even liveness is not established.
     RpcNotListening,
     /// Shutdown has been requested and the node is draining toward exit.
@@ -572,6 +574,9 @@ pub struct ReadinessInfo {
     pub snapshot_history_ready_height: Option<u32>,
     /// First missing anchor at or below the committed scan height, including after restart.
     pub snapshot_history_pending_from: Option<u32>,
+    /// In-flight or failed block attempt, cleared only after its durable commit.
+    #[serde(default)]
+    pub block_processing_pending_height: Option<u32>,
     /// Latest upstream stable height observed from balance-history, when available.
     pub balance_history_stable_height: Option<u32>,
     /// Current adopted upstream snapshot id, when available.

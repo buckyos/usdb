@@ -1348,6 +1348,8 @@ impl InscriptionIndexer {
                 current_height,
                 &balance_history_snapshot,
             )?;
+            // Reconciliation can discard a failed attempt on an abandoned branch.
+            self.status.set_block_processing_pending_height(None);
             let msg = format!(
                 "No new blocks to sync. Current height: {}, Latest height: {}",
                 current_height, latest_height
@@ -1418,6 +1420,8 @@ impl InscriptionIndexer {
 
         let mut current_height = start_height;
         for height in block_range {
+            self.status
+                .set_block_processing_pending_height(Some(height));
             debug!("Syncing inscriptions at block height {}", height);
             let sync_single_block_begin = Instant::now();
             let durable_pass_synced_height = self
@@ -1469,6 +1473,7 @@ impl InscriptionIndexer {
                 error!("{}", msg);
                 return Err(msg);
             }
+            self.status.set_block_processing_pending_height(None);
             let commit_savepoint_elapsed_ms = commit_savepoint_begin.elapsed().as_millis();
             let sync_single_block_elapsed_ms = sync_single_block_begin.elapsed().as_millis();
 
@@ -1962,6 +1967,9 @@ impl InscriptionIndexer {
         block_height: u32,
         block_hint: Option<Arc<Block>>,
     ) -> Result<CollectedMintItems, String> {
+        let block = block_hint
+            .clone()
+            .ok_or("Missing block context for inscription discovery")?;
         let discovered_batch = self
             .inscription_source
             .load_block_mint_batch(
@@ -1984,7 +1992,7 @@ impl InscriptionIndexer {
         for mint in discovered_batch.valid_mints {
             let create_info = self
                 .transfer_tracker
-                .calc_create_satpoint(&mint.inscription_id)
+                .calc_create_satpoint(&mint.inscription_id, block_height, block.clone())
                 .await?;
 
             // Creator address is required to build pass ownership; missing address is unrecoverable.
@@ -2083,7 +2091,7 @@ impl InscriptionIndexer {
         for invalid_mint in discovered_batch.invalid_mints {
             let create_info = self
                 .transfer_tracker
-                .calc_create_satpoint(&invalid_mint.inscription_id)
+                .calc_create_satpoint(&invalid_mint.inscription_id, block_height, block.clone())
                 .await?;
 
             if create_info.address.is_none() {

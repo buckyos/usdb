@@ -35,6 +35,7 @@
 - [AssumeUTXO P6 生产 bootstrap 设计与分步实施](./balance-history-assumeutxo-p6-bootstrap-design.md)
 - [AssumeUTXO P6.2 可信检查点原生启动验证与主网操作](./balance-history-assumeutxo-p62-operations.md)
 - [AssumeUTXO P6.3 并行启动与按需 LocalLoader 验收](./balance-history-assumeutxo-p63-operations.md)
+- [AssumeUTXO P6.4 indexer 历史输入与 readiness 验收](./balance-history-assumeutxo-p64-operations.md)
 - [拆分快照全量对拍与 Electrs 抽样操作](./balance-history-split-snapshot-audit-operations.md)
 - [balance-history-snapshot-signing.md](./balance-history-snapshot-signing.md)
 - [balance-history-exact-height-snapshot-tool-design.md](./balance-history-exact-height-snapshot-tool-design.md)

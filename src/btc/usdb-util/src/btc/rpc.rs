@@ -14,6 +14,40 @@ pub struct BTCRpcClient {
 }
 
 impl BTCRpcClient {
+    /// Resolve spent input amounts from this canonical block's undo records, including old coins
+    /// and outputs created earlier in the same block. No transaction index or current UTXO is used.
+    pub fn get_block_input_values(
+        &self,
+        height: u32,
+        block: &Block,
+    ) -> Result<std::collections::HashMap<OutPoint, Amount>, String> {
+        let hash = block.block_hash();
+        let result = (|| {
+            if self.get_block_hash(height)? != hash {
+                return Err("Requested input block is no longer canonical".to_string());
+            }
+            let response: serde_json::Value = self
+                .client()?
+                .call("getblock", &[serde_json::json!(hash), serde_json::json!(3)])
+                .map_err(|e| {
+                    self.on_error(&e);
+                    format!("getblock verbosity 3 failed: {e}")
+                })?;
+            let values = super::prevout::parse_block_input_values(height, block, response)?;
+            if self.get_block_hash(height)? != hash {
+                return Err("Canonical input block changed during retrieval".to_string());
+            }
+            Ok(values)
+        })();
+        result.map_err(|error: String| {
+            let msg = format!(
+                "Historical block inputs unavailable: height={height}, hash={hash}, error={error}"
+            );
+            error!("{msg}");
+            msg
+        })
+    }
+
     pub fn new(rpc_url: String, auth: Auth) -> Result<Self, String> {
         /*
         // We should not create the client here, as the auth cookie file may not exists because bitcoind not started yet

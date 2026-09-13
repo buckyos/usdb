@@ -64,6 +64,7 @@
 - `SyncedHeightMissing`
 - `CatchingUp`
 - `HistoryBackfillPending`
+- `BlockProcessingPending`
 - `UpstreamReadinessUnknown`
 - `UpstreamConsensusNotReady`
 - `UpstreamSnapshotMissing`
@@ -73,6 +74,12 @@
 - `SystemStateMissing`
 
 这些 blocker 都是结构化枚举，脚本和下游不需要依赖自由文本 message 推断语义。
+
+P6.4 新增 `block_processing_pending_height` 运行时标记：开始处理时设置，保存该块和 synced height 的事务提交后清除。
+数据查询或其他块处理失败时保持 `BlockProcessingPending`；恢复核对后已无需处理该块也可清除。
+该标记阻止瞬时或失败状态被宣称为共识就绪，普通查询继续读取已提交状态；重启仍以持久化高度、
+能量/reorg恢复和历史锚点完整性为准。Core 单块输入能力预检和后台验证进度不是本服务的 consensus readiness，
+见[P6.4操作](../balance-history/balance-history-assumeutxo-p64-operations.md)。
 
 ## 5. 判定规则
 

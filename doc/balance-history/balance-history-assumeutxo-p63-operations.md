@@ -146,4 +146,4 @@ Core `getindexinfo={}`；小型进程验证耗时9.526秒。
 
 本轮未启动以上主网长任务，不能预填收益或 ETA。两个完整实验 root 都需要预留导入、数据库、
 独立余额聚合和 compaction 的空间；可分时安排，但不自动清理既有验证结果。
-下一实现步骤为 P6.4 的 indexer 历史 prevout/reveal 查询与 readiness；P6.5/P7 继续负责整套验收和部署交付。
+后续 P6.4 已实现，见[历史输入与readiness验收](./balance-history-assumeutxo-p64-operations.md)；P6.5/P7 继续负责整套验收和部署交付。

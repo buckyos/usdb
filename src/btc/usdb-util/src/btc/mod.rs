@@ -1,4 +1,5 @@
 mod electrs;
+mod prevout;
 mod rpc;
 mod script;
 

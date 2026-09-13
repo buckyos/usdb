@@ -87,6 +87,7 @@ struct MockStatus {
     snapshot: Mutex<Option<BalanceHistorySnapshotInfo>>,
     updates: Mutex<Vec<StatusUpdateRecord>>,
     upstream_reorg_recovery_pending: AtomicBool,
+    block_processing_pending_height: Mutex<Option<u32>>,
 }
 
 impl MockStatus {
@@ -109,6 +110,7 @@ impl MockStatus {
             snapshot: Mutex::new(Some(snapshot)),
             updates: Mutex::new(Vec::new()),
             upstream_reorg_recovery_pending: AtomicBool::new(false),
+            block_processing_pending_height: Mutex::new(None),
         }
     }
 
@@ -124,6 +126,10 @@ impl MockStatus {
 }
 
 impl IndexStatusApi for MockStatus {
+    fn set_block_processing_pending_height(&self, height: Option<u32>) {
+        *self.block_processing_pending_height.lock().unwrap() = height;
+    }
+
     fn balance_history_stable_height(&self) -> Option<u32> {
         Some(self.latest_height.load(Ordering::SeqCst))
     }
@@ -374,6 +380,8 @@ impl TransferTrackerApi for MockTransferTracker {
     fn calc_create_satpoint<'a>(
         &'a self,
         inscription_id: &'a InscriptionId,
+        _block_height: u32,
+        _block: Arc<Block>,
     ) -> Pin<Box<dyn Future<Output = Result<InscriptionCreateInfo, String>> + Send + 'a>> {
         Box::pin(async move {
             let info = self
@@ -936,6 +944,14 @@ async fn test_sync_block_missing_block_hint_does_not_leak_collector_state() {
         .await
         .unwrap_err();
     assert!(first_err.contains("Missing required block hint"));
+    assert_eq!(
+        *fixture
+            .status
+            .block_processing_pending_height
+            .lock()
+            .unwrap(),
+        Some(block_height)
+    );
     assert!(
         !fixture
             .indexer

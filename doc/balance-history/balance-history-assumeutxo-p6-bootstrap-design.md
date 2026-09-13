@@ -18,8 +18,9 @@ P6.1 已提交为 `cdf4f7c`；P6.2 检查点批次已提交为 `a897975`，实�
 - 节点采用 `prune=0`，继续运行 Bitcoin Core 官方后台历史验证；快速启动依赖所需前台数据可用，后台进度单独展示。
 
 当前已实现 P6.1 独立状态摘要/只读计算，以及 P6.2 检查点驱动的原生导入、重放、封存、服务启动和 RPC 接入。
-P6.3 已实现可与 Core 前台同步并行的导入/逐段重放，以及不依赖创世连链的本地取块，见[P6.3 验收与操作](./balance-history-assumeutxo-p63-operations.md)。
-本轮检查点兼容验收结果见 P6.2 操作文档；之前 v2 种子的实测不作为当前 commit 兼容证据。主网原生重导入与本地读取性能待安排；indexer 历史交易查询和部署默认切换仍按后续步骤实施。
+P6.3 已提交为 `8103550`，实现与 Core 并行的导入/逐段重放及本地取块，见[P6.3 验收与操作](./balance-history-assumeutxo-p63-operations.md)。
+P6.4 已接入按消费块查询历史输入、块内定位 reveal 及 readiness，见[P6.4 验收与操作](./balance-history-assumeutxo-p64-operations.md)。
+本轮检查点兼容验收结果见 P6.2 操作文档；之前 v2 种子的实测不作为当前 commit 兼容证据。主网原生重导入与本地读取性能待安排；整套服务验收和部署默认切换仍按后续步骤实施。
 现有 P4 `import/replay` 继续按旧验证协议使用 reference core；不能把新增计算入口等同于已经移除生产依赖。
 
 ## 2. P6 拆分
@@ -29,7 +30,7 @@ P6.3 已实现可与 Core 前台同步并行的导入/逐段重放，以及不�
 | P6.1 | 定义 G 高度状态摘要及可信旧 commit 检查点，提供只读检查器 | 全量重放与导入重放结果相同；无需旧快照文件；状态摘要与 rolling commit 分离，独立编码向量一致 | 本批次实现，小规模测试通过；主网完整状态扫描待安排 |
 | P6.2 | 原生 bootstrap 生命周期与版本接入 | 仅需 Core 快照与内置检查点的新库可导入、重放、封存 G 并正常接块；中断恢复、查询下界、回滚和下游身份一致 | 已实现，小规模与真实Core/BH进程验收通过；主网长任务待安排 |
 | P6.3 | LocalLoader 独立适配与并行 bootstrap | 后台尚未补齐 B 以前区块时仍可加速；支持两个追加文件、乱序、部分尾部、XOR、重组与重启；G 稳定前可导入并逐段重放 | 已实现；7项专项、206项库回归及真实 Core/BH 渐进同步通过，主网性能待安排 |
-| P6.4 | indexer 历史 prevout/reveal 查询与 readiness | 不依赖全量 txindex 追平；落后消费者和历史已花费输出仍正确；不把 Core 前台可用等同于整套就绪 | 待设计与实现 |
+| P6.4 | indexer 历史 prevout/reveal 查询与 readiness | 不依赖全量 txindex 追平；落后消费者和历史已花费输出仍正确；不把 Core 前台可用等同于整套就绪 | 已实现；326项indexer回归通过，真实Core关闭txindex/落后2050块的输入、reveal及同块转移验证通过；整套服务交付留待P6.5/P7 |
 | P6.5 | 整套端到端验收与运维步骤 | 独立 regtest、主网相同锚点复核、冷启动/恢复/资源证据完整 | 待安排 |
 
 P7 再完成 Bitcoin 31.1 镜像、node-kit、安装/升级与发布身份集成。原数据目录升级 P3 独立安排。
@@ -161,6 +162,17 @@ mtime/大小变化及周期性尾部复查共同处理预分配追加，不读�
 停机恢复、处理速度差异和更大的 G-B 都可能形成积压。它是按需加速项，不是启动前置条件。
 
 该步骤保留 LocalLoader 的加速职责；txindex 和 indexer 历史交易定位属于 P6.4，不能用文件扫描通过代替其验收。
+
+## 5a. indexer 历史输入与 readiness（P6.4）
+
+- reveal 从当前处理块定位，历史输入金额从 `getblock(hash, 3)` 的 Core undo 读取；不依赖 txindex、当前 live UTXO 或 BH undo 保留窗口。
+- 每块惰性加载并校验完整响应，缓存仅限一个精确块；缺失 undo、交易内容/输入身份不符或重组时失败并重试，不推进持久化高度。
+- readiness 新增 `block_processing_pending_height` / `BlockProcessingPending`，在块未提交或失败期间阻止共识就绪。
+  新的单块数据预检单列前台与 chainstates，不将其成功等同于 USDB 整套就绪。
+- G>=B 保持有效；G=B 时快照不包含 B 自身的交易/undo，若业务处理需要这些尚未到达的数据，仍需等待该块数据可用。
+  G>B 时消费块位于快照链前台验证区间，当前实验963800>935000符合此条件。
+- 外部 Ord 历史源、默认部署 readiness gate 和镜像启动编排仍需独立处理；快速路径使用现有 bitcoind inscription source。
+  详细实现、验收和操作见[P6.4手册](./balance-history-assumeutxo-p64-operations.md)。
 
 ## 6. P6.1 只读主网计算操作（待人工安排）
 

@@ -48,6 +48,8 @@ pub(crate) trait TransferTrackerApi: Send + Sync {
     fn calc_create_satpoint<'a>(
         &'a self,
         inscription_id: &'a InscriptionId,
+        block_height: u32,
+        block: Arc<Block>,
     ) -> TransferTrackerFuture<'a, Result<InscriptionCreateInfo, String>>;
 
     fn add_new_inscription<'a>(
@@ -87,8 +89,13 @@ impl TransferTrackerApi for InscriptionTransferTracker {
     fn calc_create_satpoint<'a>(
         &'a self,
         inscription_id: &'a InscriptionId,
+        block_height: u32,
+        block: Arc<Block>,
     ) -> TransferTrackerFuture<'a, Result<InscriptionCreateInfo, String>> {
-        Box::pin(async move { self.calc_create_satpoint(inscription_id).await })
+        Box::pin(async move {
+            self.calc_create_satpoint(inscription_id, block_height, block)
+                .await
+        })
     }
 
     fn add_new_inscription<'a>(
@@ -168,9 +175,14 @@ pub(crate) trait IndexStatusApi: Send + Sync {
         message: Option<String>,
     );
     fn set_upstream_reorg_recovery_pending(&self, pending: bool);
+    fn set_block_processing_pending_height(&self, height: Option<u32>);
 }
 
 impl IndexStatusApi for StatusManager {
+    fn set_block_processing_pending_height(&self, height: Option<u32>) {
+        self.set_block_processing_pending_height(height);
+    }
+
     fn balance_history_stable_height(&self) -> Option<u32> {
         self.balance_history_stable_height()
     }

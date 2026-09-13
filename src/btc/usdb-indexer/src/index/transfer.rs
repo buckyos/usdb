@@ -92,7 +92,7 @@ pub struct InscriptionTransferTracker {
     miner_pass_storage: MinerPassStorageRef,
 
     btc_client: BTCRpcClientRef,
-    utxo_manager: UTXOValueManagerRef,
+    block_inputs: Mutex<Option<UTXOValueManagerRef>>,
 }
 
 impl InscriptionTransferTracker {
@@ -106,19 +106,42 @@ impl InscriptionTransferTracker {
         )?;
         let btc_client = Arc::new(btc_client);
 
-        let utxo_manager = UTXOValueManager::new(btc_client.clone());
-        let utxo_manager = Arc::new(utxo_manager);
-
         let ret = Self {
             config,
             inscriptions: Mutex::new(MultiMap::new()),
             staged_blocks: Mutex::new(HashMap::new()),
             miner_pass_storage,
             btc_client,
-            utxo_manager,
+            block_inputs: Mutex::new(None),
         };
 
         Ok(ret)
+    }
+
+    // Keep only the current block's context; retries and reorgs cannot reuse another block's undo.
+    fn inputs_for_block(
+        &self,
+        height: u32,
+        block: Arc<Block>,
+    ) -> Result<UTXOValueManagerRef, String> {
+        if self.btc_client.get_block_hash(height)? != block.block_hash() {
+            let msg = format!("Transfer block is no longer canonical: height={height}");
+            error!("{msg}");
+            return Err(msg);
+        }
+        let mut saved = self.block_inputs.lock().unwrap();
+        if let Some(context) = saved.as_ref()
+            && context.matches(height, &block)
+        {
+            return Ok(context.clone());
+        }
+        let context = Arc::new(UTXOValueManager::new(
+            self.btc_client.clone(),
+            height,
+            block,
+        ));
+        *saved = Some(context.clone());
+        Ok(context)
     }
 
     pub async fn init(&self) -> Result<(), String> {
@@ -134,6 +157,7 @@ impl InscriptionTransferTracker {
             *inscriptions = MultiMap::new();
         }
         self.staged_blocks.lock().unwrap().clear();
+        self.block_inputs.lock().unwrap().take();
 
         self.load_all_passes().await.map_err(|e| {
             let msg = format!("Failed to reload transfer records from storage: {}", e);
@@ -229,9 +253,17 @@ impl InscriptionTransferTracker {
     pub async fn calc_create_satpoint(
         &self,
         inscription_id: &InscriptionId,
+        block_height: u32,
+        block: Arc<Block>,
     ) -> Result<InscriptionCreateInfo, String> {
-        // First get reveal tx by inscription id
-        let tx = self.btc_client.get_transaction(&inscription_id.txid)?;
+        // The reveal is in the block currently being processed, so no global txindex is needed.
+        let tx = block.txdata.iter().find(|tx| tx.compute_txid() == inscription_id.txid)
+            .cloned().ok_or_else(|| {
+                let msg = format!("Reveal transaction absent from processing block: height={block_height}, inscription_id={inscription_id}");
+                error!("{msg}");
+                msg
+            })?;
+        let utxo_manager = self.inputs_for_block(block_height, block)?;
         let envelopes = ParsedEnvelope::from_transaction(&tx);
         let index = inscription_id.index as usize;
         if index >= envelopes.len() {
@@ -273,9 +305,7 @@ impl InscriptionTransferTracker {
         };
 
         let item = TxItem::from_tx(tx);
-        let ret = item
-            .calc_output_satpoint(satpoint, &self.utxo_manager)
-            .await?;
+        let ret = item.calc_output_satpoint(satpoint, &utxo_manager).await?;
         if ret.is_none() {
             let msg = format!(
                 "No satpoint found for inscription_id {:?} in transaction {}",
@@ -335,6 +365,8 @@ impl InscriptionTransferTracker {
             None => Arc::new(self.btc_client.get_block(block_height)?),
         };
 
+        let utxo_manager = self.inputs_for_block(block_height, block.clone())?;
+
         let mut working_inscriptions = {
             let coll = self.inscriptions.lock().unwrap();
             coll.clone()
@@ -376,7 +408,7 @@ impl InscriptionTransferTracker {
                     );
 
                     let ret = tx_item
-                        .calc_output_satpoint(existing_item.satpoint, &self.utxo_manager)
+                        .calc_output_satpoint(existing_item.satpoint, &utxo_manager)
                         .await?;
                     if ret.is_none() {
                         let msg = format!(
