@@ -231,10 +231,13 @@ impl BalanceHistoryIndexer {
         // the current canonical tip. Treat that as "not behind" for loader selection; the
         // rollback path below will reconcile the durable state afterwards.
         let blocks_behind = latest_block_height.saturating_sub(last_synced_block_height);
-        // Native mode uses canonical RPC until the independent P6.3 LocalLoader adaptation.
-        let (db, btc_client) = if config.bootstrap.is_none()
-            && blocks_behind > config.sync.local_loader_threshold as u32
-        {
+        // Native acceleration is selected per batch, including backlogs acquired after startup.
+        let (db, btc_client) = if config.bootstrap.is_some() {
+            (
+                Arc::new(db),
+                crate::btc::create_canonical_btc_client(btc_rpc_client, &config)?,
+            )
+        } else if blocks_behind > config.sync.local_loader_threshold as u32 {
             let msg = format!(
                 "Using LocalLoader BTC client as we are behind by more than {} blocks",
                 config.sync.local_loader_threshold
@@ -271,11 +274,11 @@ impl BalanceHistoryIndexer {
         };
 
         let cache_strategy = match btc_client.get_type() {
-            BTCClientType::LocalLoader => {
+            BTCClientType::LocalLoader if config.bootstrap.is_none() => {
                 info!("Using BestEffort cache strategy for Local Loader BTC client");
                 crate::cache::CacheStrategy::BestEffort
             }
-            BTCClientType::RPC => {
+            _ => {
                 info!("Using Normal cache strategy for RPC BTC client");
                 crate::cache::CacheStrategy::Normal
             }
@@ -339,8 +342,10 @@ impl BalanceHistoryIndexer {
         validate_activation_at_height(&config, db.get_btc_block_height()?)?;
 
         let cache_strategy = match btc_client.get_type() {
-            BTCClientType::LocalLoader => crate::cache::CacheStrategy::BestEffort,
-            BTCClientType::RPC => crate::cache::CacheStrategy::Normal,
+            BTCClientType::LocalLoader if config.bootstrap.is_none() => {
+                crate::cache::CacheStrategy::BestEffort
+            }
+            _ => crate::cache::CacheStrategy::Normal,
         };
         let utxo_cache = Arc::new(UTXOCache::new(config.clone(), cache_strategy));
         let balance_cache = Arc::new(AddressBalanceCache::new(config.clone(), cache_strategy));

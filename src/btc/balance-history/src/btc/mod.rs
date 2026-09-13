@@ -1,8 +1,11 @@
+mod canonical_index;
+mod canonical_loader;
 mod client;
 mod file_indexer;
 mod local_loader;
 mod rpc;
 
+pub use canonical_loader::*;
 pub use client::*;
 pub use file_indexer::*;
 pub use local_loader::*;

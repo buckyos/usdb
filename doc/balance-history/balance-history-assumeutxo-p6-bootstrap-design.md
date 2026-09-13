@@ -3,7 +3,7 @@
 ## 1. 决策与当前边界
 
 日期：2026-09-12。P4/P5 验证批次已提交为 `ce94958`；其结果继续作为历史证据。
-P6.1 已提交为 `cdf4f7c`；后续 P6.2 实现及实测见[原生启动操作文档](./balance-history-assumeutxo-p62-operations.md)。
+P6.1 已提交为 `cdf4f7c`；P6.2 检查点批次已提交为 `a897975`，实现及实测见[原生启动操作文档](./balance-history-assumeutxo-p62-operations.md)。
 当前方案采用可信旧 commit 检查点与原生导入重放，保持与从创世块重放相同的 v1 commit 链。
 `cdf4f7c` 中以业务起点状态生成新种子的方案已被本次检查点方案替代，未作为生产协议发布。
 
@@ -14,11 +14,12 @@ P6.1 已提交为 `cdf4f7c`；后续 P6.2 实现及实测见[原生启动操作�
   Bitcoin 原始 UTXO 快照及其身份校验仍是输入；代码内置经过验证的 C(B) 检查点，导入、聚合余额并重放 `B+1..=G`。
 - 只需完整保留 B 时仍有活 UTXO 的脚本，以及 B 之后观察到的脚本。余额后来归零时，保留已建立的反向映射。
   金额为零的活 UTXO 也保留；不能以“当前余额为零”作为删除 UTXO 或 registry 的规则。
-- **保留 LocalLoader**，单列 P6.3 适配，不随旧快照机制删除。
+- **保留 LocalLoader**，P6.3 已接入按实际积压量启用的原生路径，不随旧快照机制删除。
 - 节点采用 `prune=0`，继续运行 Bitcoin Core 官方后台历史验证；快速启动依赖所需前台数据可用，后台进度单独展示。
 
 当前已实现 P6.1 独立状态摘要/只读计算，以及 P6.2 检查点驱动的原生导入、重放、封存、服务启动和 RPC 接入。
-本轮检查点兼容验收结果见 P6.2 操作文档；之前 v2 种子的实测不作为当前 commit 兼容证据。主网原生重导入待安排；LocalLoader、indexer 历史交易查询和部署默认切换仍按后续步骤实施。
+P6.3 已实现可与 Core 前台同步并行的导入/逐段重放，以及不依赖创世连链的本地取块，见[P6.3 验收与操作](./balance-history-assumeutxo-p63-operations.md)。
+本轮检查点兼容验收结果见 P6.2 操作文档；之前 v2 种子的实测不作为当前 commit 兼容证据。主网原生重导入与本地读取性能待安排；indexer 历史交易查询和部署默认切换仍按后续步骤实施。
 现有 P4 `import/replay` 继续按旧验证协议使用 reference core；不能把新增计算入口等同于已经移除生产依赖。
 
 ## 2. P6 拆分
@@ -27,7 +28,7 @@ P6.1 已提交为 `cdf4f7c`；后续 P6.2 实现及实测见[原生启动操作�
 | --- | --- | --- | --- |
 | P6.1 | 定义 G 高度状态摘要及可信旧 commit 检查点，提供只读检查器 | 全量重放与导入重放结果相同；无需旧快照文件；状态摘要与 rolling commit 分离，独立编码向量一致 | 本批次实现，小规模测试通过；主网完整状态扫描待安排 |
 | P6.2 | 原生 bootstrap 生命周期与版本接入 | 仅需 Core 快照与内置检查点的新库可导入、重放、封存 G 并正常接块；中断恢复、查询下界、回滚和下游身份一致 | 已实现，小规模与真实Core/BH进程验收通过；主网长任务待安排 |
-| P6.3 | LocalLoader 独立适配 | 后台尚未补齐 B 以前区块时仍可加速；支持两个追加文件、乱序、部分尾部、XOR、重组与重启 | 待实现 |
+| P6.3 | LocalLoader 独立适配与并行 bootstrap | 后台尚未补齐 B 以前区块时仍可加速；支持两个追加文件、乱序、部分尾部、XOR、重组与重启；G 稳定前可导入并逐段重放 | 已实现；7项专项、206项库回归及真实 Core/BH 渐进同步通过，主网性能待安排 |
 | P6.4 | indexer 历史 prevout/reveal 查询与 readiness | 不依赖全量 txindex 追平；落后消费者和历史已花费输出仍正确；不把 Core 前台可用等同于整套就绪 | 待设计与实现 |
 | P6.5 | 整套端到端验收与运维步骤 | 独立 regtest、主网相同锚点复核、冷启动/恢复/资源证据完整 | 待安排 |
 
@@ -100,7 +101,7 @@ B 以前的历史余额不属于业务需求。registry 保留 B 时活脚本和
 原生库使用 `balance-history-rocksdb-schema:native-checkpoint-v1`，避免旧实验 v2 库被按 v1 打开。
 数据目录不做静默转换；已有服务及发布配置不因本轮测试自动切换。
 
-## 4. 原生 bootstrap 生命周期（P6.2）
+## 4. 原生 bootstrap 生命周期（P6.2/P6.3）
 
 ```text
 核验 Bitcoin 快照身份 / Core 逻辑承诺
@@ -113,6 +114,9 @@ B 以前的历史余额不属于业务需求。registry 保留 B 时活脚本和
 
 实施要求：
 
+- Core RPC 可用且快照基线 B 已在 active chain 后即可导入；不要求前台已到 G、最新高度或后台历史验证已完成。
+  重放目标随 Core 推进，为 `min(G, active_tip - stable_lag)`；没有下一稳定块时可取消地等待并保存进度。
+  G 的固定 hash 在其可用时核验；发布仍要求 G 达到稳定深度，并通过完整状态校验。当前 lag=10、G=963800 时，发布至少需要 active tip=963810。
 - 新入口无需旧 core、registry sidecar 或外部分发的锚点文件；检查点随代码内置，旧 P4 工具保留为验收工具。
 - 在 staging 的导入/重放阶段持续记录进度和可恢复状态；半成品不能被正常服务当成已就绪库。
 - G 之前允许内部重放元数据，公开查询按 floors 限制。封存将状态审计、原 commit、检查点和 floors 原子关联。
@@ -131,12 +135,12 @@ Core 31.1 为 `NORMAL` 和 `ASSUMED` 分别维护 blockfile cursor；两个文�
 依据：[Core blockfile cursors](https://github.com/bitcoin/bitcoin/blob/v31.1/src/node/blockstorage.h#L236)、
 [文件分配实现](https://github.com/bitcoin/bitcoin/blob/v31.1/src/node/blockstorage.cpp#L767)。
 
-当前本地实现的两个待改假设：
+旧全历史 LocalLoader 的两个假设不再用于原生模式，旧入口仍保留：
 
 - `generate_sort_blocks()` 从全零 prev_hash/height=0 开始连链。B 以前区块尚未完整到达时，不能据此发现 B 以后的连续区间。
 - `file_indexer` 只排除最大编号文件，将其余文件视为完成；不能覆盖两个 cursor 的追加行为。
 
-适配步骤与验收：
+P6.3 已按以下要求接入独立 `canonical_loader` / `canonical_index` 路径：
 
 1. 以已核验 B/hash 或恢复点的 canonical hash 开始，建立需要消费的 height/hash 序列；不要等待创世到 B 的连续本地索引。
 2. 物理层记录 `block_hash -> (file, offset, length)`，逻辑层按 canonical height/hash 选块，验证块内容与父 hash。
@@ -144,7 +148,17 @@ Core 31.1 为 `NORMAL` 和 `ASSUMED` 分别维护 blockfile cursor；两个文�
    仅凭连续两次文件大小相同也不能永久认定文件已封存。
 4. 覆盖乱序下载、重复记录、旧分叉、重启及双 cursor 轮换；重组后重新核对 canonical 映射和恢复点。
 5. 本地缺块或尾部尚未完成时显式回退 RPC，并继续增量索引；不能默默回到“等历史补齐”。
-6. 对同一连续区间比较 RPC 与 LocalLoader 的块 hash、UTXO/余额及 v1 commits，再测实际加速收益。
+6. 对同一连续区间比较 RPC 与 LocalLoader 的块 hash、UTXO/余额及 v1 commits；小规模一致性已通过，主网实际加速收益待测。
+
+每批按 `min(阶段目标, active_tip - stable_lag) - 已处理高度` 判断积压，超过
+`sync.local_loader_threshold`（默认500）才启用本地读取；接近目标时使用 RPC，运行后重新积压也可再次启用。
+bootstrap 阶段目标为 G，正常同步阶段为配置的最大高度。本地缺文件、缺块、部分写入或校验失败均回退 RPC。
+索引独立保存于 `<root>/local-block-index/<source-identity>`，只记录候选物理位置；消费时核验 canonical hash、
+父链、Merkle root、witness commitment 和重复 txid。每次最多扫描4096条候选记录，各文件保留独立游标，
+mtime/大小变化及周期性尾部复查共同处理预分配追加，不读取 Core 的内部 LevelDB。
+
+并行启动减少等待，但不能据此断言 LocalLoader 大多数时候不会使用：导入 UTXO 期间 Core 仍在下载，
+停机恢复、处理速度差异和更大的 G-B 都可能形成积压。它是按需加速项，不是启动前置条件。
 
 该步骤保留 LocalLoader 的加速职责；txindex 和 indexer 历史交易定位属于 P6.4，不能用文件扫描通过代替其验收。
 
@@ -193,6 +207,7 @@ P6_STATE=/data/usdb-assumeutxo-validation/p4-mainnet-935000-to-963800/state
 
 当前检查点方案的测试、真实进程证据和主网长任务步骤统一记录于
 [P6.2 操作文档](./balance-history-assumeutxo-p62-operations.md#3-本批验证证据)。
+P6.3 的稀疏文件、双文件追加、RPC 回退和真实进程渐进启动结果见[P6.3 验收](./balance-history-assumeutxo-p63-operations.md#3-验证结果)。
 
 核心验收包括：从 0 重放与 B=101/B=102 两份真实 Core 快照在同一 G 的状态、完整 commit 记录一致；
 G=B 边界、正常接块、重启与重组、未知或被覆盖检查点的拒绝、旧实验 v2 元数据拒绝、独立摘要和 rolling 编码向量、

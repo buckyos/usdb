@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::CoreSnapshotMeta;
+use crate::bootstrap::{NativeBootstrapConfig, NativeBootstrapIdentity};
 use crate::btc::{BTCClient, BTCClientType};
 use bitcoincore_rpc::bitcoin::{Amount, Block, OutPoint, ScriptBuf};
 use std::collections::HashMap;
@@ -41,6 +42,33 @@ pub struct Fixture {
 }
 
 impl Fixture {
+    /// Build an isolated native bootstrap configuration using this fixture's reviewed checkpoint.
+    pub fn native_config(&self, work: &Path, origin: u32) -> Arc<BalanceHistoryConfig> {
+        let source = work.join("source.dat");
+        fs::copy(self.fixture_dir.join("snapshot.dat"), &source).unwrap();
+        let mut cfg = config(&work.join("native"), Network::Regtest);
+        cfg.bootstrap = Some(NativeBootstrapConfig {
+            snapshot_file: source,
+            identity: NativeBootstrapIdentity {
+                snapshot: serde_json::from_slice(
+                    &fs::read(self.fixture_dir.join("identity.json")).unwrap(),
+                )
+                .unwrap(),
+                regtest_checkpoint: Some(
+                    serde_json::from_slice(
+                        &fs::read(self.fixture_dir.join("checkpoint.json")).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                origin_height: origin,
+                origin_block_hash: self.blocks[origin as usize].block_hash(),
+            },
+            import_batch_size: 31,
+            replay_batch_size: 1,
+        });
+        Arc::new(cfg)
+    }
+
     pub fn load() -> Self {
         Self::load_at(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures/assumeutxo"),

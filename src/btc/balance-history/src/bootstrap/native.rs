@@ -279,19 +279,22 @@ fn prepare(
     }
     let stable_lag = usdb_util::embedded_btc_stable_lag_blocks(identity.snapshot.network)
         .map_err(|e| e.to_string())?;
-    if client.get_latest_block_height()?.saturating_sub(stable_lag) < origin {
-        return Err(format!(
-            "Native bootstrap origin is not stable yet: origin={origin}, required_stable_lag={stable_lag}"
-        ));
-    }
-    // Validate the upstream network and pinned interval before creating staging or scanning input.
+    // Snapshot import may overlap Core's forward sync; only the baseline must already be active.
     if client.get_block_hash(0)?
         != bitcoincore_rpc::bitcoin::constants::genesis_block(identity.snapshot.network)
             .block_hash()
-        || client.get_block_hash(base)?.to_string() != identity.snapshot.base_hash
-        || client.get_block_hash(origin)? != identity.origin_block_hash
     {
-        return Err("Native bootstrap RPC network/baseline/origin mismatch".to_string());
+        return Err("Native bootstrap RPC network mismatch".to_string());
+    }
+    let mut tip = client.get_latest_block_height()?;
+    while tip < base {
+        wait_for_blocks(root, base, origin, tip, cancelled)?;
+        tip = client.get_latest_block_height()?;
+    }
+    if client.get_block_hash(base)?.to_string() != identity.snapshot.base_hash
+        || (tip >= origin && client.get_block_hash(origin)? != identity.origin_block_hash)
+    {
+        return Err("Native bootstrap RPC baseline/origin mismatch".to_string());
     }
     if cancelled() {
         return Err("Native bootstrap cancelled before staging".to_string());
@@ -347,14 +350,37 @@ fn prepare(
         }
         db.resume_rollback_if_needed()?;
         current = db.get_btc_block_height()?;
-        // A changed saved branch is recovered only within the imported, verified interval.
-        if db
-            .get_block_commit(current)?
-            .ok_or("Missing native replay tip")?
-            .btc_block_hash
-            != client.get_block_hash(current)?
-        {
-            let mut ancestor = current;
+        let mut replay_config = (**config).clone();
+        replay_config.sync.max_sync_block_height = origin;
+        let replay_client =
+            crate::btc::create_canonical_btc_client(client.clone(), &Arc::new(replay_config))?;
+        let utxo_cache = Arc::new(UTXOCache::new(
+            staging_config.clone(),
+            CacheStrategy::Normal,
+        ));
+        let balance_cache = Arc::new(AddressBalanceCache::new(
+            staging_config,
+            CacheStrategy::Normal,
+        ));
+        let processor = BatchBlockProcessor::new(
+            replay_client,
+            db.clone(),
+            utxo_cache.clone(),
+            balance_cache.clone(),
+        );
+        loop {
+            if cancelled() {
+                return Err("Native bootstrap cancelled during replay".to_string());
+            }
+            let tip = client.get_latest_block_height()?;
+            if tip < base {
+                return Err("Native replay crossed the snapshot baseline".to_string());
+            }
+            if tip >= origin && client.get_block_hash(origin)? != identity.origin_block_hash {
+                return Err("Native bootstrap RPC origin mismatch".to_string());
+            }
+            // Recheck the saved branch on every iteration, including after waiting for upstream.
+            let mut ancestor = current.min(tip);
             while ancestor > base
                 && db
                     .get_block_commit(ancestor)?
@@ -375,28 +401,23 @@ fn prepare(
                         .to_string(),
                 );
             }
-            db.rollback_to_block_height(ancestor)?;
-            current = ancestor;
-        }
-        let processor = BatchBlockProcessor::new(
-            client.clone(),
-            db.clone(),
-            Arc::new(UTXOCache::new(
-                staging_config.clone(),
-                CacheStrategy::Normal,
-            )),
-            Arc::new(AddressBalanceCache::new(
-                staging_config,
-                CacheStrategy::Normal,
-            )),
-        );
-        while current < origin {
-            if cancelled() {
-                return Err("Native bootstrap cancelled during replay".to_string());
+            if ancestor != current {
+                db.rollback_to_block_height(ancestor)?;
+                utxo_cache.clear();
+                balance_cache.clear();
+                current = ancestor;
+            }
+            let available = tip.saturating_sub(stable_lag).min(origin);
+            if current == origin && available >= origin {
+                break;
+            }
+            if available <= current {
+                wait_for_blocks(root, current, origin, tip, cancelled)?;
+                continue;
             }
             let end = current
                 .saturating_add(options.replay_batch_size)
-                .min(origin);
+                .min(available);
             processor.process_blocks(
                 current + 1..end + 1,
                 origin,
@@ -414,6 +435,8 @@ fn prepare(
             )?;
         }
         drop(processor);
+        drop(utxo_cache);
+        drop(balance_cache);
         let origin_identity = db.bootstrap_origin_identity_cancellable(
             identity.snapshot.network,
             origin,
@@ -423,6 +446,18 @@ fn prepare(
         db.verify_native_bootstrap_balances(&origin_identity, cancelled)?;
         if client.get_block_hash(origin)? != identity.origin_block_hash {
             return Err("Native origin changed during verification".to_string());
+        }
+        while client.get_latest_block_height()?.saturating_sub(stable_lag) < origin {
+            if client.get_block_hash(origin)? != identity.origin_block_hash {
+                return Err("Native origin changed during verification".to_string());
+            }
+            wait_for_blocks(
+                root,
+                origin,
+                origin,
+                client.get_latest_block_height()?,
+                cancelled,
+            )?;
         }
         if cancelled() {
             return Err("Native bootstrap cancelled before sealing".to_string());
@@ -457,4 +492,28 @@ fn prepare(
         started.elapsed().as_secs_f64()
     );
     Ok(state)
+}
+
+// Waiting is an operational phase, not readiness. Source import and replay checkpoints remain durable.
+fn wait_for_blocks(
+    root: &std::path::Path,
+    current: u32,
+    target: u32,
+    tip: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    eprintln!(
+        "Native bootstrap waiting for BTC blocks: height={current}, target={target}, btc_tip={tip}"
+    );
+    write_report(
+        &root.join("bootstrap-progress.json"),
+        &serde_json::json!({"phase":"waiting_for_blocks","height":current,"target":target,"btc_tip":tip,"published":false}),
+    )?;
+    for _ in 0..10 {
+        if cancelled() {
+            return Err("Native bootstrap cancelled while waiting for BTC blocks".to_string());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Ok(())
 }

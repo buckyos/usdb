@@ -2,9 +2,7 @@
 
 use super::test_common::{Fixture, Workspace};
 use super::*;
-use crate::bootstrap::{
-    NativeBootstrapConfig, NativeBootstrapIdentity, NativeBootstrapPhase, prepare_native_bootstrap,
-};
+use crate::bootstrap::{NativeBootstrapPhase, prepare_native_bootstrap};
 use crate::index::BalanceHistoryIndexer;
 use crate::service::*;
 use crate::status::{SyncPhase, SyncStatusManager};
@@ -20,29 +18,7 @@ fn fixture(branch: &str) -> Fixture {
 }
 
 fn native_config(work: &Workspace, chain: &Fixture, origin: u32) -> Arc<BalanceHistoryConfig> {
-    let source = work.0.join("source.dat");
-    fs::copy(chain.fixture_dir.join("snapshot.dat"), &source).unwrap();
-    let mut cfg = config(&work.0.join("native"), Network::Regtest);
-    cfg.bootstrap = Some(NativeBootstrapConfig {
-        snapshot_file: source,
-        identity: NativeBootstrapIdentity {
-            snapshot: serde_json::from_slice(
-                &fs::read(chain.fixture_dir.join("identity.json")).unwrap(),
-            )
-            .unwrap(),
-            regtest_checkpoint: Some(
-                serde_json::from_slice(
-                    &fs::read(chain.fixture_dir.join("checkpoint.json")).unwrap(),
-                )
-                .unwrap(),
-            ),
-            origin_height: origin,
-            origin_block_hash: chain.blocks[origin as usize].block_hash(),
-        },
-        import_batch_size: 31,
-        replay_batch_size: 1,
-    });
-    Arc::new(cfg)
+    chain.native_config(&work.0, origin)
 }
 
 fn staged_config(cfg: &Arc<BalanceHistoryConfig>) -> Arc<BalanceHistoryConfig> {
@@ -234,12 +210,6 @@ fn native_bootstrap_resumes_import_and_replay_without_publishing_partial_state()
     let work = Workspace::new();
     let chain = fixture("blocks");
     let cfg = native_config(&work, &chain, 103);
-    assert!(
-        prepare_native_bootstrap(cfg.clone(), chain.client(), &|| false)
-            .unwrap_err()
-            .contains("not stable yet")
-    );
-    assert!(!staged_config(&cfg).db_dir().exists());
     let calls = Cell::new(0);
     assert!(
         prepare_native_bootstrap(cfg.clone(), chain.client_with_stable_tip(), &|| {

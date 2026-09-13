@@ -441,3 +441,7 @@ mod origin_tests;
 #[cfg(test)]
 #[path = "../../../../../tests/assumeutxo_native.rs"]
 mod native_tests;
+
+#[cfg(test)]
+#[path = "../../../../../tests/assumeutxo_local_loader.rs"]
+mod local_loader_tests;
