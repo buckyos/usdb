@@ -38,6 +38,7 @@
 - [AssumeUTXO P6.4 indexer 历史输入与 readiness 验收](./balance-history-assumeutxo-p64-operations.md)
 - [AssumeUTXO P6.5 整套服务验收与主网长任务](./balance-history-assumeutxo-p65-operations.md)
 - [AssumeUTXO P7 部署改造计划与入口接入](./balance-history-assumeutxo-p7-deployment-plan.md)
+- [AssumeUTXO 正式部署流程复核与 CI 交付边界](./balance-history-assumeutxo-deployment-review-2026-09-13.md)
 - [AssumeUTXO P7.2 Core 31.1 镜像与快照导入操作](./balance-history-assumeutxo-p72-operations.md)
 - [AssumeUTXO 分发与 Core 镜像构建说明](./balance-history-bitcoin-artifact-distribution.md)
 - [AssumeUTXO 使用原 snapshot-keys 创建、封存、发布与准备部署 bundle](./balance-history-assumeutxo-snapshot-publish-operations.md)

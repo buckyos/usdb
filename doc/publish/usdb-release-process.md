@@ -64,9 +64,11 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 
 - 冻结目标网络、chain ID、genesis、activation registry binding；
 - 冻结 SourceDAO bootstrap 参数和 system addresses；
-- 选择 balance-history `full-sync`、fresh-indexer `signed-snapshot` 或 `paired-checkpoint`；artifact 模式在
+- 选择 balance-history `assumeutxo`、`full-sync`、fresh-indexer `signed-snapshot` 或 `paired-checkpoint`；artifact 模式在
   deployment release 中冻结 signer、catalog 和所选 artifact 的高度/hash，但 checkpoint 高度不进入
   network/genesis identity；
+- 原生 `assumeutxo` 固定 B/G/hash、可信commit检查点和公开UTXO来源，要求G>=B；
+  `SNAPSHOT_SCRIPT deploy` 登记的小型公开输入随tag进入candidate/publish，节点不再选择旧BH数据库快照；
 - 每个 network bundle 独立冻结自己的 BTC `index_origin_height`。全新 indexer 使用 snapshot 时，
   snapshot 高度不得高于该网络的 origin；推荐发布恰好位于 origin 的 full-UTXO snapshot。更高 snapshot
   必须配对已签名 indexer checkpoint，并通过恢复后的历史 state-ref 重算；
@@ -156,7 +158,8 @@ public release。上线时至少需要：
 - joiner 无法从公开 artifact 完成冷启动；
 - 没有磁盘、内存、PoW 或服务不可用时的停止条件；balance-history 至少应通过
   `compose.test-32gb.yml` 的显式 cache/cgroup 基线测试；
-- Bitcoin Core 不是 mainnet full node、`txindex` 未同步到 tip，或 RPC 暴露到公网；
+- Bitcoin Core 不是 mainnet full node或RPC暴露到公网；legacy流程还要求`txindex`同步到tip。
+  原生AssumeUTXO使用`prune=0, txindex=0`，以Core前台及BH/indexer实际readiness为门禁，后台历史验证独立继续；
 - 没有回滚、撤包、key compromise 或错误 genesis 的处置人和入口。
 
 ## 5. 下一步文档拆分

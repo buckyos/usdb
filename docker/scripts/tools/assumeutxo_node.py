@@ -154,21 +154,30 @@ def collect_native_progress(layout) -> dict:
     activation = read_progress(Path(env["BTC_ASSUMEUTXO_STATE_HOST_DIR"]) / "activation.json")
     bootstrap = read_progress(Path(env["BH_DATA_HOST_DIR"]) / "bootstrap-progress.json")
     loader = services.get("btc-snapshot-bootstrap", {})
-    details = download.get("details", {})
     latest = download if download.get("updated_at", 0) > activation.get("updated_at", 0) else activation
     phase = latest.get("phase", "waiting_for_core")
-    failed = loader.get("state") == "exited" and loader.get("exit_code") not in (None, 0)
+    details = latest.get("details", {})
+    details = details if isinstance(details, dict) else {}
+    failed = loader.get("state") in {"dead", "restarting", "paused"} or (loader.get("state") == "exited" and loader.get("exit_code") not in (None, 0))
     complete = core.get("bootstrap_ready") and loader.get("state") == "exited" and loader.get("exit_code") == 0
-    preparation_state = {"downloading": "INSTALLING", "verifying_file": "VERIFYING", "loading": "IMPORTING", "load_requested": "IMPORTING"}.get(phase, "WAITING")
+    preparation_state = {"downloading": "INSTALLING", "verifying_file": "VERIFYING", "loading": "IMPORTING", "load_requested": "IMPORTING",
+                         "load_uncertain": "BLOCKED", "load_failed": "FAILED"}.get(phase, "WAITING")
+    # Download completion is not Core import progress; never reuse its 100% bar.
+    byte_phase = phase in {"downloading", "verifying_file"}
     snapshot = node._component_progress("snapshot", "FAILED" if failed else "READY" if complete else preparation_state,
                                        f"Core UTXO preparation: {phase}; elapsed_seconds={latest.get('elapsed_seconds')}",
-                                       current=details.get("bytes"), total=details.get("total_bytes"), unit="bytes")
-    snapshot["label"] = "Core UTXO bootstrap"
+                                       current=details.get("bytes") if byte_phase else None,
+                                       total=details.get("total_bytes") if byte_phase else None, unit="bytes")
+    snapshot["label"] = "UTXO snapshot"
     snapshot["progress_phase"] = phase
     components = [snapshot, node._component_progress("script_registry", "SKIPPED", "Native observed-script registry is maintained by balance-history")]
-    bitcoin = node._component_progress("bitcoin", "STARTING" if core.get("error_kind") == "rpc_unavailable" else "BLOCKED" if core.get("error") else "READY" if core.get("tip_ready") else "SYNCING",
+    bitcoin = node._component_progress("bitcoin", "STARTING" if core.get("error_kind") == "rpc_unavailable" or core.get("rpc_available") is False else "BLOCKED" if core.get("error") else "READY" if core.get("tip_ready") else "SYNCING",
                       core.get("error") or f"foreground={core.get('active_height')}; background={core.get('background_height')}; history_validated={core.get('history_validated', False)}",
                       current=core.get("active_height"), total=core.get("headers"))
+    # This observation is separate from foreground readiness and never gates startup.
+    bitcoin["background_validation"] = dict(height=core.get("background_height"),
+        target=int(env["BH_ASSUMEUTXO_BASE_HEIGHT"]), validated=core.get("history_validated") is True,
+        available=not core.get("error") and core.get("rpc_available") is not False)
     if services.get("btc-node", {}).get("state") in {"dead", "exited", "restarting", "paused"}:
         bitcoin.update(state="FAILED", detail="Core is not running; inspect its persistent log")
     components.append(bitcoin)
@@ -179,10 +188,13 @@ def collect_native_progress(layout) -> dict:
             phase = bootstrap.get("phase", "starting")
             height, target = bootstrap.get("height"), bootstrap.get("target", int(env["USDB_GENESIS_BLOCK_HEIGHT"]))
             base = int(env["BH_ASSUMEUTXO_BASE_HEIGHT"])
-            percent = (height - base) * 100 / (target - base) if type(height) is int and target > base else None
-            item = node._component_progress(component, "IMPORTING" if phase == "importing" else "SYNCING" if phase in {"replaying", "waiting_for_blocks"} else "STARTING",
+            replay = phase in {"replaying", "waiting_for_blocks"}
+            percent = (height - base) * 100 / (target - base) if replay and type(height) is int and type(target) is int and target > base else None
+            item = node._component_progress(component, "IMPORTING" if phase == "importing" else "VERIFYING" if phase == "verifying" else "SYNCING" if replay else "STARTING",
                 f"native phase={phase}; imported_coins={bootstrap.get('imported_coins')}; elapsed_seconds={bootstrap.get('elapsed_seconds')}",
-                current=height, total=target, progress_percent=percent)
+                current=bootstrap.get("imported_coins") if phase == "importing" else height if replay else None,
+                total=target if replay else None, progress_percent=percent,
+                unit="utxos" if phase == "importing" else "blocks")
             item["progress_phase"] = phase
         components.append(item)
     chain = node._chain_component(layout, env, services.get("usdb-chain"))

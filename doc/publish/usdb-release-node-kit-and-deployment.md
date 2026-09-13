@@ -2,6 +2,13 @@
 
 Status: first implementation complete; target-host and published-release E2E pending.
 
+2026-09-13：新测试网发布输入已选择原生 AssumeUTXO，正式入口仍为 `installer -> setup -> doctor -> up`。
+原生 release 的 setup 不再选择旧 BH core/registry snapshot；controller 下载同一原始 UTXO供 Core/BH导入，
+随后渐进同步。`status --watch` 单独显示 Core后台验证，前台READY不要求后台完成。
+本文旧 snapshot 选择/安装章节仅适用于 legacy release；旧 BH 数据不能直接作为原生 BH 活动库。
+详见[本轮部署复核](../balance-history/balance-history-assumeutxo-deployment-review-2026-09-13.md)和
+[node1 重建与备份清单](../balance-history/balance-history-assumeutxo-p74-node-reuse-plan.md)。
+
 本文定义 USDB 节点发布包与部署控制器的边界。目标是让运维人员不再手工读取 commit、复制 image
 digest、编辑 Bitcoin RPC 密码或记忆服务启动顺序，同时保留不可变 release、私钥隔离和失败关闭。
 
@@ -114,7 +121,7 @@ bootnode、是否开放 Bitcoin 入站 P2P，以及 firewall mode。只有选择
 - 写入权限为 `0600` 的 `node.env`；
 - 校验 release/network identity、RPC credential 和所有安全 bind address。
 - 保存检测到的 operator SSH port；managed 模式额外要求 operator 确认；
-- 显示 release-approved snapshot 的高度、下载量和建议剩余空间，并询问使用 snapshot 还是 full sync；
+- 原生 release 显示固定 B/G 并由 controller导入；legacy release 显示旧snapshot信息并询问使用snapshot还是full sync；
 - 选择宿主机 firewall 模式，默认 `external`；只有明确选择 `managed` 才安装、应用并验证 UFW profile；
 - 默认安装并 enable bundle-scoped systemd bootstrap controller，但不在 `setup` 内启动长时间同步。
 
@@ -140,7 +147,7 @@ managed 模式的完整 firewall check 依据 `node.env` 对照 SSH、USDB P2P�
 
 `setup` 拒绝覆盖已有 `node.env` 或 `rpcauth`。非挖矿角色切换使用 `set-role`，挖矿启停使用 `mining enable/disable`，不重新生成 secret。
 
-正式 snapshot 是可选启动加速器。release manifest 已冻结经过 review 的 content-addressed record、
+旧 BH 数据库 snapshot 是可选启动加速器。legacy release manifest 已冻结经过 review 的 content-addressed record、
 高度、BTC block hash、core snapshot ID、core/可选 registry 下载规模和 trusted-key catalog。交互式 `setup` 会显示这些信息并
 按 core 与 registry 总持久占用计算推荐磁盘空间，再询问是否使用；选择后只把 release-approved snapshot
 固定到 `node.env`，不在前台执行长时间下载。

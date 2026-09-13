@@ -2127,6 +2127,10 @@ def doctor(
             "images automatically. Local image availability is not required for this preflight.",
             file=output,
         )
+    if env.get("SNAPSHOT_MODE") == "assumeutxo":
+        print("INFO AssumeUTXO: up downloads/verifies the UTXO file and activates Core's baseline; "
+              "balance-history then imports and replays while Core continues synchronization. "
+              "Observe both foreground and background with usdb-node status --watch.", file=output)
     print(
         f"Script registry {registry['state'].upper()}: {registry['summary']}",
         file=output,
@@ -3171,6 +3175,8 @@ def _script_registry_doctor_status(
     layout: ReleaseLayout,
     env: dict[str, str],
 ) -> dict[str, str]:
+    if env.get("SNAPSHOT_MODE") == "assumeutxo":
+        return {"state": "skipped", "summary": "external registry snapshot is disabled; balance-history maintains the native observed-script registry"}
     if env.get("BH_SCRIPT_REGISTRY_ENABLED", "0") != "1":
         return {
             "state": "skipped",
@@ -4453,6 +4459,8 @@ def render_node_progress(
                 progress_text = f" {current}/{total}"
         elif isinstance(current, int):
             progress_text = f" {current}"
+            if component.get("unit") == "utxos":
+                progress_text += " UTXOs"
         prefix = (
             f"{component['label']:<17} {component['state']:<10} "
             f"[{bar}] {percent_text}{progress_text} "
@@ -4462,6 +4470,17 @@ def render_node_progress(
         if len(detail) > available:
             detail = detail[: max(0, available - 3)] + "..."
         lines.append(prefix + detail)
+        background = component.get("background_validation")
+        if isinstance(background, dict):
+            if not background["available"]:
+                history = "UNAVAILABLE"
+            elif background["validated"]:
+                history = f"VALIDATED through baseline {background['target']}"
+            elif type(background.get("height")) is int:
+                history = f"SYNCING {background['height']}/{background['target']}"
+            else:
+                history = "WAITING for snapshot activation"
+            lines.append(f"  Core background history: {history}")
         timing = component.get("timing")
         if timing:
             elapsed_label = "Process elapsed" if timing["elapsed_source"] == "process" else "Observed elapsed"

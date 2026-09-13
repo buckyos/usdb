@@ -437,6 +437,11 @@ fn prepare(
         drop(processor);
         drop(utxo_cache);
         drop(balance_cache);
+        // Full origin scans can outlast replay; do not leave a completed replay bar visible.
+        write_report(
+            &root.join("bootstrap-progress.json"),
+            &serde_json::json!({"phase":"verifying","height":origin,"elapsed_seconds":started.elapsed().as_secs_f64()}),
+        )?;
         let origin_identity = db.bootstrap_origin_identity_cancellable(
             identity.snapshot.network,
             origin,

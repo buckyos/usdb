@@ -6,6 +6,8 @@ P7.2 基础已提交为 `eb6c8c2`；[自有源及签名分发](./balance-history
 Core 继续采用镜像构建时的上游校验；UTXO 自有签名已复用原 snapshot signer、`create/finalize/publish` 和对象存储，见[发布操作手册](./balance-history-assumeutxo-snapshot-publish-operations.md)。
 Core 自有签名不作为本次部署要求。
 P7.3 原生编排已提交为 `3c71205`，见[P7.3 操作与验收边界](./balance-history-assumeutxo-p73-operations.md)。
+发布输入及分发已提交为 `8bd2bbd`；最新[部署流程复核](./balance-history-assumeutxo-deployment-review-2026-09-13.md)
+覆盖正式安装链路、controller/watch 和 node1 数据保留/重建准备。
 
 ## 1. 当前结论与剩余范围
 
@@ -21,7 +23,7 @@ P7.3 原生编排已提交为 `3c71205`，见[P7.3 操作与验收边界](./bala
 | P3 原目录升级 | 独立 31.1 二进制已验证；原 28.1 数据目录升级尚未执行 | 正常停止旧进程、按升级手册切换、复核链状态/索引/读块/重启 |
 | P7.1 服务配置和入口 | 已提交 `6c3836d`，入口回归通过 | 原生配置身份、启动行为、错误配置阻断、旧模式回归 |
 | P7.2 Core 镜像与快照编排 | 已实现；本地镜像、隔离容器及HTTPS/RPC恢复通过，主网长任务待安排 | 31.1 供应链校验、下载恢复、loadtxoutset 生命周期、前后台独立状态 |
-| P7.3 node-kit 与整套编排 | 已实现；候选 node-kit、真实 Compose 展开、shell/RPC 与资源恢复验证通过 | 真实主网全栈验收归入 P7.4，现有默认 bundle 未切换 |
+| P7.3 node-kit 与整套编排 | 已实现；候选 node-kit、真实 Compose 展开、shell/RPC 与资源恢复验证通过 | 原生发布输入已选定，真实主网全栈验收归入 P7.4 |
 | P7.4 安装/升级与发布 | 源码发布输入、candidate/publish 与 node-kit 衔接已实现，线上验收待执行 | 真实 release、冷启动、故障恢复、升级路径、镜像及发布身份更新 |
 
 P6 主网手册：[P6.2 原生导入](./balance-history-assumeutxo-p62-operations.md)、
@@ -150,7 +152,7 @@ BH 使用单独的数据契约和目录；既有发布 bundle 继续采用原有
 原生发布输入已接入现有 candidate/publish workflow：`deploy` 在基础 bundle 中登记 `release-bootstrap.json` 及小型公开材料，
 CI 从同一 release tag 重建并复核 bundle，原生模式使用 UTXO 公开校验，node-kit 消费同一结果。
 接下来定义旧配置与数据契约不同情况下的正式重建步骤，补充旧节点固定历史锚点的只读采集，并执行真实发布/安装验收。
-本地源码登记不等于线上 release 已切换；仍需审查、提交并通过既有 tag、candidate、publish 流程。
+本地源码登记已提交；线上 release 仍需通过既有 tag、candidate、publish 流程切换。
 原始 UTXO 使用公开源 `pinned` 时可省略自有签名，原生 bootstrap 配置仍由发布端装入 release。
 Core 31.1 沿用既有 Docker 镜像构建和 digest 交付，不增加 Core 自有签名/密钥准备步骤。
 自有签名 UTXO 的发布复用现有 `create -> finalize -> publish`、`snapshot-keys` 和 S3/AWS profile。
@@ -158,7 +160,8 @@ Core 31.1 沿用既有 Docker 镜像构建和 digest 交付，不增加 Core 自
 `SNAPSHOT_SCRIPT deploy --snapshot-type assumeutxo` 已衔接成功发布结果与 `assumeutxo_deployment`，自动装入发布 URL、manifest 和公钥并校验候选 bundle。
 此入口默认同时登记可提交的发布输入；`--prepare-only` 可保留单独导出。已有匹配导出可复用，原生发布 record 随 bundle 哈希绑定。
 真实安装包发布和节点验收仍是后续步骤。
-本地88项回归、真实935000文件的旧 shell 创建/封存/准备发布、现有节点镜像验签通过；线上自有源发布由操作员随后执行。
+此前88项回归、真实935000文件的旧 shell 创建/封存/准备发布、现有节点镜像验签通过；
+操作员已完成自有源发布并登记固定record，最新测试和未完成的目标机验收见上述复核文档。
 新 UTXO 使用独立 record 类型，旧 split v3 record 仍保持 DB 快照语义。
 
 完成正式安装的冷启动、离线重启、下载/导入中断、错误文件身份、磁盘不足及新旧模式升级测试；

@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Verify immutable native bundles, early service startup and restartable memory handoffs."""
 
+from contextlib import redirect_stdout
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -132,6 +136,113 @@ class NativeBundleTests(unittest.TestCase):
         self.assertEqual(components["balance_history"]["state"], "STARTING")
         self.assertNotEqual(report["overall_state"], "READY")
         self.assertEqual(report["native_bootstrap"]["balance_history"]["phase"], "sealed")
+
+    def test_installer_setup_and_doctor_accept_native_release_before_download(self):
+        layout = native_kit(self.root)
+        assets = self.root / "assets"
+        assets.mkdir()
+        for name in ("usdb-release-manifest.json", "usdb-release-manifest.json.sha256"):
+            shutil.copy2(layout.kit_root / "release" / name, assets / name)
+        archive = assets / (layout.release_id + "-node-kit.tar.gz")
+        with tarfile.open(archive, "w:gz") as output:
+            output.add(layout.kit_root, arcname="usdb-node-kit")
+        archive.with_name(archive.name + ".sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n")
+        result = subprocess.run(["bash", str(ROOT / "docker/scripts/tools/install_usdb_node.sh"),
+            "--release-id", layout.release_id, "--release-base-url", assets.as_uri(),
+            "--install-root", str(self.root / "installed"), "--bin-dir", str(self.root / "bin")],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        installed = node.load_release_layout(self.root / "installed" / layout.release_id, node_env=layout.node_env)
+        prompts, output = [], io.StringIO()
+
+        def answer(prompt):
+            prompts.append(prompt)
+            return str(self.root / "data") if prompt.startswith("Host data root") else ""
+
+        with mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB), \
+             mock.patch.object(node, "_validate_data_root_capacity", return_value=node.DataRootCapacity(self.root, 4 * 1024**4, 3 * 1024**4)), \
+             mock.patch.object(node, "detect_ssh_server_port", return_value=22):
+            setup = node.setup_node(installed, input_fn=answer, output=output, resource_management="auto")
+            self.assertFalse(setup.install_snapshot)
+            self.assertFalse(any("Use this release-approved snapshot" in prompt for prompt in prompts))
+            self.assertIn("Native AssumeUTXO bootstrap", output.getvalue())
+            import usdb_p2p
+            with mock.patch.object(node, "run_host_action"), mock.patch.object(usdb_p2p, "check_host"), \
+                 mock.patch.object(node, "run_helper") as helper, redirect_stdout(output):
+                node.doctor(installed, allow_pending_snapshot=True)
+            self.assertEqual([call.args[2] for call in helper.call_args_list], [["validate-node"]])
+        self.assertIn("INFO AssumeUTXO", output.getvalue())
+        self.assertNotIn("PENDING Snapshot:", output.getvalue())
+        env = node.read_env(installed.node_env)
+        self.assertEqual(list(Path(env["BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR"]).iterdir()), [])
+
+    def test_watch_separates_download_import_replay_and_background_validation(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        env = node.read_env(layout.node_env)
+        download_path = Path(env["BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR"]) / "mainnet-935000-utxos.dat.download/progress.json"
+        download_path.parent.mkdir()
+        activation_path = Path(env["BTC_ASSUMEUTXO_STATE_HOST_DIR"]) / "activation.json"
+        bh_path = Path(env["BH_DATA_HOST_DIR"]) / "bootstrap-progress.json"
+        services = {"btc-node": dict(state="running"), "btc-snapshot-bootstrap": dict(state="running"),
+                    "balance-history": dict(state="running")}
+        core = dict(bootstrap_ready=False, tip_ready=False, history_validated=False,
+                    active_height=1, headers=966674, background_height=None)
+        with mock.patch.object(node, "_collect_compose_services", return_value=services), \
+             mock.patch.object(native, "core_progress", return_value=core), \
+             mock.patch.object(node, "_read_service_readiness", return_value=(None, "RPC unavailable")), \
+             mock.patch.object(node, "_chain_component", return_value=node._component_progress("usdb_chain", "WAITING", "not started")), \
+             mock.patch.object(node, "_resource_progress", return_value=({}, False)), \
+             mock.patch.object(node, "controller_observed_state", return_value="STARTING"):
+            download_path.write_text(json.dumps(dict(phase="downloading", updated_at=1, details=dict(bytes=50, total_bytes=100))))
+            report = node.collect_node_progress(layout)
+            self.assertEqual(report["components"][0]["progress_percent"], 50)
+            download_path.write_text(json.dumps(dict(phase="file_verified", updated_at=2, details=dict(bytes=100, total_bytes=100))))
+            activation_path.write_text(json.dumps(dict(phase="loading", updated_at=3)))
+            report = node.collect_node_progress(layout)
+            self.assertEqual(report["components"][0]["state"], "IMPORTING")
+            self.assertIsNone(report["components"][0]["current"])
+            self.assertIsNone(report["components"][0]["progress_percent"])
+            core.update(bootstrap_ready=True, tip_ready=True, active_height=966674, background_height=105439)
+            services["btc-snapshot-bootstrap"].update(state="exited", exit_code=0)
+            for phase, fields, state in (("importing", dict(imported_coins=123456), "IMPORTING"),
+                                         ("replaying", dict(height=949400, target=963800), "SYNCING"),
+                                         ("waiting_for_blocks", dict(height=949400, target=963800), "SYNCING"),
+                                         ("verifying", dict(height=963800), "VERIFYING"),
+                                         ("sealed", dict(height=963800), "STARTING")):
+                with self.subTest(phase=phase):
+                    bh_path.write_text(json.dumps(dict(phase=phase, **fields)))
+                    report = node.collect_node_progress(layout)
+                    components = {item["id"]: item for item in report["components"]}
+                    self.assertEqual(components["balance_history"]["state"], state)
+                    self.assertEqual(components["bitcoin"]["state"], "READY")
+                    self.assertNotEqual(report["overall_state"], "READY")
+                    rendered = node.render_node_progress(report, width=80)
+                    self.assertIn("Core background history: SYNCING 105439/935000", rendered)
+                    if phase == "importing":
+                        self.assertIn("123456 UTXOs", rendered)
+                    elif phase in {"replaying", "waiting_for_blocks"}:
+                        self.assertEqual(components["balance_history"]["progress_percent"], 50)
+                    else:
+                        self.assertIsNone(components["balance_history"]["progress_percent"])
+            core.update(history_validated=True, background_height=None)
+            self.assertIn("VALIDATED through baseline 935000", node.render_node_progress(node.collect_node_progress(layout), width=80))
+
+    def test_failed_or_uncertain_core_import_is_visible_in_progress(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        env = node.read_env(layout.node_env)
+        activation = Path(env["BTC_ASSUMEUTXO_STATE_HOST_DIR"]) / "activation.json"
+        services = {"btc-snapshot-bootstrap": dict(state="running")}
+        with mock.patch.object(node, "_collect_compose_services", return_value=services), \
+             mock.patch.object(native, "core_progress", return_value={}), \
+             mock.patch.object(node, "_read_service_readiness", return_value=(None, "RPC unavailable")), \
+             mock.patch.object(node, "_chain_component", return_value=node._component_progress("usdb_chain", "WAITING", "not started")), \
+             mock.patch.object(node, "_resource_progress", return_value=({}, False)), \
+             mock.patch.object(node, "controller_observed_state", return_value="FAILED"):
+            for phase, state in (("load_uncertain", "BLOCKED"), ("load_failed", "FAILED")):
+                activation.write_text(json.dumps(dict(phase=phase, updated_at=1)))
+                self.assertEqual(node.collect_node_progress(layout)["overall_state"], state)
 
     def test_signed_bundle_retains_public_trust_and_rejects_tampering(self):
         keys = self.root / "keys"
