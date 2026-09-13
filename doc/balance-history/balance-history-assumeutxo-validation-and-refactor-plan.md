@@ -11,8 +11,9 @@
 - P4/P5 验证批次已提交为 `ce94958`。P6 当前确定为“可信旧 commit 检查点 + 原生导入重放”，保持与从0重放一致；独立状态摘要仅用于校验，见[P6设计](./balance-history-assumeutxo-p6-bootstrap-design.md)。
 - P6.1 已提交为 `cdf4f7c`；P6.2 检查点原生启动已提交为 `a897975`，完成真实进程与下游承诺验收，见[P6.2操作](./balance-history-assumeutxo-p62-operations.md)。
 - P6.3 已提交为 `8103550`；按积压量选择的本地取块及并行启动通过验证，见[P6.3操作](./balance-history-assumeutxo-p63-operations.md)。
-- P6.4 已实现按消费块 undo 读取历史输入、块内定位 reveal 和 readiness，关闭txindex的真实Core验证通过，见[P6.4操作](./balance-history-assumeutxo-p64-operations.md)。
-- 尚未执行：主网原生重导入及LocalLoader性能对照、整套新启动流程端到端验收、部署默认gate切换、镜像构建及现有服务升级。
+- P6.4 已提交为 `7f52ee2`，按消费块 undo 读取历史输入、块内定位 reveal 和 readiness，关闭txindex的真实Core验证通过，见[P6.4操作](./balance-history-assumeutxo-p64-operations.md)。
+- P6.5 独立regtest整套Core/BH/indexer服务验收通过，含真实mint/转移、状态/承诺对拍、故障及重组恢复，见[P6.5操作](./balance-history-assumeutxo-p65-operations.md)。
+- 尚未执行：主网原生重导入与同锚点服务复核、LocalLoader性能对照、部署默认gate切换、镜像构建及现有服务升级。
 
 目标是验证并实现：从 Bitcoin Core 支持的 `935000` UTXO 快照恢复完整 UTXO 与脚本余额，
 重放 `935001..=963800` 共 `28,800` 个区块，从 `963800` 起提供正确余额及后续历史服务，
@@ -115,7 +116,7 @@ mempool 为空等。正式执行脚本按 31.1 实际 RPC 错误处理，不放�
 | P3 | 现有 28.1 数据目录升级兼容验证 | 原数据复用与现有消费者回归通过 | 待安排；不阻塞 P2 |
 | P4 | balance-history 最小导入/重放原型 | 935000 UTXO+余额基线、小锚点、重放到963800 | 通过：主网导入、重放、三项全量投影对比一致 |
 | P5 | balance-history 语义等价验证 | 全量状态、逐块 commit、历史边界、重启/reorg 验收通过 | 离线语义与独立regtest通过；主网28,801条commit/1,024个查询样本及下游承诺链路通过，整套在线端到端留待P6/P7；见[P5记录](./balance-history-assumeutxo-p5-validation-2026-09-12.md) |
-| P6 | 整套节点快速启动与依赖改造 | 使用 Core 快照与内置旧 commit 检查点，不依赖旧 USDB snapshot 文件及全量 txindex 完成即可达成实际 USDB 就绪 | P6.1至P6.4 已实现并通过分阶段小规模、真实Core组件和下游承诺验收；P6.5整套服务、主网长任务和加速收益待验收，见[P6设计](./balance-history-assumeutxo-p6-bootstrap-design.md) |
+| P6 | 整套节点快速启动与依赖改造 | 使用 Core 快照与内置旧 commit 检查点，不依赖旧 USDB snapshot 文件及全量 txindex 完成即可达成实际 USDB 就绪 | P6.1至P6.4已实现；P6.5独立Core/BH/indexer整套服务验收通过，主网长任务、同锚点复核和加速收益待验收，见[P6设计](./balance-history-assumeutxo-p6-bootstrap-design.md) |
 | P7 | 镜像、安装器和发布集成 | 新鲜安装与升级实测、证据归档、发布身份更新完成 | 待执行 |
 
 P1 的隔离环境可先服务 P2；生产默认镜像和现有节点切换在对应兼容性验证后进行。
@@ -265,7 +266,7 @@ P5 的旧 commit 等价证据继续适用；P6 原生流程仍需独立验证检
 
 ## 7. 下一批具体工作
 
-1. P6.2 已形成使用内置可信旧 commit 检查点、不依赖旧快照文件的原生 bootstrap，按[P6.2手册](./balance-history-assumeutxo-p62-operations.md)安排主网完整初始化及性能记录；旧快照workspace已由用户清理，不再作为必需输入。P6.3 本地取块和并行启动已实现，主网性能对照见[P6.3手册](./balance-history-assumeutxo-p63-operations.md)。P6.4历史输入/reveal与readiness已实现；下一步骤为P6.5整套在线端到端、服务恢复及同锚点验收。
+1. P6.2 已形成使用内置可信旧 commit 检查点、不依赖旧快照文件的原生 bootstrap；P6.3/P6.4已实现本地取块、并行启动及历史输入/reveal。P6.5独立整套服务、故障与重组恢复已通过；按[P6.5手册](./balance-history-assumeutxo-p65-operations.md)安排主网原生重导入、同锚点服务复核和资源记录，按[P6.3手册](./balance-history-assumeutxo-p63-operations.md)安排LocalLoader性能对照。旧快照workspace不再作为必需输入。
 2. P6采用prune=0，纳入刷盘期间RPC超时、内存及完整区块空间开销；当前已裁剪的P2实验节点仍不作为完整重放区块源。
 3. 原目录升级P3单独安排；镜像集成需处理31.1实际发布签名与现有固定三签名组合的差异，并核算导入额外内存，不能只修改版本和dbcache。
 

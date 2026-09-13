@@ -2,6 +2,7 @@ use super::common::{
     MockBalanceProvider, cleanup_temp_dir, test_inscription_id, test_root_dir, test_satpoint,
     test_script_hash,
 };
+
 use crate::balance::{BalanceMonitor, MockBalanceBackend, MockResponse, SerialBalanceLoader};
 use crate::config::{ConfigManager, IndexerConfig};
 use crate::index::MintValidationErrorCode;
@@ -38,6 +39,9 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use usdb_util::BtcScriptHash;
+
+#[path = "../../../../../../tests/assumeutxo_stale_anchor.rs"]
+mod assumeutxo_stale_anchor;
 
 type StatusUpdateRecord = (Option<u32>, Option<u32>, Option<String>);
 

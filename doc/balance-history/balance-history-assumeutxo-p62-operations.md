@@ -139,6 +139,7 @@ P2 结果继续独立记录；主网完整流程的性能与整套在线端到�
 2. 在同一个终端设置独立目录与现有供块节点信息。以下沿用本机前述8332端口和cookie位置；执行前确认仍与实际节点一致。
 
    ```bash
+   mkdir -p /data/usdb-assumeutxo-validation
    export P62_ROOT=$(mktemp -d /data/usdb-assumeutxo-validation/p62-mainnet.XXXXXX)
    export P62_SOURCE=/data/btc/mainnet-935000-utxos.dat
    export P62_BTC_DATA=/home/bucky/.bitcoin

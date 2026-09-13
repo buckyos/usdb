@@ -1171,6 +1171,32 @@ impl InscriptionIndexer {
             return Err(msg);
         }
 
+        // A status poll can predate a reorg even when block replay already consumed the new
+        // branch. Never let that poll overwrite the anchor committed with the block itself.
+        let committed_anchor = self
+            .miner_pass_storage
+            .get_balance_history_snapshot_anchor_at_height(synced_height)?
+            .ok_or_else(|| {
+                let msg = format!(
+                    "Missing committed block anchor before snapshot adoption: height={}",
+                    synced_height
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        if !Self::snapshot_anchor_matches_upstream(&committed_anchor, snapshot)? {
+            let msg = format!(
+                "Polled balance-history snapshot does not match committed block anchor: height={}, committed_hash={}, polled_hash={:?}, committed_commit={}, polled_commit={:?}; waiting for a refreshed upstream snapshot",
+                synced_height,
+                committed_anchor.stable_block_hash,
+                snapshot.stable_block_hash,
+                committed_anchor.latest_block_commit,
+                snapshot.latest_block_commit
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
         self.miner_pass_storage
             .upsert_balance_history_snapshot_anchor(snapshot)
             .map_err(|e| {

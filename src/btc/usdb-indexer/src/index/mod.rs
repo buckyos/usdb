@@ -18,3 +18,7 @@ pub(crate) use pass_commit::*;
 #[cfg(test)]
 #[path = "../../../../../tests/assumeutxo_indexer_inputs.rs"]
 mod assumeutxo_indexer_inputs;
+
+#[cfg(test)]
+#[path = "../../../../../tests/assumeutxo_service_fixture.rs"]
+mod assumeutxo_service_fixture;
