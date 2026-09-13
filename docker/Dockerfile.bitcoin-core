@@ -2,50 +2,36 @@ FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe6
 
 ARG BITCOIN_VERSION=31.1
 ARG BITCOIN_ARCH=x86_64-linux-gnu
-ARG BITCOIN_ARCHIVE_SHA256=b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e
-ARG GUIX_SIGS_REVISION=f6a216c90095f5e316318760da6411fe465b7482
+ARG BITCOIN_SOURCE_CONFIG=docker/bitcoin-source.json
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         gnupg \
+        openssl \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp/bitcoin-release
 
-# The release checksum file must be signed by all three pinned Bitcoin Core
-# contributors. The archive checksum is then checked against that signed file.
-RUN set -eux; \
-    release_base="https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}"; \
-    keys_base="https://raw.githubusercontent.com/bitcoin-core/guix.sigs/${GUIX_SIGS_REVISION}/builder-keys"; \
+# Only public trust material enters the build. The selected config comes from the
+# reviewed source revision; USDB signing keys remain in the release environment.
+COPY docker/scripts/tools/artifact_signing.py docker/scripts/tools/bitcoin_release.py docker/scripts/tools/assumeutxo_bootstrap.py /opt/usdb/docker/scripts/tools/
+COPY docker/trust/bitcoin-artifacts.trusted-keys.json /opt/usdb/docker/scripts/data/trust/bitcoin-artifacts.trusted-keys.json
+COPY ${BITCOIN_SOURCE_CONFIG} /tmp/bitcoin-source.json
+
+RUN set -eu; \
+    test "${BITCOIN_VERSION}" = 31.1; \
+    test "${BITCOIN_ARCH}" = x86_64-linux-gnu; \
+    python3 /opt/usdb/docker/scripts/tools/bitcoin_release.py fetch-core \
+        --source-config /tmp/bitcoin-source.json \
+        --trusted-keys /opt/usdb/docker/scripts/data/trust/bitcoin-artifacts.trusted-keys.json \
+        --output-dir /tmp/bitcoin-release; \
     archive="bitcoin-${BITCOIN_VERSION}-${BITCOIN_ARCH}.tar.gz"; \
-    curl -fsSLO "${release_base}/SHA256SUMS"; \
-    curl -fsSLO "${release_base}/SHA256SUMS.asc"; \
-    curl -fsSLO "${release_base}/${archive}"; \
-    curl -fsSLo achow101.gpg "${keys_base}/achow101.gpg"; \
-    curl -fsSLo fanquake.gpg "${keys_base}/fanquake.gpg"; \
-    curl -fsSLo hebasto.gpg "${keys_base}/hebasto.gpg"; \
-    printf '%s  %s\n' \
-        '1b31ab2e336d5ee44dd4d9f5703ad4445798fcee3b1352ab75afa145e737224a' achow101.gpg \
-        'd9d6d89f5d9da0811ed94469f790d5bd0e185b7ee678e7ca7b3121995ded3d26' fanquake.gpg \
-        'f305e90cb6b3cfe47beb71a51242395f1fc8d46840a1d2345283df2fefca021b' hebasto.gpg \
-        | sha256sum --check --strict; \
-    export GNUPGHOME=/tmp/bitcoin-release/gnupg; \
-    install -d -m 0700 "${GNUPGHOME}"; \
-    gpg --batch --import achow101.gpg fanquake.gpg hebasto.gpg; \
-    gpg --batch --status-fd 1 --verify SHA256SUMS.asc SHA256SUMS \
-        >signature-status.txt 2>signature-log.txt || true; \
-    for fingerprint in \
-        152812300785C96444D3334D17565732E08E5E41 \
-        CFB16E21C950F67FA95E558F2EEB9F5CC09526C1 \
-        D1DBF2C4B96F2DEBF4C16654410108112E7EA81F; do \
-        grep -q "^\[GNUPG:\] VALIDSIG ${fingerprint} " signature-status.txt; \
-    done; \
-    grep -q "^${BITCOIN_ARCHIVE_SHA256}  ${archive}$" SHA256SUMS; \
-    printf '%s  %s\n' "${BITCOIN_ARCHIVE_SHA256}" "${archive}" | sha256sum --check --strict; \
     tar -xzf "${archive}"; \
     install -d /opt/bitcoin/bin /opt/bitcoin/share/rpcauth; \
+    install -m 0644 core-artifact-provenance.json /opt/bitcoin/share/core-artifact-provenance.json; \
     install -m 0755 \
         "bitcoin-${BITCOIN_VERSION}/bin/bitcoind" \
         "bitcoin-${BITCOIN_VERSION}/bin/bitcoin-cli" \
@@ -62,6 +48,7 @@ FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe6
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        openssl \
         python3 \
         tini \
     && groupadd --gid 1000 bitcoin \
@@ -74,6 +61,8 @@ COPY --from=verifier /opt/bitcoin /opt/bitcoin
 COPY docker/scripts/entrypoints/start_bitcoin_core.sh /opt/usdb/docker/scripts/entrypoints/start_bitcoin_core.sh
 COPY docker/scripts/tools/check_bitcoin_readiness.py /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py
 COPY docker/scripts/tools/bitcoin_assumeutxo.py docker/scripts/tools/assumeutxo_bootstrap.py /opt/usdb/docker/scripts/tools/
+COPY docker/scripts/tools/artifact_signing.py docker/scripts/tools/bitcoin_release.py /opt/usdb/docker/scripts/tools/
+COPY docker/trust/bitcoin-artifacts.trusted-keys.json /opt/usdb/docker/scripts/data/trust/bitcoin-artifacts.trusted-keys.json
 COPY docker/scripts/entrypoints/bootstrap_bitcoin_core.sh /opt/usdb/docker/scripts/entrypoints/bootstrap_bitcoin_core.sh
 COPY src/btc/balance-history/src/bootstrap/checkpoints /opt/usdb/docker/scripts/data/assumeutxo
 

@@ -1,0 +1,5 @@
+{
+  "mode": "upstream",
+  "release_base_url": "https://bitcoincore.org/bin/bitcoin-core-31.1",
+  "keys_base_url": "https://raw.githubusercontent.com/bitcoin-core/guix.sigs/f6a216c90095f5e316318760da6411fe465b7482/builder-keys"
+}

@@ -108,13 +108,15 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
     def test_dockerfile_freezes_release_and_three_signers(self) -> None:
         content = (ROOT / "docker/Dockerfile.bitcoin-core").read_text(encoding="utf-8")
         self.assertIn("ARG BITCOIN_VERSION=31.1", content)
-        self.assertIn("b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e", content)
+        self.assertIn("bitcoin_release.py fetch-core", content)
+        verifier = (ROOT / "docker/scripts/tools/bitcoin_release.py").read_text(encoding="utf-8")
+        self.assertIn("b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e", verifier)
         for fingerprint in (
             "152812300785C96444D3334D17565732E08E5E41",
             "CFB16E21C950F67FA95E558F2EEB9F5CC09526C1",
             "D1DBF2C4B96F2DEBF4C16654410108112E7EA81F",
         ):
-            self.assertIn(fingerprint, content)
+            self.assertIn(fingerprint, verifier)
 
     def test_release_compose_keeps_rpc_private_and_data_external(self) -> None:
         content = (ROOT / "docker/compose.bitcoin.yml").read_text(encoding="utf-8")

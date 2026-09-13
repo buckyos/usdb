@@ -2,6 +2,7 @@
 
 日期：2026-09-12。P6.5 服务验收与重组锚点修复已提交为 `22cf06c`。
 更新：2026-09-13，P7.1 已提交为 `6c3836d`；P7.2 镜像与 Core 导入编排已实现，见[P7.2 操作及验收](./balance-history-assumeutxo-p72-operations.md)。
+P7.2 基础已提交为 `eb6c8c2`；后续补充[自有源及签名分发](./balance-history-bitcoin-artifact-distribution.md)，正式源与生产公钥待发布环境配置。
 
 ## 1. 当前结论与剩余范围
 

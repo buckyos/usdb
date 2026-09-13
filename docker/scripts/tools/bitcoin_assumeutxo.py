@@ -27,6 +27,8 @@ import urllib.parse
 import urllib.request
 
 from assumeutxo_bootstrap import checkpoint_metadata, unsigned
+import artifact_signing
+from bitcoin_release import UTXO_SIZE, default_trust_path, validate_utxo
 
 
 SCHEMA = "usdb-bitcoin-assumeutxo:v1"
@@ -48,7 +50,7 @@ def pinned_snapshot(env: dict) -> Snapshot:
         raise ValueError("Core bootstrap requires BTC_NETWORK=bitcoin")
     base = unsigned(env, "BH_ASSUMEUTXO_BASE_HEIGHT", 935000)
     metadata = checkpoint_metadata(base)
-    return Snapshot(base, metadata["base_hash"], metadata["file_sha256"], 9387990306)
+    return Snapshot(base, metadata["base_hash"], metadata["file_sha256"], UTXO_SIZE)
 
 
 def regular_file(path: Path) -> None:
@@ -321,15 +323,38 @@ def loading(rpc: Rpc) -> bool:
     return any(command.get("method") == "loadtxoutset" for command in commands)
 
 
+def resolve_distribution(mode: str, url: str, manifest_url: str, manifest_file: Path | None, trust: Path) -> tuple[str, dict | None]:
+    """Select trust before any load RPC; a signature may never change the pinned snapshot."""
+    if mode == "pinned":
+        if manifest_url or manifest_file:
+            raise ValueError("Manifest inputs require BTC_ASSUMEUTXO_DISTRIBUTION_MODE=usdb-signed")
+        return url, None
+    if mode != "usdb-signed":
+        raise ValueError("UTXO distribution mode must be pinned or usdb-signed")
+    manifest = artifact_signing.load_manifest(url=manifest_url, path=manifest_file, trust_path=trust, artifact_type="bitcoin-assumeutxo")
+    validate_utxo(manifest)
+    if not url and manifest_url:
+        url = urllib.parse.urljoin(manifest_url, manifest["file"]["name"])
+    # URL overrides support mirrors of the same authenticated bytes, not other identities.
+    if url:
+        source_url(url)
+    provenance = dict(mode=mode, signing_key_id=manifest["signing_key_id"],
+                      manifest_sha256=hashlib.sha256(artifact_signing.canonical(manifest)).hexdigest(),
+                      trusted_keys_sha256=hashlib.sha256(artifact_signing.read_small(trust)).hexdigest())
+    return url, provenance
+
+
 def activate(snapshot: Snapshot, source: Path, rpc: Rpc, state_dir: Path, *, url: str = "",
              poll_seconds: float = 5, wait_seconds: float = 0, retry_interrupted: bool = False,
-             reserve_bytes: int = 1024**3) -> dict:
+             reserve_bytes: int = 1024**3, distribution: dict | None = None) -> dict:
     """Reconcile before every load; uncertain requests require observation or explicit recovery."""
     if not source.is_absolute() or not state_dir.is_absolute() or state_dir == Path("/") or not math.isfinite(poll_seconds) or not math.isfinite(wait_seconds) or poll_seconds <= 0 or wait_seconds < 0:
         raise ValueError("Invalid source path or bootstrap wait intervals")
     identity = dict(snapshot=asdict(snapshot), source=str(source), rpc_target_sha256=hashlib.sha256(rpc.url.encode()).hexdigest())
     with exclusive_directory(state_dir):
         journal = Journal(state_dir / "activation.json", identity)
+        if distribution is not None:
+            journal.value["distribution"] = distribution
         uncertain = journal.value["phase"] in {"load_requested", "loading", "load_uncertain"}
         deadline = time.monotonic() + wait_seconds if wait_seconds else None
         prepared, requested = False, False
@@ -403,6 +428,11 @@ def main() -> int:
     parser.add_argument("command", choices=["download", "bootstrap", "status"])
     parser.add_argument("--snapshot-file", type=Path, default=os.environ.get("BTC_ASSUMEUTXO_SNAPSHOT_FILE"))
     parser.add_argument("--source-url", default=os.environ.get("BTC_ASSUMEUTXO_SOURCE_URL", ""))
+    parser.add_argument("--distribution-mode", choices=("pinned", "usdb-signed"), default=os.environ.get("BTC_ASSUMEUTXO_DISTRIBUTION_MODE", "pinned"))
+    parser.add_argument("--manifest-url", default=os.environ.get("BTC_ASSUMEUTXO_MANIFEST_URL", ""))
+    parser.add_argument("--manifest-file", type=Path, default=os.environ.get("BTC_ASSUMEUTXO_MANIFEST_FILE") or None,
+                        help="Local manifest for offline signature verification; detached signature is <manifest>.sig")
+    parser.add_argument("--trusted-keys", type=Path, default=os.environ.get("BTC_ARTIFACT_TRUSTED_KEYS_FILE") or default_trust_path())
     parser.add_argument("--state-dir", type=Path, default=os.environ.get("BTC_ASSUMEUTXO_STATE_DIR", "/data/assumeutxo-state"))
     parser.add_argument("--rpc-url", default=os.environ.get("BTC_RPC_URL", "http://127.0.0.1:8332"))
     parser.add_argument("--cookie-file", type=Path, default=os.environ.get("BTC_COOKIE_FILE"))
@@ -417,9 +447,12 @@ def main() -> int:
             raise ValueError("Download reserve must not be negative")
         if args.command != "status" and args.snapshot_file is None:
             raise ValueError("BTC_ASSUMEUTXO_SNAPSHOT_FILE or --snapshot-file is required")
+        distribution = None
+        if args.command != "status":
+            args.source_url, distribution = resolve_distribution(args.distribution_mode, args.source_url, args.manifest_url, args.manifest_file, args.trusted_keys)
         if args.command == "download":
             download_snapshot(snapshot, args.snapshot_file, args.source_url, reserve_bytes=args.reserve_bytes)
-            print(json.dumps(dict(schema_version=SCHEMA, phase="file_verified", snapshot=asdict(snapshot))))
+            print(json.dumps(dict(schema_version=SCHEMA, phase="file_verified", snapshot=asdict(snapshot), distribution=distribution)))
         else:
             password = os.environ.get("BTC_RPC_PASSWORD", "")
             if os.environ.get("BTC_RPC_PASSWORD_FILE"):
@@ -430,7 +463,7 @@ def main() -> int:
             else:
                 report = activate(snapshot, args.snapshot_file, rpc, args.state_dir, url=args.source_url,
                                   poll_seconds=args.poll_seconds, wait_seconds=args.wait_seconds,
-                                  retry_interrupted=args.retry_interrupted_load, reserve_bytes=args.reserve_bytes)
+                                  retry_interrupted=args.retry_interrupted_load, reserve_bytes=args.reserve_bytes, distribution=distribution)
             print(json.dumps(report, sort_keys=True))
             return 0 if report["bootstrap_ready"] else 1
     except (OSError, ValueError, KeyError, TypeError, RpcFailure) as error:

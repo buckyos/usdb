@@ -14,6 +14,8 @@ import threading
 class SnapshotRangeServer:
     def __init__(self, root: Path, payload: bytes):
         self.payload = payload
+        self.files = {}
+        self.paths = []
         self.requests = []
         self.plans = {}
         self.lock = threading.Lock()
@@ -27,10 +29,18 @@ class SnapshotRangeServer:
                 pass
 
             def do_GET(self):
+                origin.paths.append(self.path)
                 if self.path == "/redirect":
                     self.send_response(302)
                     self.send_header("Location", origin.url)
                     self.end_headers()
+                    return
+                if self.path in origin.files:
+                    data = origin.files[self.path]
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
                     return
                 match = re.fullmatch(r"bytes=(\d+)-(\d+)", self.headers.get("Range", ""))
                 if match is None:

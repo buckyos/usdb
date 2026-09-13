@@ -69,3 +69,13 @@ jobs:
 
       - name: Run Rust fast gate
         run: src/btc/scripts/run_fast_ci.sh
+
+      - name: Check Bitcoin artifact distribution and bootstrap
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 tests/test_bitcoin_artifact_distribution.py
+          python3 tests/test_bitcoin_assumeutxo.py
+          python3 tests/test_snapshot_range_download.py
+          python3 tests/test_assumeutxo_deployment.py
+          python3 docker/scripts/tools/test_testnet_bitcoin_release.py

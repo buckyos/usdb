@@ -2,7 +2,17 @@ name: USDB Bitcoin Core Image
 
 on:
   workflow_call:
+    inputs:
+      source_config:
+        description: Reviewed Core source config path in the checked-out revision
+        type: string
+        default: docker/bitcoin-source.json
   workflow_dispatch:
+    inputs:
+      source_config:
+        description: Reviewed Core source config path in the checked-out revision
+        type: string
+        default: docker/bitcoin-source.json
 
 permissions:
   attestations: write
@@ -35,8 +45,16 @@ jobs:
       - name: Prepare immutable candidate identity
         id: prepare
         shell: bash
+        env:
+          BITCOIN_SOURCE_CONFIG: ${{ inputs.source_config }}
         run: |
           set -euo pipefail
+          [[ "$BITCOIN_SOURCE_CONFIG" =~ ^docker/[A-Za-z0-9_./-]+[.]json$ && "$BITCOIN_SOURCE_CONFIG" != *..* ]] || {
+            echo "Core source config must be a tracked JSON path under docker/" >&2
+            exit 1
+          }
+          [[ -f "$BITCOIN_SOURCE_CONFIG" && ! -L "$BITCOIN_SOURCE_CONFIG" ]]
+          git ls-files --error-unmatch -- "$BITCOIN_SOURCE_CONFIG" >/dev/null
           revision="$(git rev-parse HEAD)"
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             [[ "$(git cat-file -t "$GITHUB_REF")" == "tag" ]] || {
@@ -89,6 +107,8 @@ jobs:
         with:
           context: .
           file: ./docker/Dockerfile.bitcoin-core
+          build-args: |
+            BITCOIN_SOURCE_CONFIG=${{ inputs.source_config }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.prepare.outputs.tag }}

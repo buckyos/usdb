@@ -1,6 +1,7 @@
 # P7.2：Core 31.1 镜像与快照导入编排
 
-日期：2026-09-13。P7.1 已提交为 `6c3836d`。本批 P7.2 尚未提交。
+日期：2026-09-13。P7.1 已提交为 `6c3836d`，P7.2 基础编排已提交为 `eb6c8c2`。
+后续新增[自有源与签名分发](./balance-history-bitcoin-artifact-distribution.md)，包含显式来源模式、发布工具与独立可信公钥。
 
 ## 1. 实现与验收边界
 
@@ -26,7 +27,7 @@
 | 快照字节数 | `9387990306` |
 | 快照文件 SHA-256 | `e572ddbe456d254f05fb004cebe225bdb3656074b66f0e9b1c7fa83e1301d486` |
 
-公钥文件 SHA-256 和签名 key fingerprint 固定在 Dockerfile 中；fanquake 的发布签名使用其公钥内已固定的签名子密钥。
+公钥文件 SHA-256 和签名 key fingerprint 固定在 `bitcoin_release.py` 中，由 Dockerfile 调用；fanquake 的发布签名使用其公钥内已固定的签名子密钥。
 本轮重新获取官方文件，并实际验证三份 `VALIDSIG`、归档 hash 和镜像构建中的相同校验步骤。
 快照网络/B/hash/文件 hash 复用 Rust 检查点目录，不提供外部 commit 或快照 hash 覆盖参数。
 快照大小用于下载和容量预检，最终仍验证完整文件 SHA-256，并由 Core 验证内置 UTXO 承诺。
@@ -188,7 +189,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 tests/run_bitcoin_assumeutxo_container.py --im
 另有候选解析14项、旧部署14项、旧readiness17项回归通过；共享Range测试帮助器改动同步运行既有下载回归。
 本轮还通过既有Range下载8项、P7.1入口8项及资源策略12项，共87项Python测试。
 完整日志保留于 `/tmp/usdb-p72-*.log`，真实容器报告位于本次输出的独立run目录。
-最后一次容器报告：`/tmp/usdb-p72-container-v80qwzwm/result.json`，状态 `pass`；
+P7.2 基础编排提交前的容器报告：`/tmp/usdb-p72-container-v80qwzwm/result.json`，状态 `pass`；
 本地 image ID 为 `sha256:a8a067126c4c863f72759b04e8c42d161f8fa1b4d99cc181067cd902234372a0`，
 镜像内 bootstrap 工具 SHA-256 为 `58dabf0a87bfb2216a47483b372fa6f362107983dca347e55679f193848e82ec`。
 该 image ID 是本地构建身份，不能冒充已经发布的 registry digest。

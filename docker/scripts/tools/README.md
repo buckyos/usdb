@@ -158,3 +158,10 @@ documenting the new entry with the same fields.
 ## Tool Paths
 
 These repo-facing helpers now live directly under `docker/scripts/tools/`.
+
+`bitcoin_release.py` prepares purpose-bound Ed25519 Core/UTXO manifests and fetches
+Core archives through explicit upstream or USDB-signed policies. Public trust is
+installed from `docker/trust/bitcoin-artifacts.trusted-keys.json`; signing keys stay
+outside images. `bitcoin_assumeutxo.py` accepts the same signed UTXO manifests while
+retaining compiled checkpoint checks and resumable downloads. See the
+[distribution operations](../../../doc/balance-history/balance-history-bitcoin-artifact-distribution.md).
