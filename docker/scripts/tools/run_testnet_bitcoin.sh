@@ -22,7 +22,13 @@ Actions:
   wait-data <minimum-tip-height> [anchor-height block-hash]
             Wait only for the historical data-start boundary. The optional
             block-hash must match Bitcoin's active chain at anchor-height.
-  wait      Wait for mainnet, full sync and txindex readiness.
+  wait      Wait for the release's foreground readiness (legacy also needs txindex).
+  bootstrap-start [--retry-interrupted-load]
+            Retry preparation; the optional flag allows an uncertain Core load to retry.
+  bootstrap-progress
+            Observe the native Core baseline without waiting for the tip.
+  bootstrap-prepared
+            Require successful completion of native UTXO file preparation.
   progress  Print one machine-readable Bitcoin sync/readiness observation.
   data-progress <minimum-tip-height> [anchor-height block-hash]
             Observe the data-start boundary once without waiting.
@@ -105,11 +111,18 @@ prepare_data_dir() {
 }
 
 compose() {
+  local -a native_files=()
+  if [[ "$(env_value SNAPSHOT_MODE "${node_env}")" == "assumeutxo" ]]; then
+    native_files+=(-f "${docker_dir}/compose.bitcoin-assumeutxo.yml")
+    export BTC_BOOTSTRAP_BUNDLE_ARTIFACTS_DIR="${bundle_dir}/artifacts"
+    export BTC_BOOTSTRAP_TRUST_DIR="${bundle_dir}/trust"
+  fi
   docker compose \
     --project-name "${project_name}" \
     --env-file "${bundle_dir}/network.env" \
     --env-file "${node_env}" \
     -f "${docker_dir}/compose.bitcoin.yml" \
+    "${native_files[@]}" \
     "$@"
 }
 
@@ -126,6 +139,9 @@ duration_text() {
 }
 
 stop_bitcoin() {
+  if [[ "$(env_value SNAPSHOT_MODE "${node_env}")" == "assumeutxo" ]]; then
+    compose stop btc-snapshot-bootstrap
+  fi
   local container_id
   local initial_state
   local current_state
@@ -237,6 +253,16 @@ stop_bitcoin() {
 }
 
 wait_ready() {
+  if [[ "$(env_value SNAPSHOT_MODE "${node_env}")" == "assumeutxo" ]]; then
+    local started="${SECONDS}"
+    while ! native_status --require-tip; do
+      if ((SECONDS - started >= ${BTC_READY_WAIT_TIMEOUT_SECS:-86400})); then
+        return 1
+      fi
+      sleep "${BTC_READY_POLL_INTERVAL_SECS:-15}"
+    done
+    return
+  fi
   local timeout_secs
   timeout_secs="${BTC_READY_WAIT_TIMEOUT_SECS:-86400}"
   compose exec -T btc-node \
@@ -297,7 +323,35 @@ wait_data_start() {
     python3 /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py "${args[@]}"
 }
 
+native_status() {
+  compose exec -T btc-node python3 /opt/usdb/docker/scripts/tools/bitcoin_assumeutxo.py status "$@"
+}
+
 case "${action}" in
+  bootstrap-start)
+    require_node_env
+    [[ "$(env_value SNAPSHOT_MODE "${node_env}")" == "assumeutxo" ]] || exit 1
+    validate_bitcoin_runtime
+    export BTC_ASSUMEUTXO_RETRY_INTERRUPTED_LOAD=0
+    if (($#)); then
+      [[ $# == 1 && "$1" == "--retry-interrupted-load" ]] || { usage >&2; exit 2; }
+      export BTC_ASSUMEUTXO_RETRY_INTERRUPTED_LOAD=1
+    fi
+    compose up -d --no-deps btc-snapshot-bootstrap
+    ;;
+  bootstrap-progress)
+    require_node_env
+    native_status
+    ;;
+  bootstrap-prepared)
+    require_node_env
+    [[ "$(env_value SNAPSHOT_MODE "${node_env}")" == "assumeutxo" ]] || exit 1
+    observer_id="$(compose ps --all --quiet btc-snapshot-bootstrap)"
+    if [[ -z "${observer_id}" || "$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "${observer_id}")" != "exited:0" ]]; then
+      echo "Native UTXO preparation must finish successfully before data services start" >&2
+      exit 1
+    fi
+    ;;
   init-rpc-auth)
     require_node_env
     rpcauth_file="$(env_value BTC_RPCAUTH_HOST_FILE "${node_env}")"
@@ -337,12 +391,20 @@ case "${action}" in
     ;;
   progress)
     require_node_env
+    if [[ "$(env_value SNAPSHOT_MODE "${node_env}")" == "assumeutxo" ]]; then
+      native_status --require-tip
+      exit $?
+    fi
     compose exec -T btc-node \
       python3 /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py \
         --status-json
     ;;
   status)
     require_node_env
+    if [[ "$(env_value SNAPSHOT_MODE "${node_env}")" == "assumeutxo" ]]; then
+      native_status --require-tip
+      exit $?
+    fi
     compose ps
     compose exec -T btc-node \
       python3 /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py

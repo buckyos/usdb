@@ -17,6 +17,8 @@ from sourcedao_release import copy_public_bundle
 
 NODE_KIT_FILES = (
     "docker/compose.bitcoin.yml",
+    "docker/compose.bitcoin-assumeutxo.yml",
+    "docker/compose.runtime-assumeutxo.yml",
     "docker/compose.runtime.yml",
     "docker/compose.p2p-dual.yml",
     "docker/compose.p2p-ipv6.yml",
@@ -30,6 +32,12 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/release_manifest.py",
     "docker/scripts/tools/runtime_compatibility.py",
     "docker/scripts/tools/resource_policy.py",
+    "docker/scripts/tools/assumeutxo_bootstrap.py",
+    "docker/scripts/tools/assumeutxo_deployment.py",
+    "docker/scripts/tools/assumeutxo_node.py",
+    "docker/scripts/tools/artifact_signing.py",
+    "docker/scripts/tools/bitcoin_release.py",
+    "docker/scripts/data/assumeutxo/mainnet-935000.json",
     "docker/scripts/tools/node_progress_timing.py",
     "docker/scripts/tools/run_testnet_bitcoin.sh",
     "docker/scripts/tools/run_testnet_runtime.sh",
@@ -68,6 +76,8 @@ def build_node_kit(
     try:
         for relative_name in NODE_KIT_FILES:
             source = root / relative_name
+            if relative_name == "docker/scripts/data/assumeutxo/mainnet-935000.json":
+                source = root / "src/btc/balance-history/src/bootstrap/checkpoints/mainnet-935000.json"
             if not source.is_file():
                 raise ValueError(f"required node kit file is missing: {source}")
             target = staging / relative_name

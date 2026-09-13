@@ -122,6 +122,36 @@ class BitcoinBootstrapTests(unittest.TestCase):
         self.assertEqual(core.calls["loadtxoutset"], 0)
         self.assertFalse(self.source.exists())
 
+    def test_foreground_readiness_is_independent_of_background_and_indexes(self):
+        core, rpc = self.core()
+        core.active = True
+        core.height = core.headers = core.origin_height + 2
+        env = dict(BTC_MIN_READY_HEIGHT=str(core.origin_height), BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH=core.origin_hash)
+        report = BOOT.tip_status(rpc, self.snapshot, env)
+        self.assertTrue(report["tip_ready"])
+        self.assertFalse(report["history_validated"])
+        self.assertEqual(report["background_height"], 12)
+        self.assertEqual(core.calls["getindexinfo"], 0)
+        for field, value in (("connections", 0), ("tip_time", 0), ("headers", core.height + 1), ("height", core.origin_height - 1)):
+            previous = getattr(core, field)
+            setattr(core, field, value)
+            with self.subTest(field=field):
+                self.assertFalse(BOOT.tip_status(rpc, self.snapshot, env)["tip_ready"])
+            setattr(core, field, previous)
+        core.origin_hash = "d" * 64
+        with self.assertRaisesRegex(ValueError, "origin hash mismatch"):
+            BOOT.tip_status(rpc, self.snapshot, env)
+
+    def test_node_preparation_still_verifies_file_when_core_is_already_validated(self):
+        core, rpc = self.core()
+        core.active, core.validated, core.snapshot_hash = True, True, None
+        self.source.write_bytes(b"x" * len(self.payload))
+        with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+            self.activate(rpc, ensure_snapshot_file=True)
+        self.source.write_bytes(self.payload)
+        self.assertTrue(self.activate(rpc, ensure_snapshot_file=True)["bootstrap_ready"])
+        self.assertEqual(core.calls["loadtxoutset"], 0)
+
     def test_wrong_network_pruning_or_baseline_never_loads(self):
         core, rpc = self.core()
         for attribute, value in (("chain", "test"), ("pruned", True), ("version", 280100)):

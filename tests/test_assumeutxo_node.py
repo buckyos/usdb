@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Verify immutable native bundles, early service startup and restartable memory handoffs."""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "docker/scripts/tools"))
+import assumeutxo_deployment as deployment
+import assumeutxo_node as native
+import artifact_signing as signing
+import bitcoin_release as artifacts
+import release_manifest as release
+import resource_policy as policy
+import usdb_node as node
+from runtime_compatibility import build_runtime_compatibility
+from common.native_node import NativeRuntime, ORIGIN, native_kit
+from common.native_docker import install_docker_recorder
+
+
+class NativeBundleTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="usdb-native-bundle-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def configure(self, layout):
+        with mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB), \
+             mock.patch.object(node, "_validate_data_root_capacity"):
+            node.configure_node(layout, data_root=self.root / "data", role="full", miner_address="", miner_threads=1,
+                                bootnodes="", nat="none", bitcoin_rpc_user=None, bitcoin_p2p="private", resource_management="auto")
+
+    def test_native_kit_configures_without_legacy_snapshot_and_loads_in_isolation(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        env = node.read_env(layout.node_env)
+        self.assertEqual(env["SNAPSHOT_MODE"], "assumeutxo")
+        self.assertEqual(env["BTC_TXINDEX"], "0")
+        self.assertEqual(env["BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH"], ORIGIN)
+        self.assertEqual(env["BTC_BOOTSTRAP_MEMORY_LIMIT"], str(128 * policy.MIB))
+        node._validate_node_config(layout, require_runtime=True, require_bitcoin_runtime=True)
+        self.assertEqual(node._snapshot_lifecycle_status(layout, env)["state"], "native")
+        tool_dir = layout.kit_root / "docker/scripts/tools"
+        result = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import usdb_node, assumeutxo_node; print(usdb_node.load_release_layout(__import__('pathlib').Path(sys.argv[2])).snapshot['status'])", str(tool_dir), str(layout.kit_root)],
+                                cwd=self.root, capture_output=True, text=True, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "native")
+        # Existing datasets retain their contracts; only native BH has a new source boundary.
+        legacy = build_runtime_compatibility(release.build_network_identity(ROOT / "docker/networks/testnet-v0"))
+        current = layout.runtime_compatibility
+        for service in ("bitcoin_core", "usdb_indexer", "usdb_chain", "control_plane"):
+            self.assertEqual(current["services"][service], legacy["services"][service])
+        self.assertNotEqual(current["services"]["balance_history"], legacy["services"]["balance_history"])
+
+    def test_native_contract_cannot_be_overridden_in_node_env(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        original = layout.node_env.read_text()
+        for key, value in (("SNAPSHOT_MODE", "none"), ("BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH", "1" * 64),
+                           ("BTC_ASSUMEUTXO_SOURCE_URL", "https://example.com/changed"), ("BH_SCRIPT_REGISTRY_ENABLED", "1"),
+                           ("BTC_BOOTSTRAP_MEMORY_LIMIT", "64m")):
+            with self.subTest(key=key):
+                layout.node_env.write_text(node.upsert_env(original, {key: value}))
+                with self.assertRaises(ValueError):
+                    node._validate_node_config(layout, require_runtime=True, require_bitcoin_runtime=True)
+        layout.node_env.write_text(original)
+        # Recomputing the policy after a stopped-node change retains the observer budget.
+        with mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB), \
+             mock.patch.object(node, "_collect_compose_services", return_value={}):
+            node.set_resource_policy(layout, "auto", {})
+        self.assertEqual(node.read_env(layout.node_env)["BTC_BOOTSTRAP_MEMORY_LIMIT"], str(128 * policy.MIB))
+
+    def test_invalid_origin_never_creates_candidate(self):
+        output = self.root / "candidate"
+        with self.assertRaises(ValueError):
+            deployment.prepare_bundle(ROOT / "docker/networks/testnet-v0", output, "0" * 64, "", None, None)
+        self.assertFalse(output.exists())
+
+    def test_shell_starts_data_only_after_budget_baseline_and_preparation(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        binary = install_docker_recorder(self.root / "bin")
+        calls = self.root / "docker-calls.jsonl"
+        environment = {**os.environ, "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+                       "PYTHONDONTWRITEBYTECODE": "1", "NATIVE_DOCKER_CALLS": str(calls),
+                       "USDB_TESTNET_NODE_ENV": str(layout.node_env), "USDB_TESTNET_BUNDLE_DIR": str(layout.bundle_dir)}
+        helper = layout.kit_root / "docker/scripts/tools/run_testnet_runtime.sh"
+        for phase, ready, observer, success in (("bitcoin", "1", "0", False), ("overlap", "0", "0", False),
+                                               ("overlap", "1", "1", False), ("overlap", "1", "0", True)):
+            with self.subTest(phase=phase, ready=ready, observer=observer):
+                env = node.read_env(layout.node_env)
+                layout.node_env.write_text(node.upsert_env(layout.node_env.read_text(), policy.build_resource_plan(64 * policy.GIB, phase, env).environment()))
+                calls.write_text("")
+                result = subprocess.run(["bash", str(helper), "native-start-data"], capture_output=True, text=True,
+                    env={**environment, "NATIVE_CORE_READY": ready, "NATIVE_OBSERVER_EXIT": observer}, timeout=15)
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+                started = [json.loads(line) for line in calls.read_text().splitlines() if '"up"' in line]
+                self.assertEqual(len(started), int(success))
+                if success:
+                    self.assertEqual(started[0][-5:], ["up", "-d", "--no-deps", "balance-history", "usdb-indexer"])
+        for action in ("up-data", "managed-start-snapshot", "managed-start-data", "install-registry"):
+            calls.write_text("")
+            result = subprocess.run(["bash", str(helper), action], capture_output=True, text=True, env=environment, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(calls.read_text(), "")
+
+    def test_progress_reports_independent_background_and_does_not_trust_seal_journal(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        env = node.read_env(layout.node_env)
+        progress = Path(env["BH_DATA_HOST_DIR"]) / "bootstrap-progress.json"
+        progress.write_text(json.dumps(dict(phase="sealed", published=True, height=963800, elapsed_seconds=60)))
+        services = {"balance-history": dict(state="running"), "btc-snapshot-bootstrap": dict(state="exited", exit_code=0)}
+        core = dict(bootstrap_ready=True, tip_ready=True, history_validated=False, active_height=966674, headers=966674, background_height=105439)
+        with mock.patch.object(node, "_collect_compose_services", return_value=services), \
+             mock.patch.object(native, "core_progress", return_value=core), \
+             mock.patch.object(node, "_read_service_readiness", return_value=(None, "RPC unavailable")), \
+             mock.patch.object(node, "_chain_component", return_value=node._component_progress("usdb_chain", "WAITING", "not started")), \
+             mock.patch.object(node, "controller_observed_state", return_value="STARTING"):
+            report = node.collect_node_progress(layout)
+        components = {item["id"]: item for item in report["components"]}
+        self.assertEqual(components["bitcoin"]["state"], "READY")
+        self.assertIn("history_validated=False", components["bitcoin"]["detail"])
+        self.assertEqual(components["balance_history"]["state"], "STARTING")
+        self.assertNotEqual(report["overall_state"], "READY")
+        self.assertEqual(report["native_bootstrap"]["balance_history"]["phase"], "sealed")
+
+    def test_signed_bundle_retains_public_trust_and_rejects_tampering(self):
+        keys = self.root / "keys"
+        signing.keygen(keys, "native-test", "bitcoin-assumeutxo")
+        identity = artifacts.utxo_identity()
+        value = dict(schema_version=signing.SCHEMA, artifact_type="bitcoin-assumeutxo", identity=identity,
+                     file=dict(name=artifacts.UTXO_FILE, sha256=identity["file_sha256"], size_bytes=artifacts.UTXO_SIZE),
+                     upstream_verification=None, signature_scheme="ed25519", signing_key_id="native-test")
+        trust = keys / "trusted-keys.json"
+        manifest = signing.write_release(self.root / "signed", value, signing.sign(value, keys / "signing-key.json", trust))
+        layout = native_kit(self.root, manifest=manifest, trusted=trust)
+        self.configure(layout)
+        env = node.read_env(layout.node_env)
+        self.assertEqual(env["BTC_ASSUMEUTXO_DISTRIBUTION_MODE"], "usdb-signed")
+        self.assertEqual(env["BTC_ASSUMEUTXO_MANIFEST_FILE"], "/network/assumeutxo-distribution.json")
+        self.assertFalse(list(layout.kit_root.rglob("signing-key.json")))
+        packaged = layout.bundle_dir / "artifacts/assumeutxo-distribution.json.sig"
+        packaged.write_bytes(b"x" * 64)
+        with self.assertRaisesRegex(ValueError, "mismatch"):
+            node.load_release_layout(layout.kit_root, node_env=layout.node_env)
+
+    @unittest.skipUnless(shutil.which("docker"), "Docker Compose is required for graph validation")
+    def test_rendered_compose_graph_has_native_mounts_and_no_legacy_dependencies(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        docker = layout.kit_root / "docker"
+        base = ["docker", "compose", "--env-file", str(layout.bundle_dir / "network.env"), "--env-file", str(layout.node_env)]
+        env = {**os.environ, "USDB_NETWORK_ARTIFACTS_DIR": str(layout.bundle_dir / "artifacts"),
+               "BH_SNAPSHOT_TRUST_HOST_DIR": str(layout.bundle_dir / "trust"),
+               "BTC_BOOTSTRAP_BUNDLE_ARTIFACTS_DIR": str(layout.bundle_dir / "artifacts"),
+               "BTC_BOOTSTRAP_TRUST_DIR": str(layout.bundle_dir / "trust")}
+        for files in ((docker / "compose.runtime.yml", layout.bundle_dir / "compose.network.yml", docker / "compose.runtime-assumeutxo.yml"),
+                      (docker / "compose.bitcoin.yml", docker / "compose.bitcoin-assumeutxo.yml")):
+            command = base + [arg for path in files for arg in ("-f", str(path))] + ["config", "--format", "json"]
+            result = subprocess.run(command, capture_output=True, text=True, env=env, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            services = json.loads(result.stdout)["services"]
+            if "balance-history" in services:
+                for name in ("snapshot-loader", "script-registry-installer", "paired-checkpoint-recovery"):
+                    self.assertNotIn(name, services)
+                for name in ("balance-history", "usdb-indexer"):
+                    self.assertFalse(services[name].get("depends_on"))
+                volumes = {item["target"]: item for item in services["balance-history"]["volumes"]}
+                self.assertEqual(set(volumes), {"/data/balance-history", "/data/bitcoin", "/data/assumeutxo"})
+                self.assertTrue(volumes["/data/bitcoin"]["read_only"])
+                self.assertTrue(volumes["/data/assumeutxo"]["read_only"])
+                self.assertEqual(set(services["usdb-chain"]["depends_on"]), {"usdb-chain-init", "usdb-indexer"})
+            else:
+                self.assertEqual(services["btc-node"]["environment"]["BTC_TXINDEX"], "0")
+                self.assertEqual(int(services["btc-snapshot-bootstrap"]["mem_limit"]), 128 * policy.MIB)
+                self.assertIn("--ensure-snapshot-file", services["btc-snapshot-bootstrap"]["command"])
+
+
+class NativeControllerTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="usdb-native-controller-")
+        self.addCleanup(temporary.cleanup)
+        self.runtime = NativeRuntime(Path(temporary.name))
+        r = self.runtime
+        for patcher in (mock.patch.object(node, "effective_memory_bytes", return_value=r.memory),
+                        mock.patch.object(node, "_resource_containers", side_effect=r.observed),
+                        mock.patch.object(node, "run_helper", side_effect=r.helper),
+                        mock.patch.object(node, "_read_service_readiness", side_effect=r.readiness),
+                        mock.patch.object(node, "_runtime_lifecycle_status", return_value=dict(state="ready")),
+                        mock.patch.object(node, "_print_startup_phase"),
+                        mock.patch.object(native.time, "monotonic", side_effect=lambda: r.tick),
+                        mock.patch.object(native.time, "sleep", side_effect=r.sleep)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def start(self, timeout=30):
+        native.start_native_node(self.runtime.layout, sync_timeout_secs=timeout, output_to_stderr=False,
+                                 progress_monitor=SimpleNamespace(set_phase=lambda _: None))
+
+    def complete_after_data(self):
+        r = self.runtime
+        if "balance-history" in r.containers:
+            r.core["tip_ready"], r.ready = True, True
+
+    def test_starts_data_before_origin_or_tip_and_background_never_gates_chain(self):
+        r = self.runtime
+        with self.assertRaisesRegex(ValueError, "timed out"):
+            self.start()
+        self.assertIn(("native-start-data", "overlap"), r.events)
+        self.assertNotIn("usdb-chain", r.containers)
+        self.assertEqual(r.core["active_height"], 935000)
+        r.core["tip_ready"], r.ready = True, True
+        self.start()
+        self.assertIn(("up-chain", "steady"), r.events)
+        self.assertFalse(r.core["history_validated"])
+        self.assertEqual(node._read_resource_state(r.layout)["recover_services"], [])
+
+    def test_resource_handoff_recovers_after_core_stop(self):
+        r = self.runtime
+        r.crash = "down"
+        with self.assertRaisesRegex(RuntimeError, "after down"):
+            self.start()
+        self.assertTrue(node._read_resource_state(r.layout)["pending"])
+        r.advance = self.complete_after_data
+        self.start(timeout=60)
+        self.assertEqual(node.read_env(r.layout.node_env)["USDB_RESOURCE_PHASE"], "steady")
+        self.assertFalse(node._read_resource_state(r.layout)["pending"])
+
+    def test_partial_data_start_is_adopted_after_controller_restart(self):
+        r = self.runtime
+        r.crash = "native-start-data"
+        with self.assertRaisesRegex(RuntimeError, "after native-start-data"):
+            self.start()
+        r.advance = self.complete_after_data
+        self.start(timeout=60)
+        self.assertEqual(r.events.count(("native-start-data", "overlap")), 1)
+
+    def test_observer_failure_and_wrong_core_identity_never_start_data(self):
+        r = self.runtime
+        r.containers["btc-node"] = r.container("btc-node")
+        r.containers["btc-snapshot-bootstrap"] = {**r.container("btc-snapshot-bootstrap"), "state": "exited", "exit_code": 1}
+        with self.assertRaisesRegex(ValueError, "preparation failed"):
+            self.start()
+        r.containers["btc-snapshot-bootstrap"]["exit_code"] = 0
+        r.core["error"] = "Core canonical baseline hash mismatch"
+        with self.assertRaisesRegex(ValueError, "canonical baseline"):
+            self.start()
+        self.assertFalse(any(action == "native-start-data" for action, _ in r.events))
+
+    def test_no_baseline_keeps_services_stopped_and_observer_has_a_budget(self):
+        r = self.runtime
+        r.core["bootstrap_ready"] = False
+        with self.assertRaisesRegex(ValueError, "timed out"):
+            self.start()
+        self.assertNotIn("balance-history", r.containers)
+        env = node.read_env(r.layout.node_env)
+        r.containers["btc-snapshot-bootstrap"] = r.container("btc-snapshot-bootstrap")
+        node._check_running_resource_budget(env, r.containers)
+        r.containers["btc-snapshot-bootstrap"]["memory"] *= 2
+        with self.assertRaisesRegex(ValueError, "stale"):
+            node._check_running_resource_budget(env, r.containers)
+
+    def test_core_failure_during_import_is_not_hidden_as_rpc_warmup(self):
+        r = self.runtime
+        r.core["bootstrap_ready"] = False
+        r.advance = lambda: r.containers["btc-node"].update(state="exited", exit_code=1)
+        with self.assertRaisesRegex(ValueError, "Core stopped"):
+            self.start()
+
+
+if __name__ == "__main__":
+    unittest.main()

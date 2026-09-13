@@ -2,7 +2,8 @@
 
 日期：2026-09-12。P6.5 服务验收与重组锚点修复已提交为 `22cf06c`。
 更新：2026-09-13，P7.1 已提交为 `6c3836d`；P7.2 镜像与 Core 导入编排已实现，见[P7.2 操作及验收](./balance-history-assumeutxo-p72-operations.md)。
-P7.2 基础已提交为 `eb6c8c2`；后续补充[自有源及签名分发](./balance-history-bitcoin-artifact-distribution.md)，正式源与生产公钥待发布环境配置。
+P7.2 基础已提交为 `eb6c8c2`；[自有源及签名分发](./balance-history-bitcoin-artifact-distribution.md)已提交为 `14248ce`，正式源与生产公钥待发布环境配置。
+P7.3 原生编排已实现，见[P7.3 操作与验收边界](./balance-history-assumeutxo-p73-operations.md)。
 
 ## 1. 当前结论与剩余范围
 
@@ -18,7 +19,7 @@ P7.2 基础已提交为 `eb6c8c2`；后续补充[自有源及签名分发](./bal
 | P3 原目录升级 | 独立 31.1 二进制已验证；原 28.1 数据目录升级尚未执行 | 正常停止旧进程、按升级手册切换、复核链状态/索引/读块/重启 |
 | P7.1 服务配置和入口 | 已提交 `6c3836d`，入口回归通过 | 原生配置身份、启动行为、错误配置阻断、旧模式回归 |
 | P7.2 Core 镜像与快照编排 | 已实现；本地镜像、隔离容器及HTTPS/RPC恢复通过，主网长任务待安排 | 31.1 供应链校验、下载恢复、loadtxoutset 生命周期、前后台独立状态 |
-| P7.3 node-kit 与整套编排 | 待实现 | bundle/Compose/controller、资源阶段、readiness、chain/control-plane 集成 |
+| P7.3 node-kit 与整套编排 | 已实现；候选 node-kit、真实 Compose 展开、shell/RPC 与资源恢复验证通过 | 真实主网全栈验收归入 P7.4，现有默认 bundle 未切换 |
 | P7.4 安装/升级与发布 | 待执行 | 新机器冷启动、故障恢复、升级路径、CI、镜像及发布身份更新 |
 
 P6 主网手册：[P6.2 原生导入](./balance-history-assumeutxo-p62-operations.md)、
@@ -125,6 +126,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s docker/scripts/tools -
 - 将“Core RPC可连接”“快照链已激活”“所需块/undo可读”“后台验证完成”分别报告，避免长期任务受旧短超时限制。
 
 ## 5. P7.3：node-kit、Compose 与 controller
+
+实现与操作步骤见[P7.3 手册](./balance-history-assumeutxo-p73-operations.md)。新模式由候选 bundle 的固定 artifact 选择，
+BH 使用单独的数据契约和目录；既有发布 bundle 继续采用原有流程。
 
 - 让 bundle/安装器共同提供 B/G/hash 与快照身份，模式校验和发布清单一致；不手改已发布清单的哈希以临时绕过校验。
 - 将原始文件挂载给 Core 和 BH，BTC blocks 只读挂载给 BH；旧 core/registry 下载和 marker 依赖从新模式图中移除。

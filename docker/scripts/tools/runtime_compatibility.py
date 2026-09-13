@@ -100,6 +100,10 @@ def build_runtime_compatibility(network: dict[str, Any]) -> dict[str, Any]:
             "identity": {"network_bundle_id": network["bundle_id"]},
         },
     }
+    if "balance_history_bootstrap" in network:
+        # Native history has a bounded retention floor and its own import seal.
+        # Use a separate BH dataset while preserving Core/indexer/chain contracts.
+        services["balance_history"]["identity"]["bootstrap"] = network["balance_history_bootstrap"]
     unsigned = {
         "schema_version": SCHEMA_VERSION,
         "data_layout_version": DATA_LAYOUT_VERSION,

@@ -197,7 +197,7 @@ def build_network_identity(bundle_dir: Path) -> dict[str, Any]:
     require(isinstance(genesis_block_hash, str), "genesis manifest block hash must be a string")
     require(BLOCK_HASH_RE.fullmatch(genesis_block_hash) is not None, "genesis block hash must be 0x plus 64 lowercase hex characters")
     artifacts = network["artifacts"]
-    return {
+    identity = {
         "bundle_id": network["network_bundle_id"],
         "bundle_status": network["status"],
         "network_json_sha256": sha256(bundle_dir / "network.json"),
@@ -210,6 +210,10 @@ def build_network_identity(bundle_dir: Path) -> dict[str, Any]:
         "btc_activation_registry_id": network["btc_source"]["activation_registry_id"],
         "snapshot_trusted_keys_sha256": artifacts["snapshot_trusted_keys"]["sha256"],
     }
+    if network.get("_native_bootstrap"):
+        from assumeutxo_deployment import state_identity
+        identity["balance_history_bootstrap"] = state_identity(network["_native_bootstrap"])
+    return identity
 
 
 def _canonical_json(value: dict[str, Any]) -> bytes:
@@ -217,6 +221,11 @@ def _canonical_json(value: dict[str, Any]) -> bytes:
 
 
 def build_snapshot_state(bundle_dir: Path) -> dict[str, Any]:
+    network = validate_network_bundle(bundle_dir)
+    if network.get("_native_bootstrap"):
+        native = network["_native_bootstrap"]
+        return {"status": "native", "bootstrap_mode": "assumeutxo", "contract": native,
+                "contract_sha256": network["artifacts"]["assumeutxo_bootstrap"]["sha256"]}
     bootstrap = read_json(bundle_dir / "artifacts/bootstrap-manifest.json")
     mode = bootstrap.get("balance_history_snapshot_mode")
     require(mode == "none", "release-approved snapshot must remain an optional node choice")
@@ -466,7 +475,7 @@ def validate_manifest(manifest: dict[str, Any], bundle_dir: Path, compatibility_
             "btc_index_origin_height",
             "btc_activation_registry_id",
             "snapshot_trusted_keys_sha256",
-        },
+        } | ({"balance_history_bootstrap"} if "balance_history_bootstrap" in network else set()),
         "network_bundle",
     )
     require_sha256(network["network_json_sha256"], "network_bundle.network_json_sha256")

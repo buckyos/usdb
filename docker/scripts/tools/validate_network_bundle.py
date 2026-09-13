@@ -631,6 +631,10 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
 
     validate_artifact_hashes(bundle_dir, network)
     validate_frozen_bundle(bundle_dir, network, read_json)
+    from assumeutxo_deployment import load_contract, state_identity
+    native = load_contract(bundle_dir, network)
+    if native is not None:
+        network["_native_bootstrap"] = native
     template = read_env(bundle_dir / "node.env.example")
     data_root = Path(template.get("USDB_DATA_ROOT", ""))
     require(data_root.is_absolute(), "node.env.example USDB_DATA_ROOT must be absolute")
@@ -642,6 +646,8 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
         "btc_index_origin_height": index_origin_height,
         "btc_activation_registry_id": btc_source["activation_registry_id"],
     }
+    if native is not None:
+        network_identity["balance_history_bootstrap"] = state_identity(native)
     compatibility = build_runtime_compatibility(network_identity)
     require(
         template.get("USDB_DATA_LAYOUT") == DATA_LAYOUT_VERSION,
@@ -871,9 +877,14 @@ def validate_node_env(
         require(hmac.compare_digest(actual_hmac, expected_hmac.lower()), "Bitcoin rpcauth does not match RPC password")
     snapshot_mode = env.get("SNAPSHOT_MODE", "none")
     require(
-        snapshot_mode in {"none", "balance-history", "paired-checkpoint"},
+        snapshot_mode in {"none", "balance-history", "paired-checkpoint", "assumeutxo"},
         "unsupported SNAPSHOT_MODE",
     )
+    native = network.get("_native_bootstrap")
+    require((snapshot_mode == "assumeutxo") == (native is not None), "SNAPSHOT_MODE must match the release bootstrap contract")
+    if native is not None:
+        from assumeutxo_deployment import validate_node
+        validate_node(native, env, network)
     snapshot_dir = Path(env.get("BH_SNAPSHOT_HOST_DIR", ""))
     require(snapshot_dir.is_absolute(), "BH_SNAPSHOT_HOST_DIR must be an absolute path")
     snapshot_file = env.get("BH_SNAPSHOT_FILE", "")
@@ -907,7 +918,7 @@ def validate_node_env(
             "script-registry artifact ID must be lowercase SHA-256",
         )
     checkpoint_manifest = env.get("USDB_INDEXER_CHECKPOINT_MANIFEST", "")
-    if snapshot_mode == "none":
+    if snapshot_mode in {"none", "assumeutxo"}:
         require(not snapshot_file, "SNAPSHOT_MODE=none requires empty BH_SNAPSHOT_FILE")
         require(not snapshot_manifest, "SNAPSHOT_MODE=none requires empty BH_SNAPSHOT_MANIFEST")
         require(

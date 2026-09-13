@@ -25,6 +25,8 @@ Actions:
   managed-start-snapshot <minimum-tip-height> [anchor-height btc-block-hash]
   managed-start-data <minimum-tip-height> [anchor-height btc-block-hash]
                  Start one managed stage without waiting for a snapshot import.
+  native-start-data
+                 Start native BH/indexer after Core baseline and UTXO preparation.
   quiesce-data   Gracefully stop dependent services for a managed resource transition.
   container-ids  Print this project's container IDs for resource inspection.
   data-status    Print the current balance-history readiness response.
@@ -111,6 +113,10 @@ compose() {
   export BH_SNAPSHOT_TRUST_HOST_DIR="${bundle_dir}/trust"
   local family
   local -a transport_files=()
+  local -a native_files=()
+  if [[ "$(node_env_value SNAPSHOT_MODE)" == "assumeutxo" ]]; then
+    native_files+=(-f "${docker_dir}/compose.runtime-assumeutxo.yml")
+  fi
   family="$(node_env_value USDB_P2P_IP_FAMILY)"
   case "${family:-ipv4}" in
     ipv4) ;;
@@ -128,6 +134,7 @@ compose() {
     --env-file "${node_env}" \
     -f "${docker_dir}/compose.runtime.yml" \
     -f "${bundle_dir}/compose.network.yml" \
+    "${native_files[@]}" \
     "${transport_files[@]}" \
     "$@"
 }
@@ -181,6 +188,21 @@ quiesce_runtime_services() {
 }
 
 case "${action}" in
+  native-start-data)
+    require_node_env
+    [[ "$(node_env_value SNAPSHOT_MODE)" == "assumeutxo" ]] || exit 1
+    validate_bundle --node-env "${node_env}" --require-runtime --require-bitcoin-runtime
+    if [[ "$(node_env_value USDB_RESOURCE_MODE)" == "auto" && "$(node_env_value USDB_RESOURCE_PHASE)" == "bitcoin" ]]; then
+      echo "Native services require committed overlap or steady resource allocations" >&2
+      exit 1
+    fi
+    USDB_TESTNET_BUNDLE_DIR="${bundle_dir}" USDB_TESTNET_NODE_ENV="${node_env}" \
+      "${bitcoin_runner}" bootstrap-progress >/dev/null
+    USDB_TESTNET_BUNDLE_DIR="${bundle_dir}" USDB_TESTNET_NODE_ENV="${node_env}" \
+      "${bitcoin_runner}" bootstrap-prepared
+    compose up -d --no-deps balance-history usdb-indexer
+    restore_runtime_restart_policy balance-history usdb-indexer
+    ;;
   init-env)
     init_node_env
     ;;
@@ -193,6 +215,10 @@ case "${action}" in
     ;;
   up-data)
     require_node_env
+    if [[ "$(node_env_value SNAPSHOT_MODE)" == "assumeutxo" ]]; then
+      echo "Native bootstrap requires usdb-node up to coordinate Core and service startup" >&2
+      exit 1
+    fi
     command -v docker >/dev/null 2>&1 || {
       echo "docker is required" >&2
       exit 1
@@ -218,6 +244,10 @@ case "${action}" in
     ;;
   managed-start-snapshot|managed-start-data)
     require_node_env
+    if [[ "$(node_env_value SNAPSHOT_MODE)" == "assumeutxo" ]]; then
+      echo "Native bootstrap requires native-start-data after the resource transition" >&2
+      exit 1
+    fi
     validate_bundle --node-env "${node_env}" --require-runtime --require-bitcoin-runtime
     if [[ "$(node_env_value USDB_RESOURCE_MODE)" != "auto" || "$(node_env_value USDB_RESOURCE_PHASE)" == "bitcoin" ]]; then
       echo "Managed data startup requires a committed overlap or steady resource plan" >&2
@@ -290,6 +320,10 @@ case "${action}" in
     ;;
   install-registry)
     require_node_env
+    if [[ "$(node_env_value SNAPSHOT_MODE)" == "assumeutxo" ]]; then
+      echo "Native bootstrap does not install a registry sidecar" >&2
+      exit 1
+    fi
     command -v docker >/dev/null 2>&1 || {
       echo "docker is required" >&2
       exit 1
@@ -329,13 +363,16 @@ case "${action}" in
       "$(host_rpc_url USDB_INDEXER_BIND_PORT 28020)" \
       "usdb-indexer" \
       --require-consensus-ready
-    if [[ "$(node_env_value USDB_RESOURCE_MODE)" == "auto" ]]; then
+    if [[ "$(node_env_value USDB_RESOURCE_MODE)" == "auto" || "$(node_env_value SNAPSHOT_MODE)" == "assumeutxo" ]]; then
       # A retry may find only one chain service running. Release the chain's
       # allocation and database before chain-init reuses the same budget slot.
       quiesce_runtime_services usdb-control-plane usdb-chain
-      # Explicitly run both existing gates without asking Compose to recreate
-      # a completed snapshot-loader whose old resource allocation has changed.
-      for job in usdb-chain-init paired-checkpoint-recovery; do
+      # Run only the release's initialization jobs after releasing chain memory.
+      jobs=(usdb-chain-init)
+      if [[ "$(node_env_value SNAPSHOT_MODE)" != "assumeutxo" ]]; then
+        jobs+=(paired-checkpoint-recovery)
+      fi
+      for job in "${jobs[@]}"; do
         compose up -d --no-deps "${job}"
         job_id="$(compose ps --all --quiet "${job}")"
         if [[ -z "${job_id}" || "$(docker wait "${job_id}")" != "0" ]]; then

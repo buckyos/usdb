@@ -867,7 +867,7 @@ def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) 
     original = layout.node_env.read_text(encoding="utf-8")
     env = read_env(layout.node_env)
     settings = {key: env.get(key, default) for key, default in CAP_DEFAULTS.items()}
-    updates = _resource_policy_updates(mode, {**settings, **caps})
+    updates = _resource_policy_updates(mode, {**settings, **caps, "SNAPSHOT_MODE": env.get("SNAPSHOT_MODE", "none")})
     if mode == "manual" and resource_mode(env) == "auto":
         selected, resources = resolve_bitcoin_resource_profile(DEFAULT_BITCOIN_RESOURCE_PROFILE)
         updates.update({"BTC_RESOURCE_PROFILE": selected,
@@ -1128,7 +1128,10 @@ def configure_node(
     bitcoin_profile, bitcoin_resources = resolve_bitcoin_resource_profile(
         bitcoin_resource_profile if resource_management == "manual" else DEFAULT_BITCOIN_RESOURCE_PROFILE
     )
-    resource_updates = _resource_policy_updates(resource_management, resource_caps or {})
+    native = layout.snapshot.get("contract") if layout.snapshot.get("status") == "native" else None
+    if native is not None and select_snapshot:
+        raise ValueError("Native releases cannot select a legacy database snapshot")
+    resource_updates = _resource_policy_updates(resource_management, {**(resource_caps or {}), **({"SNAPSHOT_MODE": "assumeutxo"} if native else {})})
     query_updates = {"USDB_CHAIN_GCMODE": "archive" if explorer_queries else "full",
                      "USDB_CHAIN_TRACING": "1" if explorer_queries else "0"}
     _validate_data_root_capacity(data_root)
@@ -1137,6 +1140,15 @@ def configure_node(
     snapshot_dir = snapshot_artifact_dir(root)
     rpcauth_path = secure_dir / "bitcoin-mainnet-rpcauth"
     data_directories = _data_directories(layout, root)
+    native_updates = {}
+    if native is not None:
+        from assumeutxo_deployment import environment
+        native_updates = environment(native, root, layout.bundle_id)
+        for key in ("BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR", "BTC_ASSUMEUTXO_STATE_HOST_DIR"):
+            path = Path(native_updates[key])
+            if path.is_symlink():
+                raise ValueError(f"Refusing a symlink for {key}")
+            path.mkdir(mode=0o755, parents=True, exist_ok=True)
     for path, mode in ((secure_dir, 0o700), (snapshot_dir, 0o755)):
         path.mkdir(mode=mode, parents=True, exist_ok=True)
         path.chmod(mode)
@@ -1191,7 +1203,7 @@ def configure_node(
                              {key: value for key, value in updates.items() if key not in resource_updates})
         # Commit query policy together with the initial configuration, including
         # when an older bundle template does not yet contain these local fields.
-        content = upsert_env(content, {**resource_updates, **query_updates})
+        content = upsert_env(content, {**resource_updates, **query_updates, **native_updates})
         _atomic_write_private(layout.node_env, content)
         _validate_node_config(
             layout,
@@ -1322,7 +1334,8 @@ def setup_node(
         host_memory_bytes=host_memory_bytes,
     )
     if resource_management == "auto":
-        managed = _resource_policy_updates(resource_management, resource_caps or {})
+        managed = _resource_policy_updates(resource_management, {**(resource_caps or {}),
+            "SNAPSHOT_MODE": "assumeutxo" if layout.snapshot.get("status") == "native" else "none"})
         bitcoin_profile = managed["BTC_RESOURCE_PROFILE"]
         bitcoin_resources = {"memory_limit": managed["BTC_MEMORY_LIMIT"],
                              "memory_swap_limit": managed["BTC_MEMORY_SWAP_LIMIT"],
@@ -1413,6 +1426,8 @@ def setup_node(
             raise ValueError("operator SSH port must be an integer between 1 and 65535") from error
     install_snapshot = False
     snapshot = layout.snapshot
+    if snapshot.get("status") == "native":
+        print(f"Native AssumeUTXO bootstrap: B={snapshot['contract']['snapshot']['base_height']}, G={snapshot['contract']['origin_height']}; Core/BH import and replay run under the controller.", file=output)
     if snapshot.get("status") == "available":
         required_free = _snapshot_required_free_bytes(snapshot)
         available_free = _disk_free_bytes(data_root)
@@ -2189,11 +2204,11 @@ def _check_running_resource_budget(env: dict[str, str], containers: dict[str, di
     for service, container in containers.items():
         if container["state"] not in {"running", "restarting", "paused"}:
             continue
-        if plan.phase == "bitcoin" and service != "btc-node":
+        if plan.phase == "bitcoin" and service != "btc-node" and not (env.get("SNAPSHOT_MODE") == "assumeutxo" and service == "btc-snapshot-bootstrap"):
             raise ValueError(f"{service} is active during the exclusive Bitcoin memory phase; "
                              "downstream services require overlap or steady resources")
         limit = container["memory"]
-        if limit <= 0 or limit > plan.limits[SERVICE_MEMORY_KEYS[service]]:
+        if limit <= 0 or limit > plan.limits.get(SERVICE_MEMORY_KEYS[service], 0):
             raise ValueError(f"{service} has an unbounded or stale container memory limit; resource transition is incomplete")
         total += limit
     if total > plan.host_memory_bytes:
@@ -2468,6 +2483,10 @@ def _start_node(
             output_to_stderr=output_to_stderr,
             quiet_progress=progress_monitor.enabled,
         )
+    if read_env(layout.node_env).get("SNAPSHOT_MODE") == "assumeutxo":
+        from assumeutxo_node import start_native_node
+        start_native_node(layout, sync_timeout_secs=sync_timeout_secs, output_to_stderr=output_to_stderr, progress_monitor=progress_monitor)
+        return
     if resource_mode(read_env(layout.node_env)) == "auto":
         _start_managed_node(layout, sync_timeout_secs=sync_timeout_secs,
                             output_to_stderr=output_to_stderr,
@@ -2880,6 +2899,8 @@ def _snapshot_lifecycle_status(
     env: dict[str, str],
 ) -> dict[str, Any]:
     mode = env.get("SNAPSHOT_MODE", "none")
+    if mode == "assumeutxo":
+        return {"state": "native", "summary": "Core UTXO bootstrap is managed independently of legacy snapshots"}
     if mode == "none":
         return {
             "state": "not_selected",
@@ -4101,7 +4122,72 @@ def _overall_progress_state(components: list[dict[str, Any]]) -> str:
     return "WAITING"
 
 
+def _resource_progress(layout, env, services, components) -> tuple[dict[str, Any], bool]:
+    """Share planned-stop display and actual budget checks across bootstrap modes."""
+    resources: dict[str, Any] = {}
+    resource_waiting = False
+    try:
+        resources["mode"] = resource_mode(env)
+        if resources["mode"] == "auto":
+            validate_resource_environment(env, effective_memory_bytes())
+            resources["phase"] = env["USDB_RESOURCE_PHASE"]
+            state = _read_resource_state(layout)
+            resources["transition_pending"] = bool(state.get("pending"))
+            resources["target_phase"] = state.get("phase")
+            resources["recover_services"] = state.get("recover_services", [])
+            resource_waiting = bool(env["USDB_RESOURCE_PHASE"] != "steady"
+                                    or state.get("pending") or state.get("recover_services"))
+            waiting = set(state.get("recover_services", []))
+            if state.get("pending"):
+                waiting.add("btc-node")
+            service_names = {"bitcoin": "btc-node", "balance_history": "balance-history",
+                             "usdb_indexer": "usdb-indexer", "usdb_chain": "usdb-chain"}
+            for component in components:
+                service = service_names.get(component["id"])
+                if (service in waiting
+                        and services.get(service, {}).get("state") in {None, "exited", "created"}
+                        and not _container_start_failed(services.get(service))
+                        and component["state"] != "BLOCKED"):
+                    detail = (f"planned resource transition to {state['phase']}; waiting for managed restart"
+                              if state.get("pending") else "waiting for managed service startup")
+                    component.update(state="STARTING", detail=detail)
+            if not resource_waiting and _overall_progress_state(components) == "READY":
+                observed = _resource_containers(layout)
+                resources["runtime_adopted"] = all(
+                    _resource_container_matches(observed.get(service), env, service)
+                    for service in ("btc-node", "balance-history")
+                )
+                resource_waiting = not resources["runtime_adopted"]
+                if not resource_waiting:
+                    _check_running_resource_budget(env, observed)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        resources["error"] = str(error)
+    return resources, resource_waiting
+
+
+def _mining_progress(layout, services, chain_component, components, overall):
+    """Retain miner role and drift observations for both native and legacy nodes."""
+    mining = None
+    if services.get("usdb-chain", {}).get("state") == "running" or (layout.node_env.parent / "node.mining.json").exists():
+        mining = _mining_status(layout)
+        if mining.get("state") == "SWITCHING" and chain_component["state"] not in {"FAILED", "BLOCKED"}:
+            chain_component.update(state="STARTING", detail=mining.get("detail", "Applying mining configuration"))
+            overall = _overall_progress_state(components)
+        elif mining.get("drift") and overall == "READY":
+            overall = "STARTING"
+        elif mining.get("state") == "FAILED":
+            overall = "FAILED"
+        elif mining.get("state") == "BLOCKED" and not mining.get("drift") and overall != "FAILED":
+            overall = "BLOCKED"
+        elif mining.get("observation_unavailable") and overall == "READY":
+            overall = "WAITING"
+    return mining, overall
+
+
 def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
+    if layout.node_env.is_file() and read_env(layout.node_env).get("SNAPSHOT_MODE") == "assumeutxo":
+        from assumeutxo_node import collect_native_progress
+        return collect_native_progress(layout)
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     controller_state = controller_observed_state(layout)
     if not layout.node_env.is_file():
@@ -4283,43 +4369,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         indexer_component,
         chain_component,
     ]
-    resources: dict[str, Any] = {}
-    resource_waiting = False
-    try:
-        resources["mode"] = resource_mode(env)
-        if resources["mode"] == "auto":
-            validate_resource_environment(env, effective_memory_bytes())
-            resources["phase"] = env["USDB_RESOURCE_PHASE"]
-            state = _read_resource_state(layout)
-            resources["transition_pending"] = bool(state.get("pending"))
-            resources["target_phase"] = state.get("phase")
-            resource_waiting = bool(env["USDB_RESOURCE_PHASE"] != "steady"
-                                    or state.get("pending") or state.get("recover_services"))
-            waiting = set(state.get("recover_services", []))
-            if state.get("pending"):
-                waiting.add("btc-node")
-            service_names = {"bitcoin": "btc-node", "balance_history": "balance-history",
-                             "usdb_indexer": "usdb-indexer", "usdb_chain": "usdb-chain"}
-            for component in components:
-                service = service_names.get(component["id"])
-                if (service in waiting
-                        and services.get(service, {}).get("state") in {None, "exited", "created"}
-                        and not _container_start_failed(services.get(service))
-                        and component["state"] != "BLOCKED"):
-                    detail = (f"planned resource transition to {state['phase']}; waiting for managed restart"
-                              if state.get("pending") else "waiting for managed service startup")
-                    component.update(state="STARTING", detail=detail)
-            if not resource_waiting and _overall_progress_state(components) == "READY":
-                observed = _resource_containers(layout)
-                resources["runtime_adopted"] = all(
-                    _resource_container_matches(observed.get(service), env, service)
-                    for service in ("btc-node", "balance-history")
-                )
-                resource_waiting = not resources["runtime_adopted"]
-                if not resource_waiting:
-                    _check_running_resource_budget(env, observed)
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
-        resources["error"] = str(error)
+    resources, resource_waiting = _resource_progress(layout, env, services, components)
     # Startup failures take precedence over the durable restart intent, which
     # intentionally remains present until the controller completes the attempt.
     gate_component = _chain_startup_gate_component(services)
@@ -4331,20 +4381,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
     # The watch client must not detach before the controller finishes the handoff.
     if overall == "READY" and resource_waiting:
         overall = "STARTING"
-    mining = None
-    if services.get("usdb-chain", {}).get("state") == "running" or (layout.node_env.parent / "node.mining.json").exists():
-        mining = _mining_status(layout)
-        if mining.get("state") == "SWITCHING" and chain_component["state"] not in {"FAILED", "BLOCKED"}:
-            chain_component.update(state="STARTING", detail=mining.get("detail", "Applying mining configuration"))
-            overall = _overall_progress_state(components)
-        elif mining.get("drift") and overall == "READY":
-            overall = "STARTING"
-        elif mining.get("state") == "FAILED":
-            overall = "FAILED"
-        elif mining.get("state") == "BLOCKED" and not mining.get("drift") and overall != "FAILED":
-            overall = "BLOCKED"
-        elif mining.get("observation_unavailable") and overall == "READY":
-            overall = "WAITING"
+    mining, overall = _mining_progress(layout, services, chain_component, components, overall)
     for component in components:
         service_name = {"bitcoin": "btc-node", "balance_history": "balance-history",
                         "usdb_indexer": "usdb-indexer", "usdb_chain": "usdb-chain"}.get(component["id"])

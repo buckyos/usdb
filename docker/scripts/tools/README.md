@@ -3,6 +3,12 @@
 This directory contains the repo-facing helpers that developers are expected to
 run directly.
 
+Native AssumeUTXO release candidates are prepared with `assumeutxo_deployment.py`.
+The generated bundle binds B/G/hash and public distribution trust; node-kit setup
+selects native controller and Compose paths automatically. See the
+[P7.3 operations guide](../../../doc/balance-history/balance-history-assumeutxo-p73-operations.md)
+for preparation, resource transitions, progress and explicit retry commands.
+
 These tool names now follow the canonical local/profile naming scheme defined
 in
 [TOOL_NAMING_PLAN.md](/home/bucky/work/usdb/docker/scripts/TOOL_NAMING_PLAN.md).

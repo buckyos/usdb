@@ -42,7 +42,7 @@ class ResourceControllerTests(unittest.TestCase):
     def container(self, service):
         env = NODE.read_env(self.layout.node_env)
         return {"state": "running", "exit_code": 0,
-                "memory": int(env[POLICY.SERVICE_MEMORY_KEYS[service]]),
+                "memory": int(env.get(POLICY.SERVICE_MEMORY_KEYS[service], 128 * 1024**2)),
                 "swap": int(env["BTC_MEMORY_SWAP_LIMIT"] if service == "btc-node" else env["BH_MEMORY_SWAP_LIMIT"]),
                 "image": env["USDB_BITCOIN_IMAGE"] if service == "btc-node" else env["USDB_SERVICES_IMAGE"],
                 "environment": env}

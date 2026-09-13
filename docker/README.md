@@ -29,6 +29,10 @@ IPv4、IPv6 和双栈均适用。内核、架构及只读检查入口见
 部署用入口已独立为 `compose.runtime.yml`，避免开发期 build、workspace mount、`latest/local`
 默认值进入 testnet/mainnet。当前 `testnet-v0` 仍是可重置测试网，不等于正式发布包已经冻结。
 
+AssumeUTXO 原生候选部署使用 `compose.bitcoin-assumeutxo.yml`、`compose.runtime-assumeutxo.yml`，
+由 node-kit/controller 根据候选 bundle 自动接入。候选生成、资源切换及后续主网验收安排见
+[P7.3 操作手册](../doc/balance-history/balance-history-assumeutxo-p73-operations.md)；现有默认 bundle 未切换。
+
 ## 1. 目录结构
 
 当前 `docker/` 目录中最重要的内容如下：

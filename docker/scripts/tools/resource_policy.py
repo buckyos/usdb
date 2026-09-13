@@ -23,6 +23,7 @@ CAP_DEFAULTS = {
 }
 SERVICE_MEMORY_KEYS = {
     "btc-node": "BTC_MEMORY_LIMIT",
+    "btc-snapshot-bootstrap": "BTC_BOOTSTRAP_MEMORY_LIMIT",
     "balance-history": "BH_MEMORY_LIMIT",
     "snapshot-loader": "BH_MEMORY_LIMIT",
     "script-registry-installer": "BH_SCRIPT_REGISTRY_MEMORY_LIMIT",
@@ -33,6 +34,7 @@ SERVICE_MEMORY_KEYS = {
     "usdb-control-plane": "CONTROL_PLANE_MEMORY_LIMIT",
 }
 MANUAL_DEFAULTS = {
+    "BTC_BOOTSTRAP_MEMORY_LIMIT": "128m",
     "BH_MEMORY_LIMIT": "20g",
     "BH_SYNC_UTXO_MAX_CACHE_BYTES": str(4 * GIB),
     "BH_SYNC_BALANCE_MAX_CACHE_BYTES": str(8 * GIB),
@@ -120,7 +122,7 @@ class ResourcePlan:
         """Budget Bitcoin alone during IBD; reserve downstream services after handoff."""
         return self.reserve_bytes + self.external_services_bytes + sum(
             amount for key, amount in self.limits.items()
-            if self.phase != "bitcoin" or key == "BTC_MEMORY_LIMIT"
+            if self.phase != "bitcoin" or key in {"BTC_MEMORY_LIMIT", "BTC_BOOTSTRAP_MEMORY_LIMIT"}
         )
 
     def environment(self) -> dict[str, str]:
@@ -175,6 +177,8 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
         "BH_SCRIPT_REGISTRY_MEMORY_LIMIT": share(2, 2 * GIB),
         "USDB_CHECKPOINT_VERIFY_MEMORY_LIMIT": share(1, GIB),
     }
+    if env.get("SNAPSHOT_MODE") == "assumeutxo":
+        limits["BTC_BOOTSTRAP_MEMORY_LIMIT"] = 128 * MIB
     # Keep the previous dbcache allowance: the IBD boost is headroom for file
     # cache and other allocations, not an equal increase in application cache.
     bitcoin_cache_limit = limits["BTC_MEMORY_LIMIT"]
@@ -243,6 +247,8 @@ def validate_resource_environment(env: dict[str, str], host_memory: int | None =
     elif host_memory is not None:
         settings = {**MANUAL_DEFAULTS, **env}
         keys = set(SERVICE_MEMORY_KEYS.values())
+        if env.get("SNAPSHOT_MODE") != "assumeutxo":
+            keys.discard("BTC_BOOTSTRAP_MEMORY_LIMIT")
         total = sum(memory_bytes(settings.get(key, "0"), key) for key in keys)
         reserve = max(4 * GIB, host_memory * 10 // 64)
         total += external_services_budget(env)

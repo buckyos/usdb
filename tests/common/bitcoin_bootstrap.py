@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import socket
 import threading
+import time
 
 
 class BootstrapCore:
@@ -18,6 +19,12 @@ class BootstrapCore:
         self.chain = snapshot.chain
         self.pruned = False
         self.version = 310100
+        self.height = snapshot.base_height
+        self.headers = snapshot.base_height + 20
+        self.connections = 2
+        self.tip_time = int(time.time())
+        self.origin_height = 963800
+        self.origin_hash = "c" * 64
         self.header_delay = 0
         self.warmup_remaining = 0
         self.loading = False
@@ -54,7 +61,7 @@ class BootstrapCore:
                     self.send_header("Location", core.redirect)
                     self.end_headers()
                     return
-                active = dict(blocks=snapshot.base_height if core.active else 0,
+                active = dict(blocks=core.height if core.active else 0,
                               bestblockhash="f" * 64 if core.active else "0" * 64,
                               validated=core.validated if core.active else True,
                               verificationprogress=0.2)
@@ -62,20 +69,22 @@ class BootstrapCore:
                     active["snapshot_blockhash"] = core.snapshot_hash
                 result, error = None, None
                 if method == "getnetworkinfo":
-                    result = dict(version=core.version)
+                    result = dict(version=core.version, connections=core.connections)
                 elif method == "getblockchaininfo":
                     result = dict(chain=core.chain, pruned=core.pruned, bestblockhash=active["bestblockhash"])
                 elif method == "getchainstates":
-                    result = dict(headers=snapshot.base_height + 20,
+                    result = dict(headers=core.headers,
                                   chainstates=[dict(blocks=12, bestblockhash="b" * 64, validated=True), active]
                                   if core.active and not core.validated else [active])
                 elif method == "getblockhash":
-                    result = core.canonical_hash
+                    result = core.origin_hash if request["params"] == [core.origin_height] else core.canonical_hash
                 elif method == "getblockheader":
                     if core.calls[method] <= core.header_delay:
                         error = dict(code=-5, message="Header not found")
                     else:
                         result = dict(hash=snapshot.base_hash, height=snapshot.base_height)
+                        if request["params"] == [active["bestblockhash"]]:
+                            result = dict(hash=active["bestblockhash"], height=core.height, time=core.tip_time)
                 elif method == "getrpcinfo":
                     result = dict(active_commands=[dict(method="loadtxoutset")] if core.loading else [])
                 elif method == "loadtxoutset":

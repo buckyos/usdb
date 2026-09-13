@@ -1,0 +1,35 @@
+# Native services retain the existing chain/control-plane gate, with no legacy
+# snapshot-loader or registry job in their dependency graph. Requires Compose 2.24.4+.
+services:
+  snapshot-loader:
+    profiles: [legacy-snapshots]
+  script-registry-installer:
+    profiles: [legacy-snapshots]
+  paired-checkpoint-recovery:
+    profiles: [legacy-snapshots]
+  balance-history:
+    depends_on: !reset {}
+    environment:
+      SNAPSHOT_MODE: assumeutxo
+      USDB_GENESIS_BLOCK_HEIGHT: ${USDB_GENESIS_BLOCK_HEIGHT:?USDB_GENESIS_BLOCK_HEIGHT is required}
+      BH_ASSUMEUTXO_BASE_HEIGHT: ${BH_ASSUMEUTXO_BASE_HEIGHT:?BH_ASSUMEUTXO_BASE_HEIGHT is required}
+      BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH: ${BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH:?BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH is required}
+      BH_ASSUMEUTXO_SNAPSHOT_FILE: /data/assumeutxo/mainnet-935000-utxos.dat
+      BH_ASSUMEUTXO_IMPORT_BATCH_SIZE: ${BH_ASSUMEUTXO_IMPORT_BATCH_SIZE:-20000}
+      BH_ASSUMEUTXO_REPLAY_BATCH_SIZE: ${BH_ASSUMEUTXO_REPLAY_BATCH_SIZE:-20}
+      BH_SYNC_LOCAL_LOADER_THRESHOLD: ${BH_SYNC_LOCAL_LOADER_THRESHOLD:-500}
+    volumes: !override
+      - ${BH_DATA_HOST_DIR:?BH_DATA_HOST_DIR is required}:/data/balance-history
+      - ${BTC_NODE_DATA_HOST_DIR:?BTC_NODE_DATA_HOST_DIR is required}:/data/bitcoin:ro
+      - ${BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR:?BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR is required}:/data/assumeutxo:ro
+  usdb-indexer:
+    depends_on: !reset {}
+    environment:
+      SNAPSHOT_MODE: assumeutxo
+      BH_ASSUMEUTXO_BASE_HEIGHT: ${BH_ASSUMEUTXO_BASE_HEIGHT:?BH_ASSUMEUTXO_BASE_HEIGHT is required}
+  usdb-chain:
+    depends_on: !override
+      usdb-chain-init:
+        condition: service_completed_successfully
+      usdb-indexer:
+        condition: service_healthy

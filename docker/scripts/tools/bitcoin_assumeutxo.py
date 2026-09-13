@@ -323,6 +323,26 @@ def loading(rpc: Rpc) -> bool:
     return any(command.get("method") == "loadtxoutset" for command in commands)
 
 
+def tip_status(rpc: Rpc, snapshot: Snapshot, env: dict) -> dict:
+    """Foreground readiness does not depend on background validation or txindex."""
+    report = core_status(rpc, snapshot)
+    report["tip_ready"] = False
+    minimum = unsigned(env, "BTC_MIN_READY_HEIGHT", snapshot.base_height)
+    if not report["bootstrap_ready"] or report["active_height"] < minimum:
+        return report
+    origin_hash = env.get("BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH", "")
+    if origin_hash and rpc.call("getblockhash", [minimum]) != origin_hash:
+        raise ValueError("Core canonical USDB origin hash mismatch")
+    header = rpc.call("getblockheader", [report["chainstates"][-1]["bestblockhash"]])
+    network = rpc.call("getnetworkinfo")
+    age = int(time.time()) - header["time"]
+    max_age = unsigned(env, "BTC_MAX_TIP_AGE_SECS", 7200, minimum=1)
+    min_peers = unsigned(env, "BTC_MIN_CONNECTIONS", 1)
+    report.update(tip_age_seconds=age, connections=network["connections"],
+                  tip_ready=report["active_height"] >= report["headers"] and -7200 <= age <= max_age and network["connections"] >= min_peers)
+    return report
+
+
 def resolve_distribution(mode: str, url: str, manifest_url: str, manifest_file: Path | None, trust: Path) -> tuple[str, dict | None]:
     """Select trust before any load RPC; a signature may never change the pinned snapshot."""
     if mode == "pinned":
@@ -346,7 +366,8 @@ def resolve_distribution(mode: str, url: str, manifest_url: str, manifest_file: 
 
 def activate(snapshot: Snapshot, source: Path, rpc: Rpc, state_dir: Path, *, url: str = "",
              poll_seconds: float = 5, wait_seconds: float = 0, retry_interrupted: bool = False,
-             reserve_bytes: int = 1024**3, distribution: dict | None = None) -> dict:
+             reserve_bytes: int = 1024**3, distribution: dict | None = None,
+             ensure_snapshot_file: bool = False) -> dict:
     """Reconcile before every load; uncertain requests require observation or explicit recovery."""
     if not source.is_absolute() or not state_dir.is_absolute() or state_dir == Path("/") or not math.isfinite(poll_seconds) or not math.isfinite(wait_seconds) or poll_seconds <= 0 or wait_seconds < 0:
         raise ValueError("Invalid source path or bootstrap wait intervals")
@@ -372,6 +393,9 @@ def activate(snapshot: Snapshot, source: Path, rpc: Rpc, state_dir: Path, *, url
                 raise ValueError("Bootstrap observation deadline reached; Core load may still be running; rerun to reconcile")
             try:
                 report = core_status(rpc, snapshot)
+                if ensure_snapshot_file and not prepared:
+                    download_snapshot(snapshot, source, url, reserve_bytes=reserve_bytes)
+                    prepared = True
                 if report["bootstrap_ready"]:
                     journal.phase(report["phase"], report=report)
                     return report
@@ -439,7 +463,10 @@ def main() -> int:
     parser.add_argument("--poll-seconds", type=float, default=5)
     parser.add_argument("--wait-seconds", type=float, default=0, help="0 observes indefinitely; a timeout never cancels Core's import")
     parser.add_argument("--reserve-bytes", type=int, default=1024**3, help="Additional free bytes to retain on the artifact filesystem; not a full-node capacity estimate")
-    parser.add_argument("--retry-interrupted-load", action="store_true", help="After inspecting Core, allow a new load if an earlier request has no known outcome and no active load is visible")
+    parser.add_argument("--retry-interrupted-load", action="store_true", default=os.environ.get("BTC_ASSUMEUTXO_RETRY_INTERRUPTED_LOAD") == "1",
+                        help="After inspecting Core, allow a new load if an earlier request has no known outcome and no active load is visible")
+    parser.add_argument("--require-tip", action="store_true", help="For status: require foreground tip, peers, age and canonical USDB origin; do not wait for background validation")
+    parser.add_argument("--ensure-snapshot-file", action="store_true", help="Prepare the raw file for BH even when Core already has a usable chain")
     args = parser.parse_args()
     try:
         snapshot = pinned_snapshot(os.environ)
@@ -459,16 +486,19 @@ def main() -> int:
                 password = Path(os.environ["BTC_RPC_PASSWORD_FILE"]).read_text().strip()
             rpc = Rpc(args.rpc_url, cookie=args.cookie_file, user=os.environ.get("BTC_RPC_USER", ""), password=password)
             if args.command == "status":
-                report = core_status(rpc, snapshot)
+                report = tip_status(rpc, snapshot, os.environ) if args.require_tip else core_status(rpc, snapshot)
             else:
                 report = activate(snapshot, args.snapshot_file, rpc, args.state_dir, url=args.source_url,
                                   poll_seconds=args.poll_seconds, wait_seconds=args.wait_seconds,
-                                  retry_interrupted=args.retry_interrupted_load, reserve_bytes=args.reserve_bytes, distribution=distribution)
+                                  retry_interrupted=args.retry_interrupted_load, reserve_bytes=args.reserve_bytes, distribution=distribution,
+                                  ensure_snapshot_file=args.ensure_snapshot_file)
             print(json.dumps(report, sort_keys=True))
-            return 0 if report["bootstrap_ready"] else 1
+            ready = report.get("tip_ready", False) if args.require_tip else report["bootstrap_ready"]
+            return 0 if ready else 1
     except (OSError, ValueError, KeyError, TypeError, RpcFailure) as error:
         if args.command == "status":
-            print(json.dumps(dict(schema_version=SCHEMA, bootstrap_ready=False, error=str(error))))
+            print(json.dumps(dict(schema_version=SCHEMA, bootstrap_ready=False, tip_ready=False, error=str(error),
+                                  error_kind="rpc_unavailable" if isinstance(error, RpcFailure) else "identity_or_configuration")))
         else:
             print(f"Bitcoin bootstrap failed: {error}", file=sys.stderr)
         return 1

@@ -5,6 +5,7 @@ services:
       SNAPSHOT_MODE: assumeutxo
       BH_ASSUMEUTXO_BASE_HEIGHT: ${BH_ASSUMEUTXO_BASE_HEIGHT:-935000}
       BTC_TXINDEX: ${BTC_TXINDEX:-0}
+      BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH: ${BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH:-}
     volumes:
       - ${BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR:?BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR is required}:/data/assumeutxo:ro
     healthcheck:
@@ -18,6 +19,7 @@ services:
   btc-snapshot-bootstrap:
     image: ${USDB_BITCOIN_IMAGE:?USDB_BITCOIN_IMAGE must reference a digest-pinned release image}
     entrypoint: ["/usr/bin/tini", "--", "/opt/usdb/docker/scripts/entrypoints/bootstrap_bitcoin_core.sh"]
+    command: ["--ensure-snapshot-file"]
     restart: "no"
     user: ${BTC_CONTAINER_UID:-1000}:${BTC_CONTAINER_GID:-1000}
     security_opt:
@@ -33,16 +35,20 @@ services:
       BH_ASSUMEUTXO_BASE_HEIGHT: ${BH_ASSUMEUTXO_BASE_HEIGHT:-935000}
       BTC_ASSUMEUTXO_SNAPSHOT_FILE: /data/assumeutxo/mainnet-935000-utxos.dat
       BTC_ASSUMEUTXO_STATE_DIR: /data/assumeutxo-state
+      BTC_ASSUMEUTXO_RETRY_INTERRUPTED_LOAD: ${BTC_ASSUMEUTXO_RETRY_INTERRUPTED_LOAD:-0}
       BTC_ASSUMEUTXO_SOURCE_URL: ${BTC_ASSUMEUTXO_SOURCE_URL:-}
       BTC_ASSUMEUTXO_DISTRIBUTION_MODE: ${BTC_ASSUMEUTXO_DISTRIBUTION_MODE:-pinned}
       BTC_ASSUMEUTXO_MANIFEST_URL: ${BTC_ASSUMEUTXO_MANIFEST_URL:-}
       BTC_ASSUMEUTXO_MANIFEST_FILE: ${BTC_ASSUMEUTXO_MANIFEST_FILE:-}
+      BTC_ARTIFACT_TRUSTED_KEYS_FILE: /run/usdb/keys/bitcoin-artifacts.trusted-keys.json
       BTC_RPC_URL: http://btc-node:8332
       BTC_RPC_USER: ${BTC_RPC_USER:?BTC_RPC_USER is required}
       BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:?BTC_RPC_PASSWORD is required}
     volumes:
       - ${BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR:?BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR is required}:/data/assumeutxo
       - ${BTC_ASSUMEUTXO_STATE_HOST_DIR:?BTC_ASSUMEUTXO_STATE_HOST_DIR is required}:/data/assumeutxo-state
+      - ${BTC_BOOTSTRAP_BUNDLE_ARTIFACTS_DIR:-../docker/networks/testnet-v0/artifacts}:/network:ro
+      - ${BTC_BOOTSTRAP_TRUST_DIR:-../docker/trust}:/run/usdb/keys:ro
     mem_limit: 128m
     memswap_limit: 128m
     stop_grace_period: 1m

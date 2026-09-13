@@ -100,6 +100,9 @@ def main():
         assert status.returncode == 1 and not native["bootstrap_ready"] and native["rpc_available"]
         assert not native["history_validated"] and native["active_height"] == 0
         report["genesis_status"] = native
+        tip = docker("exec", name, "python3", "/opt/usdb/docker/scripts/tools/bitcoin_assumeutxo.py", "status", "--require-tip", check=False)
+        assert tip.returncode == 1 and json.loads(tip.stdout)["tip_ready"] is False
+        report["foreground_probe"] = "pass"
         docker("stop", "--time", "60", name)
         assert docker("inspect", name, "--format", "{{.State.ExitCode}}").stdout.strip() == "0"
         report["status"] = "pass"
