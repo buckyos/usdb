@@ -36,6 +36,8 @@ pub struct Fixture {
     pub blocks: Vec<Block>,
     pub fallback_calls: Arc<AtomicUsize>,
     pub fixture_dir: PathBuf,
+    /// Optional advertised tip for stable-lag tests; only the retained real blocks may be fetched.
+    pub advertised_tip: Option<u32>,
 }
 
 impl Fixture {
@@ -64,11 +66,21 @@ impl Fixture {
             blocks,
             fallback_calls: Arc::new(AtomicUsize::new(0)),
             fixture_dir,
+            advertised_tip: None,
         }
     }
 
     pub fn client(&self) -> BTCClientRef {
         Arc::new(Box::new(self.clone()))
+    }
+
+    pub fn client_with_stable_tip(&self) -> BTCClientRef {
+        let mut chain = self.clone();
+        chain.advertised_tip = Some(
+            self.blocks.len() as u32 - 1
+                + usdb_util::embedded_btc_stable_lag_blocks(Network::Regtest).unwrap(),
+        );
+        Arc::new(Box::new(chain))
     }
 
     pub fn options(&self, work: &Path) -> AssumeUtxoImportOptions {
@@ -187,7 +199,7 @@ impl BTCClient for Fixture {
         Ok(())
     }
     fn get_latest_block_height(&self) -> Result<u32, String> {
-        Ok(self.blocks.len() as u32 - 1)
+        Ok(self.advertised_tip.unwrap_or(self.blocks.len() as u32 - 1))
     }
     fn get_block_hash(&self, height: u32) -> Result<BlockHash, String> {
         Ok(self.get_block_by_height(height)?.block_hash())

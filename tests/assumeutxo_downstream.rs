@@ -13,10 +13,20 @@ fn downstream_chain(
         "/../../../tests/fixtures/assumeutxo-p5/downstream-inputs.json"
     )))
     .unwrap();
+    downstream_chain_from_fixture(&fixture, source, corrupt_commit, corrupt_balance)
+}
+
+fn downstream_chain_from_fixture(
+    fixture: &serde_json::Value,
+    source: &str,
+    corrupt_commit: bool,
+    corrupt_balance: bool,
+) -> Vec<serde_json::Value> {
+    let first_height = fixture["blocks"][0]["height"].as_u64().unwrap() as u32;
     let (server, root) = build_server_with_genesis_and_network(
         "assumeutxo_p5_downstream",
-        101,
-        100,
+        first_height,
+        first_height - 1,
         Network::Regtest,
     );
     let storage = server.indexer.miner_pass_storage();
@@ -52,6 +62,14 @@ fn downstream_chain(
         storage
             .upsert_balance_history_snapshot_anchor(&state.clone().into())
             .unwrap();
+        assert_eq!(
+            storage
+                .get_balance_history_snapshot_anchor()
+                .unwrap()
+                .unwrap()
+                .commit_protocol_version,
+            upstream.commit_protocol_version
+        );
         storage.upsert_pass_block_commit(&pass).unwrap();
         storage
             .upsert_active_balance_snapshot(height, total, balances.len() as u32)
@@ -87,6 +105,20 @@ fn downstream_chain(
     drop(server);
     std::fs::remove_dir_all(root).unwrap();
     results
+}
+
+#[test]
+fn native_bootstrap_checkpoint_preserves_pass_local_and_system_state() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../tests/fixtures/assumeutxo-native-downstream.json"
+    )))
+    .unwrap();
+    let native = downstream_chain_from_fixture(&fixture, "candidate", false, false);
+    let legacy = downstream_chain_from_fixture(&fixture, "full_replay", false, false);
+    assert_eq!(native, legacy);
+    let wrong_commit = downstream_chain_from_fixture(&fixture, "candidate", true, false);
+    assert_ne!(native, wrong_commit);
 }
 
 #[test]

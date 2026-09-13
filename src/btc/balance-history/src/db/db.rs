@@ -28,6 +28,9 @@ pub use assumeutxo::*;
 #[path = "bootstrap.rs"]
 mod bootstrap;
 
+#[path = "native_bootstrap.rs"]
+mod native_bootstrap;
+
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
 pub const META_CF: &str = "meta";
@@ -204,6 +207,20 @@ pub struct BalanceHistoryDBIdentity {
 }
 
 impl BalanceHistoryDBIdentity {
+    /// Native databases carry checkpoint provenance and history floors that older binaries cannot safely interpret.
+    pub fn for_native_network(network: Network) -> Self {
+        let mut identity = Self::for_network(network);
+        identity.schema_version = "balance-history-rocksdb-schema:native-checkpoint-v1".to_string();
+        identity
+    }
+
+    fn for_config(config: &crate::config::BalanceHistoryConfig) -> Self {
+        if config.bootstrap.is_some() {
+            Self::for_native_network(config.btc.network())
+        } else {
+            Self::for_network(config.btc.network())
+        }
+    }
     /// Builds the expected balance-history identity for one Bitcoin network.
     pub fn for_network(network: Network) -> Self {
         Self {
@@ -285,10 +302,17 @@ impl BalanceHistoryDB {
             config,
             mode: Mutex::new(BalanceHistoryDBMode::Normal),
         };
-        let expected = BalanceHistoryDBIdentity::for_network(db.config.btc.network());
+        let expected = BalanceHistoryDBIdentity::for_config(&db.config);
         let identity_begin = Instant::now();
         match db.get_db_identity()? {
-            Some(actual) if actual == expected => {
+            Some(actual)
+                if actual == expected
+                    || (db.config.bootstrap.is_none()
+                        && actual
+                            == BalanceHistoryDBIdentity::for_native_network(
+                                db.config.btc.network(),
+                            )) =>
+            {
                 info!(
                     "Opened balance-history RocksDB: mode=read_only, path={}, open_engine_elapsed_ms={}, identity_validation_elapsed_ms={}, total_elapsed_ms={}",
                     db.file.display(),
@@ -362,7 +386,7 @@ impl BalanceHistoryDB {
     }
 
     fn ensure_db_identity(&self) -> Result<(), String> {
-        let expected = BalanceHistoryDBIdentity::for_network(self.config.btc.network());
+        let expected = BalanceHistoryDBIdentity::for_config(&self.config);
         match self.get_db_identity()? {
             Some(actual) if actual == expected => {
                 info!(

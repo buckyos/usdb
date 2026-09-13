@@ -359,6 +359,8 @@ pub enum ReadinessBlocker {
     LatestBlockCommitMissing,
     /// Local DB came from snapshot install without manifest-backed provenance verification.
     SnapshotInstallUnverified,
+    /// Native bootstrap has not been sealed or does not match the configured database identity.
+    NativeBootstrapNotReady,
 }
 
 /// Structured readiness state for both local monitoring and downstream gating.
@@ -524,6 +526,10 @@ pub trait BalanceHistoryRpc {
     /// Returns detailed snapshot-install provenance for the current local DB, when available.
     #[rpc(name = "get_snapshot_provenance")]
     fn get_snapshot_provenance(&self) -> JsonResult<Option<SnapshotInstallProvenance>>;
+
+    /// Returns native source validation and origin provenance; independent of legacy snapshot install.
+    #[rpc(name = "get_bootstrap_info")]
+    fn get_bootstrap_info(&self) -> JsonResult<Option<crate::bootstrap::NativeBootstrapState>>;
 
     /// Returns the exact historical consensus state reference at one BTC height.
     ///

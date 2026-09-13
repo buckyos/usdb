@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(about = "Resumable AssumeUTXO import/replay validation prototype")]
 struct Cli {
-    /// Absolute dedicated output workspace (required except for scan and origin-commit).
+    /// Absolute dedicated output workspace (required except for read-only inspection and scan).
     #[arg(long, global = true)]
     root_dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -19,7 +19,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Calculate the proposed business-origin commit read-only; no old snapshots or RPC are used.
+    /// Extract a candidate v1 checkpoint read-only; release review must independently approve it.
+    Checkpoint {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        identity: PathBuf,
+    },
+    /// Inspect the business-origin state digest read-only; it is never used as a rolling commit.
+    #[command(name = "origin-state", alias = "origin-commit")]
     OriginCommit {
         #[arg(long)]
         state_dir: PathBuf,
@@ -80,6 +88,19 @@ fn identity(path: &PathBuf) -> Result<SnapshotIdentity, String> {
 }
 
 fn run(cli: Cli) -> Result<(), String> {
+    if let Command::Checkpoint {
+        state_dir,
+        identity: file,
+    } = cli.command
+    {
+        let result =
+            balance_history::bootstrap::inspect_bootstrap_checkpoint(&state_dir, identity(&file)?)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
     if let Command::OriginCommit {
         state_dir,
         network,
@@ -179,7 +200,10 @@ fn run(cli: Cli) -> Result<(), String> {
                 root.join("p5-semantics-result.json").display()
             );
         }
-        Command::Scan { .. } | Command::Status | Command::OriginCommit { .. } => unreachable!(),
+        Command::Scan { .. }
+        | Command::Status
+        | Command::OriginCommit { .. }
+        | Command::Checkpoint { .. } => unreachable!(),
     }
     Ok(())
 }

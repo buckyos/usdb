@@ -73,6 +73,8 @@ struct SnapshotKeygenArgs {
 #[derive(Subcommand, Debug, Clone)]
 #[command(rename_all = "kebab-case")]
 enum BalanceHistoryCommands {
+    /// Import, replay and publish the configured native bootstrap without starting the service.
+    Bootstrap {},
     /// Delete the database files, DANGEROUS: This will remove all indexed data!
     /// Use with caution.
     // #[command(alias = "c")]
@@ -180,6 +182,25 @@ async fn main() {
         .unwrap_or_else(|| usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME));
 
     match cli.command {
+        Some(BalanceHistoryCommands::Bootstrap {}) => {
+            let log_handle = init_command_logging(&root_dir, "balance_history_bootstrap");
+            let result = match BalanceHistoryConfig::load(&root_dir) {
+                Ok(config) if config.bootstrap.is_some() => {
+                    balance_history::runtime::run_native_bootstrap(Arc::new(config)).await
+                }
+                Ok(_) => Err("bootstrap configuration is required in config.toml".to_string()),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(state) => println!("{}", serde_json::to_string_pretty(&state).unwrap()),
+                Err(error) => {
+                    eprintln!("{error}");
+                    exit_command_failure();
+                }
+            }
+            log_handle.shutdown();
+            return;
+        }
         Some(BalanceHistoryCommands::ClearDb {}) => {
             let file_name = format!("{}_clear_db", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let log_handle = init_command_logging(&root_dir, &file_name);

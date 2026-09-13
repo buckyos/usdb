@@ -1,4 +1,9 @@
-//! Proposed bootstrap-origin commitment. Production startup and RPC activation remain separate.
+//! Canonical business-origin state verification and checkpoint-based native bootstrap.
+
+mod checkpoint;
+pub use checkpoint::*;
+mod native;
+pub use native::*;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -11,9 +16,9 @@ use sha2::{Digest, Sha256};
 use crate::{BALANCE_HISTORY_DATA_MODEL_VERSION, BalanceHistoryConfig, BalanceHistoryDB};
 
 /// Canonical identity schema for a business-origin state, independent of its import source.
-pub const BOOTSTRAP_ORIGIN_SCHEMA: &str = "balance-history-bootstrap-origin:v1";
-/// Proposed rolling-commit version. This does not activate an embedded network version.
-pub const BOOTSTRAP_COMMIT_PROTOCOL_VERSION: &str = "2.0.0";
+pub const BOOTSTRAP_ORIGIN_SCHEMA: &str = "balance-history-bootstrap-state:v1";
+/// Native balance-history commit version; distinct from the indexer's local commit version family.
+pub const BOOTSTRAP_COMMIT_PROTOCOL_VERSION: &str = crate::COMMIT_PROTOCOL_VERSION;
 
 /// Ordered logical table digest; zero-valued UTXOs are retained, zero balances are omitted.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,13 +32,13 @@ pub struct OriginTableDigest {
     pub sha256: String,
 }
 
-/// Complete hash input for the proposed origin commit. Physical storage and old commits are excluded.
+/// Logical state digest input for independent verification. Rolling commits are excluded.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BootstrapOriginIdentity {
     /// Canonical schema and domain separator.
     pub schema_version: String,
-    /// Proposed commit rules selected for a future network activation.
+    /// Existing rolling commit protocol, unchanged by native bootstrap.
     pub commit_protocol_version: String,
     /// Bitcoin network; encoded in the hash by its genesis block hash.
     pub network: Network,
@@ -54,17 +59,17 @@ pub struct BootstrapOriginIdentity {
 pub struct BootstrapOriginReport {
     /// Auditable logical identity used by the hash function.
     pub identity: BootstrapOriginIdentity,
-    /// Proposed first commit, before rolling subsequent blocks under the new protocol.
-    pub origin_commit: String,
+    /// Logical state digest for auditing; never installed as a block commit or rolling seed.
+    pub origin_state_digest: String,
     /// Explicit distinction from an activated network or installed database migration.
     pub activated: bool,
     /// Wall time spent opening and scanning the local database.
     pub elapsed_seconds: f64,
 }
 
-/// Encode the proposed identity with length-prefixed UTF-8 strings and fixed-width binary fields.
+/// Hash the logical state identity for auditing, independently of the historical rolling chain.
 /// See the P6 design document and independent Python golden vector for the exact wire encoding.
-pub fn derive_origin_commit(identity: &BootstrapOriginIdentity) -> Result<String, String> {
+pub fn derive_origin_state_digest(identity: &BootstrapOriginIdentity) -> Result<String, String> {
     if identity.schema_version != BOOTSTRAP_ORIGIN_SCHEMA
         || identity.commit_protocol_version != BOOTSTRAP_COMMIT_PROTOCOL_VERSION
         || identity.data_model_version != BALANCE_HISTORY_DATA_MODEL_VERSION
@@ -150,14 +155,14 @@ fn inspect_origin_state(
     config.btc.network = network;
     let db = BalanceHistoryDB::open_read_only(Arc::new(config))?;
     let identity = db.bootstrap_origin_identity(network, origin_height, origin_block_hash)?;
-    let origin_commit = derive_origin_commit(&identity)?;
+    let origin_state_digest = derive_origin_state_digest(&identity)?;
     eprintln!(
-        "Bootstrap origin inspection finished: height={origin_height}, origin_commit={origin_commit}, activated=false, elapsed_seconds={:.1}",
+        "Bootstrap origin inspection finished: height={origin_height}, origin_state_digest={origin_state_digest}, activated=false, elapsed_seconds={:.1}",
         started.elapsed().as_secs_f64()
     );
     Ok(BootstrapOriginReport {
         identity,
-        origin_commit,
+        origin_state_digest,
         activated: false,
         elapsed_seconds: started.elapsed().as_secs_f64(),
     })
@@ -168,24 +173,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn origin_commit_matches_independent_python_vector() {
+    fn origin_state_digest_matches_independent_python_vector() {
         let golden: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../tests/fixtures/bootstrap-origin-v1.json"
         ))
         .unwrap();
         let mut identity: BootstrapOriginIdentity =
             serde_json::from_value(golden["identity"].clone()).unwrap();
-        let expected = derive_origin_commit(&identity).unwrap();
-        assert_eq!(expected, golden["origin_commit"].as_str().unwrap());
+        let expected = derive_origin_state_digest(&identity).unwrap();
+        assert_eq!(expected, golden["origin_state_digest"].as_str().unwrap());
         identity.origin_height += 1;
-        assert_ne!(derive_origin_commit(&identity).unwrap(), expected);
+        assert_ne!(derive_origin_state_digest(&identity).unwrap(), expected);
         identity.origin_height -= 1;
         identity.network = Network::Bitcoin;
-        assert_ne!(derive_origin_commit(&identity).unwrap(), expected);
+        assert_ne!(derive_origin_state_digest(&identity).unwrap(), expected);
         identity.utxos.total_sats += 1;
-        assert!(derive_origin_commit(&identity).is_err());
+        assert!(derive_origin_state_digest(&identity).is_err());
         identity.utxos.total_sats -= 1;
-        identity.commit_protocol_version = "1.0.0".to_string();
-        assert!(derive_origin_commit(&identity).is_err());
+        identity.commit_protocol_version = "2.0.0".to_string();
+        assert!(derive_origin_state_digest(&identity).is_err());
     }
 }

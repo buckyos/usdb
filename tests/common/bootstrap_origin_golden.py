@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print an independent binary-encoding vector for the proposed bootstrap-origin commitment."""
+"""Print an independent binary-encoding vector for the independent bootstrap state digest."""
 
 import hashlib
 import json
@@ -29,8 +29,8 @@ def main():
     encoded_balances = [script + struct.pack(">Q", amount)
                         for script, amount in sorted(balances.items(), reverse=True) if amount]
     identity = dict(
-        schema_version="balance-history-bootstrap-origin:v1",
-        commit_protocol_version="2.0.0",
+        schema_version="balance-history-bootstrap-state:v1",
+        commit_protocol_version="1.0.0",
         network="regtest",
         origin_height=103,
         origin_block_hash=origin_hash[::-1].hex(),
@@ -45,7 +45,7 @@ def main():
     encoded += genesis_hash + struct.pack(">I", 103) + origin_hash
     for table in [identity["utxos"], identity["balances"]]:
         encoded += struct.pack(">QQ", table["rows"], table["total_sats"]) + bytes.fromhex(table["sha256"])
-    print(json.dumps(dict(identity=identity, encoded_hex=encoded.hex(), origin_commit=sha(encoded).hex()), indent=2))
+    print(json.dumps(dict(identity=identity, encoded_hex=encoded.hex(), origin_state_digest=sha(encoded).hex()), indent=2))
 
 
 if __name__ == "__main__":

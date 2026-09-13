@@ -407,6 +407,9 @@ pub struct BalanceHistoryConfig {
     pub snapshot: SnapshotConfig,
     #[serde(default)]
     pub script_registry: ScriptRegistryConfig,
+    /// Native UTXO bootstrap for a new dedicated database; absent keeps the legacy startup path.
+    #[serde(default)]
+    pub bootstrap: Option<crate::bootstrap::NativeBootstrapConfig>,
 }
 
 impl Default for BalanceHistoryConfig {
@@ -420,6 +423,7 @@ impl Default for BalanceHistoryConfig {
             rpc_server: RpcServer::default(),
             snapshot: SnapshotConfig::default(),
             script_registry: ScriptRegistryConfig::default(),
+            bootstrap: None,
         }
     }
 }
@@ -489,6 +493,9 @@ impl BalanceHistoryConfig {
         self.rpc_server.validate()?;
         self.snapshot.validate()?;
         self.script_registry.validate()?;
+        if let Some(bootstrap) = &self.bootstrap {
+            bootstrap.validate(self.btc.network())?;
+        }
         Ok(())
     }
 

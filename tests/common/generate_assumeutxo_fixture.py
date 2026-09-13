@@ -31,6 +31,8 @@ def main():
     parser.add_argument("--bitcoind", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--p5", action="store_true", help="Include distinct historical scripts and real replacement branches")
+    parser.add_argument("--chain", type=Path, help="Reuse existing real blocks instead of mining a new chain")
+    parser.add_argument("--snapshot-height", type=int, default=101, help="Snapshot baseline when reusing --chain")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     if any(args.output.iterdir()):
@@ -65,6 +67,31 @@ def main():
                         time.sleep(0.1)
                 else:
                     raise RuntimeError("Isolated regtest RPC did not start")
+                if args.chain:
+                    chain_bytes = args.chain.read_bytes()
+                    blocks = json.loads(chain_bytes)["blocks"]
+                    if not 0 < args.snapshot_height < len(blocks):
+                        raise RuntimeError("Snapshot height must exist in the supplied chain")
+                    for block in blocks[1:args.snapshot_height + 1]:
+                        result = rpc("submitblock", block)
+                        if result is not None:
+                            raise RuntimeError(result)
+                    snapshot = root / "snapshot.dat"
+                    dump = rpc("dumptxoutset", str(snapshot), "latest")
+                    stats = rpc("gettxoutsetinfo", "hash_serialized_3")
+                    data = snapshot.read_bytes()
+                    identity = dict(network="regtest", base_height=args.snapshot_height,
+                                    base_hash=rpc("getblockhash", args.snapshot_height),
+                                    file_sha256=hashlib.sha256(data).hexdigest(),
+                                    hash_serialized_3=stats["hash_serialized_3"])
+                    (args.output / "snapshot.dat").write_bytes(data)
+                    (args.output / "identity.json").write_text(json.dumps(identity, indent=2) + "\n")
+                    dump.pop("path", None)
+                    evidence = dict(core_version=rpc("getnetworkinfo")["subversion"], dump=dump,
+                                    stats=stats, chain_sha256=hashlib.sha256(chain_bytes).hexdigest())
+                    (args.output / "generation.json").write_text(json.dumps(evidence, indent=2) + "\n")
+                    print(json.dumps(identity, indent=2))
+                    return
                 if args.p5:
                     hashes = rpc("generatetodescriptor", 1, "raw(5161)")
                     hashes += rpc("generatetodescriptor", 1, "raw(5151)")

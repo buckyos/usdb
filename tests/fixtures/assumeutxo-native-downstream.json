@@ -1,0 +1,157 @@
+{
+  "blocks": [
+    {
+      "candidate": {
+        "balances": [
+          502000000000,
+          5000000000,
+          0,
+          2800000000
+        ],
+        "block_commit": {
+          "balance_delta_root": "ab5033d3a6e7e3377c8d8aa04b1ed6f1de2efcc68d21ca768a47ba6a36bfa32e",
+          "block_commit": "83e2873c70906fa31263ac9be91d604285fd0a946133343fac97696fee307a96",
+          "block_height": 102,
+          "btc_block_hash": "59e5cd25cbb7ee120b3e47874763c16fcddf2c4f530b07a672422407e72e6205",
+          "commit_hash_algo": "sha256",
+          "commit_protocol_version": "1.0.0"
+        },
+        "state_ref": {
+          "block_height": 102,
+          "commit_hash_algo": "sha256",
+          "commit_protocol_version": "1.0.0",
+          "consensus_identity": {
+            "balance_history_api_version": "1.0.0",
+            "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+            "network": "regtest",
+            "source_chain": "BTC",
+            "stable_block_hash": "59e5cd25cbb7ee120b3e47874763c16fcddf2c4f530b07a672422407e72e6205",
+            "stable_height": 102,
+            "stable_lag": 10
+          },
+          "latest_block_commit": "83e2873c70906fa31263ac9be91d604285fd0a946133343fac97696fee307a96",
+          "snapshot_id": "2df5932edea2d2e2040226540150fe6accd136918687a1f5a5e01a516b6ac018",
+          "snapshot_id_hash_algo": "sha256",
+          "snapshot_id_version": "btc-consensus-snapshot:v1",
+          "stable_block_hash": "59e5cd25cbb7ee120b3e47874763c16fcddf2c4f530b07a672422407e72e6205"
+        }
+      },
+      "full_replay": {
+        "balances": [
+          502000000000,
+          5000000000,
+          0,
+          2800000000
+        ],
+        "block_commit": {
+          "balance_delta_root": "ab5033d3a6e7e3377c8d8aa04b1ed6f1de2efcc68d21ca768a47ba6a36bfa32e",
+          "block_commit": "83e2873c70906fa31263ac9be91d604285fd0a946133343fac97696fee307a96",
+          "block_height": 102,
+          "btc_block_hash": "59e5cd25cbb7ee120b3e47874763c16fcddf2c4f530b07a672422407e72e6205",
+          "commit_hash_algo": "sha256",
+          "commit_protocol_version": "1.0.0"
+        },
+        "state_ref": {
+          "block_height": 102,
+          "commit_hash_algo": "sha256",
+          "commit_protocol_version": "1.0.0",
+          "consensus_identity": {
+            "balance_history_api_version": "1.0.0",
+            "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+            "network": "regtest",
+            "source_chain": "BTC",
+            "stable_block_hash": "59e5cd25cbb7ee120b3e47874763c16fcddf2c4f530b07a672422407e72e6205",
+            "stable_height": 102,
+            "stable_lag": 10
+          },
+          "latest_block_commit": "83e2873c70906fa31263ac9be91d604285fd0a946133343fac97696fee307a96",
+          "snapshot_id": "2df5932edea2d2e2040226540150fe6accd136918687a1f5a5e01a516b6ac018",
+          "snapshot_id_hash_algo": "sha256",
+          "snapshot_id_version": "btc-consensus-snapshot:v1",
+          "stable_block_hash": "59e5cd25cbb7ee120b3e47874763c16fcddf2c4f530b07a672422407e72e6205"
+        }
+      },
+      "height": 102
+    },
+    {
+      "candidate": {
+        "balances": [
+          505000000000,
+          5000000000,
+          1800000000,
+          2800000000
+        ],
+        "block_commit": {
+          "balance_delta_root": "463ce176ff1ff7dfa620481703ed3bfac8f1d70cb2228ca9578349e05116ef59",
+          "block_commit": "3f7bb7bd5728e2a2fd91c3a6727315de22108620e7d0aab8c59b1ea8677a4e81",
+          "block_height": 103,
+          "btc_block_hash": "00379c26dc6c0f6f4a892a5263c77ee5b85c7e28eb6a34b3bfd1257f7aab0e1c",
+          "commit_hash_algo": "sha256",
+          "commit_protocol_version": "1.0.0"
+        },
+        "state_ref": {
+          "block_height": 103,
+          "commit_hash_algo": "sha256",
+          "commit_protocol_version": "1.0.0",
+          "consensus_identity": {
+            "balance_history_api_version": "1.0.0",
+            "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+            "network": "regtest",
+            "source_chain": "BTC",
+            "stable_block_hash": "00379c26dc6c0f6f4a892a5263c77ee5b85c7e28eb6a34b3bfd1257f7aab0e1c",
+            "stable_height": 103,
+            "stable_lag": 10
+          },
+          "latest_block_commit": "3f7bb7bd5728e2a2fd91c3a6727315de22108620e7d0aab8c59b1ea8677a4e81",
+          "snapshot_id": "36d49fb81cb9152eeff140e14feab39772934ffb14b544a2ef815bca3bbe1f00",
+          "snapshot_id_hash_algo": "sha256",
+          "snapshot_id_version": "btc-consensus-snapshot:v1",
+          "stable_block_hash": "00379c26dc6c0f6f4a892a5263c77ee5b85c7e28eb6a34b3bfd1257f7aab0e1c"
+        }
+      },
+      "full_replay": {
+        "balances": [
+          505000000000,
+          5000000000,
+          1800000000,
+          2800000000
+        ],
+        "block_commit": {
+          "balance_delta_root": "463ce176ff1ff7dfa620481703ed3bfac8f1d70cb2228ca9578349e05116ef59",
+          "block_commit": "3f7bb7bd5728e2a2fd91c3a6727315de22108620e7d0aab8c59b1ea8677a4e81",
+          "block_height": 103,
+          "btc_block_hash": "00379c26dc6c0f6f4a892a5263c77ee5b85c7e28eb6a34b3bfd1257f7aab0e1c",
+          "commit_hash_algo": "sha256",
+          "commit_protocol_version": "1.0.0"
+        },
+        "state_ref": {
+          "block_height": 103,
+          "commit_hash_algo": "sha256",
+          "commit_protocol_version": "1.0.0",
+          "consensus_identity": {
+            "balance_history_api_version": "1.0.0",
+            "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+            "network": "regtest",
+            "source_chain": "BTC",
+            "stable_block_hash": "00379c26dc6c0f6f4a892a5263c77ee5b85c7e28eb6a34b3bfd1257f7aab0e1c",
+            "stable_height": 103,
+            "stable_lag": 10
+          },
+          "latest_block_commit": "3f7bb7bd5728e2a2fd91c3a6727315de22108620e7d0aab8c59b1ea8677a4e81",
+          "snapshot_id": "36d49fb81cb9152eeff140e14feab39772934ffb14b544a2ef815bca3bbe1f00",
+          "snapshot_id_hash_algo": "sha256",
+          "snapshot_id_version": "btc-consensus-snapshot:v1",
+          "stable_block_hash": "00379c26dc6c0f6f4a892a5263c77ee5b85c7e28eb6a34b3bfd1257f7aab0e1c"
+        }
+      },
+      "height": 103
+    }
+  ],
+  "schema": "assumeutxo-native-downstream:v1",
+  "script_hashes": [
+    "6032c38c0bc0e91e726f1e55e1832e434509001a7aed5cfd881b6ef07215e84a",
+    "a8310eb16ba7642696e8ac46d4df7339383d0c4cc4f695d6601f1f05aaa3042f",
+    "ac41cf8c00321ed97e8352cd543e19a5c1467fe0bc56f7fd95f963208974258c",
+    "d324aa97871246776fe32f5e55c95c7d5dbd1987ddac908f8e50bc70f6d115e9"
+  ]
+}

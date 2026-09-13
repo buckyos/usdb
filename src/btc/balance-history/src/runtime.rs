@@ -5,6 +5,48 @@ use crate::service::BalanceHistoryRpcServer;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Run native bootstrap before opening the service DB/RPC, with cooperative signal cancellation.
+pub async fn run_native_bootstrap(
+    config: Arc<BalanceHistoryConfig>,
+) -> Result<Option<crate::bootstrap::NativeBootstrapState>, String> {
+    if config.bootstrap.is_none() {
+        return Ok(None);
+    }
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = cancelled.clone();
+    let mut worker = tokio::task::spawn_blocking(move || {
+        let client = crate::btc::create_btc_rpc_client(&config)?;
+        crate::bootstrap::prepare_native_bootstrap(config, client, &|| {
+            stop.load(std::sync::atomic::Ordering::Relaxed)
+        })
+    });
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(|e| e.to_string())?
+            .recv()
+            .await;
+        Ok::<(), String>(())
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<Result<(), String>>();
+    tokio::select! {
+        result = &mut worker => result.map_err(|e| format!("Native bootstrap worker failed: {e}"))?,
+        signal = tokio::signal::ctrl_c() => {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            signal.map_err(|e| e.to_string())?;
+            worker.await.map_err(|e| format!("Native bootstrap shutdown failed: {e}"))??;
+            Err("Native bootstrap cancelled before service startup".to_string())
+        }
+        signal = terminate => {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            signal?;
+            worker.await.map_err(|e| format!("Native bootstrap shutdown failed: {e}"))??;
+            Err("Native bootstrap cancelled before service startup".to_string())
+        }
+    }
+}
+
 /// Runs the balance-history indexing service until an external shutdown signal
 /// or an indexer error stops the process.
 pub async fn run_service(
@@ -87,6 +129,11 @@ pub async fn run_service(
     ));
 
     let config = Arc::new(config);
+
+    if let Err(error) = run_native_bootstrap(config.clone()).await {
+        output.eprintln(&error);
+        std::process::exit(1);
+    }
 
     let indexer = match BalanceHistoryIndexer::new(config.clone(), output.clone()) {
         Ok(idx) => idx,

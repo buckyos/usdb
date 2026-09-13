@@ -56,8 +56,24 @@ impl BalanceHistoryDB {
         self.get_json_meta(IMPORT_STATE)
     }
 
+    /// Coverage begins with baseline live scripts, followed by scripts observed during replay.
+    pub fn get_utxo_bootstrap_coverage(&self) -> Result<Option<(bool, SnapshotIdentity)>, String> {
+        if let Some(native) = self.get_native_bootstrap_state()? {
+            return Ok(Some((
+                native.phase == crate::bootstrap::NativeBootstrapPhase::Sealed,
+                native.identity.snapshot,
+            )));
+        }
+        Ok(self
+            .get_assumeutxo_import_state()?
+            .map(|s| (s.complete, s.identity)))
+    }
+
     /// Marks complete-UTXO semantics, which prohibit historical RPC fallback on missing inputs.
     pub fn get_assumeutxo_base_height(&self) -> Result<Option<u32>, String> {
+        if let Some(native) = self.get_native_bootstrap_state()? {
+            return Ok(Some(native.identity.snapshot.base_height));
+        }
         Ok(self
             .get_assumeutxo_import_state()?
             .map(|s| s.identity.base_height))
@@ -122,6 +138,32 @@ impl BalanceHistoryDB {
         {
             return Err("Noncontiguous AssumeUTXO import checkpoint".to_string());
         }
+        let meta_cf = self
+            .db
+            .cf_handle(META_CF)
+            .ok_or("Missing meta column family")?;
+        let mut batch = WriteBatch::default();
+        self.append_snapshot_coins(&mut batch, coins, state.identity.base_height)?;
+        state.imported_coins = processed;
+        batch.put_cf(
+            meta_cf,
+            IMPORT_STATE,
+            serde_json::to_vec(&state).map_err(|e| e.to_string())?,
+        );
+        let mut options = WriteOptions::default();
+        options.set_sync(true);
+        self.db
+            .write_opt(&batch, &options)
+            .map_err(|e| format!("Commit AssumeUTXO import batch at coin {processed}: {e}"))
+    }
+
+    // Share the validated Coin projection between legacy verification and native bootstrap.
+    pub(super) fn append_snapshot_coins(
+        &self,
+        batch: &mut WriteBatch,
+        coins: &[SnapshotCoin],
+        base_height: u32,
+    ) -> Result<(), String> {
         let utxo_cf = self
             .db
             .cf_handle(UTXO_CF)
@@ -130,13 +172,8 @@ impl BalanceHistoryDB {
             .db
             .cf_handle(BALANCE_HISTORY_CF)
             .ok_or("Missing balance column family")?;
-        let meta_cf = self
-            .db
-            .cf_handle(META_CF)
-            .ok_or("Missing meta column family")?;
         let mut deltas: HashMap<BtcScriptHash, u64> = HashMap::new();
         let mut scripts: HashMap<BtcScriptHash, ScriptBuf> = HashMap::new();
-        let mut batch = WriteBatch::default();
         use usdb_util::ToBtcScriptHash;
         for coin in coins {
             let script_hash = coin.script.to_btc_script_hash();
@@ -156,7 +193,7 @@ impl BalanceHistoryDB {
         let changes: Vec<_> = deltas.into_iter().collect();
         let keys: Vec<_> = changes
             .iter()
-            .map(|(hash, _)| Self::make_balance_history_key(hash, state.identity.base_height))
+            .map(|(hash, _)| Self::make_balance_history_key(hash, base_height))
             .collect();
         let old = self
             .db
@@ -182,18 +219,8 @@ impl BalanceHistoryDB {
                 script_pubkey,
             })
             .collect();
-        self.append_script_registry_entries_to_batch(&mut batch, &scripts)?;
-        state.imported_coins = processed;
-        batch.put_cf(
-            meta_cf,
-            IMPORT_STATE,
-            serde_json::to_vec(&state).map_err(|e| e.to_string())?,
-        );
-        let mut options = WriteOptions::default();
-        options.set_sync(true);
-        self.db
-            .write_opt(&batch, &options)
-            .map_err(|e| format!("Commit AssumeUTXO import batch at coin {processed}: {e}"))
+        self.append_script_registry_entries_to_batch(batch, &scripts)?;
+        Ok(())
     }
 
     /// Publish the baseline metadata atomically after the streaming verifier has succeeded.

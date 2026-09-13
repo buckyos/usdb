@@ -113,7 +113,12 @@ fn find_reorg_common_ancestor_height(
         );
     }
 
-    for height in (1..=search_start_height).rev() {
+    let floor = db
+        .get_native_bootstrap_state()?
+        .map(|s| s.identity.origin_height)
+        .or(db.get_assumeutxo_base_height()?)
+        .unwrap_or(1);
+    for height in (floor..=search_start_height).rev() {
         let local_commit = db.get_block_commit(height)?.ok_or_else(|| {
             let msg = format!(
                 "Missing local block commit at height {} while searching reorg common ancestor",
@@ -128,7 +133,12 @@ fn find_reorg_common_ancestor_height(
         }
     }
 
-    Ok(Some(0))
+    if db.get_native_bootstrap_state()?.is_some() {
+        return Err(format!(
+            "Canonical chain crosses native bootstrap origin {floor}; recovery requires an explicitly selected new bootstrap identity/state"
+        ));
+    }
+    Ok(Some(floor.saturating_sub(1)))
 }
 
 // Wake the sync loop when height changes or the watched tip hash no longer matches local state.
@@ -194,6 +204,8 @@ impl BalanceHistoryIndexer {
         };
         output.println("Database initialized.");
 
+        db.validate_native_bootstrap_service()?;
+
         // Check synced block height
         let last_synced_block_height = db.get_btc_block_height()?;
         validate_activation_at_height(&config, last_synced_block_height)?;
@@ -219,7 +231,10 @@ impl BalanceHistoryIndexer {
         // the current canonical tip. Treat that as "not behind" for loader selection; the
         // rollback path below will reconcile the durable state afterwards.
         let blocks_behind = latest_block_height.saturating_sub(last_synced_block_height);
-        let (db, btc_client) = if blocks_behind > config.sync.local_loader_threshold as u32 {
+        // Native mode uses canonical RPC until the independent P6.3 LocalLoader adaptation.
+        let (db, btc_client) = if config.bootstrap.is_none()
+            && blocks_behind > config.sync.local_loader_threshold as u32
+        {
             let msg = format!(
                 "Using LocalLoader BTC client as we are behind by more than {} blocks",
                 config.sync.local_loader_threshold
@@ -320,6 +335,7 @@ impl BalanceHistoryIndexer {
             }
         };
         output.println("Database initialized.");
+        db.validate_native_bootstrap_service()?;
         validate_activation_at_height(&config, db.get_btc_block_height()?)?;
 
         let cache_strategy = match btc_client.get_type() {

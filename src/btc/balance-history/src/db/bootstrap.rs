@@ -18,14 +18,26 @@ use crate::bootstrap::{
 
 impl BalanceHistoryDB {
     /// Scan exact-height logical state without including old commits, registry or historical deltas.
-    /// Called by the offline read-only inspector; production bootstrap publication is a later step.
+    /// Used by the offline inspector and the native bootstrap verification before publication.
     pub(crate) fn bootstrap_origin_identity(
         &self,
         network: Network,
         height: u32,
         block_hash: BlockHash,
     ) -> Result<BootstrapOriginIdentity, String> {
-        if self.get_db_identity()? != Some(BalanceHistoryDBIdentity::for_network(network))
+        self.bootstrap_origin_identity_cancellable(network, height, block_hash, &|| false)
+    }
+
+    pub(crate) fn bootstrap_origin_identity_cancellable(
+        &self,
+        network: Network,
+        height: u32,
+        block_hash: BlockHash,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<BootstrapOriginIdentity, String> {
+        let identity = self.get_db_identity()?;
+        if (identity != Some(BalanceHistoryDBIdentity::for_network(network))
+            && identity != Some(BalanceHistoryDBIdentity::for_native_network(network)))
             || self.get_btc_block_height()? != height
             || self.is_rollback_in_progress()?
         {
@@ -82,6 +94,9 @@ impl BalanceHistoryDB {
             for item in view.iterator_cf_opt(cf, options, IteratorMode::End) {
                 let (key, value) = item.map_err(|e| format!("Read origin {name}: {e}"))?;
                 scanned += 1;
+                if scanned % 4096 == 1 && cancelled() {
+                    return Err("Native bootstrap cancelled during origin scan".to_string());
+                }
                 if progress.elapsed().as_secs() >= 10 {
                     eprintln!(
                         "Bootstrap origin scan progress: table={name}, scanned={scanned}, rows={rows}, elapsed_seconds={:.1}",

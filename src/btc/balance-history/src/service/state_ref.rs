@@ -98,7 +98,7 @@ pub fn build_historical_state_ref_at_height(
         snapshot_id,
         snapshot_id_hash_algo: CONSENSUS_SNAPSHOT_ID_HASH_ALGO.to_string(),
         snapshot_id_version: CONSENSUS_SNAPSHOT_ID_VERSION.to_string(),
-        commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
+        commit_protocol_version: db.block_commit_protocol_version()?.to_string(),
         commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
     }))
 }

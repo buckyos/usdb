@@ -15,7 +15,7 @@ fn p5_fixture() -> Fixture {
 }
 
 #[test]
-fn origin_commit_real_replay_matches_import_without_reference_files() {
+fn origin_state_digest_real_replay_matches_import_without_reference_files() {
     let work = Workspace::new();
     let chain = p5_fixture();
     let options = chain.options(&work.0);
@@ -32,7 +32,7 @@ fn origin_commit_real_replay_matches_import_without_reference_files() {
     let full =
         inspect_bootstrap_origin(&work.0.join("full-replay"), Network::Regtest, 103, hash).unwrap();
     assert_eq!(actual.identity, full.identity);
-    assert_eq!(actual.origin_commit, full.origin_commit);
+    assert_eq!(actual.origin_state_digest, full.origin_state_digest);
     assert!(!actual.activated);
     {
         let db = BalanceHistoryDB::open(
@@ -72,7 +72,7 @@ fn origin_commit_real_replay_matches_import_without_reference_files() {
     }
     let again = inspect_bootstrap_origin(&root.join("state"), Network::Regtest, 103, hash).unwrap();
     assert_eq!(again.identity, actual.identity);
-    assert_eq!(again.origin_commit, actual.origin_commit);
+    assert_eq!(again.origin_state_digest, actual.origin_state_digest);
     assert!(inspect_bootstrap_origin(&root.join("state"), Network::Regtest, 102, hash).is_err());
     assert!(
         inspect_bootstrap_origin(
@@ -87,7 +87,7 @@ fn origin_commit_real_replay_matches_import_without_reference_files() {
 }
 
 #[test]
-fn origin_commit_database_projection_matches_python_and_binds_actual_state() {
+fn origin_state_digest_database_projection_matches_python_and_binds_actual_state() {
     let work = Workspace::new();
     let root = work.0.join("synthetic");
     let golden: serde_json::Value =
@@ -164,7 +164,7 @@ fn origin_commit_database_projection_matches_python_and_binds_actual_state() {
         serde_json::to_value(&original.identity).unwrap(),
         golden["identity"]
     );
-    assert_eq!(original.origin_commit, golden["origin_commit"]);
+    assert_eq!(original.origin_state_digest, golden["origin_state_digest"]);
     assert_eq!(original.identity.utxos.rows, 3); // Keep the zero-valued output.
     {
         let db = BalanceHistoryDB::open(
@@ -201,7 +201,7 @@ fn origin_commit_database_projection_matches_python_and_binds_actual_state() {
         db.flush_all().unwrap();
     }
     let changed = inspect_bootstrap_origin(&root, Network::Regtest, 103, block_hash).unwrap();
-    assert_ne!(changed.origin_commit, original.origin_commit);
+    assert_ne!(changed.origin_state_digest, original.origin_state_digest);
     {
         let db = BalanceHistoryDB::open(
             Arc::new(config(&root, Network::Regtest)),

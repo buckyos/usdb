@@ -1,0 +1,13 @@
+{
+  "snapshot": {
+    "network": "bitcoin",
+    "base_height": 935000,
+    "base_hash": "0000000000000000000147034958af1652b2b91bba607beacc5e72a56f0fb5ee",
+    "file_sha256": "e572ddbe456d254f05fb004cebe225bdb3656074b66f0e9b1c7fa83e1301d486",
+    "hash_serialized_3": "e4b90ef9eae834f56c4b64d2d50143cee10ad87994c614d7d04125e2a6025050"
+  },
+  "data_model_version": "balance-history-data-model:bip30-generations-core-unspendable-v2",
+  "commit_protocol_version": "1.0.0",
+  "block_commit": "6108f77e4abaafbc3a7a246024e942483c18fb37a3c710209ea6294c5617fe81",
+  "balance_delta_root": "3265637bf1b3ec9bbd6936d5d76740890a81183234695106cb96a8e89d6dc398"
+}

@@ -3,117 +3,119 @@
 ## 1. 决策与当前边界
 
 日期：2026-09-12。P4/P5 验证批次已提交为 `ce94958`；其结果继续作为历史证据。
-本设计落实随后确认的新方向，不再要求新网络状态兼容旧 balance-history commit。
+P6.1 已提交为 `cdf4f7c`；后续 P6.2 实现及实测见[原生启动操作文档](./balance-history-assumeutxo-p62-operations.md)。
+当前方案采用可信旧 commit 检查点与原生导入重放，保持与从创世块重放相同的 v1 commit 链。
+`cdf4f7c` 中以业务起点状态生成新种子的方案已被本次检查点方案替代，未作为生产协议发布。
 
-- Bitcoin 导入基线 `B=935000`；USDB 业务起点 `G=963800`，表示应用该块后的状态。
-- 新生产 bootstrap 取消对历史 **core snapshot、script-registry snapshot、旧 USDB commit 小锚点**的依赖。
-  Bitcoin 原始 UTXO 快照及其身份校验仍是输入；balance-history 仍需导入、聚合余额并重放 `B+1..=G`。
+- 当前实验使用 Bitcoin 导入基线 `B=935000`、USDB 业务起点 `G=963800`，均表示应用该块后的状态。
+  **业务 genesis 必须满足 `G >= B`**；正式网可以选择更晚的 G，配置固定其 canonical BTC hash。
+  原生配置不再硬编码 G=963800，但目前受支持的主网快照检查点仍只有 B=935000。
+- 新生产 bootstrap 取消对历史 **core snapshot、script-registry snapshot 文件**的依赖。
+  Bitcoin 原始 UTXO 快照及其身份校验仍是输入；代码内置经过验证的 C(B) 检查点，导入、聚合余额并重放 `B+1..=G`。
 - 只需完整保留 B 时仍有活 UTXO 的脚本，以及 B 之后观察到的脚本。余额后来归零时，保留已建立的反向映射。
   金额为零的活 UTXO 也保留；不能以“当前余额为零”作为删除 UTXO 或 registry 的规则。
 - **保留 LocalLoader**，单列 P6.3 适配，不随旧快照机制删除。
 - 节点采用 `prune=0`，继续运行 Bitcoin Core 官方后台历史验证；快速启动依赖所需前台数据可用，后台进度单独展示。
 
-截至本批次，已实现 P6.1 的候选起点承诺编码、只读计算入口及小规模验收。
-生产初始化、RPC/网络版本激活、LocalLoader、indexer 历史交易查询和部署流程仍待接入。
+当前已实现 P6.1 独立状态摘要/只读计算，以及 P6.2 检查点驱动的原生导入、重放、封存、服务启动和 RPC 接入。
+本轮检查点兼容验收结果见 P6.2 操作文档；之前 v2 种子的实测不作为当前 commit 兼容证据。主网原生重导入待安排；LocalLoader、indexer 历史交易查询和部署默认切换仍按后续步骤实施。
 现有 P4 `import/replay` 继续按旧验证协议使用 reference core；不能把新增计算入口等同于已经移除生产依赖。
 
 ## 2. P6 拆分
 
 | 步骤 | 范围 | 验收边界 | 状态 |
 | --- | --- | --- | --- |
-| P6.1 | 定义 G 高度状态身份及新初始 commit，提供只读计算器 | 全量重放与导入重放结果相同；不读取旧快照，不依赖旧 commit；独立编码向量一致 | 本批次实现，小规模测试通过；主网新承诺扫描待安排 |
-| P6.2 | 原生 bootstrap 生命周期与正式版本接入 | 无旧 snapshot/小锚点的新库可导入、重放、封存 G 并正常接块；中断恢复、查询下界、回滚和下游身份一致 | 下一实现步骤 |
+| P6.1 | 定义 G 高度状态摘要及可信旧 commit 检查点，提供只读检查器 | 全量重放与导入重放结果相同；无需旧快照文件；状态摘要与 rolling commit 分离，独立编码向量一致 | 本批次实现，小规模测试通过；主网完整状态扫描待安排 |
+| P6.2 | 原生 bootstrap 生命周期与版本接入 | 仅需 Core 快照与内置检查点的新库可导入、重放、封存 G 并正常接块；中断恢复、查询下界、回滚和下游身份一致 | 已实现，小规模与真实Core/BH进程验收通过；主网长任务待安排 |
 | P6.3 | LocalLoader 独立适配 | 后台尚未补齐 B 以前区块时仍可加速；支持两个追加文件、乱序、部分尾部、XOR、重组与重启 | 待实现 |
 | P6.4 | indexer 历史 prevout/reveal 查询与 readiness | 不依赖全量 txindex 追平；落后消费者和历史已花费输出仍正确；不把 Core 前台可用等同于整套就绪 | 待设计与实现 |
 | P6.5 | 整套端到端验收与运维步骤 | 独立 regtest、主网相同锚点复核、冷启动/恢复/资源证据完整 | 待安排 |
 
 P7 再完成 Bitcoin 31.1 镜像、node-kit、安装/升级与发布身份集成。原数据目录升级 P3 独立安排。
 
-## 3. 为什么初始承诺固定在业务起点 G
+## 3. 同一条历史 commit 链
 
-AssumeUTXO 文件是 B 高度的 Coin 集合；它没有旧余额历史或 USDB rolling commit。
-P4/P5 使用旧 935000 小锚点证明了兼容旧算法的重放正确性，这不意味着新流程必须继续携带该锚点。
+B 高度的 AssumeUTXO 文件提供应用 B 后的 Coin 集合，不包含 USDB 历史 commit。
+内置的 `C(B)` 与这份状态配对；第一个重放块为 B+1。全量重放和快照导入共用唯一的 v1 计算路径：
 
-新流程在 G 计算完整逻辑状态的承诺，作为后续 rolling commit 的起点。同一 Bitcoin 网络、G/hash、
-数据模型及当前逻辑状态，应得到同一个结果，无论数据库来自完整重放还是较早的受支持 UTXO 快照。
-不将导入高度 B、下载文件 SHA-256、RocksDB 文件布局、旧 registry 总量、历史 delta 或旧 commit 写入该承诺。
-它们作为来源及诊断信息另行保留。
+```text
+C(h) = SHA256(
+    UTF8("balance-history:block-commit:v1")
+    || height:u32BE || btc_block_hash:raw32
+    || balance_delta_root:raw32 || C(h-1):raw32
+)
+```
 
-候选身份包含：
+`balance_delta_root` 沿用原有 v1 编码，包含当块按 script 排序的余额变化及最终余额。
+C(B) 相同、导入状态等价且消费相同 canonical 区块时，后续每块的 delta root 和 commit 都与全量重放一致。
+G 只决定服务的历史/恢复边界，**不在 G 重置 commit，不把状态摘要写入 commit 链**。
+更换受支持的 B 时，必须提供同一条历史链上与新快照配对的检查点；G 始终满足 G>=B。
 
-| 字段 | 含义 |
-| --- | --- |
-| `schema_version` | `balance-history-bootstrap-origin:v1`，起点身份编码域 |
-| `commit_protocol_version` | `2.0.0`，候选新 commit 版本；本批次不激活 |
-| `network` | Bitcoin 网络，二进制编码使用该网络 genesis hash |
-| `origin_height` / `origin_block_hash` | G 及该高度固定 canonical BTC hash |
-| `data_model_version` | `balance-history-data-model:bip30-generations-core-unspendable-v2` |
-| `utxos` | 所有活 outpoint 的行数、总金额及规范投影 SHA-256 |
-| `balances` | 每个 script 最新非零余额的行数、总金额及规范投影 SHA-256 |
+### 3.1 检查点身份与生成证据
 
-B 必须不晚于 G。未来只有高于 G 的 UTXO 快照时，不能从中恢复 G 已被花费的输出或 G 后完整历史。
-若要使用这种新快照，需要另行定义可信业务 checkpoint 和历史保留契约，不能只替换 B 配置。
+[内置主网检查点](../../src/btc/balance-history/src/bootstrap/checkpoints/mainnet-935000.json)绑定：
 
-### 3.1 规范二进制编码
+- Bitcoin 网络、B、BTC block hash、快照文件 SHA-256、Core `hash_serialized_3`。
+- balance-history 数据模型和旧 commit 协议 `1.0.0`。
+- C(B)，以及同一历史记录中的 `balance_delta_root(B)`，以保证 G=B 时完整 block-commit RPC 记录也相同。
 
-所有整数均为无符号大端；所有 SHA-256 为单次 SHA-256，输出小写 64 位 hex。
-Bitcoin txid/block hash 使用内部 32 字节顺序，与 RPC 常见的显示 hex 相反；script hash 使用数据库原始 32 字节。
-JSON 仅用于展示，JSON 字段顺序、空白和字符串格式不参与计算。
+当前 C(935000) 为 `6108f77e4abaafbc3a7a246024e942483c18fb37a3c710209ea6294c5617fe81`，
+该块 delta root 为 `3265637bf1b3ec9bbd6936d5d76740890a81183234695106cb96a8e89d6dc398`。
+两项于本轮从保留的 P4 实验 RocksDB 只读提取；P4 已核对含基线的 28,801 条完整 commit 记录与旧参考库一致。
+旧参考 core SHA-256 为 `3e3490ac19521647a8513a0ef2961607df4456ba3e3ea6922c1ba750f7fbea61`，
+验收见[P4固定身份及全量比较](./balance-history-assumeutxo-p4-validation-2026-09-12.md)。
 
-1. UTXO 按 `txid[32] || vout:u32` 的字节序降序排列。
-   每行编码为 `txid[32] || vout:u32 || script_hash[32] || value:u64`，共 76 字节。
-   对全部行连接计算 SHA-256；包括 value=0 的输出。
-2. 余额对每个 script 选择 G 时最新一行，忽略旧行的高度与 delta，排除最新余额为零的 script。
-   按原始 script hash 降序排列，每行 `script_hash[32] || balance:u64`，共 40 字节。
-   对全部行连接计算 SHA-256。
-3. 起点 preimage 依次连接下列字段后计算 SHA-256：
+Core 验证 UTXO 集合，不验证 USDB 历史承诺。新增检查点需独立核对来源、算法版本及重放结果后随代码发布；
+主网配置不能覆盖检查点。`regtest_checkpoint` 只允许私有 regtest 链显式提供，且同样绑定源快照身份。
+每台部署节点使用已发布检查点，不需要从 0 重建 balance-history；Core 官方后台历史验证保持不变。
 
-   ```text
-   len:u32 || UTF8(schema_version)
-   len:u32 || UTF8(commit_protocol_version)
-   len:u32 || UTF8(data_model_version)
-   network_genesis_hash[32]
-   origin_height:u32
-   origin_block_hash[32]
-   utxos.rows:u64 || utxos.total_sats:u64 || utxos.sha256[32]
-   balances.rows:u64 || balances.total_sats:u64 || balances.sha256[32]
-   ```
+只读提取候选检查点的命令为：
 
-总金额均为 satoshi。UTXO 与余额总金额必须相等；这个检查不能替代逐 script 的余额聚合正确性验证。
-独立 Python 编码器及 Rust 数据库投影测试共同固定字节序、零金额行为和字段顺序：
-[编码器](../../tests/common/bootstrap_origin_golden.py)、[固定向量](../../tests/fixtures/bootstrap-origin-v1.json)。
-regtest 合成向量 commit 为 `e2bb3760e24e5ef768ff6831b66882eff230adbebe754dd2dfcae6bddcb4fbd8`，不是主网结果。
+```bash
+balance-history-assumeutxo-tool checkpoint --state-dir <停写的状态目录> --identity <SnapshotIdentity.json>
+```
 
-### 3.2 与正式 commit/查询契约的关系
+该命令只读一条已保留的历史 commit，**提取不等于批准**；它不重新验证快照内容或整个历史链。
 
-G 的新 commit 表示完整起点状态，不伪造 G 当块收入或 delta。后续块从该种子滚动，
-具体 v2 rolling 编码、网络激活及黄金向量在 P6.2 接入时一并固定。
-本批次的 `2.0.0` 只出现在候选计算结果中，不修改 embedded network 或运行中 RPC。
+### 3.2 独立状态摘要与 RPC 契约
 
-按 G 压缩生产基线时，拟定余额查询从 G 开始，精确变化历史从 G+1 开始；
-若选择额外保留 G 当块真实 delta，则须显式定义另一历史保留边界，不能把初始余额当作收入。
-P4 实验库现有的 B/B+1 查询下界不在本批次改写。公开可查询高度继续遵循冻结的 stable lag。
+状态摘要 `origin_state_digest` 用于比较不同导入路径的逻辑状态，独立于 C(G)。
+它按以下顺序编码后做单次 SHA-256：
 
-P6.2 需要同步变更数据库 bootstrap 身份、provenance、RPC state-ref、commit version、snapshot_id 的身份语义、
-indexer pass/local/system state 以及网络配置的版本选择。旧库须显式识别和迁移到独立新状态，不能静默混用 v1/v2。
-P5 的旧 commit 等价证据继续成立，但不自动覆盖新版本下游结果。
+1. 长度前缀 UTF-8 字符串：`balance-history-bootstrap-state:v1`、commit 协议 `1.0.0`、数据模型版本。
+2. 网络 genesis hash raw32、G 的 u32BE、G 的 BTC block hash raw32。
+3. 依次编码 UTXO 和余额表的行数 u64BE、总 satoshi u64BE、有序投影 hash raw32。
+
+UTXO 投影按 `txid:raw32 || vout:u32BE` 降序，每行追加 script hash raw32 与金额 u64BE；保留零金额输出。
+余额投影为每个 script 在 G 时的最新非零余额，按原始 script hash 降序，编码 hash raw32 和余额 u64BE。
+不纳入旧历史行、registry 总量、导入高度、物理文件布局或旧 commit。字符串长度使用 u32BE；
+BTC raw hash 字节顺序与常见 RPC 显示 hex 相反，script hash 使用数据库原始字节。
+
+封存后元数据分别记录 `origin_commit`、`origin_balance_delta_root` 和 `origin_state_digest`。
+正常 commit RPC/state-ref 均报告 `1.0.0`；相同高度下，余额、commit、state-ref 及下游 pass/local/system 均应与全量重放一致。
+`get_bootstrap_info` 单独返回快照来源、内置检查点、阶段及独立状态摘要。
+
+余额查询从 G 开始，精确变化历史从 G+1 开始；即使保留了 D(G)，G=B 时仍不能从 UTXO 快照还原当块逐地址变化。
+B 以前的历史余额不属于业务需求。registry 保留 B 时活脚本和之后观察到的映射，不声明全历史覆盖。
+原生库使用 `balance-history-rocksdb-schema:native-checkpoint-v1`，避免旧实验 v2 库被按 v1 打开。
+数据目录不做静默转换；已有服务及发布配置不因本轮测试自动切换。
 
 ## 4. 原生 bootstrap 生命周期（P6.2）
 
 ```text
 核验 Bitcoin 快照身份 / Core 逻辑承诺
   -> staging 导入 B 的 UTXO、余额与 live scripts
-  -> 按 canonical 区块重放 B+1..G，补充 registry
-  -> 校验并封存 G 状态，写入新起点 commit / 查询下界 / 来源
+  -> 安装内置 C(B)/D(B)，按 canonical 区块重放 B+1..G，补充 registry
+  -> 校验并封存 G 状态，保留原 v1 commit / 写入查询下界与来源
   -> 原子发布为可用数据库
-  -> 正常同步 G+1..tip，应用新 rolling commit 与重组规则
+  -> 正常同步 G+1..tip，沿用原 v1 rolling commit 与既有重组规则
 ```
 
 实施要求：
 
-- 新入口不接受必填旧 core、registry sidecar 或旧 USDB anchor；旧 P4 工具保留为验收工具。
+- 新入口无需旧 core、registry sidecar 或外部分发的锚点文件；检查点随代码内置，旧 P4 工具保留为验收工具。
 - 在 staging 的导入/重放阶段持续记录进度和可恢复状态；半成品不能被正常服务当成已就绪库。
-- G 之前允许内部重放元数据，但不对外发布旧 commit 语义。封存应将状态、种子、版本和 floors 原子关联。
+- G 之前允许内部重放元数据，公开查询按 floors 限制。封存将状态审计、原 commit、检查点和 floors 原子关联。
 - 从 UTXO 聚合余额必须独立验证；当前只读计算器的双表总额相同不能证明每个 script 一致。
 - 把来源、Core 快照校验、业务状态校验和后台验证进度分开记录；不重新实现或跳过官方历史验证。
 - 余额零行可按保留契约压缩；registry 一旦观察到映射则继续保留，以支持后续矿工证地址反查。
@@ -142,7 +144,7 @@ Core 31.1 为 `NORMAL` 和 `ASSUMED` 分别维护 blockfile cursor；两个文�
    仅凭连续两次文件大小相同也不能永久认定文件已封存。
 4. 覆盖乱序下载、重复记录、旧分叉、重启及双 cursor 轮换；重组后重新核对 canonical 映射和恢复点。
 5. 本地缺块或尾部尚未完成时显式回退 RPC，并继续增量索引；不能默默回到“等历史补齐”。
-6. 对同一连续区间比较 RPC 与 LocalLoader 的块 hash、UTXO/余额及 v2 commits，再测实际加速收益。
+6. 对同一连续区间比较 RPC 与 LocalLoader 的块 hash、UTXO/余额及 v1 commits，再测实际加速收益。
 
 该步骤保留 LocalLoader 的加速职责；txindex 和 indexer 历史交易定位属于 P6.4，不能用文件扫描通过代替其验收。
 
@@ -166,7 +168,7 @@ CARGO_BUILD_JOBS=2 cargo build --offline --locked --release \
 P6_RUN=$(mktemp -d /data/usdb-assumeutxo-validation/p6-origin-963800.XXXXXX)
 P6_TOOL=/home/bucky/work/usdb/src/btc/target/release/balance-history-assumeutxo-tool
 P6_STATE=/data/usdb-assumeutxo-validation/p4-mainnet-935000-to-963800/state
-"$P6_TOOL" origin-commit \
+"$P6_TOOL" origin-state \
   --state-dir "$P6_STATE" --network bitcoin --height 963800 \
   --block-hash 000000000000000000012c999b5f6d2043b1d3d76dcf06ee007b5f86290c0551 \
   > "$P6_RUN/origin.json" 2> "$P6_RUN/origin.log"
@@ -181,40 +183,17 @@ P6_STATE=/data/usdb-assumeutxo-validation/p4-mainnet-935000-to-963800/state
 - `identity.origin_height=963800`，BTC hash 与命令一致，`activated=false`。
 - UTXO 行数 `165748439`，digest `86cba93334b2a6b6862a00d070617a0bdfded56b8eec2a25c41c2dcff82faedd`。
 - 非零余额行数 `59356343`，digest `7e9e427332cf8bf95a52cd8689e2b17c732593b69a3f7f062c03dd93ab92449b`。
-- 两张表总金额相等，并归档新的候选 `origin_commit`、日志及本次工具源码身份。
+- 两张表总金额相等，并归档独立 `origin_state_digest`、日志及本次工具源码身份。
 
-上述两个 digest 来自 P4 已通过的相同投影；新主网 `origin_commit` 尚未计算，不预填预期值。
+上述两个 digest 来自 P4 已通过的相同投影；主网 `origin_state_digest` 尚未计算，不预填预期值；它不替代已知的旧 C(963800)。
 工具使用 RocksDB 同一个一致读视图检查高度/hash并扫描双表，仍要求停写以明确实验边界。
 它检查的是已索引状态，不独立验证 canonical chainwork，也不宣布 Core 后台验证或整套服务已就绪。
 
-## 7. 本批次自动验收
+## 7. 自动验收
 
-2026-09-12 本地检查结果：
+当前检查点方案的测试、真实进程证据和主网长任务步骤统一记录于
+[P6.2 操作文档](./balance-history-assumeutxo-p62-operations.md#3-本批验证证据)。
 
-| 检查 | 结果 |
-| --- | --- |
-| `cargo test -p balance-history --lib origin_commit` | 3 passed |
-| `cargo test -p balance-history --lib assumeutxo::` | 12 passed；与上一过滤器重叠2项，共覆盖13项测试 |
-| Python 重新生成固定向量 | 与提交候选 fixture 字节完全一致 |
-| workspace `cargo fmt --all -- --check` | 通过 |
-| workspace `cargo clippy --all-targets --all-features -- -D warnings` | 通过，8.354秒 |
-| `cargo doc -p balance-history --no-deps` | 通过，2.529秒 |
-| release 工具构建 | 通过，10.496秒 |
-| CLI 顶层及 `origin-commit --help` | 通过 |
-| CLI 指向不存在的实验状态目录 | 正确失败，不创建目录，stdout 不产生伪成功 JSON |
-
-Cargo 检查使用 `--offline --locked --manifest-path src/btc/Cargo.toml`；测试使用临时数据库和固定 regtest 区块，未启动或写入主网服务。
-静态检查、构建与 CLI 日志位于本机 `/tmp/usdb-assumeutxo-p6-checks/`，该路径是临时运行证据，不属于发布产物。
-
-覆盖的行为：
-
-- 独立 Python 编码器与 Rust 哈希实现匹配。
-- 真实 regtest 区块完整重放与 AssumeUTXO 导入重放在同一 G 得到相同 identity/commit。
-  删除临时测试中的 reference core 和 P4 input.json 后，仍可独立计算。
-- 改变旧 commit、旧 delta root、历史 delta、零余额记录及附加 registry 映射，结果不变。
-- 合成数据库的投影匹配 Python 向量，包含零金额活 UTXO；真实余额/UTXO 变化使 commit 改变。
-- 错网络、错高度/hash、未对齐的双表总金额和超出目标高度的历史行明确失败。
-
-实现：[起点身份与编码](../../src/btc/balance-history/src/bootstrap.rs)、
-[一致读视图扫描](../../src/btc/balance-history/src/db/bootstrap.rs)、
-[跨模块验收](../../tests/assumeutxo_origin.rs)。
+核心验收包括：从 0 重放与 B=101/B=102 两份真实 Core 快照在同一 G 的状态、完整 commit 记录一致；
+G=B 边界、正常接块、重启与重组、未知或被覆盖检查点的拒绝、旧实验 v2 元数据拒绝、独立摘要和 rolling 编码向量、
+以及下游 pass/local/system 身份一致。主网原生长任务独立安排，不能用小规模结果代替主网性能记录。

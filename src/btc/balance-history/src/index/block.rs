@@ -1429,6 +1429,26 @@ mod block_commit_tests {
     }
 
     #[test]
+    fn native_bootstrap_rolling_commit_matches_independent_python_vectors() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../tests/fixtures/bootstrap-rolling-v1.json"
+        ))
+        .unwrap();
+        for vector in vectors.as_array().unwrap() {
+            let height = vector["height"].as_u64().unwrap() as u32;
+            let block = vector["block_hash"].as_str().unwrap().parse().unwrap();
+            let delta =
+                crate::assumeutxo::format::hash_bytes(vector["delta_root"].as_str().unwrap())
+                    .unwrap();
+            let previous =
+                crate::assumeutxo::format::hash_bytes(vector["previous_commit"].as_str().unwrap())
+                    .unwrap();
+            let actual = compute_block_commit(height, &block, &delta, &previous);
+            assert_eq!(crate::assumeutxo::format::hex(&actual), vector["commit"]);
+        }
+    }
+
+    #[test]
     fn test_build_block_commits_depends_on_previous_commit() {
         let block = BlockBalanceDelta {
             block_height: 11,

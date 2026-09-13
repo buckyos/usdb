@@ -210,7 +210,7 @@ impl BalanceHistoryRpcServer {
                 .map_err(|error| error.to_string())?,
             balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
             balance_history_semantics_version: semantics_version,
-            commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
+            commit_protocol_version: self.db.block_commit_protocol_version()?.to_string(),
             commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
         })
     }
@@ -786,6 +786,10 @@ impl BalanceHistoryRpcServer {
             .map(|entry| encode_hex(&entry.block_commit));
 
         let mut blockers = Vec::new();
+        let native_ready = self.db.validate_native_bootstrap_service().is_ok();
+        if !native_ready {
+            blockers.push(ReadinessBlocker::NativeBootstrapNotReady);
+        }
         if !runtime.rpc_alive {
             blockers.push(ReadinessBlocker::RpcNotListening);
         }
@@ -818,7 +822,8 @@ impl BalanceHistoryRpcServer {
             blockers.push(ReadinessBlocker::SnapshotInstallUnverified);
         }
 
-        let query_ready = runtime.rpc_alive
+        let query_ready = native_ready
+            && runtime.rpc_alive
             && !runtime.rollback_in_progress
             && !runtime.shutdown_requested
             && !matches!(
@@ -937,6 +942,12 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         })
     }
 
+    fn get_bootstrap_info(&self) -> JsonResult<Option<crate::bootstrap::NativeBootstrapState>> {
+        self.db
+            .get_native_bootstrap_state()
+            .map_err(Self::to_internal_error)
+    }
+
     fn get_state_ref_at_height(
         &self,
         params: GetStateRefAtHeightParams,
@@ -954,6 +965,10 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
     fn get_block_commit(&self, block_height: u32) -> JsonResult<Option<BlockCommitInfo>> {
         self.ensure_query_ready()?;
+        let protocol = self
+            .db
+            .block_commit_protocol_version()
+            .map_err(Self::to_internal_error)?;
         let commit = self
             .db
             .get_block_commit(block_height)
@@ -971,7 +986,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
             btc_block_hash: format!("{:x}", entry.btc_block_hash),
             balance_delta_root: encode_hex(&entry.balance_delta_root),
             block_commit: encode_hex(&entry.block_commit),
-            commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
+            commit_protocol_version: protocol.to_string(),
             commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
         }))
     }

@@ -1,0 +1,21 @@
+{
+  "core_version": "/Satoshi:31.1.0/",
+  "dump": {
+    "coins_written": 405,
+    "base_hash": "59e5cd25cbb7ee120b3e47874763c16fcddf2c4f530b07a672422407e72e6205",
+    "base_height": 102,
+    "txoutset_hash": "3bbd927f0ab1fd2b2fefc0d5e2d88bccb4138fb39bb290b0c2ba454341e4e2c7",
+    "nchaintx": 105
+  },
+  "stats": {
+    "height": 102,
+    "bestblock": "59e5cd25cbb7ee120b3e47874763c16fcddf2c4f530b07a672422407e72e6205",
+    "txouts": 405,
+    "bogosize": 20703,
+    "hash_serialized_3": "3bbd927f0ab1fd2b2fefc0d5e2d88bccb4138fb39bb290b0c2ba454341e4e2c7",
+    "total_amount": 5098.0,
+    "transactions": 103,
+    "disk_size": 0
+  },
+  "chain_sha256": "b0898d514de0a66c1ca943408c274bc38875453c809fd53636fe66076f00282e"
+}

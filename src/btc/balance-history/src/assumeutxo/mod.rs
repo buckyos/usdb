@@ -437,3 +437,7 @@ mod semantics_tests;
 #[cfg(test)]
 #[path = "../../../../../tests/assumeutxo_origin.rs"]
 mod origin_tests;
+
+#[cfg(test)]
+#[path = "../../../../../tests/assumeutxo_native.rs"]
+mod native_tests;
