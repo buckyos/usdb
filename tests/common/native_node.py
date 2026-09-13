@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 ORIGIN = "000000000000000000012c999b5f6d2043b1d3d76dcf06ee007b5f86290c0551"
 
 
-def native_kit(root, *, manifest=None, trusted=None):
-    bundle = deployment.prepare_bundle(ROOT / "docker/networks/testnet-v0", root / "bundle", ORIGIN, "", manifest, trusted)
+def native_kit(root, *, manifest=None, trusted=None, bundle=None):
+    bundle = bundle or deployment.prepare_bundle(ROOT / "docker/networks/testnet-v0", root / "bundle", ORIGIN, "", manifest, trusted)
     revisions = dict(go_ethereum="a" * 40, usdb="b" * 40, source_dao="c" * 40)
     lock = root / "ci-revisions.json"
     lock.write_text(json.dumps(dict(schema_version="usdb-ci-revisions:v2", toolchains={},

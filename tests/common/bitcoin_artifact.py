@@ -34,3 +34,27 @@ class UpstreamFixture:
 
     def close(self):
         subprocess.run(["gpgconf", "--homedir", str(self.home), "--kill", "gpg-agent"], capture_output=True, timeout=15)
+
+
+class PublishedSnapshotStore:
+    """Expose only successfully uploaded fixture objects through the real HTTPS origin."""
+
+    def __init__(self, origin):
+        self.origin = origin
+        self.metadata = {}
+        self.uploads = []
+        self.fail_role = None
+        self.after_upload = None
+
+    def head(self, key):
+        return self.metadata.get(key)
+
+    def upload(self, source, key, digest, size, content_type):
+        if self.fail_role and source.name == self.fail_role:
+            raise OSError("Injected upload interruption")
+        data = source.read_bytes()
+        self.uploads.append(key)
+        self.origin.files["/" + key] = data
+        self.metadata[key] = dict(ContentLength=size, Metadata={"usdb-sha256": digest, "usdb-size": str(size)})
+        if self.after_upload:
+            self.after_upload(source, key)

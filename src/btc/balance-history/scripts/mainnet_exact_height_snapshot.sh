@@ -59,6 +59,10 @@ MEMORY_PLAN_JSON=""
 usage() {
   cat <<'USAGE'
 Usage:
+  mainnet_exact_height_snapshot.sh COMMAND --snapshot-type assumeutxo [--height 935000]
+      [--snapshot-file /path/mainnet-935000-utxos.dat] [--source-url HTTPS_URL]
+  mainnet_exact_height_snapshot.sh deploy --snapshot-type assumeutxo [--height 935000]
+      --source-bundle DIR --output-dir DIR --origin-block-hash HASH [--prepare-only]
   mainnet_exact_height_snapshot.sh init
   mainnet_exact_height_snapshot.sh preflight --height H [--block-hash HASH]
   mainnet_exact_height_snapshot.sh create --height H [--block-hash HASH]
@@ -89,9 +93,14 @@ Commands:
   prepare-release
              Build a content-addressed split v3 release record.
   publish    Upload both components and the immutable release record.
+  deploy     UTXO only: prepare a native bundle and register reviewed inputs for release CI.
   paths      Print all resolved operational paths without modifying them.
 
 Primary overrides:
+  SNAPSHOT_TYPE              balance-history (default) or assumeutxo; also --snapshot-type.
+  SNAPSHOT_KEY_ROOT          Existing snapshot signer files; reused without keygen for UTXO.
+  SNAPSHOT_UTXO_FILE         Existing raw UTXO file (or --snapshot-file).
+  SNAPSHOT_UTXO_SOURCE_URL   Optional HTTPS input source (or --source-url).
   SNAPSHOT_ROOT              Snapshot-only root. Default: ~/.usdb/balance-history-snapshot-mainnet
   SNAPSHOT_SIGNER_ID         Frozen signer ID. Default: usdb-mainnet-snapshot-v1
   BITCOIN_BIN_DIR            Bitcoin Core bin directory.
@@ -111,6 +120,14 @@ Primary overrides:
 
 The snapshot root must be independent from the live balance-history root. For a dedicated disk,
 mount it at SNAPSHOT_ROOT or set SNAPSHOT_ROOT to a directory on that filesystem.
+UTXO supports paths/preflight/create/status/verify/finalize/prepare-release/publish/verify-published/deploy.
+Its small release metadata lives in SNAPSHOT_RELEASE_ROOT/assumeutxo/mainnet-935000.
+UTXO create does not build binaries, start services, generate keys, or copy an existing raw file.
+UTXO publish reuses S3 settings and verifies full anonymous HTTPS downloads before reporting success.
+UTXO deploy reads publish-result.json and the original public catalog; no private key or large file is needed.
+It writes small public release inputs into the source bundle for candidate/publish workflows.
+Use --prepare-only to export without source integration. Matching previous exports can be reused.
+Node installation and startup remain in the release installer/setup/up flow.
 USAGE
 }
 
@@ -970,6 +987,44 @@ S3_CHUNK_SIZE_MIB=${S3_CHUNK_SIZE_MIB}
 UPLOAD_PROGRESS=${UPLOAD_PROGRESS}
 EOF
 }
+
+# Select the artifact branch before invoking any legacy node/build/key initialization.
+snapshot_type="${SNAPSHOT_TYPE:-balance-history}"
+forward_args=()
+while (($# > 0)); do
+  if [[ "$1" == "--snapshot-type" ]]; then
+    (($# >= 2)) || die "--snapshot-type requires a value"
+    snapshot_type="$2"
+    shift 2
+  else
+    forward_args+=("$1")
+    shift
+  fi
+done
+set -- "${forward_args[@]}"
+if [[ "$snapshot_type" == "assumeutxo" && "$COMMAND" != "help" && "$COMMAND" != "-h" && "$COMMAND" != "--help" ]]; then
+  check_path_isolation
+  [[ "$UPLOAD_PROGRESS" == "0" || "$UPLOAD_PROGRESS" == "1" ]] || die "SNAPSHOT_UPLOAD_PROGRESS must be 0 or 1"
+  utxo_args=(
+    "${REPO_ROOT}/docker/scripts/tools/assumeutxo_release.py" "$COMMAND"
+    --root-dir "${RELEASE_ROOT}/assumeutxo/mainnet-935000"
+    --signing-key "$SIGNING_KEY" --trusted-keys "$TRUSTED_KEYS" --signer-id "$SIGNER_ID"
+    --public-base-url "$PUBLIC_BASE_URL" --bucket "$S3_BUCKET" --endpoint-url "$S3_ENDPOINT_URL"
+    --aws-region "$AWS_REGION" --aws-profile "$AWS_PROFILE" --aws-executable "$AWS_EXECUTABLE"
+    --s3-upload-concurrency "$S3_UPLOAD_CONCURRENCY" --s3-chunk-size-mib "$S3_CHUNK_SIZE_MIB"
+  )
+  if [[ -n "${SNAPSHOT_UTXO_FILE:-}" ]]; then
+    utxo_args+=(--snapshot-file "$SNAPSHOT_UTXO_FILE")
+  fi
+  if [[ -n "${SNAPSHOT_UTXO_SOURCE_URL:-}" ]]; then
+    utxo_args+=(--source-url "$SNAPSHOT_UTXO_SOURCE_URL")
+  fi
+  if [[ "$UPLOAD_PROGRESS" == "1" ]]; then
+    utxo_args+=(--progress)
+  fi
+  exec python3 "${utxo_args[@]}" "$@"
+fi
+[[ "$snapshot_type" == "balance-history" || "$snapshot_type" == "assumeutxo" ]] || die "Unknown snapshot type: $snapshot_type"
 
 case "$COMMAND" in
   init)

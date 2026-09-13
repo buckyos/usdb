@@ -1,0 +1,2 @@
+# Ed25519 release signatures are raw bytes, never text or newline-normalized.
+docker/networks/**/release-inputs/**/*.sig binary

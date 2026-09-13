@@ -8,14 +8,16 @@ import hashlib
 import json
 from pathlib import Path
 
-from artifact_signing import canonical, exact, https_url, parse_json, read_small, require
+from artifact_signing import canonical, digest, exact, https_url, parse_json, read_small, require
 from assumeutxo_bootstrap import checkpoint_metadata, validate_environment
-from bitcoin_release import UTXO_FILE, validate_utxo
+from bitcoin_release import UTXO_FILE, UTXO_SIZE, validate_utxo
 from resource_policy import MIB, memory_bytes
 
 SCHEMA = "usdb-assumeutxo-deployment:v1"
 ARTIFACT = "assumeutxo_bootstrap"
 RELATIVE = "artifacts/assumeutxo-bootstrap.json"
+PUBLICATION_ARTIFACT = "assumeutxo_release_record"
+PUBLICATION_PATH = "artifacts/assumeutxo-release-record.json"
 
 
 def validate_contract(contract: dict, origin: int) -> None:
@@ -66,7 +68,49 @@ def load_contract(bundle: Path, network: dict) -> dict | None:
         manifest = load_manifest(path=bundle / distribution["manifest"]["path"],
                                  trust_path=bundle / distribution["trusted_keys"]["path"], artifact_type="bitcoin-assumeutxo")
         validate_utxo(manifest)
+    load_publication(bundle, network, contract)
     return contract
+
+
+def load_publication(bundle: Path, network: dict, contract: dict) -> dict | None:
+    """Bind an optional published UTXO record to the bundle's signed distribution."""
+    entry = network["artifacts"].get(PUBLICATION_ARTIFACT)
+    if entry is None:
+        return None
+    require(entry["path"] == PUBLICATION_PATH, "Native publication record path mismatch")
+    content = read_small(bundle / PUBLICATION_PATH)
+    record_sha = hashlib.sha256(content).hexdigest()
+    require(record_sha == entry["sha256"], "Native publication record digest mismatch")
+    record = parse_json(content)
+    exact(record, {"schema_version", "artifact_type", "snapshot", "signing_key_id", "public_base_url", "files"}, "native publication")
+    require(content == canonical(record) and record["schema_version"] == "usdb-assumeutxo-release-record:v1"
+            and record["artifact_type"] == "bitcoin-assumeutxo", "Unsupported native publication record")
+    require(record["snapshot"] == contract["snapshot"], "Native publication checkpoint mismatch")
+    distribution = contract["distribution"]
+    require(distribution["mode"] == "usdb-signed", "Native publication requires a signed distribution")
+    manifest = parse_json(read_small(bundle / distribution["manifest"]["path"]))
+    require(record["signing_key_id"] == manifest["signing_key_id"], "Native publication signer mismatch")
+    base = https_url(record["public_base_url"])
+    require(not base.endswith("/"), "Native publication base URL must not end in slash")
+    files = record["files"]
+    exact(files, {"snapshot", "manifest", "signature", "trusted_keys", "finalization"}, "native publication files")
+    names = dict(snapshot=UTXO_FILE, manifest=files["manifest"]["sha256"] + ".json",
+                 signature=files["manifest"]["sha256"] + ".json.sig", trusted_keys="bitcoin-artifacts.trusted-keys.json",
+                 finalization="artifact-finalized.json")
+    prefix = f"bitcoin/utxo/{contract['snapshot']['base_height']}/{digest(files['finalization']['sha256'])}"
+    for role, item in files.items():
+        exact(item, {"name", "size_bytes", "sha256", "object_key"}, "native publication file")
+        digest(item["sha256"])
+        require(type(item["size_bytes"]) is int and item["size_bytes"] > 0, "Invalid native publication file size")
+        require(item["name"] == names[role] and item["object_key"] == prefix + "/" + names[role], "Native publication object path mismatch")
+        if role in {"manifest", "signature", "trusted_keys"}:
+            payload = read_small(bundle / distribution[role]["path"])
+            require(len(payload) == item["size_bytes"] and hashlib.sha256(payload).hexdigest() == item["sha256"],
+                    "Native publication differs from packaged signing materials")
+    require(files["snapshot"]["sha256"] == contract["snapshot"]["file_sha256"]
+            and files["snapshot"]["size_bytes"] == UTXO_SIZE, "Native publication file identity mismatch")
+    require(distribution["source_url"] == base + "/" + files["snapshot"]["object_key"], "Native publication source URL mismatch")
+    return dict(path=PUBLICATION_PATH, sha256=record_sha, url=f"{base}/snapshot-records/assumeutxo/v1/{record_sha}.json")
 
 
 def state_identity(contract: dict) -> dict:
@@ -116,7 +160,8 @@ def validate_node(contract: dict, env: dict, network: dict) -> None:
         require(path.is_dir() and not path.is_symlink(), f"Native artifact/state directory is missing or unsafe: {key}")
 
 
-def prepare_bundle(source: Path, output: Path, origin_hash: str, source_url: str, manifest: Path | None, trusted: Path | None) -> Path:
+def prepare_bundle(source: Path, output: Path, origin_hash: str, source_url: str, manifest: Path | None, trusted: Path | None,
+                   publication: Path | None = None) -> Path:
     """Create a candidate bundle without editing a published bundle or release checksum."""
     from validate_network_bundle import validate_network_bundle
     from sourcedao_release import copy_public_bundle
@@ -148,6 +193,10 @@ def prepare_bundle(source: Path, output: Path, origin_hash: str, source_url: str
         network["artifacts"]["assumeutxo_" + key] = distribution[key]
     (output / RELATIVE).write_bytes(canonical(contract))
     network["artifacts"][ARTIFACT] = dict(path=RELATIVE, sha256=hashlib.sha256(canonical(contract)).hexdigest())
+    if publication is not None:
+        content = read_small(publication)
+        (output / PUBLICATION_PATH).write_bytes(content)
+        network["artifacts"][PUBLICATION_ARTIFACT] = dict(path=PUBLICATION_PATH, sha256=hashlib.sha256(content).hexdigest())
     (output / "network.json").write_text(json.dumps(network, indent=2) + "\n")
     from runtime_compatibility import build_runtime_compatibility, build_persistent_data_paths
     from usdb_node import upsert_env

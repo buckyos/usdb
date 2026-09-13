@@ -226,10 +226,14 @@ jobs:
           python3 usdb/docker/scripts/tools/sync_project_skills.py check
           --workspace-root "$GITHUB_WORKSPACE"
 
-      - name: Validate frozen network bundle
-        run: >-
-          python3 usdb/docker/scripts/tools/validate_network_bundle.py
-          --bundle-dir usdb/docker/networks/testnet-v0
+      - name: Resolve reviewed release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir="$(python3 usdb/docker/scripts/tools/release_bundle.py prepare \
+            --source-bundle usdb/docker/networks/testnet-v0 \
+            --output-dir "$GITHUB_WORKSPACE/selected-release-bundle/testnet-v0")"
+          echo "BUNDLE_DIR=$bundle_dir" >>"$GITHUB_ENV"
 
       - name: Set up release Go toolchain
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -243,9 +247,9 @@ jobs:
         run: |
           set -euo pipefail
           expected="$(jq -er '.block_hash' \
-            usdb/docker/networks/testnet-v0/artifacts/usdb-genesis.manifest.json)"
+            "$BUNDLE_DIR/artifacts/usdb-genesis.manifest.json")"
           actual="$(cd go-ethereum && go run ./cmd/usdb-genesis-hash \
-            ../usdb/docker/networks/testnet-v0/artifacts/usdb-genesis.json)"
+            "$BUNDLE_DIR/artifacts/usdb-genesis.json")"
           [[ "$actual" == "$expected" ]] || {
             echo "genesis block hash mismatch: computed=$actual frozen=$expected" >&2
             exit 1
@@ -340,9 +344,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 usdb/docker/scripts/tools/snapshot_distribution.py verify-public \
-            --record usdb/docker/networks/testnet-v0/snapshots/balance-history-snapshot-release-record.json \
-            --trusted-keys usdb/docker/networks/testnet-v0/trust/usdb-mainnet-snapshot-v1.trusted-keys.json
+          python3 usdb/docker/scripts/tools/release_bundle.py verify-public \
+            --bundle-dir "$BUNDLE_DIR"
 
       - name: Create and revalidate cross-repository manifest
         id: manifest
@@ -366,7 +369,7 @@ jobs:
           evidence="release-output/qualification-evidence.json"
           printf '%s\n' "$QUALIFICATION_EVIDENCE_JSON" >"$evidence"
           python3 usdb/docker/scripts/tools/release_manifest.py create \
-            --bundle-dir usdb/docker/networks/testnet-v0 \
+            --bundle-dir "$BUNDLE_DIR" \
             --output "$manifest" \
             --release-id "$RELEASE_ID" \
             --created-at-utc "$CREATED_AT_UTC" \
@@ -382,7 +385,7 @@ jobs:
             --qualification-evidence "$evidence"
           rm "$evidence"
           python3 usdb/docker/scripts/tools/release_manifest.py validate \
-            --bundle-dir usdb/docker/networks/testnet-v0 \
+            --bundle-dir "$BUNDLE_DIR" \
             --manifest "$manifest" \
             --compatibility-lock go-ethereum/scripts/usdb/ci-revisions.json
           (cd release-output && sha256sum usdb-release-manifest.json >usdb-release-manifest.json.sha256)
@@ -390,8 +393,8 @@ jobs:
           {
             echo "sha256=$manifest_sha256"
             echo "snapshot_status=$(jq -r '.snapshot.status' "$manifest")"
-            echo "snapshot_height=$(jq -r '.snapshot.height' "$manifest")"
-            echo "snapshot_record_url=$(jq -r '.snapshot.record.url' "$manifest")"
+            echo "snapshot_height=$(jq -r '.snapshot.contract.snapshot.base_height // .snapshot.height // empty' "$manifest")"
+            echo "snapshot_record_url=$(jq -r '.snapshot.record.url // .snapshot.contract.distribution.source_url // empty' "$manifest")"
             echo "qualification_level=$(jq -r '.qualification.level' "$manifest")"
           } >>"$GITHUB_OUTPUT"
 

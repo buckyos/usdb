@@ -17,6 +17,7 @@ class SnapshotRangeServer:
         self.files = {}
         self.paths = []
         self.requests = []
+        self.required_user_agent = None
         self.plans = {}
         self.lock = threading.Lock()
         self.active = 0
@@ -30,6 +31,9 @@ class SnapshotRangeServer:
 
             def do_GET(self):
                 origin.paths.append(self.path)
+                if origin.required_user_agent is not None and self.headers.get("User-Agent") != origin.required_user_agent:
+                    self.send_error(403)
+                    return
                 if self.path == "/redirect":
                     self.send_response(302)
                     self.send_header("Location", origin.url)
@@ -37,7 +41,15 @@ class SnapshotRangeServer:
                     return
                 if self.path in origin.files:
                     data = origin.files[self.path]
-                    self.send_response(200)
+                    match = re.fullmatch(r"bytes=(\d+)-(\d+)", self.headers.get("Range", ""))
+                    if match:
+                        start, end = map(int, match.groups())
+                        self.send_response(206)
+                        self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+                        origin.requests.append((start, end))
+                        data = data[start:end + 1]
+                    else:
+                        self.send_response(200)
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)

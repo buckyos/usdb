@@ -28,6 +28,8 @@ TRUST_SCHEMA = "usdb-bitcoin-artifact-trust:v1"
 KEY_SCHEMA = "usdb-bitcoin-artifact-key:v1"
 TYPES = ("bitcoin-core", "bitcoin-assumeutxo")
 METADATA_LIMIT = 1024 * 1024
+# Keep public artifact requests compatible with the existing snapshot download origin.
+HTTP_USER_AGENT = "usdb-snapshot-verifier/1"
 PUBLIC_DER_PREFIX = bytes.fromhex("302a300506032b6570032100")
 PRIVATE_DER_PREFIX = bytes.fromhex("302e020100300506032b657004220420")
 
@@ -97,7 +99,7 @@ def fetch(url: str, destination: Path, *, limit: int) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
-        request = urllib.request.Request(url, headers={"Accept-Encoding": "identity"})
+        request = urllib.request.Request(url, headers={"Accept-Encoding": "identity", "User-Agent": HTTP_USER_AGENT})
         opener = urllib.request.build_opener(HttpsRedirect())
         with opener.open(request, timeout=30) as response, tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as output:
             temporary = Path(output.name)
@@ -128,6 +130,8 @@ def file_identity(path: Path) -> dict:
     """Hash the entire file with progress and reject replacement during the scan."""
     regular(path)
     sha, size, last = hashlib.sha256(), 0, time.monotonic()
+    started = last
+    print(f"Artifact verification started: file={path.name}, bytes={path.stat().st_size}", file=sys.stderr, flush=True)
     with path.open("rb") as source:
         before = os.fstat(source.fileno())
         while chunk := source.read(4 * 1024 * 1024):
@@ -140,6 +144,8 @@ def file_identity(path: Path) -> dict:
     current = path.stat()
     require((before.st_size, before.st_mtime_ns, before.st_ctime_ns) == (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
             and (current.st_dev, current.st_ino) == (after.st_dev, after.st_ino), "Artifact changed during verification")
+    print(f"Artifact verification finished: file={path.name}, bytes={size}, elapsed_seconds={time.monotonic() - started:.1f}",
+          file=sys.stderr, flush=True)
     return dict(name=path.name, sha256=sha.hexdigest(), size_bytes=size)
 
 
@@ -185,7 +191,11 @@ def keygen(directory: Path, signer: str, artifact_type: str) -> None:
 
 
 def trusted_key(path: Path, signer: str, artifact_type: str) -> bytes:
-    catalog = parse_json(read_small(path))
+    return catalog_key(parse_json(read_small(path)), signer, artifact_type)
+
+
+def catalog_key(catalog: dict, signer: str, artifact_type: str) -> bytes:
+    """Validate every catalog entry before selecting one purpose-bound public key."""
     exact(catalog, {"schema_version", "keys"}, "trusted catalog")
     require(catalog["schema_version"] == TRUST_SCHEMA and isinstance(catalog["keys"], list), "Invalid trusted catalog schema")
     ids, materials, found = set(), set(), None
@@ -201,6 +211,48 @@ def trusted_key(path: Path, signer: str, artifact_type: str) -> bytes:
             found = public
     require(found is not None, "Signer is not trusted for this artifact purpose")
     return found
+
+
+def snapshot_catalog(path: Path, signer: str) -> dict:
+    """Adapt only public legacy snapshot material to the UTXO signature purpose."""
+    catalog = parse_json(read_small(path))
+    if "schema_version" not in catalog:
+        exact(catalog, {"keys"}, "snapshot trusted catalog")
+        require(isinstance(catalog["keys"], list), "Invalid snapshot trusted keys")
+        entries = []
+        for entry in catalog["keys"]:
+            exact(entry, {"key_id", "public_key_base64"}, "snapshot trusted key")
+            entries.append(dict(entry, artifact_type="bitcoin-assumeutxo"))
+        catalog = dict(schema_version=TRUST_SCHEMA, keys=entries)
+    catalog_key(catalog, signer, "bitcoin-assumeutxo")
+    return catalog
+
+
+def read_signing_key(path: Path, artifact_type: str, *, reuse_snapshot_key: bool = False) -> dict:
+    """Normalize an explicitly selected legacy UTXO signer without rewriting its secret file."""
+    secret = parse_json(read_small(path))
+    require(stat.S_IMODE(path.stat().st_mode) & 0o077 == 0, "Signing key permissions must exclude group and other users")
+    if reuse_snapshot_key:
+        require(artifact_type == "bitcoin-assumeutxo", "Snapshot keys are only accepted for UTXO manifests")
+        if "schema_version" not in secret:
+            exact(secret, {"key_id", "secret_key_base64"}, "snapshot signing key")
+            secret = dict(secret, schema_version=KEY_SCHEMA, artifact_type=artifact_type)
+    exact(secret, {"schema_version", "key_id", "artifact_type", "secret_key_base64"}, "signing key")
+    require(secret["schema_version"] == KEY_SCHEMA and secret["artifact_type"] == artifact_type,
+            "Signing key purpose or ID mismatch")
+    key_id(secret["key_id"])
+    raw_key(secret["secret_key_base64"])
+    return secret
+
+
+def require_key_matches(secret: dict, catalog: dict) -> None:
+    """Check an operator's key pair before downloading or scanning a large artifact."""
+    public = catalog_key(catalog, secret["key_id"], secret["artifact_type"])
+    with tempfile.TemporaryDirectory() as temporary:
+        private = Path(temporary) / "private.der"
+        private.write_bytes(PRIVATE_DER_PREFIX + raw_key(secret["secret_key_base64"]))
+        actual = openssl(["pkey", "-inform", "DER", "-in", str(private), "-pubout", "-outform", "DER"])
+    require(actual == PUBLIC_DER_PREFIX + public, "Signing key does not match trusted public key")
 
 
 def validate_envelope(manifest: dict, artifact_type: str) -> None:
@@ -222,13 +274,10 @@ def payload(manifest: dict) -> bytes:
     return (SCHEMA + ":" + manifest["artifact_type"] + "\0").encode() + canonical(manifest)
 
 
-def sign(manifest: dict, secret_path: Path, trust_path: Path) -> bytes:
+def sign(manifest: dict, secret_path: Path, trust_path: Path, *, reuse_snapshot_key: bool = False) -> bytes:
     """Sign only with a dedicated key whose public half already matches the approved catalog."""
-    secret = parse_json(read_small(secret_path))
-    require(stat.S_IMODE(secret_path.stat().st_mode) & 0o077 == 0, "Signing key permissions must exclude group and other users")
-    exact(secret, {"schema_version", "key_id", "artifact_type", "secret_key_base64"}, "signing key")
-    require(secret["schema_version"] == KEY_SCHEMA and secret["artifact_type"] == manifest["artifact_type"]
-            and secret["key_id"] == manifest["signing_key_id"], "Signing key purpose or ID mismatch")
+    secret = read_signing_key(secret_path, manifest["artifact_type"], reuse_snapshot_key=reuse_snapshot_key)
+    require(secret["key_id"] == manifest["signing_key_id"], "Signing key purpose or ID mismatch")
     validate_envelope(manifest, secret["artifact_type"])
     public = trusted_key(trust_path, secret["key_id"], secret["artifact_type"])
     with tempfile.TemporaryDirectory() as temporary:

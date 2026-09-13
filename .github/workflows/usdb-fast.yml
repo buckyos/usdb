@@ -75,6 +75,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python3 tests/test_bitcoin_artifact_distribution.py
+          python3 tests/test_assumeutxo_release.py
           python3 tests/test_bitcoin_assumeutxo.py
           python3 tests/test_snapshot_range_download.py
           python3 tests/test_assumeutxo_deployment.py

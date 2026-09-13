@@ -247,7 +247,11 @@ jobs:
             "$EXPECTED_GO_REVISION" ]]
           bundle_id="$(jq -er '.network_bundle.bundle_id' "$manifest")"
           case "$bundle_id" in
-            usdb-testnet-v0) bundle_dir="usdb/docker/networks/testnet-v0" ;;
+            usdb-testnet-v0)
+              bundle_dir="$(python3 usdb/docker/scripts/tools/release_bundle.py prepare \
+                --source-bundle usdb/docker/networks/testnet-v0 \
+                --output-dir "$GITHUB_WORKSPACE/selected-release-bundle/testnet-v0")"
+              ;;
             *)
               echo "unsupported publish network bundle: $bundle_id" >&2
               exit 1
@@ -275,9 +279,9 @@ jobs:
             echo "manifest_sha256=$(sha256sum "$manifest" | cut -d ' ' -f 1)"
             qualification_level="$(jq -er '.qualification.level' "$manifest")"
             echo "qualification_level=$qualification_level"
-            echo "snapshot_height=$(jq -er '.snapshot.height' "$manifest")"
-            echo "snapshot_record_url=$(jq -er '.snapshot.record.url' "$manifest")"
-            echo "snapshot_release_id=$(jq -er '.snapshot.snapshot_release_id' "$manifest")"
+            echo "snapshot_height=$(jq -er '.snapshot.contract.snapshot.base_height // .snapshot.height' "$manifest")"
+            echo "snapshot_record_url=$(jq -er '.snapshot.record.url // .snapshot.contract.distribution.source_url' "$manifest")"
+            echo "snapshot_release_id=$(jq -er '.snapshot.snapshot_release_id // ("assumeutxo-b" + (.snapshot.contract.snapshot.base_height | tostring))' "$manifest")"
           } >>"$GITHUB_OUTPUT"
           python3 usdb/docker/scripts/tools/release_publish_resolver.py \
             release-title \
@@ -288,11 +292,12 @@ jobs:
 
       - name: Reverify approved snapshot publication
         shell: bash
+        env:
+          BUNDLE_DIR: ${{ steps.manifest.outputs.bundle_dir }}
         run: |
           set -euo pipefail
-          python3 usdb/docker/scripts/tools/snapshot_distribution.py verify-public \
-            --record usdb/docker/networks/testnet-v0/snapshots/balance-history-snapshot-release-record.json \
-            --trusted-keys usdb/docker/networks/testnet-v0/trust/usdb-mainnet-snapshot-v1.trusted-keys.json
+          python3 usdb/docker/scripts/tools/release_bundle.py verify-public \
+            --bundle-dir "$BUNDLE_DIR"
 
       - name: Reverify OCI image provenance
         shell: bash
@@ -449,7 +454,7 @@ jobs:
           - Qualification: \`${QUALIFICATION_LEVEL}\`
           - Candidate manifest SHA-256: \`${MANIFEST_SHA256}\`
           - Candidate validation: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/attempts/${CANDIDATE_RUN_ATTEMPT}
-          - Optional balance-history snapshot: \`${SNAPSHOT_RELEASE_ID}\` at BTC height \`${SNAPSHOT_HEIGHT}\`
+          - Balance-history bootstrap: \`${SNAPSHOT_RELEASE_ID}\` at BTC height \`${SNAPSHOT_HEIGHT}\`
           - Snapshot record: ${SNAPSHOT_RECORD_URL}
 
           Digest-pinned images:

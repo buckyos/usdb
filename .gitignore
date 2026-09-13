@@ -8,3 +8,6 @@ docker/local/*
 !docker/local/README.md
 docker/.build-world-sim/
 .sourcedao-freeze-backup-*/
+# Python bytecode is generated locally and must not enter release source inputs.
+__pycache__/
+*.py[cod]

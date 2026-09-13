@@ -55,15 +55,17 @@ class BitcoinBootstrapTests(unittest.TestCase):
 
     def test_download_resumes_interrupted_response_then_verifies_entire_file(self):
         origin = self.origin()
+        origin.required_user_agent = "usdb-snapshot-verifier/1"
+        url = origin.url.rsplit("/", 1)[0] + "/redirect"
         origin.plans[0] = deque(["cut-valid"])
         with self.assertRaises(ValueError):
-            BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
+            BOOT.download_snapshot(self.snapshot, self.source, url, reserve_bytes=0)
         part = self.source.with_name("snapshot.dat.download") / "snapshot.part"
         offset = part.stat().st_size
         self.assertGreater(offset, 0)
         self.assertLess(offset, len(self.payload))
         self.assertFalse(self.source.exists())
-        BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
+        BOOT.download_snapshot(self.snapshot, self.source, url, reserve_bytes=0)
         self.assertEqual(self.source.read_bytes(), self.payload)
         self.assertIn((offset, len(self.payload) - 1), origin.requests)
         self.assertFalse(part.exists())

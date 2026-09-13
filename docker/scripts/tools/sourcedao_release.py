@@ -12,7 +12,7 @@ from typing import Any
 FREEZE_SCHEMA = "usdb-sourcedao-bootstrap-freeze:v1"
 PUBLIC_STATE_SCHEMA = "sourcedao-bootstrap-public-state:v1"
 SOURCE_ARTIFACTS = {"sourcedao_bootstrap_freeze", "sourcedao_contract_golden", "sourcedao_bootstrap_source", "sourcedao_bootstrap_imported"}
-PUBLIC_ARTIFACTS = SOURCE_ARTIFACTS | {"genesis", "genesis_manifest", "chain_bootstrap", "sourcedao_bootstrap", "snapshot_trusted_keys", "bootstrap_manifest", "network_environment", "compose_overlay", "assumeutxo_bootstrap", "assumeutxo_manifest", "assumeutxo_signature", "assumeutxo_trusted_keys"}
+PUBLIC_ARTIFACTS = SOURCE_ARTIFACTS | {"genesis", "genesis_manifest", "chain_bootstrap", "sourcedao_bootstrap", "snapshot_trusted_keys", "bootstrap_manifest", "network_environment", "compose_overlay", "assumeutxo_bootstrap", "assumeutxo_manifest", "assumeutxo_signature", "assumeutxo_trusted_keys", "assumeutxo_release_record"}
 
 def apply_source_import(base: dict, imported: dict, report: dict) -> dict:
     """Verify shared source evidence, then copy only allocations and committee members."""

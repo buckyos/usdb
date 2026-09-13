@@ -1,6 +1,6 @@
 # P7.3：原生 node-kit、Compose 与 controller 接入
 
-日期：2026-09-13。P7.2 分发兼容已提交为 `14248ce`。
+日期：2026-09-13。P7.2 分发兼容已提交为 `14248ce`，P7.3 编排已提交为 `3c71205`。
 
 ## 1. 实现边界
 
@@ -29,24 +29,80 @@ BH 的 `bootstrap-progress.json` 只用于显示；即使文件记录 `sealed`�
 后台验证继续使用 Core 的稳定额度，可能影响后台完成速度，但不影响上述启动条件。
 原生预算也暂时保留旧辅助任务的保守预留，不会实际启动这些任务。
 
-## 3. 生成原生候选 bundle
+## 3. 发布端准备原生 bundle
 
-以下准备步骤在源码目录执行，生成新目录，不修改已发布 bundle。当前测试网 G=963800。
+这里生成的是小型部署配置包：继承网络/genesis 配置，增加 `assumeutxo-bootstrap.json`，并更新相关身份和哈希。
+**不会生成、改写或复制原始 UTXO 文件，也不会生成旧 BH core/registry 数据库快照。**
+UTXO 自有签名是另外一个可选的发布步骤，只为同一原始 `.dat` 生成 manifest 和签名。
+
+| 原始 UTXO 分发选择 | 原生 bootstrap 配置 | UTXO manifest/signature/public catalog |
+| --- | --- | --- |
+| `pinned`：公开源、自有镜像或预置本地文件 | 必须，由发布端生成并装入 release | 不需要，不生成；三个引用均为 `null` |
+| `usdb-signed`：经 USDB 签名的同一原始文件 | 必须，由发布端生成并装入 release | 必须，由发布端签发、核对并装入 bundle |
+
+模式决定信任方式，与网站归属不等价：自有镜像也可以使用 `pinned`。
+`pinned` 核对内置文件 SHA-256，后续 Core/BH 继续核对快照承诺；没有额外要求上游 UTXO 发布者签名。
+“三名固定上游签名者”是 Core 二进制发布包的验证规则，不是 UTXO 文件的签名格式。
+Core 31.1 已在 Docker 构建时固定并采用上游校验；这两种 UTXO 模式均不要求 USDB 为 Core 二进制签名或生成 Core 密钥。
+自有签名 UTXO 已接入原 snapshot signer 和 `create/finalize/publish`，直接复用旧密钥文件，普通节点不执行密钥生成。
+两种模式均保留原有 release/OCI 交付校验和每台 Core 的官方后台历史验证。
+
+以下命令由**发布端**在源码目录执行一次，生成不存在的新目录。当前测试网 G=963800。
+普通节点拿到已包含这些配置的安装包后，直接执行第4节，无需源码、签名私钥或再次生成 bundle。
+
+### 3.1 公开源 / pinned
 
 ```bash
 USDB_REPO=/home/bucky/work/usdb
 P73_BUNDLE=/tmp/usdb-testnet-v0-assumeutxo-candidate
+# 空值表示节点提前放置文件；自动下载时填已选定的完整 HTTPS .dat 地址。
+P73_SOURCE_URL=
 python3 "$USDB_REPO/docker/scripts/tools/assumeutxo_deployment.py" \
   --source-bundle "$USDB_REPO/docker/networks/testnet-v0" \
   --output-dir "$P73_BUNDLE" \
+  --source-url "$P73_SOURCE_URL" \
   --origin-block-hash 000000000000000000012c999b5f6d2043b1d3d76dcf06ee007b5f86290c0551
 python3 "$USDB_REPO/docker/scripts/tools/validate_network_bundle.py" \
   --bundle-dir "$P73_BUNDLE"
 ```
 
-不传 `--source-url` 表示操作员提前放置已下载的原始文件；需要下载时，传入完整 HTTPS 文件地址。
-自有签名分发同时提供 `--manifest-file`、`--trusted-keys`，材料由[分发手册](./balance-history-bitcoin-artifact-distribution.md)生成；
-仍可传 `--source-url` 指定镜像站上同一原始文件。工具先验证用途为 `bitcoin-assumeutxo` 的 Ed25519 签名及编译内置快照身份。
+不提供 `--manifest-file/--trusted-keys` 即选择 `pinned`。此步骤只生成配置，不下载或扫描 `.dat`；节点使用文件时再验证。
+
+### 3.2 自有签名 / usdb-signed
+
+先按[分发手册第2节](./balance-history-bitcoin-artifact-distribution.md)准备 UTXO manifest/signature 和公开 catalog。
+已有 `snapshot-keys` 时按[UTXO 发布手册](./balance-history-assumeutxo-snapshot-publish-operations.md)执行原脚本的
+`create/finalize/publish --snapshot-type assumeutxo` 分支，无需重新生成密钥。
+成功后的 `publish-result.json` 提供下列参数需要的 `manifest_file/trusted_keys_file/source_url`。
+**推荐继续用同一 `SNAPSHOT_SCRIPT deploy` 生成候选并登记源码发布输入**，见[发布手册第5节](./balance-history-assumeutxo-snapshot-publish-operations.md#5-状态deploy-与节点装包)。
+该入口自动读取并复核成功发布记录，将三个公开输出传给本脚本；只需指定基础 bundle、新输出目录和 G 的 block hash。
+它默认写入基础 bundle 下的 `release-bootstrap.json` 和 `release-inputs/`，供正式 candidate/publish 自动重建；
+`--prepare-only` 只导出候选。它不部署节点或发布安装器，也不重复下载/扫描原始 UTXO。
+使用该入口后，不必再执行下面的等价底层命令。
+独立 `bitcoin_release.py prepare-utxo` 仍可使用；显式 `--reuse-snapshot-key` 接受旧私钥格式，但公钥目录需要先转为 UTXO 用途，统一 wrapper 会自动完成。
+以下装包步骤消费这些公开输出，与私钥是否复用无关，也不重新生成 UTXO。
+以下变量分别指向准备好的公开 manifest、经审查的公钥目录、未使用的新 bundle 输出目录；`P73_SOURCE_URL` 与上一节含义相同：
+
+```bash
+: "${P73_UTXO_MANIFEST:?Set the generated manifest absolute path}"
+: "${P73_UTXO_TRUST:?Set the approved public key catalog absolute path}"
+: "${P73_SIGNED_BUNDLE:?Set a new signed bundle output directory}"
+python3 "$USDB_REPO/docker/scripts/tools/assumeutxo_deployment.py" \
+  --source-bundle "$USDB_REPO/docker/networks/testnet-v0" \
+  --output-dir "$P73_SIGNED_BUNDLE" \
+  --origin-block-hash 000000000000000000012c999b5f6d2043b1d3d76dcf06ee007b5f86290c0551 \
+  --source-url "$P73_SOURCE_URL" \
+  --manifest-file "$P73_UTXO_MANIFEST" \
+  --trusted-keys "$P73_UTXO_TRUST"
+python3 "$USDB_REPO/docker/scripts/tools/validate_network_bundle.py" \
+  --bundle-dir "$P73_SIGNED_BUNDLE"
+```
+
+工具先验签并核对内置快照身份，再将三份公开材料原样复制到固定包内路径，不在此处重新签名。
+节点使用的是包内本地 manifest；需要自动下载 `.dat` 时必须提供完整 `--source-url`，不能从这个本地路径推导远程源。
+地址为空时仍要求节点预置文件。上述两个生成流程都不上传文件或发布 release。
+
+### 3.3 配置与固定包内路径
 
 生成的 `artifacts/assumeutxo-bootstrap.json` 固定以下内容，并被 `network.json` 和 release manifest 哈希绑定：
 
@@ -54,26 +110,52 @@ python3 "$USDB_REPO/docker/scripts/tools/validate_network_bundle.py" \
 - `pinned` 或 `usdb-signed` 来源模式和文件 URL。
 - 自有源的公开 manifest、分离签名及 trusted-keys 文件哈希。
 
-签名材料采用固定包内路径 `artifacts/assumeutxo-distribution.json[.sig]` 和 `trust/bitcoin-artifacts.trusted-keys.json`；
+仅 `usdb-signed` 需要以下三个文件，格式和签名编码见[分发材料格式](./balance-history-bitcoin-artifact-distribution.md#41-原生-bundle-中的公开材料格式)：
+
+| 包内路径 | 内容与生成来源 |
+| --- | --- |
+| `artifacts/assumeutxo-distribution.json` | `prepare-utxo` 输出的 canonical manifest，原样改名复制 |
+| `artifacts/assumeutxo-distribution.json.sig` | 相邻的64字节 Ed25519 原始二进制签名，原样复制 |
+| `trust/bitcoin-artifacts.trusted-keys.json` | 经审查的 UTXO public catalog；原 snapshot 公钥由发布 wrapper 自动转换，新 signer 也可直接生成 |
+
+`pinned` 的 `distribution` 配置如下；`snapshot`、`origin_height`、`origin_block_hash` 在同一个 bootstrap JSON 中由工具填入：
+
+```json
+{
+  "mode": "pinned",
+  "source_url": "",
+  "manifest": null,
+  "signature": null,
+  "trusted_keys": null
+}
+```
+
+`usdb-signed` 将 `mode` 设为该值，并将三个 `null` 替换为对应文件的 `{"path":"包内路径","sha256":"文件SHA256"}`。
+`assumeutxo-bootstrap.json` 的 schema 是 `usdb-assumeutxo-deployment:v1`；外部配置不能注入 C(B)/D(B)，它们仍由服务代码内置。
 不会把私钥装入 node-kit。离线重启验证包内签名，不重新访问 manifest 服务。
 调整来源/公钥需生成新候选 release；它不改变 BH 数据身份。改变 B/G/hash 则产生不同 BH 数据目录。
 
 将候选 bundle 传入现有 release manifest 生成和 `prepare_release_node_kit.py --bundle-dir` 流程；
 manifest 必须由该候选 bundle 生成，不能复用旧 manifest 后手改 checksum。
 镜像需包含本阶段代码并按既有流程固定 digest，尤其 Core 镜像需要新的 `--ensure-snapshot-file` 与 `--require-tip` 探针。
-默认发布 workflow 的 bundle 选择尚未切换，属于 P7.4 发布准备。
+**正式 candidate/publish workflow 已通过 `release_bundle.py` 消费源码中的发布输入。**
+`SNAPSHOT_SCRIPT deploy` 登记的小型配置和公开材料随代码提交、进入 release tag 后，两条 workflow 从同一源码重建原生 bundle，
+并用于 manifest、发布复核、归档和 node-kit。原生公开校验核对 UTXO record/签名材料和 Range 下载，旧模式保留原 BH record 校验。
+登记缺失时使用历史基础 bundle；登记存在但损坏时阻断，不回退。
+仅使用本节底层命令生成 `/tmp` 候选仍属于独立导出；自有签名正式打包应使用 `deploy` 完成源码登记。
+随后按原发布流程生成用于节点验收的真实安装包，不在节点手改 bundle、旧 release manifest 或 compatibility ID。
 
 ## 4. 在验收节点配置与运行
 
-以下在安排好的新验收节点执行，使用上一步生成且镜像已准备好的 node-kit；不直接套用到当前开发机正在运行的服务。
-安装方式沿用现有 node-kit 安装手册，也可直接调用包内入口。将 `P73_KIT` 设为该包的绝对目录。
+验收使用正式的 `installer -> setup -> doctor -> up -> status` 流程，不另建一套临时节点部署入口。
+可以在同一台测试机归档旧基线、按确认的范围重置后串行执行，具体见[单机复用评估](./balance-history-assumeutxo-p74-node-reuse-plan.md)。
+以下是第3节发布链路接通、原生安装包就绪之后的操作；目前不应直接在运行中的旧节点执行。
+先按[正式安装手册](../publish/usdb-release-node-kit-and-deployment.md)安装选定 release，随后使用安装器提供的入口：
 
 ```bash
-: "${P73_KIT:?Set the absolute path of the prepared native node kit}"
-P73_TOOL="$P73_KIT/docker/scripts/tools/usdb_node.py"
-python3 "$P73_TOOL" setup --resource-mode auto
-python3 "$P73_TOOL" resources --json
-python3 "$P73_TOOL" doctor
+usdb-node setup --resource-mode auto
+usdb-node resources --json
+usdb-node doctor
 ```
 
 `setup` 不再询问是否使用旧 BH 数据库快照。配置生成两个独立路径：
@@ -90,14 +172,17 @@ python3 "$P73_TOOL" doctor
 重启后的文件校验可能扫描约9.39GB，但不会因此重复发送 `loadtxoutset`；已 sealed 的 BH 自身直接恢复在线状态。
 
 ```bash
-python3 "$P73_TOOL" up
-python3 "$P73_TOOL" status --progress-json
-python3 "$P73_TOOL" status --watch
+usdb-node up
+usdb-node status --progress-json
+usdb-node status --watch
 ```
 
 默认 `up` 由已有 systemd controller 托管；退出观察窗口只停止观察。
 需要终端内验证时使用 `up --foreground --sync-timeout-secs 604800`。观察超时不删除下载/导入数据，也不取消 Core 已提交的导入。
 完整 blocks/undo、Core 双 chainstate、UTXO 原始文件、BH staging/live、indexer 和 chain 均需计入磁盘空间，沿用前述全节点空间预留要求。
+当前 `setup/configure` 要求数据根所在文件系统**总容量和可用空间均至少1.5TiB**，推荐2TiB；
+复用磁盘时不能只看删除 BH 后的空闲量或磁盘标称容量。已有 `node.env` 时 `setup` 会拒绝，旧模式到原生模式也不是同契约的 `activate-release`。
+配置、凭据、controller 和数据目录的重置范围需要在单机复用步骤中明确。
 
 ## 5. 进度与恢复
 
@@ -115,6 +200,7 @@ python3 "$P73_TOOL" status --watch
 将下面两个变量设为此次 node-kit 的 bundle 和私有配置路径：
 
 ```bash
+: "${P73_KIT:?Set the installed native node kit absolute path}"
 : "${P73_NODE_ENV:?Set the native node.env absolute path}"
 export USDB_TESTNET_BUNDLE_DIR="$P73_KIT/docker/networks/testnet-v0"
 export USDB_TESTNET_NODE_ENV="$P73_NODE_ENV"
@@ -122,7 +208,7 @@ P73_BITCOIN="$P73_KIT/docker/scripts/tools/run_testnet_bitcoin.sh"
 "$P73_BITCOIN" logs btc-snapshot-bootstrap
 # 退出日志观察后，重试下载/观察，并让 controller 继续。
 "$P73_BITCOIN" bootstrap-start
-python3 "$P73_TOOL" --node-env "$P73_NODE_ENV" up
+usdb-node --node-env "$P73_NODE_ENV" up
 ```
 
 若 activation 记录 `load_uncertain`，先按 P7.2 手册核对 Core 的 `getchainstates/getrpcinfo` 和日志。
@@ -145,5 +231,6 @@ actionlint、旧默认 bundle 校验和 `git diff --check` 通过。
 镜像只保存在本地，没有发布；该容器停留在主网 genesis，没有导入真实935000快照。
 
 P7.4 再安排主网长任务：实际 Core 下载/导入与 BH 全量重放、同一锚点的 BH/indexer/Go chain/control-plane 验收、
-新机器安装、离线重启、下载与导入中断、磁盘不足、旧 Core 数据升级和新旧 release 选择。
+正式安装流程的冷启动、离线重启、下载与导入中断、磁盘不足、旧 Core 数据升级和新旧 release 选择。
+主网验收优先采用一台现有测试机串行重建，旧节点比较证据先归档，不要求同时保留两套主网服务。
 归档实际镜像 digest、release/bundle 身份、耗时、峰值资源和最终 RPC 状态后，再决定默认部署切换与正式发布。

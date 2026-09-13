@@ -4,6 +4,17 @@ This directory contains the repo-facing helpers that developers are expected to
 run directly.
 
 Native AssumeUTXO release candidates are prepared with `assumeutxo_deployment.py`.
+The existing `mainnet_exact_height_snapshot.sh` accepts `--snapshot-type assumeutxo`
+for `create/finalize/publish/deploy`. Its `assumeutxo_release.py` backend reuses legacy
+snapshot keys and the existing S3 upload client, then verifies anonymous HTTPS
+bytes before declaring publication complete. See the
+[UTXO publishing guide](../../../doc/balance-history/balance-history-assumeutxo-snapshot-publish-operations.md).
+`deploy` verifies the saved publication result, prepares a bundle and records small
+public inputs in the source bundle's `release-bootstrap.json` and `release-inputs/`.
+Both release workflows use `release_bundle.py` to reconstruct the same selected
+bundle, verify public delivery and package it into the node kit. Matching existing
+exports are reusable; `--prepare-only` opts out of source integration.
+Deploy does not rescan the snapshot, commit, publish an installer or start a node.
 The generated bundle binds B/G/hash and public distribution trust; node-kit setup
 selects native controller and Compose paths automatically. See the
 [P7.3 operations guide](../../../doc/balance-history/balance-history-assumeutxo-p73-operations.md)

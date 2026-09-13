@@ -224,8 +224,13 @@ def build_snapshot_state(bundle_dir: Path) -> dict[str, Any]:
     network = validate_network_bundle(bundle_dir)
     if network.get("_native_bootstrap"):
         native = network["_native_bootstrap"]
-        return {"status": "native", "bootstrap_mode": "assumeutxo", "contract": native,
-                "contract_sha256": network["artifacts"]["assumeutxo_bootstrap"]["sha256"]}
+        state = {"status": "native", "bootstrap_mode": "assumeutxo", "contract": native,
+                 "contract_sha256": network["artifacts"]["assumeutxo_bootstrap"]["sha256"]}
+        from assumeutxo_deployment import load_publication
+        publication = load_publication(bundle_dir, network, native)
+        if publication is not None:
+            state["record"] = publication
+        return state
     bootstrap = read_json(bundle_dir / "artifacts/bootstrap-manifest.json")
     mode = bootstrap.get("balance_history_snapshot_mode")
     require(mode == "none", "release-approved snapshot must remain an optional node choice")

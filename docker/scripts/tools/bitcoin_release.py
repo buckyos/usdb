@@ -121,16 +121,17 @@ def download_upstream(directory: Path, release_base: str, keys_base: str) -> Pat
     return directory / CORE_FILE
 
 
-def prepare(artifact_type: str, archive: Path, evidence: Path | None, secret: Path, trust: Path, output: Path) -> Path:
+def prepare(artifact_type: str, archive: Path, evidence: Path | None, secret: Path, trust: Path, output: Path,
+            *, reuse_snapshot_key: bool = False) -> Path:
     """Validate payload before signing; private keys never enter an image or published directory."""
-    key = signing.parse_json(signing.read_small(secret))
+    key = signing.read_signing_key(secret, artifact_type, reuse_snapshot_key=reuse_snapshot_key)
     proof = verify_upstream(evidence, archive) if artifact_type == "bitcoin-core" and evidence is not None else None
     manifest = dict(schema_version=signing.SCHEMA, artifact_type=artifact_type,
                     identity=core_identity() if artifact_type == "bitcoin-core" else utxo_identity(),
                     file=signing.file_identity(archive), upstream_verification=proof,
                     signature_scheme="ed25519", signing_key_id=key["key_id"])
     (validate_core if artifact_type == "bitcoin-core" else validate_utxo)(manifest)
-    signature = signing.sign(manifest, secret, trust)
+    signature = signing.sign(manifest, secret, trust, reuse_snapshot_key=reuse_snapshot_key)
     signing.verify(signing.canonical(manifest), signature, trust, artifact_type)
     path = signing.write_release(output, manifest, signature)
     print(f"Signed artifact release prepared: manifest={path}", file=sys.stderr, flush=True)
@@ -185,6 +186,9 @@ def main() -> int:
         prepare_parser.add_argument("--output-dir", type=Path, required=True)
         if name == "prepare-core":
             prepare_parser.add_argument("--upstream-evidence", type=Path, required=True)
+        else:
+            prepare_parser.add_argument("--reuse-snapshot-key", action="store_true",
+                                        help="Read an existing snapshot signing key; supply a UTXO-purpose public catalog")
     build = commands.add_parser("fetch-core", help="Fetch and verify a Core archive using the selected source config")
     build.add_argument("--source-config", type=Path, required=True)
     build.add_argument("--trusted-keys", type=Path, required=True)
@@ -206,7 +210,8 @@ def main() -> int:
             (args.output_dir / "upstream-verification.json").write_bytes(signing.canonical(proof))
         elif args.command.startswith("prepare-"):
             prepare("bitcoin-core" if args.command == "prepare-core" else "bitcoin-assumeutxo", args.artifact,
-                    getattr(args, "upstream_evidence", None), args.signing_key, args.trusted_keys, args.output_dir)
+                    getattr(args, "upstream_evidence", None), args.signing_key, args.trusted_keys, args.output_dir,
+                    reuse_snapshot_key=getattr(args, "reuse_snapshot_key", False))
         elif args.command == "fetch-core":
             fetch_core(args.source_config, args.trusted_keys, args.output_dir)
         else:

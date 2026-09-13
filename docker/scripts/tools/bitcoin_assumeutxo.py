@@ -184,7 +184,8 @@ def download_snapshot(snapshot: Snapshot, destination: Path, url: str, *, reserv
         if shutil.disk_usage(destination.parent).free < remaining + reserve_bytes:
             raise ValueError("Insufficient snapshot filesystem space for the remaining bytes and reserve")
         if remaining:
-            request = urllib.request.Request(url, headers={"Range": f"bytes={offset}-{snapshot.size_bytes - 1}", "Accept-Encoding": "identity"})
+            request = urllib.request.Request(url, headers={"Range": f"bytes={offset}-{snapshot.size_bytes - 1}",
+                                             "Accept-Encoding": "identity", "User-Agent": artifact_signing.HTTP_USER_AGENT})
             opener = urllib.request.build_opener(HttpsRedirect())
             journal.phase("downloading", bytes=offset, total_bytes=snapshot.size_bytes)
             try:
