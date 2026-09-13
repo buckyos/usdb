@@ -319,7 +319,7 @@ def resolve_candidate(
             f"git-{usdb_revision}-run-{usdb_run['id']}-{usdb_run['attempt']}"
         ),
         "bitcoin_tag": (
-            "ghcr.io/buckyos/usdb-bitcoin-core:bitcoin-28.1-"
+            "ghcr.io/buckyos/usdb-bitcoin-core:bitcoin-31.1-"
             f"git-{usdb_revision}-run-{usdb_run['id']}-{usdb_run['attempt']}"
         ),
         "chain_tag": (

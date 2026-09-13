@@ -60,7 +60,7 @@ jobs:
           }
 
           image="ghcr.io/buckyos/usdb-bitcoin-core"
-          tag="${image}:bitcoin-28.1-git-${revision}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          tag="${image}:bitcoin-31.1-git-${revision}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           scan_enforcement="report-only"
           if [[ "$GITHUB_REF_TYPE" == "tag" &&
                 "$GITHUB_REF_NAME" =~ ^usdb-mainnet-v[0-9]+-r[1-9][0-9]*$ ]]; then
@@ -95,7 +95,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.prepare.outputs.revision }}
-            org.opencontainers.image.version=bitcoin-core-28.1
+            org.opencontainers.image.version=bitcoin-core-31.1
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
@@ -113,7 +113,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "### USDB Bitcoin Core 28.1 image candidate"
+            echo "### USDB Bitcoin Core 31.1 image candidate"
             echo
             echo '```text'
             echo "${{ steps.prepare.outputs.image }}@${{ steps.build.outputs.digest }}"

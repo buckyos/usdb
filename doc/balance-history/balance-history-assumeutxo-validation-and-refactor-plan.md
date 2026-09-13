@@ -13,7 +13,7 @@
 - P6.3 已提交为 `8103550`；按积压量选择的本地取块及并行启动通过验证，见[P6.3操作](./balance-history-assumeutxo-p63-operations.md)。
 - P6.4 已提交为 `7f52ee2`，按消费块 undo 读取历史输入、块内定位 reveal 和 readiness，关闭txindex的真实Core验证通过，见[P6.4操作](./balance-history-assumeutxo-p64-operations.md)。
 - P6.5 已提交为 `22cf06c`，独立regtest整套Core/BH/indexer服务验收通过，含真实mint/转移、状态/承诺对拍、故障及重组恢复，见[P6.5操作](./balance-history-assumeutxo-p65-operations.md)。
-- P7 已开始原生模式配置生成与服务入口接入；镜像、快照编排、node-kit及默认模式尚未切换，见[P7计划](./balance-history-assumeutxo-p7-deployment-plan.md)。
+- P7.1 已提交为 `6c3836d`；P7.2 已实现31.1镜像和独立Core下载/导入编排，隔离测试通过。主网长任务、node-kit及默认模式切换待完成，见[P7计划](./balance-history-assumeutxo-p7-deployment-plan.md)和[P7.2操作](./balance-history-assumeutxo-p72-operations.md)。
 - 尚未执行：主网原生重导入与同锚点服务复核、LocalLoader性能对照、部署默认gate切换、镜像构建及现有服务升级。
 
 目标是验证并实现：从 Bitcoin Core 支持的 `935000` UTXO 快照恢复完整 UTXO 与脚本余额，
@@ -118,7 +118,7 @@ mempool 为空等。正式执行脚本按 31.1 实际 RPC 错误处理，不放�
 | P4 | balance-history 最小导入/重放原型 | 935000 UTXO+余额基线、小锚点、重放到963800 | 通过：主网导入、重放、三项全量投影对比一致 |
 | P5 | balance-history 语义等价验证 | 全量状态、逐块 commit、历史边界、重启/reorg 验收通过 | 离线语义与独立regtest通过；主网28,801条commit/1,024个查询样本及下游承诺链路通过，整套在线端到端留待P6/P7；见[P5记录](./balance-history-assumeutxo-p5-validation-2026-09-12.md) |
 | P6 | 整套节点快速启动与依赖改造 | 使用 Core 快照与内置旧 commit 检查点，不依赖旧 USDB snapshot 文件及全量 txindex 完成即可达成实际 USDB 就绪 | P6.1至P6.4已实现；P6.5独立Core/BH/indexer整套服务验收通过，主网长任务、同锚点复核和加速收益待验收，见[P6设计](./balance-history-assumeutxo-p6-bootstrap-design.md) |
-| P7 | 镜像、安装器和发布集成 | 新鲜安装与升级实测、证据归档、发布身份更新完成 | P7.1服务配置与入口已实现，回归通过；镜像、快照编排、node-kit及交付待完成，见[P7计划](./balance-history-assumeutxo-p7-deployment-plan.md) |
+| P7 | 镜像、安装器和发布集成 | 新鲜安装与升级实测、证据归档、发布身份更新完成 | P7.1已提交，P7.2镜像/独立Core编排与隔离验收已完成；主网、node-kit及交付待完成，见[P7计划](./balance-history-assumeutxo-p7-deployment-plan.md) |
 
 P1 的隔离环境可先服务 P2；生产默认镜像和现有节点切换在对应兼容性验证后进行。
 软件升级本身不改变 chain ID、index origin 或 UIP 版本；如果后续改变共识可观察语义，则另行设计版本与激活。

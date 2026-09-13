@@ -1,9 +1,9 @@
 FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS verifier
 
-ARG BITCOIN_VERSION=28.1
+ARG BITCOIN_VERSION=31.1
 ARG BITCOIN_ARCH=x86_64-linux-gnu
-ARG BITCOIN_ARCHIVE_SHA256=07f77afd326639145b9ba9562912b2ad2ccec47b8a305bd075b4f4cb127b7ed7
-ARG GUIX_SIGS_REVISION=3b667ee3ebb3dcd9e1990cf03e38a0935eec1683
+ARG BITCOIN_ARCHIVE_SHA256=b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e
+ARG GUIX_SIGS_REVISION=f6a216c90095f5e316318760da6411fe465b7482
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -24,22 +24,22 @@ RUN set -eux; \
     curl -fsSLO "${release_base}/SHA256SUMS.asc"; \
     curl -fsSLO "${release_base}/${archive}"; \
     curl -fsSLo achow101.gpg "${keys_base}/achow101.gpg"; \
-    curl -fsSLo laanwj.gpg "${keys_base}/laanwj.gpg"; \
-    curl -fsSLo 0xb10c.gpg "${keys_base}/0xb10c.gpg"; \
+    curl -fsSLo fanquake.gpg "${keys_base}/fanquake.gpg"; \
+    curl -fsSLo hebasto.gpg "${keys_base}/hebasto.gpg"; \
     printf '%s  %s\n' \
         '1b31ab2e336d5ee44dd4d9f5703ad4445798fcee3b1352ab75afa145e737224a' achow101.gpg \
-        '556c62caf73e85a56ac2d15ecd814cf733f2a425cf72edb89eb7bafad6178656' laanwj.gpg \
-        'ccd3cc6fd3c58e8717abc31472ca9318a657711ecbdcf1a26289b3214045195e' 0xb10c.gpg \
+        'd9d6d89f5d9da0811ed94469f790d5bd0e185b7ee678e7ca7b3121995ded3d26' fanquake.gpg \
+        'f305e90cb6b3cfe47beb71a51242395f1fc8d46840a1d2345283df2fefca021b' hebasto.gpg \
         | sha256sum --check --strict; \
     export GNUPGHOME=/tmp/bitcoin-release/gnupg; \
     install -d -m 0700 "${GNUPGHOME}"; \
-    gpg --batch --import achow101.gpg laanwj.gpg 0xb10c.gpg; \
+    gpg --batch --import achow101.gpg fanquake.gpg hebasto.gpg; \
     gpg --batch --status-fd 1 --verify SHA256SUMS.asc SHA256SUMS \
         >signature-status.txt 2>signature-log.txt || true; \
     for fingerprint in \
         152812300785C96444D3334D17565732E08E5E41 \
-        9DEAE0DC7063249FB05474681E4AED62986CD25D \
-        0CCBAAFD76A2ECE2CCD3141DE2FFD5B1D88CA97D; do \
+        CFB16E21C950F67FA95E558F2EEB9F5CC09526C1 \
+        D1DBF2C4B96F2DEBF4C16654410108112E7EA81F; do \
         grep -q "^\[GNUPG:\] VALIDSIG ${fingerprint} " signature-status.txt; \
     done; \
     grep -q "^${BITCOIN_ARCHIVE_SHA256}  ${archive}$" SHA256SUMS; \
@@ -73,9 +73,13 @@ RUN apt-get update \
 COPY --from=verifier /opt/bitcoin /opt/bitcoin
 COPY docker/scripts/entrypoints/start_bitcoin_core.sh /opt/usdb/docker/scripts/entrypoints/start_bitcoin_core.sh
 COPY docker/scripts/tools/check_bitcoin_readiness.py /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py
+COPY docker/scripts/tools/bitcoin_assumeutxo.py docker/scripts/tools/assumeutxo_bootstrap.py /opt/usdb/docker/scripts/tools/
+COPY docker/scripts/entrypoints/bootstrap_bitcoin_core.sh /opt/usdb/docker/scripts/entrypoints/bootstrap_bitcoin_core.sh
+COPY src/btc/balance-history/src/bootstrap/checkpoints /opt/usdb/docker/scripts/data/assumeutxo
 
 RUN chmod 0755 \
     /opt/usdb/docker/scripts/entrypoints/start_bitcoin_core.sh \
+    /opt/usdb/docker/scripts/entrypoints/bootstrap_bitcoin_core.sh \
     /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py
 
 ENV PATH="/opt/bitcoin/bin:${PATH}"

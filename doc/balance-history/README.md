@@ -38,6 +38,7 @@
 - [AssumeUTXO P6.4 indexer 历史输入与 readiness 验收](./balance-history-assumeutxo-p64-operations.md)
 - [AssumeUTXO P6.5 整套服务验收与主网长任务](./balance-history-assumeutxo-p65-operations.md)
 - [AssumeUTXO P7 部署改造计划与入口接入](./balance-history-assumeutxo-p7-deployment-plan.md)
+- [AssumeUTXO P7.2 Core 31.1 镜像与快照导入操作](./balance-history-assumeutxo-p72-operations.md)
 - [拆分快照全量对拍与 Electrs 抽样操作](./balance-history-split-snapshot-audit-operations.md)
 - [balance-history-snapshot-signing.md](./balance-history-snapshot-signing.md)
 - [balance-history-exact-height-snapshot-tool-design.md](./balance-history-exact-height-snapshot-tool-design.md)

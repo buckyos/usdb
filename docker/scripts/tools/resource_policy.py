@@ -11,7 +11,7 @@ MIB = 1024**2
 GIB = 1024**3
 # A nominal 32 GB machine must expose at least 32 decimal GB to the OS/controller.
 MIN_HOST_MEMORY_BYTES = 32_000_000_000
-# The release pins Bitcoin Core 28.1; src/txdb.h caps -dbcache at 16384 MiB.
+# Retain the conservative 16 GiB deployment cap across the Core 31.1 upgrade.
 MAX_BITCOIN_DBCACHE_MIB = 16384
 PHASES = ("bitcoin", "overlap", "steady")
 CAP_DEFAULTS = {

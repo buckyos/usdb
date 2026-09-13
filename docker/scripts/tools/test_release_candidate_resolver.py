@@ -147,7 +147,7 @@ class ReleaseCandidateResolverTests(unittest.TestCase):
         )
         self.assertEqual(
             resolved["bitcoin_tag"],
-            "ghcr.io/buckyos/usdb-bitcoin-core:bitcoin-28.1-"
+            "ghcr.io/buckyos/usdb-bitcoin-core:bitcoin-31.1-"
             f"git-{self.usdb_revision}-run-101-2",
         )
         evidence = json.loads(resolved["qualification_evidence_json"])["evidence"]

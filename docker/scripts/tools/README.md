@@ -70,10 +70,14 @@ This table compares the runtime semantics instead of only listing services.
 | `run_local_world_sim_ethw.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | local dev `geth` node, protocol-aligned with world-sim | none | deterministic BTC ord wallets; optional ETHW deterministic alignment |
 | `run_local_bootstrap.sh` | `regtest` | `cookie` | none | bootstrap-oriented local USDB chain from generated genesis | dev-workspace bootstrap by default | bootstrap artifacts and USDB-chain init inputs, not world-sim identities |
 | `run_local_full_sim.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | bootstrap-oriented local USDB chain plus deterministic miner identity | full dev-workspace bootstrap | deterministic BTC ord wallets and USDB-chain identity alignment |
-| `run_testnet_bitcoin.sh` | Bitcoin mainnet | dedicated rpcauth, private Docker RPC | no ord | not started | none | digest-pinned Bitcoin 28.1 and persistent host data directory |
+| `run_testnet_bitcoin.sh` | Bitcoin mainnet | dedicated rpcauth, private Docker RPC | no ord | not started | none | digest-pinned Bitcoin release and persistent host data directory |
 | `run_testnet_runtime.sh` | Bitcoin mainnet | dedicated rpcauth through `btc-node:8332` | no separate ord service; indexer uses bitcoind inscription source | testnet-v0 full/bootnode/miner role from frozen genesis | config is frozen in bundle; execution is a separate secret-bearing step | chain/network ID and genesis are bundle-owned; node identity is machine-local |
 
 Current status:
+
+- The Core image source now pins 31.1. The opt-in Core snapshot overlay and recovery
+  commands are documented in [P7.2 operations](../../../doc/balance-history/balance-history-assumeutxo-p72-operations.md).
+  Existing published image digests and node-kit defaults are not switched by rebuilding this source.
 
 - BTC runtime today is split mainly between `bitcoin mainnet` style joiner /
   bootstrap envs and `regtest` development envs.

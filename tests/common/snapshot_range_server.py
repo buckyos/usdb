@@ -58,8 +58,8 @@ class SnapshotRangeServer:
                     if mode != "oversize":
                         self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
-                    if mode == "cut":
-                        self.wfile.write(b"X" * (len(data) // 2))
+                    if mode in {"cut", "cut-valid"}:
+                        self.wfile.write(data[:len(data) // 2] if mode == "cut-valid" else b"X" * (len(data) // 2))
                         self.wfile.flush()
                         self.connection.shutdown(socket.SHUT_WR)
                     else:
