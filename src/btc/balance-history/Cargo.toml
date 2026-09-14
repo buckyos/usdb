@@ -6,7 +6,7 @@ default-run = "balance-history"
 
 [dependencies]
 usdb-util = { path = "../usdb-util" }
-rust-rocksdb = "0.45"
+rust-rocksdb = "0.52"
 tokio = { version = "*", features = ["full"] }
 futures = "0.3"
 bitcoincore-rpc = "0.19"
