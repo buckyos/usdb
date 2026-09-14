@@ -15,12 +15,16 @@ serde_json = "1.0"
 sha2 = "0.10"
 log = "0.4"
 toml = "0.9"
+bitcoincore-rpc = "0.19"
 
 [dev-dependencies]
-bitcoincore-rpc = "0.19"
 rusqlite = { version = "0.38", features = ["bundled"] }
 tempfile = "3.23"
 
 [[test]]
 name = "split_snapshot_audit"
 path = "../../../tests/split_snapshot_audit.rs"
+
+[[test]]
+name = "baseline_snapshot_workflow"
+path = "../../../tests/baseline_snapshot_workflow.rs"

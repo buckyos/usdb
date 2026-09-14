@@ -7,6 +7,32 @@ mod state;
 mod test_hook;
 mod verify;
 
+/// Held producer lock for baseline synchronization and export.
+pub struct BaselineWorkspaceLock {
+    _guard: BuilderLock,
+}
+
+/// Acquire the existing producer workspace lock for managed baseline synchronization.
+pub fn lock_baseline_workspace(root: &std::path::Path) -> Result<BaselineWorkspaceLock, String> {
+    Ok(BaselineWorkspaceLock {
+        _guard: BuilderLock::acquire(root)?,
+    })
+}
+
+/// Exercise durable baseline checkpoints in debug binaries; production builds are inert.
+pub fn baseline_test_checkpoint(label: &str) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    if std::env::var("USDB_BH_SNAPSHOT_TEST_ABORT_AFTER_CHECKPOINT")
+        .ok()
+        .as_deref()
+        == Some(label)
+    {
+        // Exit without running destructors, but avoid a multi-gigabyte core dump in CI.
+        std::process::exit(86);
+    }
+    fail_at_checkpoint(label)
+}
+
 pub use builder::*;
 pub(crate) use state::{
     BUILDER_STATE_VERSION, BuilderLock, BuilderPaths, COMPLETE_MARKER_VERSION, JOB_STATE_VERSION,

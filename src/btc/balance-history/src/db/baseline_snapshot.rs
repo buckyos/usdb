@@ -3,23 +3,18 @@
 use std::collections::BTreeMap;
 
 use bitcoincore_rpc::bitcoin::Block;
-use rust_rocksdb::{IteratorMode, ReadOptions};
+use rust_rocksdb::{Direction, IteratorMode, ReadOptions};
 use usdb_util::ToBtcScriptHash;
 
 use super::{
     BALANCE_HISTORY_CF, BLOCK_COMMITS_CF, BalanceHistoryDB, BalanceHistoryDBIdentity, META_CF,
     META_KEY_BTC_BLOCK_HEIGHT, SCRIPT_REGISTRY_CF, UTXO_CF,
 };
-use crate::baseline_snapshot::{BaselineSource, Result, storage::Writer};
+use crate::baseline_snapshot::{BaselineIdentity, BaselineSource, Result, storage::Writer};
 use crate::bootstrap::NativeBootstrapPhase;
 
 impl BalanceHistoryDB {
-    pub(crate) fn export_baseline_view(
-        &self,
-        writer: &mut Writer,
-        block: &Block,
-    ) -> Result<BaselineSource> {
-        let identity = &writer.identity;
+    pub(crate) fn baseline_source(&self, identity: &BaselineIdentity) -> Result<BaselineSource> {
         if self.get_btc_block_height()? != identity.height || self.is_rollback_in_progress()? {
             return Err("Baseline export requires exact genesis height and no rollback".into());
         }
@@ -53,6 +48,52 @@ impl BalanceHistoryDB {
                 db_identity: actual,
             }
         };
+        Ok(source)
+    }
+
+    /// Read a bounded descending page; the caller rejects any mutation of the offline file set.
+    pub(crate) fn baseline_rows(
+        &self,
+        balances: bool,
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let view = self.db.snapshot();
+        let cf = self
+            .db
+            .cf_handle(if balances {
+                BALANCE_HISTORY_CF
+            } else {
+                UTXO_CF
+            })
+            .ok_or("Missing baseline source table")?;
+        let mut options = ReadOptions::default();
+        options.set_total_order_seek(true);
+        options.fill_cache(false);
+        let mode = after
+            .map(|key| IteratorMode::From(key, Direction::Reverse))
+            .unwrap_or(IteratorMode::End);
+        let mut result = Vec::new();
+        for row in view.iterator_cf_opt(cf, options, mode) {
+            let (key, value) = row?;
+            if after == Some(key.as_ref()) {
+                continue;
+            }
+            result.push((key.to_vec(), value.to_vec()));
+            if result.len() == limit {
+                break;
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn export_baseline_view(
+        &self,
+        writer: &mut Writer,
+        block: &Block,
+    ) -> Result<BaselineSource> {
+        let identity = &writer.identity;
+        let source = self.baseline_source(identity)?;
         let view = self.db.snapshot();
         let meta = self
             .db

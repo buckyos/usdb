@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use bitcoincore_rpc::bitcoin::{Block, ScriptBuf, consensus};
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use usdb_util::{ToBtcScriptHash, parse_json_strict};
 
@@ -24,6 +24,7 @@ pub(crate) struct Writer {
     started: Instant,
     heartbeat: Instant,
     rows: u64,
+    automatic_commit: bool,
 }
 
 impl Writer {
@@ -45,6 +46,7 @@ impl Writer {
             started: Instant::now(),
             heartbeat: Instant::now(),
             rows: 0,
+            automatic_commit: true,
         })
     }
 
@@ -52,7 +54,7 @@ impl Writer {
         self.rows += 1;
         // Bound transaction/WAL work as well as application memory. An unfinished
         // directory never has a completed manifest and cannot be installed.
-        if self.rows.is_multiple_of(20_000) {
+        if self.automatic_commit && self.rows.is_multiple_of(20_000) {
             self.conn.execute_batch("COMMIT; BEGIN IMMEDIATE")?;
         }
         if self.heartbeat.elapsed().as_secs() >= 10 {
@@ -73,6 +75,24 @@ impl Writer {
                 .execute(params![hash, i64::try_from(balance)?])?;
         }
         self.progress("balances")
+    }
+
+    /// Resume an unpublished DB; callers checkpoint rows and their cursor in one transaction.
+    pub(crate) fn resume(path: &Path, identity: BaselineIdentity) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        conn.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA temp_store=FILE; PRAGMA cache_size=-65536; BEGIN IMMEDIATE")?;
+        Ok(Self {
+            conn,
+            identity,
+            started: Instant::now(),
+            heartbeat: Instant::now(),
+            rows: 0,
+            automatic_commit: false,
+        })
+    }
+
+    pub(crate) fn use_external_checkpoints(&mut self) {
+        self.automatic_commit = false;
     }
 
     pub(crate) fn put_utxo(&mut self, outpoint: &[u8], hash: &[u8], value: u64) -> Result<()> {
@@ -107,10 +127,21 @@ impl Writer {
     pub(crate) fn finish(self) -> Result<BaselineState> {
         self.conn.execute_batch("COMMIT")?;
         let state = scan_state(&self.conn, self.identity)?;
-        self.conn.execute(
-            "INSERT INTO meta VALUES (1, ?1)",
-            [serde_json::to_string(&state)?],
-        )?;
+        let existing: Option<String> = self
+            .conn
+            .query_row("SELECT state_json FROM meta WHERE id=1", [], |r| r.get(0))
+            .optional()?;
+        let encoded = serde_json::to_string(&state)?;
+        match existing {
+            Some(value) if value != encoded => {
+                return Err("Existing baseline state metadata differs".into());
+            }
+            Some(_) => (),
+            None => {
+                self.conn
+                    .execute("INSERT INTO meta VALUES (1, ?1)", [encoded])?;
+            }
+        }
         self.conn.close().map_err(|(_, error)| error)?;
         eprintln!(
             "Baseline export state finished: logical_sha256={}, elapsed_seconds={:.1}",

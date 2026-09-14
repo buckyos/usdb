@@ -46,7 +46,8 @@ registry_included=false 契约保持原意，禁止往旧格式直接加表后�
 | P8.4 | 配置/打包/installer/setup/doctor/up/controller 接入 | Core AssumeUTXO 与 BH 快照为独立配置；匹配快照恢复，无快照原生重放；校验失败明确停止；进度不混淆 |
 | P8.5 | 完整服务验收与主网制作/容量测试 | G→tip BH/indexer/chain 对拍；记录制作、下载、安装、磁盘峰值与时长；整理操作步骤供安排长任务 |
 
-当前批次实现 P8.1，验收结果记录于第 7 节；P8.2–P8.5 尚未接入。后续阶段不得仅因 exporter 通过便标为完成。
+P8.1 已提交为 `d0bd933`，验收结果记录于第 7 节；P8.2 制作/转换/发布编排已实现，见第 8 节。
+P8.3–P8.5 尚未接入。后续阶段不得仅因 exporter 通过便标为完成。
 尤其单文件可验证不表示现有生产 installer 已能接受新格式。
 
 ## 4. 校验与性能要求
@@ -71,8 +72,8 @@ registry_included=false 契约保持原意，禁止往旧格式直接加表后�
 ## 6. P8.1 离线命令与摘要编码
 
 本批在现有 `balance-history-snapshot-tool` 增加 `export-baseline` 和 `verify-baseline`。
-这是供后续编排复用的底层入口；尚未由 `SNAPSHOT_SCRIPT create/finalize/publish` 调用，
-也尚不能通过当前生产 installer 安装。命令帮助可先独立查看：
+这是一次性离线导出的底层入口；需要可恢复任务和发布流程时使用第 8 节的 P8.2 入口。
+目前仍不能通过生产 installer 安装。命令帮助可先独立查看：
 
 ```bash
 cargo build --manifest-path src/btc/Cargo.toml -p balance-history-snapshot-tool
@@ -112,7 +113,7 @@ BASELINE_TOOL=/home/bucky/work/usdb/src/btc/target/debug/balance-history-snapsho
 成功输出一个目录，内含 `balance_history_baseline_963800.db`、
 `balance_history_baseline_963800.manifest.json` 和对应 `.manifest.sig`。
 仅在全文件、签名和语义自检通过后公布最终目录。失败会保留输出父目录内的 `.baseline-*`
-临时目录供诊断，不作为完成产物；P8.1 不支持断点续导，续导能力由 P8.2 补齐。
+临时目录供诊断，不作为完成产物；这个一次性命令不支持断点续导，P8.2 独立的 job 入口提供续导能力。
 单独 `verify-baseline` 验证签名中的身份与内容；部署方仍需把该身份与网络 bundle 的预期 G/hash 比对。
 
 逻辑编码固定如下，所有金额单位为 satoshi：
@@ -162,3 +163,30 @@ fixture 的断面为 4 行非零余额、406 个活 UTXO、9 条 registry、1 �
 release fragment 校验、新命令帮助和实际校验失败退出路径均通过。
 
 主网大小、耗时、临时排序空间和恢复后的服务表现尚未验证；这些是 P8.3/P8.5 的验收内容。
+
+## 8. P8.2 制作编排与恢复
+
+现有 wrapper 新增显式 `--snapshot-type baseline`，复用 snapshot-tool、签名密钥和 S3/R2 配置，
+支持 `create → finalize → publish` 及 `status/resume-verify/verify/verify-published`。
+完整参数、三种来源、目录布局和恢复限制见
+[P8.2 操作手册](balance-history-unified-baseline-p82-operations.md)。
+
+旧 core＋registry 输入先验签、核对配对身份及全文件哈希，再直接读取 SQLite 裁剪合并；
+不先恢复全量 RocksDB。输出如实记为 `legacy_split` 来源，嵌入原两份 manifest，逻辑摘要保持来源无关。
+管理式构建使用独立 workspace，从 0 或原生断面同步到精确 G，再进入相同导出流程。
+
+job 冻结来源、G/hash、签名者和可信目录摘要；UTXO、余额和 registry 按批次将数据与游标同事务提交。
+数据完成后独立验证，不再依赖旧来源。原始输入哈希和最终验证扫描中断后重算，不冒充已断点续扫。
+最终目录仅在验签和完整语义校验通过后原子公布；进程在公布前后退出均可恢复。
+finalize 冻结工具/脚本摘要及文件清单；publish 复用不可覆盖的对象上传和公开内容验证，record 最后发布。
+
+小规模验收覆盖真实 Core 夹具下三种来源逻辑内容一致、两个管理式 RPC 构建入口、
+六个阶段的进程强制退出恢复、数据源变化拒绝、验证阶段脱离旧来源、旧输入签名/文件损坏拒绝、
+完整 shell/Rust/Python 制作链路，以及模拟 S3/公开访问的失败、重试和内容损坏。
+网络测试只使用临时回环 RPC；S3/公开传输边界使用替身，尚未声称真实发布或主网性能验收完成。
+
+本阶段回归结果：BH 与 snapshot-tool 的单元/集成测试共 261 通过、1 项依赖主网旧快照的测试按原配置跳过；
+旧 wrapper、snapshot distribution、AssumeUTXO release 的 Python 回归分别为 13、14、28 项通过。
+workspace 编译检查、相关包 Clippy、格式检查、API 文档、ShellCheck、新命令帮助和 release fragment 校验均通过。
+发布说明使用 `balance-history-baseline-release-workflow`，建议后续提交 trailer 为
+`Release-Note: balance-history-baseline-release-workflow`。

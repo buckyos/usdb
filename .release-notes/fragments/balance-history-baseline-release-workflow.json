@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "balance-history-baseline-release-workflow",
+  "type": "added",
+  "scopes": ["balance-history", "release"],
+  "summary": "Add resumable unified baseline snapshot creation and publishing",
+  "details": [
+    "The existing snapshot script supports baseline create, finalize and publish with existing snapshot keys and object storage, using stopped exact-height databases, managed full or AssumeUTXO replay, or authenticated legacy core and registry pairs.",
+    "Export rows and cursors commit atomically. Completed batches survive process interruption; incomplete verification scans restart. Publication reuses matching uploaded objects and checks full public contents before publishing its immutable record. Installation and node orchestration remain separate stages."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

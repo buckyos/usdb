@@ -303,3 +303,267 @@ fn exporter_rejects_wrong_height_block_and_unsealed_source() {
     assert!(!incomplete.output_dir.exists());
     assert!(BaselineIdentity::new(Network::Regtest, u32::MAX, args.block_hash).is_err());
 }
+
+fn job_input(options: &BaselineExportOptions) -> BaselineJobInput {
+    BaselineJobInput {
+        identity: BaselineIdentity::new(options.network, options.height, options.block_hash)
+            .unwrap(),
+        source: BaselineJobSource::Rocksdb {
+            root: options.source_root.clone(),
+        },
+        genesis_block_file: options.genesis_block_file.clone(),
+    }
+}
+
+#[test]
+fn resumable_export_keeps_batches_and_matches_one_shot_at_every_stage() {
+    let work = Workspace::new();
+    let fixture = chain();
+    let source = work.0.join("full");
+    fixture.reference(&source, &work.0.join("reference.db"));
+    let args = options(&work.0, source, "expected", &fixture);
+    let expected = export_baseline_snapshot(&args).unwrap();
+    for interrupted in [
+        "utxos",
+        "balances",
+        "script_registry",
+        "data_finished",
+        "verified",
+        "published",
+    ] {
+        let root = work.0.join(format!("job-{interrupted}"));
+        let error = create_or_resume_baseline(
+            &root,
+            Some(job_input(&args)),
+            &args.signing_key_file,
+            &args.trusted_keys_file,
+            17,
+            &|stage| {
+                if stage == interrupted {
+                    Err("planned interruption".into())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("planned interruption"), "{error}");
+        let status = baseline_job_status(&root).unwrap();
+        if interrupted == "utxos" {
+            assert_eq!(status.checkpoint, Some(("utxos".into(), 17)));
+            let db =
+                Connection::open(root.join("staging/balance_history_baseline_103.db")).unwrap();
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM utxos", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                17
+            );
+        }
+        let report = create_or_resume_baseline(
+            &root,
+            None,
+            &args.signing_key_file,
+            &args.trusted_keys_file,
+            13,
+            &|_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(report.stage, "complete");
+        let actual =
+            verify_baseline_snapshot(&report.manifest_file.unwrap(), &args.trusted_keys_file)
+                .unwrap();
+        assert_eq!(actual.state, expected.state, "{interrupted}");
+        let again = create_or_resume_baseline(
+            &root,
+            None,
+            &args.signing_key_file,
+            &args.trusted_keys_file,
+            31,
+            &|_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            again.logical_sha256.as_ref(),
+            Some(&expected.logical_sha256)
+        );
+    }
+}
+
+#[test]
+fn data_resume_rejects_source_mutation_and_verification_needs_no_source() {
+    let work = Workspace::new();
+    let fixture = chain();
+    let source = work.0.join("full");
+    fixture.reference(&source, &work.0.join("reference.db"));
+    let args = options(&work.0, source, "unused", &fixture);
+    let data = work.0.join("data-job");
+    assert!(
+        create_or_resume_baseline(
+            &data,
+            Some(job_input(&args)),
+            &args.signing_key_file,
+            &args.trusted_keys_file,
+            17,
+            &|_| Err("stop".into())
+        )
+        .is_err()
+    );
+    let verify = work.0.join("verify-job");
+    assert!(
+        create_or_resume_baseline(
+            &verify,
+            Some(job_input(&args)),
+            &args.signing_key_file,
+            &args.trusted_keys_file,
+            17,
+            &|stage| if stage == "data_finished" {
+                Err("stop".into())
+            } else {
+                Ok(())
+            }
+        )
+        .is_err()
+    );
+    // A source inventory change must be rejected even if it leaves the exported prefix intact.
+    fs::write(
+        args.source_root.join("db/balance_history/changed-input"),
+        b"changed",
+    )
+    .unwrap();
+    assert!(
+        create_or_resume_baseline(
+            &data,
+            None,
+            &args.signing_key_file,
+            &args.trusted_keys_file,
+            17,
+            &|_| Ok(())
+        )
+        .unwrap_err()
+        .contains("source changed")
+    );
+    fs::rename(&args.source_root, work.0.join("archived-source")).unwrap();
+    assert_eq!(
+        create_or_resume_baseline(
+            &verify,
+            None,
+            &args.signing_key_file,
+            &args.trusted_keys_file,
+            17,
+            &|_| Ok(())
+        )
+        .unwrap()
+        .stage,
+        "complete"
+    );
+}
+
+#[test]
+fn signed_legacy_conversion_matches_full_and_rejects_mismatched_inputs() {
+    let work = Workspace::new();
+    let fixture = chain();
+    let source = work.0.join("full");
+    fixture.reference(&source, &work.0.join("reference.db"));
+    let args = options(&work.0, source, "expected", &fixture);
+    let mut config = (*source_config(&args.source_root)).clone();
+    config.snapshot.signing_key_file = Some(args.signing_key_file.clone());
+    let config = Arc::new(config);
+    let db = Arc::new(BalanceHistoryDB::open_read_only(config.clone()).unwrap());
+    let indexer = crate::SnapshotIndexer::new(
+        config,
+        db,
+        Arc::new(crate::IndexOutput::new(Arc::new(
+            crate::SyncStatusManager::new(),
+        ))),
+    );
+    let core = indexer
+        .run_core_to_path(103, &work.0.join("core.db"))
+        .unwrap();
+    let registry = indexer
+        .run_registry_to_path(&core.manifest, &work.0.join("registry.db"))
+        .unwrap();
+    drop(indexer);
+    let expected = export_baseline_snapshot(&args).unwrap();
+    let mut input = job_input(&args);
+    input.source = BaselineJobSource::LegacySplit {
+        core_manifest: core.manifest_path.clone(),
+        registry_manifest: registry.manifest_path.clone(),
+    };
+    let root = work.0.join("converted");
+    assert!(
+        create_or_resume_baseline(
+            &root,
+            Some(input.clone()),
+            &args.signing_key_file,
+            &args.trusted_keys_file,
+            13,
+            &|stage| if stage == "balances" {
+                Err("interrupted conversion".into())
+            } else {
+                Ok(())
+            }
+        )
+        .is_err()
+    );
+    let result = create_or_resume_baseline(
+        &root,
+        None,
+        &args.signing_key_file,
+        &args.trusted_keys_file,
+        17,
+        &|_| Ok(()),
+    )
+    .unwrap();
+    let actual =
+        verify_baseline_snapshot(&result.manifest_file.unwrap(), &args.trusted_keys_file).unwrap();
+    assert_eq!(actual.state, expected.state);
+    assert!(matches!(actual.source, BaselineSource::LegacySplit { .. }));
+    // Each old manifest is independently authenticated, even when the paired anchor agrees.
+    for path in [&core.manifest_path, &registry.manifest_path] {
+        let saved = fs::read(path).unwrap();
+        let mut tampered: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        tampered["generated_at"] = serde_json::json!(0);
+        fs::write(path, serde_json::to_vec(&tampered).unwrap()).unwrap();
+        let rejected = work.0.join(format!(
+            "invalid-signature-{}",
+            path.file_name().unwrap().to_string_lossy()
+        ));
+        assert!(
+            create_or_resume_baseline(
+                &rejected,
+                Some(input.clone()),
+                &args.signing_key_file,
+                &args.trusted_keys_file,
+                17,
+                &|_| Ok(())
+            )
+            .unwrap_err()
+            .contains("signature verification failed")
+        );
+        assert!(
+            !rejected
+                .join("staging/balance_history_baseline_103.db")
+                .exists()
+        );
+        fs::write(path, saved).unwrap();
+    }
+    // A core/registry hash mismatch must fail before any cursor or output DB is created.
+    let db = Connection::open(&registry.db_path).unwrap();
+    db.execute_batch("UPDATE script_registry SET script_pubkey=x'51'")
+        .unwrap();
+    drop(db);
+    let bad = work.0.join("bad-conversion");
+    assert!(
+        create_or_resume_baseline(
+            &bad,
+            Some(input),
+            &args.signing_key_file,
+            &args.trusted_keys_file,
+            17,
+            &|_| Ok(())
+        )
+        .unwrap_err()
+        .contains("file hash mismatch")
+    );
+    assert!(!bad.join("staging/balance_history_baseline_103.db").exists());
+}

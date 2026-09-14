@@ -59,6 +59,9 @@ MEMORY_PLAN_JSON=""
 usage() {
   cat <<'USAGE'
 Usage:
+  mainnet_exact_height_snapshot.sh COMMAND --snapshot-type baseline --height G --block-hash HASH
+      [--source-root OFFLINE_BH_ROOT | --core-manifest FILE --registry-manifest FILE | --config FILE]
+      [--genesis-block RAW_BLOCK_FILE] [--batch-size 20000]
   mainnet_exact_height_snapshot.sh COMMAND --snapshot-type assumeutxo [--height 935000]
       [--snapshot-file /path/mainnet-935000-utxos.dat] [--source-url HTTPS_URL]
   mainnet_exact_height_snapshot.sh deploy --snapshot-type assumeutxo [--height 935000]
@@ -97,7 +100,7 @@ Commands:
   paths      Print all resolved operational paths without modifying them.
 
 Primary overrides:
-  SNAPSHOT_TYPE              balance-history (default) or assumeutxo; also --snapshot-type.
+  SNAPSHOT_TYPE              balance-history (default), baseline or assumeutxo; also --snapshot-type.
   SNAPSHOT_KEY_ROOT          Existing snapshot signer files; reused without keygen for UTXO.
   SNAPSHOT_UTXO_FILE         Existing raw UTXO file (or --snapshot-file).
   SNAPSHOT_UTXO_SOURCE_URL   Optional HTTPS input source (or --source-url).
@@ -128,6 +131,9 @@ UTXO deploy reads publish-result.json and the original public catalog; no privat
 It writes small public release inputs into the source bundle for candidate/publish workflows.
 Use --prepare-only to export without source integration. Matching previous exports can be reused.
 Node installation and startup remain in the release installer/setup/up flow.
+Baseline supports create/resume/resume-verify/status/verify/finalize/prepare-release/publish/verify-published/paths.
+It reuses snapshot keys and S3 settings. Offline sources require the raw binary G block.
+The new artifact is for producer validation; node installation integration is a subsequent stage.
 USAGE
 }
 
@@ -1002,6 +1008,20 @@ while (($# > 0)); do
   fi
 done
 set -- "${forward_args[@]}"
+if [[ "$snapshot_type" == "baseline" && "$COMMAND" != "help" && "$COMMAND" != "-h" && "$COMMAND" != "--help" ]]; then
+  check_path_isolation
+  [[ "$UPLOAD_PROGRESS" == "0" || "$UPLOAD_PROGRESS" == "1" ]] || die "SNAPSHOT_UPLOAD_PROGRESS must be 0 or 1"
+  baseline_args=(
+    "${REPO_ROOT}/docker/scripts/tools/baseline_snapshot_release.py" "$COMMAND"
+    --root-dir "${RELEASE_ROOT}/baseline" --builder-root "${BUILDER_ROOT}/baseline" --tool "$SNAPSHOT_TOOL"
+    --signing-key "$SIGNING_KEY" --trusted-keys "$TRUSTED_KEYS" --signer-id "$SIGNER_ID"
+    --public-base-url "$PUBLIC_BASE_URL" --bucket "$S3_BUCKET" --endpoint-url "$S3_ENDPOINT_URL"
+    --aws-region "$AWS_REGION" --aws-profile "$AWS_PROFILE" --aws-executable "$AWS_EXECUTABLE"
+    --s3-upload-concurrency "$S3_UPLOAD_CONCURRENCY" --s3-chunk-size-mib "$S3_CHUNK_SIZE_MIB"
+  )
+  if [[ "$UPLOAD_PROGRESS" == "1" ]]; then baseline_args+=(--progress); fi
+  exec python3 "${baseline_args[@]}" "$@"
+fi
 if [[ "$snapshot_type" == "assumeutxo" && "$COMMAND" != "help" && "$COMMAND" != "-h" && "$COMMAND" != "--help" ]]; then
   check_path_isolation
   [[ "$UPLOAD_PROGRESS" == "0" || "$UPLOAD_PROGRESS" == "1" ]] || die "SNAPSHOT_UPLOAD_PROGRESS must be 0 or 1"
@@ -1024,7 +1044,7 @@ if [[ "$snapshot_type" == "assumeutxo" && "$COMMAND" != "help" && "$COMMAND" != 
   fi
   exec python3 "${utxo_args[@]}" "$@"
 fi
-[[ "$snapshot_type" == "balance-history" || "$snapshot_type" == "assumeutxo" ]] || die "Unknown snapshot type: $snapshot_type"
+[[ "$snapshot_type" == "balance-history" || "$snapshot_type" == "assumeutxo" || "$snapshot_type" == "baseline" ]] || die "Unknown snapshot type: $snapshot_type"
 
 case "$COMMAND" in
   init)

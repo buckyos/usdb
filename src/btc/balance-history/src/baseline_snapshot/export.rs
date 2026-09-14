@@ -73,7 +73,7 @@ fn source_files(path: &Path) -> Result<BTreeMap<PathBuf, (u64, SystemTime)>> {
         .collect()
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut output = File::options().create_new(true).write(true).open(path)?;
     output.write_all(bytes)?;
     output.sync_all()?;
@@ -207,6 +207,22 @@ pub(crate) fn validate_source(
                     != Some(&crate::assumeutxo::format::hex(&delta))
             {
                 return Err("Native source provenance differs from the baseline state".into());
+            }
+        }
+        BaselineSource::LegacySplit { core, registry } => {
+            core.validate()?;
+            registry.validate_against_core(core)?;
+            let commit: Vec<u8> = conn.query_row(
+                "SELECT block_commit FROM block_commits WHERE block_height=?1",
+                [identity.height],
+                |r| r.get(0),
+            )?;
+            if core.db_identity != BalanceHistoryDBIdentity::for_network(identity.network)
+                || core.state_ref.block_height != identity.height
+                || core.state_ref.stable_block_hash != identity.block_hash.to_string()
+                || core.state_ref.latest_block_commit != crate::assumeutxo::format::hex(&commit)
+            {
+                return Err("Legacy split provenance differs from the baseline state".into());
             }
         }
     }

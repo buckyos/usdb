@@ -1,9 +1,15 @@
 //! Source-independent business-genesis snapshots; production installation is a separate stage.
 
 mod export;
+mod job;
+mod source;
 pub(crate) mod storage;
 
 pub use export::{BaselineExportOptions, export_baseline_snapshot};
+pub use job::{
+    BaselineJobInput, BaselineJobReport, BaselineJobSource, baseline_job_status,
+    create_or_resume_baseline, verify_baseline_job,
+};
 pub use storage::verify_baseline_snapshot;
 
 use std::collections::BTreeMap;
@@ -117,6 +123,13 @@ pub enum BaselineSource {
     },
     /// Sealed native replay, including its independently verified original source/checkpoint.
     Assumeutxo { state: Box<NativeBootstrapState> },
+    /// Verified legacy split artifacts, retained as provenance rather than native-import evidence.
+    LegacySplit {
+        /// Complete signed core identity.
+        core: Box<crate::CoreSnapshotManifest>,
+        /// Registry identity bound to that exact core.
+        registry: Box<crate::ScriptRegistryManifest>,
+    },
 }
 
 /// One signed manifest for the complete baseline DB. Trusted keys remain release-owned.

@@ -1,4 +1,5 @@
 use balance_history::snapshot_audit::SplitSnapshotAudit;
+mod baseline;
 use balance_history::{
     BalanceHistoryConfig, BalanceHistoryDB, DEFAULT_CACHE_BUDGET_PERCENT, IndexConfig,
     LegacySnapshotIntegrityCheck, LegacyStateCompareOptions, LegacyStateCompareProgressRef,
@@ -37,6 +38,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Create, resume and verify unified baseline artifacts.
+    Baseline {
+        #[command(subcommand)]
+        command: baseline::BaselineCommand,
+    },
     /// Export a signed normalized genesis snapshot from a stopped exact-height DB.
     ExportBaseline(BaselineExportArgs),
 
@@ -304,8 +310,11 @@ fn main() -> ExitCode {
         std::process::exit(1);
     });
 
-    let builder = ExactHeightSnapshotBuilder::new(root_dir);
+    let builder = ExactHeightSnapshotBuilder::new(root_dir.clone());
     let result = match cli.command {
+        Command::Baseline { command } => {
+            baseline::run(&root_dir, command).and_then(|report| print_value(&report, cli.json))
+        }
         Command::ExportBaseline(args) => export_baseline(args, cli.json),
         Command::VerifyBaseline {
             manifest,
