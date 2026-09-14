@@ -7,7 +7,7 @@
 采用用户指定的第一台测试节点，先归档旧状态的比较证据，再在同机按正式发布安装流程串行重建。
 不要求同时存放两套完整 Bitcoin/BH/indexer 数据。开发机现有 P4/P5/P6 证据可复用，不重新生成旧 BH 大型快照。
 
-本次通过 `ssh usdb@xxxx` 只读核实：主机名 `bucky04`，操作员属于 `sudo/docker` 组，
+本次通过 `ssh usdb@192.168.1.119` 只读核实：主机名 `bucky04`，操作员属于 `sudo/docker` 组，
 launcher 指向 `usdb-testnet-v0-r17`，数据根 `/data/.usdb`。配置仍为 `SNAPSHOT_MODE=balance-history`、
 `BH_SCRIPT_REGISTRY_ENABLED=1`、自动资源阶段 `steady`。controller unit 为
 `usdb-node-bootstrap-usdb-testnet-v0.service`，本次观察是 `inactive/dead`；这不代表 Docker 服务已经停止。
@@ -222,8 +222,8 @@ H 的样本和承诺可保存在小型 JSON/报告包内。若还要求 H 的独
 
 ```bash
 scp -P 2224 /home/bucky/work/usdb/docker/scripts/tools/node_rebuild.py \
-  usdb@[ip]:/home/usdb/node_rebuild.py
-ssh usdb@[ip]
+  usdb@192.168.1.119:/home/usdb/node_rebuild.py
+ssh usdb@192.168.1.119
 ```
 
 在 node1 选择备份位置并预览；`/mnt/backup` 是示例，需换成实际可用的备份盘：
