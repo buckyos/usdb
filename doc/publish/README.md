@@ -32,6 +32,8 @@
 - [USDB Network 数据布局与 Release 兼容契约](./usdb-network-data-layout-and-release-compatibility.md)
 - [USDB 测试网节点角色与 CPU 挖矿方案](./usdb-testnet-node-roles-and-cpu-mining.md)
 - [USDB 节点矿工切换与运维](./usdb-node-mining-operations-design.md)
+- [SourceDAO 受管操作与验证说明](./usdb-node-sourcedao-operations.md)
+- [面向运维的手册覆盖复核（2026-09-14）](./usdb-operator-handbook-review-2026-09-14.md)
 - [USDB 独立 DAO Bootstrap 参数、部署与验收核对](./usdb-independent-dao-bootstrap-review-2026-09-06.md)
 - [USDB testnet-v0 深 BTC 重组停链与整网重置](./usdb-testnet-v0-deep-btc-reorg-operations.md)
 - [Balance-History 发布与 Snapshot 分发](./balance-history-release-and-snapshot-distribution.md)

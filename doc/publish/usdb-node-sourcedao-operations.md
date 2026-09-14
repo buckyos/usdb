@@ -1,5 +1,7 @@
 # 使用 usdb-node 初始化 SourceDAO
 
+> 网络初始化负责人的操作步骤见[网络启动后初始化 SourceDAO](../handbook/network-admin/sourcedao.md)。本文继续维护工具行为、发布要求和内部验收细节。
+
 目标节点使用已安装 release 中的冻结 bundle 和按 digest 固定的 SourceDAO 工具镜像。
 不需要 clone SourceDAO、安装 Node/npm、编译合约或设置 `SOURCE_DAO_RELEASE_DIR`。
 配置准备、参数审核、`freeze --apply` 在发布前完成；部署时不再修改委员会或初始分配。

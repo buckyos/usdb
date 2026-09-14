@@ -26,6 +26,19 @@ usdb-node status
 
 进度面板中的单个组件状态与这里的总体状态不是同一层级。单行 `READY`、下载 100% 或容器显示 `running`，都不代表整个节点就绪。
 
+## 节点就绪后的独立检查
+
+节点 `READY` 不代表矿工已经产块，也不代表 SourceDAO 已完成初始化。按节点职责分别检查：
+
+| 职责 | 检查命令与判断 |
+| --- | --- |
+| 普通 full 节点 | 保持整体运行与入网正常，本地挖矿 `DISABLED` 是正常状态 |
+| 矿工节点 | `usdb-node mining status` 检查挖矿状态；本地产块证据见[CPU 挖矿](mining.md#判断是否已经在挖矿) |
+| SourceDAO 初始化执行节点 | `usdb-node sourcedao status` 检查最近任务结果和链上初始化状态；导出及验证单独完成 |
+| 加入已有网络的节点 | 需要核对 DAO 时使用 `usdb-node sourcedao check`；本机没有部署任务不代表链上未初始化 |
+
+SourceDAO 的 `check/status` 不发送交易，但可能拉取工具镜像、启动短时检查容器。初始化期间使用[专用进度与恢复指南](../network-admin/sourcedao.md)，不能仅凭主节点的后台 controller 状态判断初始化任务。
+
 ## 连续观察同步
 
 ```bash

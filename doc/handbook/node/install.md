@@ -136,4 +136,4 @@ usdb-node peers status
 
 `CONNECTED` 是基本连接观测，不单独证明已经追到全网最新高度。Bitcoin 前台就绪后，后台历史验证仍可能继续；保持节点运行并在进度面板观察它。
 
-此时节点角色仍为 `full`，不会自动挖矿，也不需要执行 SourceDAO 初始化。后续操作见[日常维护](maintenance.md)。
+此时节点角色仍为 `full`，不会自动挖矿，也不需要重复初始化已有网络的 SourceDAO。需要参与挖矿时继续阅读[CPU 挖矿](mining.md)；网络初始化负责人在链开始出块后执行[SourceDAO 初始化与验证](../network-admin/sourcedao.md)。日常操作见[日常维护](maintenance.md)。

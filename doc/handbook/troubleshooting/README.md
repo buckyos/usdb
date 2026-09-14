@@ -18,6 +18,9 @@
 | `AWAITING_PEERS`、没有实际连接 | [入网问题](#等待-peers-或一直没有连接) |
 | 后台任务失败、服务不健康、`BLOCKED` | [后台或服务失败](#后台任务或服务失败) |
 | 更新工具后要求激活或提示不兼容 | [升级问题](#升级后要求激活或兼容检查失败) |
+| 矿工预检失败、长期等待工作、无法确认本机产块 | [矿工常见问题](../node/mining.md#常见问题) |
+| SourceDAO 初始化失败、等待回执或导出/验证失败 | [SourceDAO 中断与失败恢复](../network-admin/sourcedao.md#中断与失败恢复) |
+| `A SourceDAO task is active`，停机或升级被拒绝 | [SourceDAO 任务互斥](../network-admin/sourcedao.md#维护期间的互斥与备份) |
 
 ## 找不到 usdb-node 命令
 
@@ -223,6 +226,7 @@ usdb-node controller logs --follow
 
 - 主机权限、下载连通性或磁盘问题：先修复具体条件，再用 `up --dry-run` 判断是否可以继续。工具仍阻断时保留输出，不循环重试。
 - 配置应用失败：按该任务的恢复入口处理，例如 `peers apply`。
+- SourceDAO 任务活动导致操作被拒绝：使用 `usdb-node sourcedao status --watch` 观察独立任务；不能通过停止 controller 或删除锁来绕过。具体见[SourceDAO 章节](../network-admin/sourcedao.md)。
 - 原生导入显示 `load_uncertain`、`load_failed`，或准备任务退出失败：保留导入记录和日志，交由网络运维人员核对是否仍有活动导入，并按对应版本的恢复说明操作。普通 `up` 不一定能恢复这种情况。
 - 数据库损坏、网络身份不匹配或深度重组导致停链：保存现场并联系网络运维方。不要删除锁、修改身份、清除停链记录或丢弃数据库来强行启动。
 
@@ -253,6 +257,8 @@ usdb-node doctor
 2. 出错时间和时区、正在执行的命令、最近是否升级或重启。
 3. `status` 的总体状态与第一项失败；同步问题补充两次带时间的进度观察。
 4. 对应阶段附近的日志片段；连接问题补充地址族和实际端口；容量问题补充 `df` 结果。
+
+矿工问题另提供 `mining status` 的状态及操作目标。SourceDAO 问题另提供 `action/outcome`、部署阶段、当前区块和待确认交易哈希；核对最近任务是 bootstrap、export 还是 validate。原始签名交易和私有部署恢复文件不作为公开附件。
 
 不要上传完整 `node.env`、私钥、助记词、钱包文件、RPC 密码或 token。日志和 JSON 输出也要检查并移除带凭据的 URL、私有访问参数及不需要公开的主机信息。配置和数据库需要保留在本机或受控备份中，不作为公开工单附件。
 
