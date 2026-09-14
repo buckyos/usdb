@@ -4483,8 +4483,13 @@ def render_node_progress(
         lines.append(prefix + detail)
         milestone = component.get("genesis_milestone")
         if isinstance(milestone, dict):
-            lines.append(f"  Blocks from {component['sync_start_height']} | Genesis {milestone['height']}: {milestone['state']}")
-            lines.append(f"  Target: Bitcoin tip minus {component['stable_lag_blocks']} confirmation blocks")
+            # Partial observations may retain a milestone without its range metadata.
+            start_height = component.get("sync_start_height")
+            range_prefix = f"Blocks from {start_height} | " if type(start_height) is int else ""
+            lines.append(f"  {range_prefix}Genesis {milestone['height']}: {milestone['state']}")
+            stable_lag = component.get("stable_lag_blocks")
+            if type(stable_lag) is int:
+                lines.append(f"  Target: Bitcoin tip minus {stable_lag} confirmation blocks")
             if component.get("sync_max_height") is not None:
                 lines.append(f"  Configured maximum target: {component['sync_max_height']}")
             if milestone.get("remaining_blocks"):
@@ -4626,6 +4631,11 @@ class NodeProgressHistory:
                                 component[key] = cached_component[key]
                         if component_id == "balance_history" and cached_component.get("genesis_milestone", {}).get("state") == "available":
                             component["genesis_milestone"] = {**cached_component["genesis_milestone"], "state": "last observed available; RPC unavailable"}
+                            # Container startup observations omit the native range; keep its
+                            # context with the cached milestone without replacing fresh fields.
+                            for key in ("sync_start_height", "stable_lag_blocks", "sync_max_height"):
+                                if key in cached_component:
+                                    component.setdefault(key, cached_component[key])
                         component["detail"] = (
                             f"STALE from {cached_observed_at}: {cached_component['detail']}; "
                             f"latest probe: {component['detail']}"

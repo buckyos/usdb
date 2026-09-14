@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-watch-native-startup-gap",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Keep node status watch running across native bootstrap service startup transitions",
+  "details": [
+    "Retain synchronization range metadata with the last observed balance-history genesis milestone when a subsequent container startup observation lacks live progress.",
+    "Render partial milestone observations without raising sync_start_height or stable_lag_blocks KeyError; cached observations remain explicitly stale and never change service readiness."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

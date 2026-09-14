@@ -12,6 +12,17 @@ import usdb_node as NODE
 
 
 class ProgressDisplayTests(unittest.TestCase):
+    def test_genesis_milestone_renders_without_optional_range_metadata(self):
+        component = NODE._component_progress("balance_history", "STARTING", "RPC unavailable")
+        component["genesis_milestone"] = dict(height=963800, state="last observed available; RPC unavailable")
+        report = dict(release_id="test", observed_at="now", overall_state="STARTING", components=[component])
+        for fields in ({}, {"sync_start_height": 935000}, {"stable_lag_blocks": 10}):
+            with self.subTest(fields=fields):
+                rendered = NODE.render_node_progress({**report, "components": [{**component, **fields}]}, width=80)
+                self.assertIn("Genesis 963800: last observed available; RPC unavailable", rendered)
+                self.assertEqual("Blocks from" in rendered, "sync_start_height" in fields)
+                self.assertEqual("confirmation blocks" in rendered, "stable_lag_blocks" in fields)
+
     def test_unknown_service_phase_keeps_indeterminate_progress_renderable(self):
         component = NODE._component_progress("balance_history", "IMPORTING", "waiting for progress")
         component["progress_phase"] = None

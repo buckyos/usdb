@@ -9,9 +9,41 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/tools"))
 import usdb_node as NODE  # noqa: E402
+import assumeutxo_node as NATIVE  # noqa: E402
 
 
 class NodeProgressObservationTests(unittest.TestCase):
+    def test_native_startup_gap_retains_renderable_range_without_claiming_readiness(self):
+        ready = NATIVE._balance_history_progress(
+            NODE._component_progress("balance_history", "READY", "ready"),
+            dict(phase="Synced", stable_height=966992, query_ready=True), {},
+            dict(headers=967002), {}, base=935000, origin=963800, stable_lag=10,
+            max_height=966992,
+        )
+        # A recreated container has no native range metadata until it is running.
+        starting = NODE._indexed_service_component(
+            "balance_history", dict(state="created"), None, "RPC unavailable", "waiting",
+        )
+        report = dict(release_id="r25", observed_at="now", overall_state="READY", components=[ready])
+        pending = {**report, "overall_state": "STARTING", "components": [starting]}
+        original = copy.deepcopy(pending)
+        history = NODE.NodeProgressHistory(max_stale_age_secs=60)
+        history.apply(report, observed_monotonic=0)
+        observed = history.apply(pending, observed_monotonic=5)
+        rendered = NODE.render_node_progress(observed, width=80)
+        self.assertIn("Blocks from 935000 | Genesis 963800: last observed available; RPC unavailable", rendered)
+        self.assertIn("Target: Bitcoin tip minus 10 confirmation blocks", rendered)
+        self.assertIn("Configured maximum target: 966992", rendered)
+        self.assertEqual(observed["components"][0]["state"], "STARTING")
+        self.assertEqual(observed["overall_state"], "STARTING")
+        self.assertEqual(pending, original)
+        expired = history.apply(pending, observed_monotonic=61)
+        self.assertNotIn("Genesis", NODE.render_node_progress(expired))
+        self.assertIsNone(expired["components"][0]["current"])
+        recovered = history.apply(report, observed_monotonic=62)
+        self.assertIn("Genesis 963800: available", NODE.render_node_progress(recovered))
+        self.assertNotIn("STALE", NODE.render_node_progress(recovered))
+
     def test_indexer_waits_for_upstream_without_claiming_zero_block_sync(self):
         readiness = dict(consensus_ready=False, current=0, total=0, synced_block_height=None,
                          blockers=["SyncedHeightMissing", "UpstreamReadinessUnknown", "UpstreamSnapshotMissing"])
