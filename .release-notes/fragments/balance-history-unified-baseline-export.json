@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "balance-history-unified-baseline-export",
+  "type": "added",
+  "scopes": ["balance-history"],
+  "summary": "Add signed unified genesis snapshot export and offline verification",
+  "details": [
+    "The snapshot tool can normalize exact-height full-replay and sealed AssumeUTXO databases into one SQLite artifact containing current balances, live UTXOs, the original genesis commit and the required script mappings.",
+    "Export and verification reuse existing snapshot keys, compare per-script balances with UTXOs and publish a source-independent logical digest. Production snapshot publishing, installation and node bootstrap integration remain separate planned stages."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

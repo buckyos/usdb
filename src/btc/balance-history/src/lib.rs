@@ -2,6 +2,7 @@
 #![allow(unused_imports)]
 
 pub mod assumeutxo;
+pub mod baseline_snapshot;
 pub mod bench;
 pub mod bootstrap;
 pub mod btc;

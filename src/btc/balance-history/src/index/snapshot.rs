@@ -1037,7 +1037,8 @@ fn load_signature_file(path: &Path) -> Result<Signature, String> {
     Ok(Signature::from_bytes(&signature_bytes))
 }
 
-fn sign_snapshot_artifact_manifest(
+/// Sign a caller-selected snapshot signature domain using the existing key/sidecar format.
+pub(crate) fn sign_snapshot_artifact_manifest(
     signing_key: &SnapshotSigningKeyFile,
     manifest_path: &Path,
     payload: &[u8],
@@ -1048,7 +1049,7 @@ fn sign_snapshot_artifact_manifest(
     Ok(signature_path)
 }
 
-/// Verifies one domain-separated split-artifact manifest payload against a trusted-key catalog.
+/// Verify a domain-separated snapshot manifest payload against a trusted-key catalog.
 pub fn verify_snapshot_artifact_manifest_signature(
     signature_scheme: Option<&str>,
     signing_key_id: Option<&str>,

@@ -424,7 +424,7 @@ pub fn snapshot_status(root: &Path) -> Result<serde_json::Value, String> {
 
 #[cfg(test)]
 #[path = "../../../../../tests/common/assumeutxo.rs"]
-mod test_common;
+pub(crate) mod test_common;
 
 #[cfg(test)]
 #[path = "../../../../../tests/assumeutxo_bootstrap.rs"]

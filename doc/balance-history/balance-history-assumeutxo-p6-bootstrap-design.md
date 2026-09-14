@@ -2,6 +2,10 @@
 
 ## 1. 决策与当前边界
 
+2026-09-14 补充：可选的业务 genesis 合并快照加速方案见
+[P8 精简合并基线快照计划](./balance-history-unified-baseline-snapshot-plan.md)。
+P8.1 先实现统一导出与校验；无 BH 快照时继续使用本文的原生导入重放流程，生产安装接入另行验收。
+
 日期：2026-09-12。P4/P5 验证批次已提交为 `ce94958`；其结果继续作为历史证据。
 P6.1 已提交为 `cdf4f7c`；P6.2 检查点批次已提交为 `a897975`，实现及实测见[原生启动操作文档](./balance-history-assumeutxo-p62-operations.md)。
 当前方案采用可信旧 commit 检查点与原生导入重放，保持与从创世块重放相同的 v1 commit 链。

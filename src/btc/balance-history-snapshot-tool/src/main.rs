@@ -21,7 +21,7 @@ const DEFAULT_SNAPSHOT_MAX_MEMORY_PERCENT: usize = 80;
 
 #[derive(Parser, Debug)]
 #[command(name = TOOL_NAME)]
-#[command(about = "Build restartable core and script-registry artifacts at exact BTC heights")]
+#[command(about = "Build exact-height split artifacts and signed unified genesis baselines")]
 struct Cli {
     /// Builder root containing the shared workspace, jobs, and immutable snapshots.
     #[arg(long)]
@@ -37,6 +37,18 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Export a signed normalized genesis snapshot from a stopped exact-height DB.
+    ExportBaseline(BaselineExportArgs),
+
+    /// Fully verify a signed single-file baseline without installing it.
+    VerifyBaseline {
+        /// Unified baseline manifest; its DB and detached signature must be adjacent.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Existing release-owned snapshot trusted-key catalog.
+        #[arg(long)]
+        trusted_keys: PathBuf,
+    },
     /// Calculate cgroup-aware cache limits without opening a snapshot workspace.
     MemoryPlan {
         /// Percentage of the effective memory ceiling assigned to both caches.
@@ -185,6 +197,55 @@ enum Command {
     },
 }
 
+#[derive(clap::Args, Debug)]
+struct BaselineExportArgs {
+    /// Stopped service root or offline checkpoint, containing db/balance_history.
+    #[arg(long)]
+    source_root: PathBuf,
+    /// Expected Bitcoin network; validated against the source identity.
+    #[arg(long, default_value = "bitcoin")]
+    network: String,
+    /// Exact snapshot height, also the business genesis.
+    #[arg(long)]
+    height: u32,
+    /// Canonical BTC block hash at the business genesis.
+    #[arg(long)]
+    expected_block_hash: String,
+    /// Raw serialized block at the genesis height, including witnesses.
+    #[arg(long)]
+    genesis_block: PathBuf,
+    /// New directory outside the source; its parent must already exist.
+    #[arg(long)]
+    output_dir: PathBuf,
+    /// Existing snapshot signer JSON; never copied to the output.
+    #[arg(long)]
+    signing_key: PathBuf,
+    /// Existing release-owned snapshot trusted-key catalog.
+    #[arg(long)]
+    trusted_keys: PathBuf,
+}
+
+fn export_baseline(args: BaselineExportArgs, json: bool) -> Result<(), String> {
+    use balance_history::baseline_snapshot::{BaselineExportOptions, export_baseline_snapshot};
+    let report = export_baseline_snapshot(&BaselineExportOptions {
+        source_root: args.source_root,
+        network: args
+            .network
+            .parse()
+            .map_err(|e| format!("Invalid BTC network: {e}"))?,
+        height: args.height,
+        block_hash: args
+            .expected_block_hash
+            .parse()
+            .map_err(|e| format!("Invalid genesis block hash: {e}"))?,
+        genesis_block_file: args.genesis_block,
+        output_dir: args.output_dir,
+        signing_key_file: args.signing_key,
+        trusted_keys_file: args.trusted_keys,
+    })?;
+    print_value(&report, json)
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum IntegrityCheckArg {
     Off,
@@ -245,6 +306,12 @@ fn main() -> ExitCode {
 
     let builder = ExactHeightSnapshotBuilder::new(root_dir);
     let result = match cli.command {
+        Command::ExportBaseline(args) => export_baseline(args, cli.json),
+        Command::VerifyBaseline {
+            manifest,
+            trusted_keys,
+        } => balance_history::baseline_snapshot::verify_baseline_snapshot(&manifest, &trusted_keys)
+            .and_then(|report| print_value(&report, cli.json)),
         Command::MemoryPlan {
             cache_budget_percent,
             max_memory_percent,

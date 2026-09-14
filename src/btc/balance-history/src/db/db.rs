@@ -31,6 +31,9 @@ mod bootstrap;
 #[path = "native_bootstrap.rs"]
 mod native_bootstrap;
 
+#[path = "baseline_snapshot.rs"]
+mod baseline_snapshot;
+
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
 pub const META_CF: &str = "meta";
