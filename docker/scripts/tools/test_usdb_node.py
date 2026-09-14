@@ -30,6 +30,8 @@ REPOSITORY_ROOT = MODULE_PATH.parents[3]
 SOURCE_BUNDLE = REPOSITORY_ROOT / "docker/networks/testnet-v0"
 sys.path.insert(0, str(REPOSITORY_ROOT / "tests"))
 from common.enode import V4 as VALID_SEED
+from common.p2p import HOST, V4
+import usdb_p2p as P2P
 
 
 class UsdbNodeTests(unittest.TestCase):
@@ -277,8 +279,20 @@ class UsdbNodeTests(unittest.TestCase):
             return next(answers)
 
         output = io.StringIO()
-        result = NODE.setup_node(layout, input_fn=answer, output=output)
+        args = NODE.build_parser().parse_args([
+            "setup", "--p2p-ip-family", "ipv4", "--advertise-ipv4", V4,
+            "--advertise-port", "41303", "--advertise-discovery-port", "41304",
+        ])
+        original_template = (layout.bundle_dir / "node.env.example").read_bytes()
+        with mock.patch.object(P2P, "host_capabilities", return_value=HOST):
+            result = NODE.setup_node(layout, input_fn=answer, output=output, p2p_options=P2P.options(args))
         env = NODE.read_env(result.node_env)
+        self.assertEqual({key: env[key] for key in P2P.KEYS}, {
+            "USDB_P2P_IP_FAMILY": "ipv4", "USDB_P2P_REQUESTED_FAMILY": "ipv4",
+            "USDB_P2P_ADVERTISE_IPV4": V4, "USDB_P2P_ADVERTISE_IPV6": "",
+            "USDB_P2P_ADVERTISE_PORT": "41303", "USDB_P2P_ADVERTISE_DISCOVERY_PORT": "41304",
+        })
+        self.assertEqual((layout.bundle_dir / "node.env.example").read_bytes(), original_template)
         self.assertEqual(env["USDB_CHAIN_GCMODE"], "archive")
         self.assertEqual(env["USDB_CHAIN_TRACING"], "1")
         self.assertEqual(env["USDB_NODE_ROLE"], "full")

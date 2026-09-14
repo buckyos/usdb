@@ -1188,7 +1188,6 @@ def configure_node(
             "USDB_NODE_ROLE": role,
             "USDB_BOOTNODES": bootnodes,
             "USDB_NAT": nat,
-            **p2p_updates,
             "USDB_MINER_ADDRESS": miner_address,
             "USDB_MINER_THREADS": str(miner_threads),
         }
@@ -1201,9 +1200,9 @@ def configure_node(
             )
         content = render_env(template_path.read_text(encoding="utf-8"),
                              {key: value for key, value in updates.items() if key not in resource_updates})
-        # Commit query policy together with the initial configuration, including
-        # when an older bundle template does not yet contain these local fields.
-        content = upsert_env(content, {**resource_updates, **query_updates, **native_updates})
+        # Persist operator-local policies even when the immutable bundle template
+        # does not yet contain these fields, including the resolved P2P family.
+        content = upsert_env(content, {**resource_updates, **query_updates, **native_updates, **p2p_updates})
         _atomic_write_private(layout.node_env, content)
         _validate_node_config(
             layout,

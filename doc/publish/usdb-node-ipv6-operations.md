@@ -52,6 +52,13 @@ usdb-node setup --p2p-ip-family ipv6 --advertise-ipv6 "$NODE_IPV6"
 非交互式 `configure` 同样支持 `--p2p-ip-family` 和这些地址参数。两条 setup 示例是替代选择；
 已经存在配置时，使用下面的 `peers configure`。
 
+setup/configure 会将选择后的六个 `USDB_P2P_*` 地址族与公布端点字段写入本机 `node.env`；
+bundle 的 `node.env.example` 可以不包含这些本机字段，setup 不修改 release 内的模板。
+若旧版工具在确认后报 `node.env template is missing keys: ['USDB_P2P_…', …]`，
+需要更新 node kit 中的配置工具；改用 `--p2p-ip-family ipv4` 也不能绕过该问题。
+此处失败会撤回本次生成的 `node.env` 和 Bitcoin RPC 凭据，更新工具后可直接重试原 setup 命令，
+无需再次清理数据目录。
+
 ```bash
 # 首节点提供双栈入口；PUBLIC_IPV4 可以是路由器映射的公网 IPv4
 usdb-node peers configure --ip-family dual \

@@ -25,9 +25,11 @@ import bitcoin_release as artifacts
 import release_manifest as release
 import resource_policy as policy
 import usdb_node as node
+import usdb_p2p as p2p
 from runtime_compatibility import build_runtime_compatibility
 from common.native_node import NativeRuntime, ORIGIN, native_kit
 from common.native_docker import install_docker_recorder
+from common.p2p import HOST, V6
 
 
 class NativeBundleTests(unittest.TestCase):
@@ -153,6 +155,9 @@ class NativeBundleTests(unittest.TestCase):
             capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         installed = node.load_release_layout(self.root / "installed" / layout.release_id, node_env=layout.node_env)
+        template_path = installed.bundle_dir / "node.env.example"
+        original_template = template_path.read_bytes()
+        p2p_options = p2p.options(node.build_parser().parse_args(["setup"]))
         prompts, output = [], io.StringIO()
 
         def answer(prompt):
@@ -161,8 +166,11 @@ class NativeBundleTests(unittest.TestCase):
 
         with mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB), \
              mock.patch.object(node, "_validate_data_root_capacity", return_value=node.DataRootCapacity(self.root, 4 * 1024**4, 3 * 1024**4)), \
-             mock.patch.object(node, "detect_ssh_server_port", return_value=22):
-            setup = node.setup_node(installed, input_fn=answer, output=output, resource_management="auto")
+             mock.patch.object(node, "detect_ssh_server_port", return_value=22), \
+             mock.patch.object(p2p, "host_capabilities", return_value=HOST), \
+             mock.patch.object(p2p, "engine_capabilities", return_value={"engine": "28.0.0", "compose": "2.33.1"}):
+            setup = node.setup_node(installed, input_fn=answer, output=output, resource_management="auto",
+                                    p2p_options=p2p_options)
             self.assertFalse(setup.install_snapshot)
             self.assertFalse(any("Use this release-approved snapshot" in prompt for prompt in prompts))
             self.assertIn("Native AssumeUTXO bootstrap", output.getvalue())
@@ -174,6 +182,12 @@ class NativeBundleTests(unittest.TestCase):
         self.assertIn("INFO AssumeUTXO", output.getvalue())
         self.assertNotIn("PENDING Snapshot:", output.getvalue())
         env = node.read_env(installed.node_env)
+        self.assertEqual({key: env[key] for key in p2p.KEYS}, {
+            "USDB_P2P_IP_FAMILY": "dual", "USDB_P2P_REQUESTED_FAMILY": "auto",
+            "USDB_P2P_ADVERTISE_IPV4": "", "USDB_P2P_ADVERTISE_IPV6": V6,
+            "USDB_P2P_ADVERTISE_PORT": "31303", "USDB_P2P_ADVERTISE_DISCOVERY_PORT": "31303",
+        })
+        self.assertEqual(template_path.read_bytes(), original_template)
         self.assertEqual(list(Path(env["BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR"]).iterdir()), [])
 
     def test_watch_separates_download_import_replay_and_background_validation(self):
