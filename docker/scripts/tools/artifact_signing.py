@@ -8,6 +8,7 @@ Ed25519; this module never implements cryptographic primitives itself.
 from __future__ import annotations
 
 import base64
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -289,6 +290,12 @@ def sign(manifest: dict, secret_path: Path, trust_path: Path, *, reuse_snapshot_
         return openssl(["pkeyutl", "-sign", "-rawin", "-keyform", "DER", "-inkey", str(private), "-in", str(message)])
 
 
+@lru_cache(maxsize=128)
+def _report_verified(artifact_type: str, signer: str, manifest_sha256: str, public_key: bytes) -> None:
+    """Deduplicate success notices per process/key; cryptographic checks are never cached."""
+    print(f"Artifact signature verified: type={artifact_type}, signer={signer}, manifest_sha256={manifest_sha256}", file=sys.stderr, flush=True)
+
+
 def verify(content: bytes, signature: bytes, trust_path: Path, artifact_type: str) -> dict:
     manifest = parse_json(content)
     validate_envelope(manifest, artifact_type)
@@ -302,7 +309,7 @@ def verify(content: bytes, signature: bytes, trust_path: Path, artifact_type: st
         (root / "signature").write_bytes(signature)
         openssl(["pkeyutl", "-verify", "-rawin", "-pubin", "-keyform", "DER", "-inkey", str(root / "key.der"),
                  "-in", str(root / "message"), "-sigfile", str(root / "signature")])
-    print(f"Artifact signature verified: type={artifact_type}, signer={manifest['signing_key_id']}, manifest_sha256={hashlib.sha256(content).hexdigest()}", file=sys.stderr, flush=True)
+    _report_verified(artifact_type, manifest["signing_key_id"], hashlib.sha256(content).hexdigest(), public)
     return manifest
 
 

@@ -295,12 +295,32 @@ def guard_check(layout: node.ReleaseLayout, env, epoch=None):
             raise ValueError("DEEP_REORG_EPOCH_CHANGED: current upstream epoch differs from the chain baseline")
 
 
+def bitcoin_check(layout: node.ReleaseLayout, env):
+    """Use the selected bootstrap mode's readiness contract before resolving a miner."""
+    if env.get("SNAPSHOT_MODE") != "assumeutxo":
+        bitcoin = node._bitcoin_startup_progress(layout, command_timeout_secs=20)
+        if not bitcoin or bitcoin.get("ready") is not True:
+            raise ValueError("BITCOIN_NOT_READY: full Bitcoin readiness is required")
+        return
+    from assumeutxo_node import core_progress
+    try:
+        bitcoin = core_progress(layout)
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("BITCOIN_NOT_READY: native Bitcoin readiness probe timed out; retry after RPC recovers") from error
+    except OSError as error:
+        raise ValueError("BITCOIN_NOT_READY: native Bitcoin readiness probe could not run") from error
+    if bitcoin.get("rpc_available") is False or bitcoin.get("error_kind") == "rpc_unavailable":
+        raise ValueError("BITCOIN_NOT_READY: Bitcoin RPC is unavailable; retry after RPC recovers")
+    # Match native startup: require the verified baseline and current foreground
+    # tip; background historical validation and txindex are independent.
+    if bitcoin.get("bootstrap_ready") is not True or bitcoin.get("tip_ready") is not True:
+        raise ValueError("BITCOIN_NOT_READY: native Bitcoin baseline and foreground tip must be ready; inspect status --progress-json")
+
+
 def upstream_candidate(layout: node.ReleaseLayout, address, expect_pass=None):
     env = node.read_env(layout.node_env)
     guard_check(layout, env)
-    bitcoin = node._bitcoin_startup_progress(layout, command_timeout_secs=20)
-    if not bitcoin or bitcoin.get("ready") is not True:
-        raise ValueError("BITCOIN_NOT_READY: full Bitcoin readiness is required")
+    bitcoin_check(layout, env)
     bh, error = node._read_service_readiness(layout, "run_testnet_runtime.sh", ["data-status"], "balance-history")
     if error or not bh or bh.get("consensus_ready") is not True:
         raise ValueError(f"BALANCE_HISTORY_NOT_READY: {error or (bh or {}).get('blockers')}")

@@ -39,10 +39,16 @@ usdb-node mining status --watch
 
 **仅由确认正在创建该网络的初始化负责人执行。** 首节点没有其他 peers 时，先确认 Bitcoin、数据服务和 USDB 链已启动，链处于初始状态；此时普通总览可能显示 `AWAITING_PEERS`。
 
-按前节设置收益地址，然后使用以下命令替代普通加入节点的检查和启用命令：
+在当前终端输入收益地址，执行首节点预检：
 
 ```bash
+read -r -p 'Miner reward address: ' USDB_MINER_ADDRESS
 usdb-node mining check --address "$USDB_MINER_ADDRESS" --first-node
+```
+
+预检通过后再启用；失败时先按下方的[常见问题](#常见问题)处理：
+
+```bash
 usdb-node mining enable --address "$USDB_MINER_ADDRESS" --first-node
 usdb-node mining status --watch
 ```
@@ -95,10 +101,19 @@ usdb-node mining status --watch
 | 现象 | 检查与处理 |
 | --- | --- |
 | 没有合格 pass 或收益地址不匹配 | 核对地址和 pass 的生效状态，等待上游索引追平后重新检查 |
-| `PEER_SOURCE_REQUIRED`、无 peers 或仍在同步 | 普通加入节点先完成入网，不添加 `--first-node` 绕过 |
+| `PEER_SOURCE_REQUIRED`、无 peers 或仍在同步 | 普通加入节点先完成入网；确认负责创建网络的首节点使用本页的[首节点分支](#网络首节点启用挖矿) |
+| `BITCOIN_NOT_READY` | 查看 `usdb-node status --progress-json` 的 Bitcoin 状态；AssumeUTXO 模式及 r25 已知问题见下方说明 |
 | `CHAIN_NOT_RUNNING` | 先启动 full 节点并检查链及上游状态 |
 | 长期 `WARMING_UP` | 检查 `usdb-node logs usdb-chain`、CPU/内存及上游进度，不只凭哈希率为零判断失败 |
 | 任务失败或配置漂移 | 保存 `mining status --json` 和链日志；解决具体错误后按同一目标重试 enable/disable |
 | 上游回滚或停链标记阻断 | 保留现场，按网络事故流程处理，不清除标记强行恢复 |
+
+在 AssumeUTXO 模式下，Bitcoin 基线和前台链尖端必须就绪，BH 与 indexer 也必须通过共识就绪检查。Bitcoin 后台历史验证可以继续运行，`history_validated=false` 本身不阻止挖矿预检。
+
+**r25 已知问题**：挖矿预检错误地使用旧版 Bitcoin 状态解析器，可能在状态面板显示 Bitcoin READY 时仍报 `BITCOIN_NOT_READY`。若 `native_bootstrap.core.bootstrap_ready` 和 `tip_ready` 都为 `true`，向网络运维方取得包含该修复的工具版本；单纯等待后台历史验证完成不能修复这个版本问题。不要修改快照模式或启用 txindex 来绕过。
+
+若当前报告是 `rpc_unavailable`，则这次查询确实没有取得就绪证据。查看 `usdb-node logs --bitcoin`：Core 大规模写入 UTXO 数据时可能暂时无法响应 RPC，应等待该操作结束后重试检查，不能仅凭容器仍在运行认定就绪。
+
+`Artifact signature verified` 表示发布材料签名验证成功。旧版工具在多个检查入口重复打印相同提示，不表示重复下载或重新执行 BH 基线核对。
 
 需要帮助时提供状态、操作目标、网络与版本、脱敏日志及相关时间。不要提供收益地址私钥或 Bootstrap Admin 私钥。

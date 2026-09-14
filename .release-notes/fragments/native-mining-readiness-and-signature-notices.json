@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "native-mining-readiness-and-signature-notices",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Use native Bitcoin readiness for AssumeUTXO mining checks and deduplicate signature success notices",
+  "details": [
+    "Mining preflight uses the same pinned baseline and foreground readiness contract as native node startup, allowing background historical validation to continue while retaining all upstream and miner eligibility gates.",
+    "Native Bitcoin RPC outages and probe timeouts remain blocking and report their cause explicitly.",
+    "Repeated validation of the same signed artifact emits one success notice per process while still checking every signature and the current trusted key catalog."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

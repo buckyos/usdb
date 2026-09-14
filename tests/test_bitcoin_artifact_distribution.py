@@ -176,6 +176,24 @@ class ArtifactDistributionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not trusted"):
             SIGN.verify(content, signature, self.trust, "bitcoin-core")
 
+    def test_duplicate_success_notice_never_skips_signature_or_trust_validation(self):
+        path, manifest = self.manifest()
+        content, signature = path.read_bytes(), Path(str(path) + ".sig").read_bytes()
+        # Manifest preparation already verified once in this same process.
+        with mock.patch.object(SIGN, "openssl", wraps=SIGN.openssl) as verify:
+            for _ in range(2):
+                self.assertEqual(SIGN.verify(content, signature, self.trust, "bitcoin-core"), manifest)
+            self.assertEqual(verify.call_count, 2)
+        self.assertEqual(self.log.getvalue().count("Artifact signature verified:"), 1)
+        # A previous success cannot authorize a changed signature or revoked key.
+        with self.assertRaises(ValueError):
+            SIGN.verify(content, bytes([signature[0] ^ 1]) + signature[1:], self.trust, "bitcoin-core")
+        catalog = json.loads(self.trust.read_text())
+        catalog["keys"] = []
+        self.trust.write_bytes(SIGN.canonical(catalog))
+        with self.assertRaises(ValueError):
+            SIGN.verify(content, signature, self.trust, "bitcoin-core")
+
     def test_catalog_rejects_duplicate_ids_material_and_legacy_snapshot_catalog(self):
         catalog = json.loads(self.trust.read_text())
         entry = catalog["keys"][0]

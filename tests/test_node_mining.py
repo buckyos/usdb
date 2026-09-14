@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "docker/scripts/tools"))
 import usdb_node as NODE
 import usdb_mining as MINING
+import assumeutxo_node as NATIVE
 from common.mining import ADDRESS, PASS_ID, SEED, MiningFixture, RuntimeScriptFixture, RuntimeHelperFixture
 
 
@@ -20,6 +21,54 @@ class Interrupted(BaseException):
 
 
 class MiningTests(unittest.TestCase):
+    def test_native_preflight_accepts_ready_foreground_with_background_validation_pending(self):
+        with MiningFixture() as f:
+            f.update_env(SNAPSHOT_MODE="assumeutxo", BTC_TXINDEX="0")
+            report = dict(schema_version="usdb-bitcoin-assumeutxo:v1", rpc_available=True,
+                          bootstrap_ready=True, tip_ready=True, history_validated=False)
+            with mock.patch.object(NODE, "run_helper", return_value=subprocess.CompletedProcess(
+                    [], 0, json.dumps(report), "")), \
+                    mock.patch.object(NODE, "_bitcoin_startup_progress", side_effect=AssertionError("legacy probe")):
+                plan = MINING.preflight(f.layout, ADDRESS, first_node=True)
+            self.assertEqual(plan["state"], "READY")
+            self.assertEqual(plan["candidate"]["pass"]["pass_id"], PASS_ID)
+            self.assertEqual(f.calls, [])
+
+    def test_native_preflight_rejects_pending_unavailable_and_invalid_bitcoin_reports(self):
+        ready = dict(schema_version="usdb-bitcoin-assumeutxo:v1", rpc_available=True,
+                     bootstrap_ready=True, tip_ready=True, history_validated=True)
+        cases = [(dict(tip_ready=False), "BITCOIN_NOT_READY"),
+                 (dict(bootstrap_ready=False), "BITCOIN_NOT_READY"),
+                 (dict(tip_ready="true"), "BITCOIN_NOT_READY"),
+                 (dict(rpc_available=False), "BITCOIN_NOT_READY"),
+                 (dict(error="RPC unavailable", error_kind="rpc_unavailable"), "BITCOIN_NOT_READY"),
+                 (dict(schema_version="usdb-bitcoin-readiness:v1"), "incompatible response"),
+                 (dict(error="baseline mismatch", error_kind="identity_or_configuration"), "configured chain")]
+        for change, message in cases:
+            with self.subTest(change=change), MiningFixture() as f:
+                f.update_env(SNAPSHOT_MODE="assumeutxo", BTC_TXINDEX="0")
+                before = f.layout.node_env.read_bytes()
+                with mock.patch.object(NODE, "run_helper", return_value=subprocess.CompletedProcess(
+                        [], 1, json.dumps({**ready, **change}), "")), \
+                        self.assertRaisesRegex(ValueError, message):
+                    f.enable()
+                self.assertEqual(f.layout.node_env.read_bytes(), before)
+                self.assertFalse(MINING.state_path(f.layout).exists())
+                self.assertEqual(f.calls, [])
+
+    def test_legacy_bitcoin_gate_and_native_timeout_remain_blocking(self):
+        for report in (None, {"ready": False}):
+            with self.subTest(report=report), MiningFixture() as f, \
+                    mock.patch.object(NODE, "_bitcoin_startup_progress", return_value=report), \
+                    mock.patch.object(NATIVE, "core_progress", side_effect=AssertionError("native probe")), \
+                    self.assertRaisesRegex(ValueError, "BITCOIN_NOT_READY"):
+                MINING.preflight(f.layout, ADDRESS, first_node=True)
+        with MiningFixture() as f:
+            f.update_env(SNAPSHOT_MODE="assumeutxo")
+            with mock.patch.object(NATIVE, "core_progress", side_effect=subprocess.TimeoutExpired("probe", 45)), \
+                    self.assertRaisesRegex(ValueError, "BITCOIN_NOT_READY.*timed out"):
+                MINING.preflight(f.layout, ADDRESS, first_node=True)
+
     def test_private_geth_files_preserve_binding_across_chain_stop_and_restart(self):
         with MiningFixture() as f:
             expected = MINING.binding(f.layout, f.env)
