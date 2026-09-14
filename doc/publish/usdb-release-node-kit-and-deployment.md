@@ -1,5 +1,7 @@
 # USDB Release Node Kit 与简化部署
 
+> 面向节点使用者的安装、入网和维护步骤见[用户与节点运维手册](../handbook/README.md)。本文保留工具包设计、兼容边界及内部验证记录，安装版本以手册的[测试网版本页](../handbook/networks/testnet.md)为准。
+
 Status: first implementation complete; target-host and published-release E2E pending.
 
 2026-09-13：新测试网发布输入已选择原生 AssumeUTXO，正式入口仍为 `installer -> setup -> doctor -> up`。

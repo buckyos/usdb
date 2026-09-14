@@ -1,5 +1,7 @@
 # USDB testnet-v0 首节点发布与部署操作手册
 
+> 普通节点安装和加入已有测试网，请阅读[用户与节点运维手册](../handbook/README.md)。本文保留内部首节点发布、网络初始化及历史现场记录；其中旧 BH 快照步骤不适用于原生 AssumeUTXO 发布包。当前安装版本及限制见[测试网版本页](../handbook/networks/testnet.md)。
+
 ## 1. 适用范围
 
 本文面向负责第一个 `usdb-testnet-v0` 节点的发布和运维人员。当前网络是

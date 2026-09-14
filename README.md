@@ -2,6 +2,8 @@
 
 [English](./README.md) | [中文](./README.zh.md)
 
+For node installation, testnet access, daily operations, and troubleshooting, start with the [User and Node Operator Handbook (Chinese)](./doc/handbook/README.md). Check its network version notes before installing.
+
 USDB is not a standalone "indexing and query" project. It is the **BTC-side infrastructure repository for a BTC-staked, miner-certificate inscription based dual-chain system**.
 
 Its job is to turn Bitcoin blocks, balance history, inscription state, and miner certificate (`pass`) derived state into a set of **replayable, auditable external state services** that can be consumed by ETHW miners and validators.
