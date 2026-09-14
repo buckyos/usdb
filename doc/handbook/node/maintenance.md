@@ -131,11 +131,16 @@ usdb-node up
 1. 记录当前版本、节点状态和目标版本，确认 SourceDAO 任务已结束，安排停机窗口及所需备份。
 2. 使用当前工具执行 `usdb-node down`，等待整个节点停止。
 3. 按[安装页第 2 步](install.md#2-下载并安装节点工具)安装目标版本工具。只执行工具安装，不继续首次 `setup`。
-4. 用新工具执行下列命令，完成配置中的版本切换并刷新后台服务：
+4. 用新工具完成配置中的版本切换，并查看 controller 是否需要额外操作：
 
 ```bash
 usdb-node activate-release
-usdb-node controller install
+usdb-node status
+```
+
+正常 `setup` 已安装并启用 controller，普通换版不必重复安装。包含[controller 诊断](status.md#后台任务状态)的工具会在缺失或配置需要刷新时给出具体命令；按提示处理后再执行下面的检查。若目标版本未提供该诊断，按该版本升级说明判断是否需要刷新 unit。自定义 unit 或 systemd 覆盖配置先核对，不直接覆盖。
+
+```bash
 usdb-node doctor
 ```
 

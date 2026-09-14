@@ -88,6 +88,7 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertTrue((output / "docker/compose.p2p-ipv6.yml").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_p2p.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_node.py").is_file())
+        self.assertTrue((output / "docker/scripts/tools/node_controller_status.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_mining.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_peers.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/chain_file_inspection.py").is_file())

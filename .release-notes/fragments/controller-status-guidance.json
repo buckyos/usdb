@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "controller-status-guidance",
+  "type": "added",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Show controller configuration, systemd state and actionable guidance in node status",
+  "details": [
+    "Node status displays controller installation, template compatibility, runtime results and persistent autostart observations without changing node readiness.",
+    "Missing or outdated managed units receive explicit installation guidance that preserves supported timeout and image-pull settings; ordinary upgrades through the stable launcher do not require reinstallation.",
+    "Normal idle controllers and exit-code-2 requests for operator action are distinguished from failures, and custom systemd overrides require review instead of automatic replacement."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

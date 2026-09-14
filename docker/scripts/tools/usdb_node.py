@@ -4884,17 +4884,8 @@ def _finish_node_status(
             report["next_actions"].append(action)
     else:
         report["auxiliary_state"] = "UNKNOWN"
-    controller = report["checks"].get("controller")
-    if (
-        overall_state
-        in {"ACTIVATION_REQUIRED", "SNAPSHOT_INCOMPLETE", "READY_TO_START", "STARTING"}
-        and isinstance(controller, dict)
-        and controller.get("state") == "missing"
-    ):
-        report["next_actions"].insert(0, "usdb-node controller install")
-        report["operator_guidance"].append(
-            "Install the systemd bootstrap controller before starting a multi-stage operation."
-        )
+    from node_controller_status import apply_controller_guidance
+    apply_controller_guidance(report)
     return report
 
 
@@ -4945,15 +4936,8 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
         "summary": "private node configuration is present and parseable",
         "firewall_mode": env.get("USDB_FIREWALL_MODE", "managed"),
     }
-    controller_path = controller_unit_path(layout)
-    checks["controller"] = {
-        "state": "installed" if controller_path.is_file() else "missing",
-        "summary": (
-            f"systemd bootstrap controller is installed: {controller_path.name}"
-            if controller_path.is_file()
-            else f"systemd bootstrap controller is not installed: {controller_path}"
-        ),
-    }
+    from node_controller_status import inspect_controller
+    checks["controller"] = inspect_controller(layout, node=sys.modules[__name__])
     mismatched_images = [key for key, expected in layout.images.items() if env.get(key) != expected]
     activation_required = bool(mismatched_images)
     checks["activation"] = {
@@ -5105,6 +5089,7 @@ def _print_node_status_report(report: dict[str, Any]) -> None:
         "release": "Release kit",
         "configuration": "Node config",
         "activation": "Activation",
+        "controller": "Controller",
         "data": "Local data",
         "snapshot": "Snapshot",
         "script_registry": "Script registry",
@@ -5115,7 +5100,7 @@ def _print_node_status_report(report: dict[str, Any]) -> None:
     for key, label in labels.items():
         check = report["checks"].get(key)
         if check is not None:
-            print(f"{label:<14} {check['state'].upper():<12} {check['summary']}")
+            print(f"{label:<14} {check.get('display_state', check['state']).upper():<12} {check['summary']}")
             if key == "runtime" and isinstance(check.get("bitcoin_progress"), dict):
                 print(
                     f"{'Bitcoin sync':<14} {'WAITING':<12} "

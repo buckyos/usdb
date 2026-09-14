@@ -2,7 +2,7 @@
 
 [返回手册首页](../README.md) · [版本与验证范围](../networks/testnet.md#版本与验证范围)
 
-本页按 r25 的命令和状态含义说明。屏幕布局、详细进度和错误提示可能随版本变化；判定运行是否正常时，同时看总体状态、具体阶段、最近进度和日志。
+本页的基础命令适用于 r25；新增的 controller 诊断见[后台任务状态](#后台任务状态)，需使用包含该功能的工具版本。屏幕布局、详细进度和错误提示可能随版本变化；判定运行是否正常时，同时看总体状态、具体阶段、最近进度和日志。
 
 ## 先看总体状态
 
@@ -91,10 +91,27 @@ r25 中可能出现缺少详细进度、RPC 暂不可用时状态变化、等待
 
 默认安装的 controller 是负责启动和同步编排的后台任务，容器运行由 Docker 维持。
 
-- 节点已经 `READY` 时，controller 显示 `inactive (dead)` 可以是正常完成。
-- 等待 peers 时，controller 也可能结束本次编排并保留数据服务运行，接下来补充 Seed 或处理连通性。
-- 节点未就绪且 controller 显示 `failed` 时，读取其日志，不仅凭容器是否存在判断成功。
-- `controller stop` 只停止编排；停止节点用 `usdb-node down`，具体区别见[日常维护](maintenance.md#停止与重新启动)。
+包含 controller 诊断的新工具会在 `usdb-node status` 中增加 `Controller` 行，并在必要时提供 `Next actions`。r25 尚无这项完整诊断，可以使用 `usdb-node controller status` 和 `usdb-node controller logs --follow` 单独检查。
+
+| `Controller` | 含义与操作 |
+| --- | --- |
+| `MISSING` | 尚未安装后台编排；使用后台启动前执行 `usdb-node controller install`。有意使用前台模式时按提示运行 `up --foreground` |
+| `UPDATE_REQUIRED` | unit 与当前工具生成的配置不一致，或 systemd 尚未加载磁盘上的配置；核对后执行 `Next actions` 中的安装命令 |
+| `REVIEW_REQUIRED` | 存在自定义覆盖、屏蔽、账号不匹配或无法识别的配置；先查看 `controller status`，确认自定义内容后处理 |
+| `RUNNING` | 正在运行启动或运维编排；查看同步进度或 controller 日志 |
+| `STOPPING` | 编排正在停止，等待当前停机操作完成 |
+| `IDLE` | 当前没有编排任务；节点已经 `READY` 时可以是正常完成，不必重新安装 |
+| `MANUAL_ACTION` | 上次编排以退出码 2 要求人工处理；先看当前节点检查项，`AWAITING_PEERS` 应处理入网条件 |
+| `FAILED` | 编排异常退出；按提示先查日志，再决定是否重试 `up` |
+| `UNAVAILABLE` | 未取得可靠的 systemd 状态；检查 `controller status`，不能据此断定节点服务失败 |
+
+状态说明还会显示开机启动是否启用。若显示 `automatic startup after reboot is disabled`，手动 `up` 仍可启动，但不会恢复开机启动；仅在希望恢复开机启动时执行提示中的 `controller install`。该操作不会由状态查询自动执行。
+
+**普通 rN 升级不要求每次重装 controller。** 稳定命令入口、配置路径和 unit 模板仍匹配时可以复用；支持的自定义超时和 `--skip-pull` 不会被误判为版本过旧。需要刷新时，提示命令保留这些选项。手工编辑或 systemd 覆盖配置需要自行核对。
+
+`Controller` 是独立的运维检查，不改变核心服务的 `Overall` 或状态命令退出码。因此节点可能同时显示 `Overall READY` 和 controller 需要维护；监控应同时检查 `checks.controller.action_required`。JSON 中还包含 `configuration_state`、`runtime_state`、`autostart`、退出结果及建议操作。
+
+`controller stop` 只停止编排；停止节点用 `usdb-node down`，具体区别见[日常维护](maintenance.md#停止与重新启动)。
 
 ## 自动采集
 
