@@ -20,6 +20,15 @@ selects native controller and Compose paths automatically. See the
 [P7.3 operations guide](../../../doc/balance-history/balance-history-assumeutxo-p73-operations.md)
 for preparation, resource transitions, progress and explicit retry commands.
 
+`node_rebuild.py` is a standalone Linux tool for the reviewed node1 backup and
+path cleanup plan. `plan` is read-only; `run` requires an interactive terminal and
+fresh confirmation for every backup/move/delete path. `--backup-dir` selects a
+private directory outside active node roots; `--bh-backup-mode move` preserves a
+single offline BH copy on the same filesystem. Verified receipts support retries.
+It requires stopped services and a disabled controller, checks Docker references
+and DB locks, and never prunes containers or images. Copy it outside the release
+directories before use. See the [node1 runbook](../../../doc/balance-history/balance-history-assumeutxo-p74-node-reuse-plan.md#44-独立交互式备份清理脚本).
+
 These tool names now follow the canonical local/profile naming scheme defined
 in
 [TOOL_NAMING_PLAN.md](/home/bucky/work/usdb/docker/scripts/TOOL_NAMING_PLAN.md).

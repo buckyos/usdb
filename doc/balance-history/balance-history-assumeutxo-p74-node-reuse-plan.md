@@ -7,7 +7,7 @@
 采用用户指定的第一台测试节点，先归档旧状态的比较证据，再在同机按正式发布安装流程串行重建。
 不要求同时存放两套完整 Bitcoin/BH/indexer 数据。开发机现有 P4/P5/P6 证据可复用，不重新生成旧 BH 大型快照。
 
-本次通过 `ssh usdb@99.47.70.238 -p 2224` 只读核实：主机名 `bucky04`，操作员属于 `sudo/docker` 组，
+本次通过 `ssh usdb@xxxx` 只读核实：主机名 `bucky04`，操作员属于 `sudo/docker` 组，
 launcher 指向 `usdb-testnet-v0-r17`，数据根 `/data/.usdb`。配置仍为 `SNAPSHOT_MODE=balance-history`、
 `BH_SCRIPT_REGISTRY_ENABLED=1`、自动资源阶段 `steady`。controller unit 为
 `usdb-node-bootstrap-usdb-testnet-v0.service`，本次观察是 `inactive/dead`；这不代表 Docker 服务已经停止。
@@ -184,6 +184,104 @@ H 的样本和承诺可保存在小型 JSON/报告包内。若还要求 H 的独
    然后执行新 installer、setup（选择 `/data/.usdb`）、doctor、up。
 
 本节是排期/审批清单，没有执行停服、复制、移动或删除，也没有生成可无条件运行的递归删除命令。
+
+### 4.4 独立交互式备份清理脚本
+
+已实现 [node_rebuild.py](../../docker/scripts/tools/node_rebuild.py)。这是单文件 Python 3/64位Linux 工具，
+可单独复制到旧节点，不依赖 r17 中缺少的新模块；同时进入后续 node-kit 打包及 Fast CI。
+**本轮仅实现和测试，尚未在 node1 执行备份或清理。**
+
+工具从 `--operator-home` 下当前 `node.env` 推导路径，只接受本手册对应的 v2/mainnet 数据布局。
+不会按目录名猜测 `/home/usdb/.usdb`、`/data/usdb` 等未确认路径的用途，也不会删除整个数据根。
+默认执行主机必须是 `bucky04`；其他已审查节点需要显式指定 `--expect-host`。
+
+| 命令/选项 | 行为 |
+| --- | --- |
+| `plan` | 只读打印主机、路径、存在状态和每项保留范围；不创建备份目录、不停服、不删除 |
+| `run` | 先检查 controller 已禁用且停止、相关 Docker 服务停止；逐项备份，再逐项询问是否删除 |
+| `verify` | 完整读取已完成备份，重新核对文件清单与 SHA-256；不删除源目录 |
+| `--backup-dir` | 必填的绝对路径，空的专用目录或同一工具会话目录；位于活动数据、配置和 release 根之外，权限0700 |
+| `--bh-backup-mode copy` | 默认；完整复制 BH，完成后核对所有文件，再单独询问删除源目录；需要同时容纳原库和副本 |
+| `--bh-backup-mode move` | 仅 BH 使用；先校验再同文件系统 rename 到归档目录，保留唯一离线旧副本，不增加一整份 DB 空间，也不释放 BH 占用 |
+
+每个备份/移动/删除提示均显示目标路径；输入 **`yes`** 才处理，直接回车或其他输入跳过，`q`/Ctrl-C退出。
+没有批量 `--yes` 开关，`run` 拒绝管道输入。复制备份与删除源路径是两次独立确认；
+移动模式的提示明确说明活动 BH 路径将消失。目标目录及既有备份从不作为清理对象。
+
+保留范围与删除条件：
+
+- BH：整个根目录，包含 DB、registry、bootstrap、配置和日志。跳过/未完成/校验失败时不删除 BH；旧 snapshot artifact 清理也要求 BH 备份完整。
+- 配置、secure、control-plane、旧 release kit、controller unit、UTXO activation 状态：完整保留后才允许删除。
+- BTC：保留默认 `wallets`/`wallet.dat`、debug.log、settings.json 和 dataset marker；**不备份 blocks/indexes/chainstate**。
+- chain：保留 keystore、geth/nodekey、bootstrap、recovery 和 marker；**不备份 chaindata**。Indexer和旧下载包不做全库备份。
+- 容器和镜像：由既有停服/清理流程另行处理；本脚本不调用 prune、不删 Docker 根目录。
+  任意容器（包括已退出的 SourceDAO 容器）仍挂载将删除的路径时，脚本报告容器ID并拒绝删除；核实后单独移除该容器再续跑。
+- 系统 unit：逐项确认、备份通过后，仅该文件的删除和 daemon-reload 可能调用 sudo；其他服务/防火墙/挂载不改动。
+
+先在开发机复制脚本（以下命令由操作员执行）：
+
+```bash
+scp -P 2224 /home/bucky/work/usdb/docker/scripts/tools/node_rebuild.py \
+  usdb@[ip]:/home/usdb/node_rebuild.py
+ssh usdb@[ip]
+```
+
+在 node1 选择备份位置并预览；`/mnt/backup` 是示例，需换成实际可用的备份盘：
+
+```bash
+NODE_REBUILD_BACKUP=/mnt/backup/node1-pre-assumeutxo-20260913
+NODE_REBUILD_MODE=copy
+
+python3 /home/usdb/node_rebuild.py plan \
+  --operator-home /home/usdb --backup-dir "$NODE_REBUILD_BACKUP" \
+  --bh-backup-mode "$NODE_REBUILD_MODE"
+```
+
+如使用本机 `/data` 的唯一旧副本归档，将上述两个变量改为：
+
+```bash
+NODE_REBUILD_BACKUP=/data/usdb-reference/node1-pre-assumeutxo-20260913
+NODE_REBUILD_MODE=move
+```
+
+同盘归档仍受4.1节约370.05GiB总保留量约束。不要选 `/data/.usdb` 下面的备份位置。
+脚本必须放在旧 release 和其他待清目录之外；直接从待删 kit 运行会被拒绝。
+
+完成故障证据、G/H样本和备份介质检查后，使用**旧**入口干净停服，再运行交互处理：
+
+```bash
+/home/usdb/.local/bin/usdb-node controller disable
+/home/usdb/.local/bin/usdb-node down
+
+python3 /home/usdb/node_rebuild.py run \
+  --operator-home /home/usdb --backup-dir "$NODE_REBUILD_BACKUP" \
+  --bh-backup-mode "$NODE_REBUILD_MODE"
+```
+
+不要同时启动新的 `setup/up` 或手工 DB 进程。脚本会在操作前重查 controller、Docker挂载、数据库锁和路径；
+拒绝符号链接目标、备份目录重叠、目录中的挂载点和已被替换的源目录。复制备份不接受指向其他数据的硬链接。
+未完成的大文件复制保留在 `.partial`，重跑时核对已有文件后继续；不要手工混入其他文件或复用另一节点的目录。
+移动后的中断可依据持久记录复核归档；删除中断后重跑仍需确认，只接受原目录中未改变的剩余内容。
+
+备份目录中的 `session.json` 记录身份、源文件状态、SHA-256、完成阶段和操作日志；`objects/` 保存实际副本。
+配置/钱包属于私有材料，整个目录须受限保存，不提交到 Git、不公开上传。源 node.env/旧kit删掉后，仍可从已保存配置恢复同一会话。
+复制/校验输出字节数和耗时，目录扫描/删除有持续心跳；校验可能多次读取大库，不预估未经测量的完成时间。
+
+可在首个 DELETE 提示输入 `q`，先安排离线 DB 打开/G/H 逻辑复核，之后用相同参数重新 `run`。
+也可单独复核已保存的全部字节：
+
+```bash
+python3 /home/usdb/node_rebuild.py verify \
+  --operator-home /home/usdb --backup-dir "$NODE_REBUILD_BACKUP" \
+  --bh-backup-mode "$NODE_REBUILD_MODE"
+```
+
+这里的验证证明文件副本一致，**不证明原数据库没有既有损坏或业务承诺正确**，也不会修复当前 Core 的 LevelDB 错误。
+DB打开、固定锚点比较和磁盘健康检查仍按4.3节执行。结束时脚本打印空闲字节和仍保留的路径；
+某项选择跳过并不等于整机已清空，尤其要检查旧node.env、BTC数据及1.5TiB可用空间，再安装新 release。
+
+本地新增21项测试覆盖逐项确认、真实文件复制/校验/删除、移动与删除中断恢复、锁占用及读取后锁仍保持、空间不足、
+目录替换、链接/挂载防护和不泄露配置；测试只使用临时目录和模拟主机检查。
 
 ## 5. 后续执行顺序与完成条件
 
