@@ -276,10 +276,17 @@ class NativeBundleTests(unittest.TestCase):
                     self.assertIn("Core background history: SYNCING 105439/935000", rendered)
                     if phase == "importing":
                         self.assertIn("123456 UTXOs", rendered)
-                    elif phase in {"replaying", "waiting_for_blocks"}:
-                        self.assertEqual(components["balance_history"]["progress_percent"], 50)
-                    else:
                         self.assertIsNone(components["balance_history"]["progress_percent"])
+                    elif phase in {"replaying", "waiting_for_blocks"}:
+                        lag = node.btc_registry_stable_lag_blocks(layout.network_identity["btc_activation_registry_id"])
+                        self.assertEqual(components["balance_history"]["total"], core["headers"] - lag)
+                        self.assertAlmostEqual(components["balance_history"]["progress_percent"],
+                                               (949400 - 935000) * 100 / (core["headers"] - lag - 935000))
+                        self.assertIn("Genesis 963800: replaying", rendered)
+                    elif phase == "sealed":
+                        self.assertIsNone(components["balance_history"]["progress_percent"])
+                    else:
+                        self.assertLess(components["balance_history"]["progress_percent"], 100)
             core.update(history_validated=True, background_height=None)
             self.assertIn("VALIDATED through baseline 935000", node.render_node_progress(node.collect_node_progress(layout), width=80))
 
@@ -289,8 +296,9 @@ class NativeBundleTests(unittest.TestCase):
         env = node.read_env(layout.node_env)
         activation = Path(env["BTC_ASSUMEUTXO_STATE_HOST_DIR"]) / "activation.json"
         services = {"btc-snapshot-bootstrap": dict(state="running")}
+        core = {}
         with mock.patch.object(node, "_collect_compose_services", return_value=services), \
-             mock.patch.object(native, "core_progress", return_value={}), \
+             mock.patch.object(native, "core_progress", return_value=core), \
              mock.patch.object(node, "_read_service_readiness", return_value=(None, "RPC unavailable")), \
              mock.patch.object(node, "_chain_component", return_value=node._component_progress("usdb_chain", "WAITING", "not started")), \
              mock.patch.object(node, "_resource_progress", return_value=({}, False)), \
@@ -298,6 +306,78 @@ class NativeBundleTests(unittest.TestCase):
             for phase, state in (("load_uncertain", "BLOCKED"), ("load_failed", "FAILED")):
                 activation.write_text(json.dumps(dict(phase=phase, updated_at=1)))
                 self.assertEqual(node.collect_node_progress(layout)["overall_state"], state)
+            activation.write_text(json.dumps(dict(phase="snapshot_active", updated_at=2)))
+            services["btc-snapshot-bootstrap"].update(state="exited", exit_code=0)
+            core.update(error="Core RPC timed out", error_kind="rpc_unavailable", rpc_available=False)
+            snapshot = node.collect_node_progress(layout)["components"][0]
+            self.assertEqual(snapshot["state"], "STARTING")
+            self.assertEqual(snapshot["display_state"], "UNKNOWN")
+            self.assertTrue(snapshot["observation_unavailable"])
+            self.assertIsNone(snapshot["progress_percent"])
+            core.update(error="Core baseline mismatch", error_kind="identity_or_configuration")
+            self.assertEqual(node.collect_node_progress(layout)["components"][0]["state"], "BLOCKED")
+
+    def test_balance_history_keeps_one_range_through_genesis_and_live_catchup(self):
+        core = dict(headers=966950)
+        percentages = []
+        for phase, height, readiness, state, milestone in (
+            ("replaying", 963799, None, "SYNCING", "replaying"),
+            ("verifying", 963800, None, "VERIFYING", "verifying"),
+            ("Loading", 963800, dict(stable_height=963800, phase="Loading", query_ready=False), "SYNCING", "initializing"),
+            ("Indexing", 963820, dict(stable_height=963820, phase="Indexing", query_ready=True), "SYNCING", "available"),
+            ("Synced", 966940, dict(stable_height=966940, phase="Synced", query_ready=True), "READY", "available"),
+        ):
+            with self.subTest(phase=phase):
+                original = node._component_progress("balance_history", state, "RPC progress")
+                item = native._balance_history_progress(original, readiness, dict(phase=phase, height=height), core, {},
+                                                        base=935000, origin=963800, stable_lag=10)
+                self.assertEqual(item["current"], height)
+                self.assertEqual(item["total"], 966940)
+                self.assertEqual(item["genesis_milestone"]["state"], milestone)
+                self.assertEqual(item["state"], state)
+                percentages.append(item["progress_percent"])
+        self.assertEqual(percentages, sorted(percentages))
+        self.assertLess(percentages[1], 100)
+        self.assertEqual(percentages[-1], 100)
+
+        # The completed journal is a baseline checkpoint, not a live height.
+        report = dict(release_id="test", observed_at="now", overall_state="SYNCING", components=[item])
+        history = node.NodeProgressHistory()
+        history.apply(report, observed_monotonic=0)
+        unavailable = native._balance_history_progress(node._component_progress("balance_history", "STARTING", "RPC unavailable"),
+            None, dict(phase="sealed", height=963800), core, {}, base=935000, origin=963800, stable_lag=10)
+        self.assertIsNone(unavailable["current"])
+        self.assertIn("sealed", unavailable["genesis_milestone"]["state"])
+        retained = history.apply({**report, "components": [unavailable]}, observed_monotonic=5)["components"][0]
+        self.assertEqual(retained["current"], 966940)
+        self.assertEqual(retained["progress_percent"], 100)
+        self.assertEqual(retained["state"], "STARTING")
+        self.assertIn("STALE", retained["detail"])
+        self.assertIn("last observed", retained["genesis_milestone"]["state"])
+
+    def test_balance_history_labels_unknown_targets_and_waits_for_bitcoin_when_ahead_of_available_blocks(self):
+        for core, activation, target, source in (
+            ({}, {}, None, "unavailable"),
+            ({}, dict(details=dict(report=dict(headers=966950))), 966940, "last_observed_bitcoin_headers"),
+        ):
+            item = native._balance_history_progress(node._component_progress("balance_history", "SYNCING", "replay"), None,
+                dict(phase="replaying", height=943860), core, activation, base=935000, origin=963800, stable_lag=10)
+            self.assertEqual(item["total"], target)
+            self.assertEqual(item["sync_target_source"], source)
+            self.assertEqual(item["genesis_milestone"]["remaining_blocks"], 19940)
+            if target is None:
+                self.assertIsNone(item["progress_percent"])
+        item = native._balance_history_progress(node._component_progress("balance_history", "READY", "ready"),
+            dict(stable_height=964000, phase="Synced", query_ready=True, total=964000), {}, dict(headers=966950), {},
+            base=935000, origin=963800, stable_lag=10)
+        self.assertEqual(item["state"], "WAITING")
+        self.assertIn("waiting for Bitcoin", item["detail"])
+        capped = native._balance_history_progress(node._component_progress("balance_history", "READY", "ready"),
+            dict(stable_height=964000, phase="Synced", query_ready=True, total=964000), {}, dict(headers=966950), {},
+            base=935000, origin=963800, stable_lag=10, max_height=964000)
+        self.assertEqual(capped["state"], "READY")
+        self.assertEqual(capped["progress_percent"], 100)
+        self.assertEqual(capped["total"], 964000)
 
     def test_signed_bundle_retains_public_trust_and_rejects_tampering(self):
         keys = self.root / "keys"

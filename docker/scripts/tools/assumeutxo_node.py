@@ -188,6 +188,70 @@ def _snapshot_component(phase, latest, imported, *, failed, complete, activated)
     return item
 
 
+def _height(value):
+    """Read optional nonnegative block heights without treating booleans as integers."""
+    return value if type(value) is int and value >= 0 else None
+
+
+def _balance_history_progress(item, readiness, bootstrap, core, activation, *, base, origin, stable_lag, max_height=0xFFFFFFFF):
+    """Use one block range across origin replay and live sync, with an origin milestone."""
+    if item["state"] in {"FAILED", "BLOCKED"}:
+        return item
+    phase = bootstrap.get("phase", "starting") if readiness is None else readiness.get("phase")
+    height = _height(bootstrap.get("height")) if readiness is None else _height(readiness.get("stable_height"))
+    if readiness is not None and height is None and phase in {"Indexing", "Synced"}:
+        height = _height(readiness.get("current"))
+    if readiness is not None and height is not None and height >= origin:
+        milestone = "available" if readiness.get("query_ready") else "initializing"
+    elif phase == "verifying":
+        milestone = "verifying"
+    elif phase == "sealed":
+        milestone = "sealed; waiting for service RPC"
+    else:
+        milestone = "replaying" if height is not None else "pending"
+    item["genesis_milestone"] = dict(height=origin, state=milestone,
+        remaining_blocks=max(0, origin - height) if height is not None else None)
+    item["sync_start_height"] = base
+    item["stable_lag_blocks"] = stable_lag
+    if max_height != 0xFFFFFFFF:
+        item["sync_max_height"] = max_height
+    # Once published, the journal only describes the baseline. It cannot report
+    # the current service height during an RPC outage after normal sync begins.
+    if readiness is None and phase == "sealed":
+        item.update(current=None, total=None, progress_percent=None,
+                    detail="Baseline sealed; waiting for service RPC")
+        return item
+    if height is None or height < base:
+        return item
+    target, source = _height(core.get("headers")), "bitcoin_headers"
+    if target is not None:
+        target = max(0, target - stable_lag)
+    if target is None or target < origin:
+        target = _height(readiness.get("total")) if readiness is not None and phase in {"Indexing", "Synced"} else None
+        source = "balance_history_rpc"
+    if target is None or target < origin:
+        details = activation.get("details", {})
+        report = details.get("report", {}) if isinstance(details, dict) else {}
+        target = _height(report.get("headers")) if isinstance(report, dict) else None
+        if target is not None:
+            target = max(0, target - stable_lag)
+        source = "last_observed_bitcoin_headers"
+    if target is not None:
+        target = min(target, max_height)
+    if target is None or target < max(origin, height):
+        target, source = None, "unavailable"
+    percent = (height - base) * 100 / (target - base) if target is not None and target > base else None
+    item.update(current=height, total=target, progress_percent=percent, unit="blocks", sync_target_source=source)
+    if item["state"] == "READY" and target is not None and height < target:
+        item.update(state="WAITING", detail="Caught up with available blocks; waiting for Bitcoin")
+    if readiness is None:
+        item["detail"] = {"replaying": "Replaying blocks toward genesis baseline",
+                          "waiting_for_blocks": "Waiting for Bitcoin blocks or undo data",
+                          "verifying": "Verifying genesis baseline before publication",
+                          "sealed": "Baseline sealed; waiting for service RPC"}.get(phase, item["detail"])
+    return item
+
+
 def collect_native_progress(layout) -> dict:
     """Expose import/replay plus independent Core foreground/background observations."""
     env = node.read_env(layout.node_env)
@@ -197,8 +261,10 @@ def collect_native_progress(layout) -> dict:
         services = {}
     try:
         core = core_progress(layout)
-    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        core = dict(error=str(error))
+    except (OSError, subprocess.TimeoutExpired) as error:
+        core = dict(error=str(error), error_kind="rpc_unavailable", rpc_available=False)
+    except ValueError as error:
+        core = dict(error=str(error), error_kind="identity_or_configuration")
     artifact = Path(env["BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR"]) / "mainnet-935000-utxos.dat"
     download = read_progress(artifact.with_name(artifact.name + ".download") / "progress.json")
     activation = read_progress(Path(env["BTC_ASSUMEUTXO_STATE_HOST_DIR"]) / "activation.json")
@@ -220,6 +286,17 @@ def collect_native_progress(layout) -> dict:
             imported = read_import_progress(Path(env["BTC_NODE_DATA_HOST_DIR"]) / "debug.log",
                 layout.snapshot["contract"]["snapshot"]["base_hash"], max(process_start, attempt_start))
     snapshot = _snapshot_component(phase, latest, imported, failed=failed, complete=complete, activated=activated)
+    # Completion remains an RPC observation. A failed probe cannot mean a new
+    # import, and a completed journal alone cannot assert current readiness.
+    if not failed and core.get("error_kind") == "identity_or_configuration":
+        snapshot.update(state="BLOCKED", detail=core["error"], progress_percent=None)
+    elif not failed and (core.get("error_kind") == "rpc_unavailable" or core.get("rpc_available") is False):
+        if phase in {"snapshot_active", "fully_validated_chain"}:
+            snapshot.update(state="STARTING", display_state="UNKNOWN", progress_phase="observation_unavailable",
+                            observation_unavailable=True, detail="Core RPC unavailable; completion observation pending",
+                            current=None, total=None, progress_percent=None)
+    snapshot["observation_identity"] = [layout.release_id, services.get("btc-node", {}).get("started_at"),
+                                        activation.get("started_at")]
     components = [snapshot, node._component_progress("script_registry", "SKIPPED", "Native observed-script registry is maintained by balance-history")]
     pre_snapshot = not activated and core.get("rpc_available") is not False and not core.get("error") and type(core.get("active_height")) is int
     sync_phase = "foreground" if activated else "pre_snapshot_ibd" if pre_snapshot else "unavailable"
@@ -256,6 +333,11 @@ def collect_native_progress(layout) -> dict:
                 total=target if replay else None, progress_percent=percent,
                 unit="utxos" if phase == "importing" else "blocks")
             item["progress_phase"] = phase
+        if component == "balance_history" and services.get(service, {}).get("state") == "running":
+            item = _balance_history_progress(item, readiness, bootstrap, core, activation,
+                base=int(env["BH_ASSUMEUTXO_BASE_HEIGHT"]), origin=int(env["USDB_GENESIS_BLOCK_HEIGHT"]),
+                stable_lag=node.btc_registry_stable_lag_blocks(layout.network_identity["btc_activation_registry_id"]),
+                max_height=int(env.get("BH_SYNC_MAX_SYNC_BLOCK_HEIGHT", 0xFFFFFFFF)))
         components.append(item)
     chain = node._chain_component(layout, env, services.get("usdb-chain"))
     gate = node._chain_startup_gate_component(services)

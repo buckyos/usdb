@@ -12,6 +12,58 @@ import usdb_node as NODE  # noqa: E402
 
 
 class NodeProgressObservationTests(unittest.TestCase):
+    def test_indexer_waits_for_upstream_without_claiming_zero_block_sync(self):
+        readiness = dict(consensus_ready=False, current=0, total=0, synced_block_height=None,
+                         blockers=["SyncedHeightMissing", "UpstreamReadinessUnknown", "UpstreamSnapshotMissing"])
+        component = NODE._indexed_service_component("usdb_indexer", {"state": "running"}, readiness, None, "waiting")
+        self.assertEqual(component["state"], "WAITING")
+        self.assertIsNone(component["current"])
+        self.assertIsNone(component["total"])
+        self.assertIn("indexing has not started", component["detail"])
+        report = dict(release_id="test", observed_at="now", overall_state="WAITING", components=[component])
+        rendered = NODE.render_node_progress(report)
+        self.assertNotIn("0/0", rendered)
+        self.assertNotIn("in progress", rendered)
+        # Real block processing or durable progress must not be hidden by this classification.
+        for fields in (dict(block_processing_pending_height=963800), dict(current=963810, total=963900, synced_block_height=963809)):
+            with self.subTest(fields=fields):
+                active = NODE._indexed_service_component("usdb_indexer", {"state": "running"}, {**readiness, **fields}, None, "waiting")
+                self.assertEqual(active["state"], "SYNCING")
+
+    def test_snapshot_rpc_outage_retains_only_recent_display_evidence(self):
+        fresh = NODE._component_progress("snapshot", "READY", "Snapshot baseline and raw file ready", progress_percent=100)
+        fresh["observation_identity"] = ["r25", "core-start", 1000]
+        unavailable = NODE._component_progress("snapshot", "STARTING", "Core RPC unavailable")
+        unavailable.update(observation_unavailable=True, display_state="UNKNOWN", observation_identity=fresh["observation_identity"])
+        report = dict(release_id="r25", observed_at="now", overall_state="STARTING", components=[fresh])
+        history = NODE.NodeProgressHistory(max_stale_age_secs=60)
+        history.apply(report, observed_monotonic=0)
+        observed = history.apply({**report, "components": [unavailable]}, observed_monotonic=5)
+        component = observed["components"][0]
+        self.assertEqual(component["progress_percent"], 100)
+        self.assertEqual(component["state"], "STARTING")
+        self.assertEqual(observed["overall_state"], "STARTING")
+        self.assertIn("STALE", component["detail"])
+        self.assertIn("UNKNOWN", NODE.render_node_progress(observed))
+        self.assertIsNone(unavailable["progress_percent"])
+        expired = history.apply({**report, "components": [unavailable]}, observed_monotonic=61)
+        self.assertIsNone(expired["components"][0]["progress_percent"])
+        self.assertIn("unavailable", NODE.render_node_progress(expired))
+
+    def test_snapshot_restart_failure_or_new_import_clears_cached_completion(self):
+        fresh = NODE._component_progress("snapshot", "READY", "ready", progress_percent=100)
+        fresh["observation_identity"] = ["r25", "core-start", 1000]
+        unavailable = NODE._component_progress("snapshot", "STARTING", "Core RPC unavailable")
+        unavailable.update(observation_unavailable=True, observation_identity=fresh["observation_identity"])
+        report = dict(release_id="r25", observed_at="now", overall_state="STARTING", components=[fresh])
+        for change in (dict(state="FAILED"), dict(state="IMPORTING"), dict(observation_identity=["r25", "restarted", 1000])):
+            with self.subTest(change=change):
+                history = NODE.NodeProgressHistory()
+                history.apply(report, observed_monotonic=0)
+                history.apply({**report, "components": [{**unavailable, **change, "observation_unavailable": change.get("state") is None}]}, observed_monotonic=1)
+                observed = history.apply({**report, "components": [unavailable]}, observed_monotonic=2)
+                self.assertIsNone(observed["components"][0]["progress_percent"])
+
     def test_indexer_uses_durable_height_and_current_upstream_target(self):
         readiness = {
             "consensus_ready": False,

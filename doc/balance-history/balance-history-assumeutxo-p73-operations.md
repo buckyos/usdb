@@ -202,6 +202,22 @@ usdb-node status --watch
 观察器按增量读取日志，首次/落后时最多读取末尾 8 MiB，日志轮转或 Core 重启会重置观测。
 快照激活前 Bitcoin 行标为 `Bitcoin (IBD)`，并注明尚未激活快照，表示普通区块同步；其区块百分比独立于 UTXO 导入进度。
 激活后恢复前台追平和后台历史验证的独立显示。
+Core RPC 临时不可用时，已经完成的导入不会退回 `WAITING`：该次观察显示 `UNKNOWN`，
+连续 watch 在有效期内保留同一 Core 进程/导入尝试最近确认的百分比并标注 `STALE`；
+无历史观察或超出有效期则显示 `unavailable`。这不构成就绪证据，controller 仍使用实时 RPC 判定。
+
+BH 区块进度统一为 `(已处理高度 - 935000) / (BTC 最新稳定高度 - 935000)`，
+稳定目标按 release activation registry 的确认滞后从 BTC headers 高度扣除；界面同时显示起点和确认块数。
+配置了同步高度上限时，目标仍受该上限约束。
+963800 是单独的 genesis 里程碑，依次显示重放、校验、封存等待服务 RPC、可查询。
+到基线后仍使用同一个区间追平，不重新从零计算；新增 BTC 区块会使目标小幅移动。
+RPC 暂不可用时可使用标注为“上次观测”的 headers 目标，未知目标不伪造为 genesis 或 `0/0`。
+基线已封存后，BH RPC 超时会保留有效期内最后观测的高度并标注 `STALE`，不把旧 bootstrap journal 的高度当作当前高度。
+
+indexer 进程已启动但尚无上游可查询状态时显示 `WAITING`，隐藏无意义的 `0/0` 和同步 ETA。
+BH 完成基线校验、发布并开放查询后，indexer 可从 genesis 开始，跟随 BH 已发布的稳定高度并行追赶。
+`UpstreamSnapshotMissing` 指 BH 的稳定状态信息，不是需要重新下载历史数据库快照。
+`Process elapsed` 是进程运行时间；等待上游也计入，不能理解为已执行索引的时长。
 旧 snapshot-loader/registry/paired-checkpoint marker 不参与新模式启动条件；反向 script 查询来自 BH 原生 observed-script registry。
 
 若 observer 下载失败或退出非零，controller 停止推进并保留证据。先查看日志，再显式重试。

@@ -3920,6 +3920,13 @@ def _indexed_service_component(
     if isinstance(message, str) and message:
         detail_parts.append(message)
     blockers = readiness.get("blockers")
+    if (component_id == "usdb_indexer" and not readiness["consensus_ready"]
+            and readiness.get("synced_block_height") is None and current_value in (None, 0) and total_value in (None, 0)
+            and readiness.get("block_processing_pending_height") is None and isinstance(blockers, list)
+            and any(value in blockers for value in ("UpstreamReadinessUnknown", "UpstreamSnapshotMissing"))):
+        component = _component_progress(component_id, "WAITING", "Waiting for balance-history queryable baseline; indexing has not started")
+        component.update(progress_phase="waiting_for_upstream", blockers=blockers)
+        return component
     if isinstance(blockers, list) and blockers:
         detail_parts.append("blockers=" + ",".join(str(item) for item in blockers))
     state = "READY" if readiness["consensus_ready"] else "SYNCING"
@@ -4446,7 +4453,12 @@ def render_node_progress(
             bar = "#" * filled + "-" * (bar_width - filled)
             percent_text = f"{bounded:6.2f}%"
         else:
-            bar = "in progress".center(bar_width) if component["state"] in {"IMPORTING", "VERIFYING", "INSTALLING", "SYNCING", "STARTING"} else "-" * bar_width
+            if component.get("observation_unavailable"):
+                bar = "unavailable".center(bar_width)
+            elif component["state"] in {"IMPORTING", "VERIFYING", "INSTALLING", "SYNCING", "STARTING"}:
+                bar = "in progress".center(bar_width)
+            else:
+                bar = "-" * bar_width
             percent_text = "    -- "
         current = component.get("current")
         total = component.get("total")
@@ -4461,7 +4473,7 @@ def render_node_progress(
             if component.get("unit") == "utxos":
                 progress_text += " UTXOs"
         prefix = (
-            f"{component['label']:<17} {component['state']:<10} "
+            f"{component['label']:<17} {component.get('display_state', component['state']):<10} "
             f"[{bar}] {percent_text}{progress_text} "
         )
         available = max(20, width - len(prefix))
@@ -4469,6 +4481,16 @@ def render_node_progress(
         if len(detail) > available:
             detail = detail[: max(0, available - 3)] + "..."
         lines.append(prefix + detail)
+        milestone = component.get("genesis_milestone")
+        if isinstance(milestone, dict):
+            lines.append(f"  Blocks from {component['sync_start_height']} | Genesis {milestone['height']}: {milestone['state']}")
+            lines.append(f"  Target: Bitcoin tip minus {component['stable_lag_blocks']} confirmation blocks")
+            if component.get("sync_max_height") is not None:
+                lines.append(f"  Configured maximum target: {component['sync_max_height']}")
+            if milestone.get("remaining_blocks"):
+                lines.append(f"  To genesis: {milestone['remaining_blocks']} blocks")
+            if component.get("sync_target_source") == "last_observed_bitcoin_headers":
+                lines.append("  Using last observed Bitcoin headers; current Core RPC unavailable")
         progress_phase = component.get("progress_phase")
         if isinstance(progress_phase, str) and progress_phase.startswith("core_") and "stage_elapsed_secs" in component:
             lines.append(f"  Stage elapsed={_duration_text(component['stage_elapsed_secs'])} | ETA=-- (not reported by Core)")
@@ -4549,7 +4571,7 @@ class NodeProgressHistory:
     """Retain bounded last-good values for transient display-only RPC failures."""
 
     _COMPONENT_IDS = frozenset(
-        {"bitcoin", "balance_history", "usdb_indexer", "usdb_chain"}
+        {"snapshot", "bitcoin", "balance_history", "usdb_indexer", "usdb_chain"}
     )
 
     def __init__(self, max_stale_age_secs: float = MAX_STALE_PROGRESS_AGE_SECS) -> None:
@@ -4585,6 +4607,11 @@ class NodeProgressHistory:
                 continue
 
             state = component.get("state")
+            if component_id == "snapshot":
+                cached = self._last_good.get(component_id)
+                if ((not component.get("observation_unavailable") and state != "READY")
+                        or (cached is not None and cached[2].get("observation_identity") != component.get("observation_identity"))):
+                    self._last_good.pop(component_id, None)
             if state in {"SYNCING", "READY"} and self._has_progress(component):
                 self._last_good[component_id] = (now, observed_at, dict(component))
             elif state in {"WAITING", "BLOCKED", "FAILED"}:
@@ -4597,6 +4624,8 @@ class NodeProgressHistory:
                         for key in ("current", "total", "progress_percent", "unit"):
                             if cached_component.get(key) is not None:
                                 component[key] = cached_component[key]
+                        if component_id == "balance_history" and cached_component.get("genesis_milestone", {}).get("state") == "available":
+                            component["genesis_milestone"] = {**cached_component["genesis_milestone"], "state": "last observed available; RPC unavailable"}
                         component["detail"] = (
                             f"STALE from {cached_observed_at}: {cached_component['detail']}; "
                             f"latest probe: {component['detail']}"
