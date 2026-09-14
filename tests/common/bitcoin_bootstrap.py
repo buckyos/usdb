@@ -90,7 +90,8 @@ class BootstrapCore:
                 elif method == "loadtxoutset":
                     core.loading = True
                     core.started_load.set()
-                    core.release_load.wait(10)
+                    # Tests release explicitly; close() also unblocks failed tests.
+                    core.release_load.wait()
                     if not core.reject_code and not core.drop_before_activation:
                         core.active = True
                     core.loading = False

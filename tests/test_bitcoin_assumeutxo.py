@@ -11,7 +11,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import unittest
 from unittest import mock
@@ -193,18 +192,55 @@ class BitcoinBootstrapTests(unittest.TestCase):
         self.assertTrue(self.activate(rpc, retry_interrupted=True)["bootstrap_ready"])
         self.assertEqual(core.calls["loadtxoutset"], 2)
 
+    def test_observer_timeout_before_load_can_retry_normally(self):
+        core, rpc = self.core()
+        self.source.write_bytes(self.payload)
+        clock = mock.Mock(wraps=time)
+        clock.monotonic.return_value = 0
+        download = BOOT.download_snapshot
+
+        def prepare(*args, **kwargs):
+            download(*args, **kwargs)
+            clock.monotonic.return_value = 2
+
+        # Exhaust the deadline during preparation, before any load can be sent.
+        with mock.patch.object(BOOT, "time", clock), mock.patch.object(BOOT, "download_snapshot", side_effect=prepare):
+            with self.assertRaisesRegex(ValueError, "deadline"):
+                BOOT.activate(self.snapshot, self.source, rpc, self.state, poll_seconds=0.01, wait_seconds=1, reserve_bytes=0)
+        self.assertFalse(core.started_load.is_set())
+        self.assertEqual(core.calls["loadtxoutset"], 0)
+        self.assertTrue(self.activate(rpc)["bootstrap_ready"])
+        self.assertEqual(core.calls["loadtxoutset"], 1)
+
     def test_observer_timeout_does_not_duplicate_an_active_load(self):
         core, rpc = self.core()
         core.release_load.clear()
         self.source.write_bytes(self.payload)
-        with self.assertRaisesRegex(ValueError, "deadline"):
-            BOOT.activate(self.snapshot, self.source, rpc, self.state, poll_seconds=0.01, wait_seconds=0.15, reserve_bytes=0)
+        wait_seconds = 30
+        clock = mock.Mock(wraps=time)
+        # Trigger the deadline only after Core acknowledges the load. Real time
+        # remains a watchdog if startup breaks; it does not order the scenario.
+        clock.monotonic.side_effect = lambda: time.monotonic() + (wait_seconds if core.started_load.is_set() else 0)
+        with mock.patch.object(BOOT, "time", clock), self.assertRaisesRegex(ValueError, "deadline"):
+            BOOT.activate(self.snapshot, self.source, rpc, self.state, poll_seconds=0.01, wait_seconds=wait_seconds, reserve_bytes=0)
         self.assertTrue(core.started_load.is_set())
         self.assertTrue(core.loading)
-        release = threading.Timer(0.1, core.release_load.set)
-        release.start()
-        self.addCleanup(release.join)
-        self.assertTrue(self.activate(rpc)["bootstrap_ready"])
+        self.assertEqual(core.calls["loadtxoutset"], 1)
+        call = rpc.call
+        active_observations = []
+
+        def observe_then_release(method, *args, **kwargs):
+            result = call(method, *args, **kwargs)
+            if method == "getrpcinfo" and any(command["method"] == "loadtxoutset" for command in result["active_commands"]):
+                # Keep the import pending until the resumed observer sees it.
+                active_observations.append(result)
+                core.release_load.set()
+            return result
+
+        with mock.patch.object(rpc, "call", side_effect=observe_then_release):
+            report = BOOT.activate(self.snapshot, self.source, rpc, self.state, poll_seconds=0.01, wait_seconds=wait_seconds, reserve_bytes=0)
+        self.assertTrue(active_observations)
+        self.assertTrue(report["bootstrap_ready"])
         self.assertEqual(core.calls["loadtxoutset"], 1)
 
     def test_explicit_core_error_retains_code_without_sensitive_message(self):
