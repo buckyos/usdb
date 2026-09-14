@@ -7,6 +7,12 @@
 采用用户指定的第一台测试节点，先归档旧状态的比较证据，再在同机按正式发布安装流程串行重建。
 不要求同时存放两套完整 Bitcoin/BH/indexer 数据。开发机现有 P4/P5/P6 证据可复用，不重新生成旧 BH 大型快照。
 
+**当前确定范围：全清测试节点后重新安装，只归档 BH RocksDB 用于后续核对。**
+用户已确认旧节点没有恢复需求，也不保留旧账户、密钥或 P2P 身份；矿工 address 在新 `setup` 时重新输入。
+需要保留原节点数据/身份的场景应走单独的升级流程，不纳入这次全清重装。
+第4.2—4.4节为已精简的脚本和当前续跑命令；同盘归档完成后可以安排重装，不再等待小型导出工具。
+本文不代表已执行远程移动或删除；旧 BH 在归档验证完成前仍需保留。
+
 本次通过 `ssh usdb@192.168.1.119` 只读核实：主机名 `bucky04`，操作员属于 `sudo/docker` 组，
 launcher 指向 `usdb-testnet-v0-r17`，数据根 `/data/.usdb`。配置仍为 `SNAPSHOT_MODE=balance-history`、
 `BH_SCRIPT_REGISTRY_ENABLED=1`、自动资源阶段 `steady`。controller unit 为
@@ -33,7 +39,7 @@ Core 故障观察在 `/tmp/usdb-node1-bitcoin-observation.txt`。
 | 身份和路径 | 数据根与实际挂载、各服务目录及 marker、B/G/hash、网络/chain ID、activation registry 和算法版本 |
 | 空间 | 数据根文件系统总容量/可用空间，Core blocks/indexes/chainstate、BH、旧下载包、indexer、chain 分项占用 |
 | 可比状态 | Core canonical 高度/hash，BH/indexer 稳定高度与历史保留下界，当前 chain 引用的 BTC 锚点 |
-| 需要保留的节点身份 | chain keystore、矿工/钱包密钥、controller 配置、RPC 凭据等是否存在及其备份位置 |
+| 新安装参数 | 矿工 address 在 setup 时重新输入；不采集或备份旧身份材料 |
 
 只读清单不输出凭据内容。大目录统计需单独计时，避免把尚未完成的统计误记为零占用。
 
@@ -49,7 +55,7 @@ P7.3 的临时 bundle 用于发布端准备和本地自动化验证，不是另�
    构建新镜像、生成 candidate、批准 publish；不能沿用旧镜像或旧 manifest。
 2. **定义同机旧配置重置。** `setup` 会拒绝已有 `node.env`；`activate-release` 只接受相同数据兼容契约。
    旧 BH 与原生 BH 的契约/目录不同，不能仅替换镜像、手改 compatibility ID 或 dataset marker。
-   应先明确 controller、配置、RPC 凭据与服务目录的归档/重建范围，再给出实际主机的命令。
+   本次清理旧 controller、配置、RPC 凭据和服务目录，由新 setup 重新生成；不要求先做恢复备份。
 3. **补齐只读比较采集。** 现有 `check_assumeutxo_p65_mainnet.py` 面向已封存 G 的原生服务；
    其 `capture_anchor` 要求 BH/indexer 当前高度恰好等于目标高度。
    它不能直接充当仍在追块的旧节点的任意历史高度导出器。需补充固定历史锚点采集与比较，或安排受控的固定高度验收阶段。
@@ -63,27 +69,46 @@ P7.3 的临时 bundle 用于发布端准备和本地自动化验证，不是另�
 
 ## 3. 清理前留存的比较基线
 
-至少保留业务起点 G 与一个较新的固定高度 H。G 用于复用既有主网全量投影证据，H 用于覆盖实际矿工证和下游服务。
-H 必须落在旧 BH/indexer 均保留的历史区间，并固定对应 canonical BTC hash；不是随采样变化的“最新高度”。
+旧数据只用于 BH 一致性验证。至少保留业务起点 G 与一个较新的固定高度 H；G 用于复用既有主网全量投影证据，
+H 用于核对原生导入后的余额与 commit。H 必须落在旧 BH 保留的历史区间，并固定对应 canonical BTC hash。
 
 | 证据 | 留存内容及比较范围 |
 | --- | --- |
-| 运行身份 | release/bundle 文件及哈希、三仓库源码 revision、镜像 digest、网络/G/hash、协议/算法/registry 身份、脱敏配置 |
+| 比对元数据 | BH 版本、导出工具版本、网络、G/H 和 commit 协议版本；无需完整配置或所有旧 kit |
 | BTC 锚点 | G/H 的 canonical block hash；采集前后核对 H 未被重组，必要时重采 |
 | BH | G/H 的 block commit、可取得的历史 state-ref、固定地址/脚本的高度余额；归档样本键和请求参数 |
-| indexer | H 的历史 state-ref、pass commit，以及该历史 state-ref 内嵌的 local/system 信息；代表性矿工证 owner/状态/能量 |
-| control-plane | 同一批矿工证对应的脚本反查结果、地址及所依赖的 BTC 锚点；动态展示/时间字段单独记录 |
-| chain | genesis/链身份、选定旧链块及其实际消费的 BTC 锚点和承诺输入；如计划续跑，还需保护相应链数据和身份密钥 |
-| 运行与故障 | 当前 readiness、版本和必要日志；用于解释行为，不作为数据一致性的替代 |
+| 脚本反查样本 | 若验收需要，保存同一批 BH 样本的 scriptPubKey/address 映射；不保存完整 registry |
 
-历史 H 的比较不得混入只返回当前头部的 `get_local_state_commit_info/get_system_state_info`。
-优先取 `get_state_ref_at_height` 的历史内嵌结果，采集前后重复核对锚点；若旧版本缺少历史接口，应明确限制或安排停在 H 的窗口，不能拼接不同时点结果。
 样本覆盖已有非零余额、之后归零、B 后首次出现脚本、实际铸造/转移矿工证的地址。
 对 B 前已归零且之后未观察到的脚本，新 registry 不承诺反查；不能把这种覆盖差异记为余额错误。
 
-相同 G、BTC 链、协议和领域身份下，比较 BH commit/snapshot identity、pass/local/system 承诺及业务结果。
-历史保留下界、registry coverage、bootstrap 来源、进度计数和时间字段可以不同。
-重新启动测试链后产生的新 chain tip/hash/state root 不能直接与旧链 tip 比较；只有相同区块和共识输入才适合做这些比较。
+Indexer、chain、control-plane 在新部署中验收就绪、连通及正常业务调用，不要求与旧节点做历史数据对照。
+这些运行验收仍需完成，但不增加旧节点数据库、身份或配置的保留要求。
+
+### 3.0 BH 核对范围与本次归档方式
+
+本次先用第4节脚本同盘归档完整BH RocksDB，以支持重装后的固定核对及事后补查。无需保留整个BH服务根或其余服务备份。
+旧身份材料也不保留，矿工address在setup时重新输入。后续从离线旧库读取下列参考数据；也可以导出小型参考包后释放旧库。
+
+参考包至少保存：
+
+1. 网络、G=963800、固定稳定高度 H、G/H 对应的 BTC block hash、commit 协议版本和导出工具版本。
+2. 旧 BH 在 `[G,H]` 内已持久化的逐块 commit。若旧库缺少某段历史，明确记录范围，不把缺失当作匹配。
+3. 固定 script_hash 清单及 G/H 的逻辑余额（satoshi），覆盖非零余额、后续归零、新出现脚本和实际矿工证地址。
+   需要反查验收的少量脚本另导出 scriptPubKey/address 映射，不为这些样本保留完整 registry。
+4. 导出完成状态、样本数量和参考包 SHA-256；保留请求高度/样本键，使新服务可以逐项复查。
+
+新 BH 同步到至少 H 后，在相同 BTC 锚点和协议版本下比较这些记录。余额按指定查询高度的逻辑值比较；
+bootstrap 前的最后变化高度、初始化 delta、registry 覆盖范围和运行进度不能混作同一项业务结果。
+已有第3.1节 G 的全量投影结果继续作为原生导入的参考。样本匹配加 commit 匹配支持本次既定验收，
+不等于重新扫描了 H 的全部数据库，也不支持删除旧库后任意新增历史查询。
+
+当前旧服务已经停止时，优先使用 `BalanceHistoryDB::open_read_only` 从现有目录导出，
+无需为了取样重启 Bitcoin 或搬动大库。现有离线工具提供 checkpoint/origin 检查，但**尚无上述参考包的一键导出/比对命令**；
+小型导出/比对命令仍可后续补充；本次已经选择归档完整RocksDB，因此不以该命令实现为清理前置条件。
+
+如果仍需要事后任意补查，才选择保存完整 `db/balance_history` RocksDB 目录，并保留对应读取工具和最小身份元数据。
+“只取部分数据”应通过逻辑查询导出记录，不能从 RocksDB 随意挑几个 SST 当作可读数据库。
 
 ### 3.1 复用已有 G=963800 主网证据
 
@@ -106,7 +131,7 @@ H 的样本和承诺可保存在小型 JSON/报告包内。若还要求 H 的独
 小型参考包支持既定比较，不能恢复已删数据库，也不能满足事后任意补查。
 
 比较材料计算文件哈希并复制到目标节点以外，验证副本可读后再进入重建安排。
-私有配置、身份密钥另做受限备份，不混入可公开的验收报告。无需为此生成新的旧式 BH 数据库 snapshot。
+本次不另行归档私有配置或身份密钥，也无需生成新的旧式 BH 数据库 snapshot。
 
 ## 4. 两种复用范围与磁盘约束
 
@@ -139,158 +164,116 @@ H 的样本和承诺可保存在小型 JSON/报告包内。若还要求 H 的独
 该上限不是 BH 已测大小，也不保证完整运行峰值足够；以停服归档和清理后的 `df` 实测为准。
 无法满足时，将 BH 备份转移到独立磁盘/其他主机。把目录改名不会释放其占用。
 
-### 4.2 清理和保留清单（已确认路径；尚未执行）
+### 4.2 当前脚本的归档和清理范围
 
-下面 `BH_OLD` 指：
-`/data/.usdb/datasets/balance-history/btc-mainnet/09ece7f367d1b0f266adcf9f999be5ca1cfb9cadf13fe66c1ddc907c3b0ca156`。
-`INDEXER_OLD` 指：
-`/data/.usdb/datasets/usdb-indexer/5754a8f5af6839a0710aef7289c81514923634185873a26e4d133d8290095ead`。
+[node_rebuild.py](../../docker/scripts/tools/node_rebuild.py) 已调整为 v2：只保留 BH RocksDB，其他旧数据逐项确认清理。
+不要求恢复旧节点，也不备份旧身份。脚本仍是可独立复制的 Python 3/64位Linux 文件，进入现有 node-kit 打包链路。
 
-| 对象 | 计划处理 | 先决条件/理由 |
-| --- | --- | --- |
-| `BH_OLD` | 停服后一致性备份整个服务根；备份核验后清除旧活动路径 | 包含完整 `db`、`auxiliary` registry、bootstrap、配置、dataset marker 和必要日志；不能只复制几个 SST |
-| `BH_OLD/db_backup_snapshot_install_1788678082866748700` | 单独归类旧安装回退副本 | 本次仅测得274432 bytes；不是当前数据库备份，不替代上一项 |
-| `/data/.usdb/datasets/bitcoin/btc-mainnet` | 整个清除并由 setup 重建 | 包括 blocks/undo、indexes、chainstate、日志、peers 和 dataset marker；不保留旧块，不只删 chainstate |
-| `INDEXER_OLD` | 留存 H 锚点与样本后清除 | 新 indexer 从相同业务 G 重建；必要的历史 state-ref 先导出 |
-| `/data/.usdb/networks/usdb-testnet-v0/usdb-chain` | 保护密钥/身份及旧链证据后清除并重同步 | 已发现 `keystore`、`geth`、`bootstrap`、`recovery`；保护 keystore、geth/nodekey 和 SourceDAO/bootstrap 相关私有材料。仍使用相同 v0 genesis，不能误当新链创世节点 |
-| `/data/.usdb/networks/usdb-testnet-v0/control-plane` | 归档配置/日志后清除 | 已确认目录存在；按新 release 重建 |
-| `/data/.usdb/artifacts/balance-history` | 旧 core/registry 下载包与安装状态可清除 | 当前含 `balance-history-bitcoin-h963800-59e54b88ef118294`、`balance-history-bitcoin-h963800-99ef3fb1f13b8609`；先确认完整 BH 备份包含所需 registry，且无其他节点引用 |
-| `/home/usdb/.config/usdb/usdb-testnet-v0` | 私密归档后移出活动位置，再走 setup | 已发现 node.env、node.resources.json、node.mining.json、sourcedao 和操作锁；不要单删 node.env 留下旧控制状态 |
-| `/data/.usdb/networks/usdb-testnet-v0/secure` | 先私密备份，重建时生成新 RPC 凭据 | 这是代码约定路径，现场尚未单独核实；如有其他签名材料则保护，不能整段无条件删除 |
-| `/etc/systemd/system/usdb-node-bootstrap-usdb-testnet-v0.service` | 先 disable/停服；归档后移除旧 unit，由新 setup 安装 | 旧 unit 可能指向旧 release；保留日志证据 |
-| `/home/usdb/.local/share/usdb/releases/` 下的旧 r4/r5/r7/r10/r11/r12/r14/r15/r17 | 归档至少 r17 的完整 kit/manifest 后，按明确 release 列表移除 | 离线查询旧 BH 可能需要旧版本工具；不能先丢掉唯一兼容工具 |
-| `/home/usdb/.local/bin/usdb-node` | 停服并归档后移除旧链接 | 新 installer 重建；不清整个 `.local/bin` |
-| USDB runtime/Bitcoin 两个 Compose 项目的容器与镜像 | 正式 down 后清容器；仅移除核实过、未被其他容器引用的镜像 ID/digest | 已观察旧 snapshot-loader/registry-installer 和独立 sourcedao 退出容器，清理前补齐精确项目/mount/引用清单；不要 `docker system prune -a --volumes`，不清整个 Docker 根目录 |
-| `/data/.usdb/artifacts/assumeutxo/mainnet-935000`、`/data/.usdb/networks/usdb-testnet-v0/assumeutxo` | 新部署前应为空或不存在 | 新代码约定路径，未发现旧配置使用；若实际存在，先核实来源再清下载片段和 activation journal |
-| `/data/usdb-reference/node1-pre-assumeutxo-20260913` | 建议的独立保留目录；永不纳入此次清理 | 尚未创建；位于活动数据根外，同盘保存仍受370.05 GiB总保留量约束 |
-| SSH/sudo、Docker Engine/Compose、`/data` 挂载、其他服务和其他网络数据 | 保留 | 不需要卸载宿主机 Docker 或格式化磁盘；`/data/usdb` 也未确认用途，不列入清理 |
-| `/home/usdb/.usdb` | 先核实旧目录的用途，暂不删除 | 现场存在，当前 node.env 使用的是 `/data/.usdb`；不根据目录名直接推断可回收 |
-
-### 4.3 BH 备份方式与操作顺序
-
-1. 先保存旧 Core 故障日志和磁盘/文件系统健康观察；新部署前排除仍在发生的 I/O 问题并验证 BH 备份。
-   采集第3节的固定高度 H 锚点/样本和版本。旧 Core 重启循环无法提供稳定 RPC 时，可用另一台经过验证的同链 Core
-   核实 G/H canonical hash；不要把 BH 的健康检查或不断变化的“最新高度”当作对比基线。
-2. 使用旧 `r17` 正式入口执行 `controller disable`，再 `down`（不带 `--keep-bitcoin`）；
-   检查 controller inactive、两个项目容器退出、无进程持有 BH DB。数据库必须干净关闭后再作物理备份。
-3. 首选复制整个 `BH_OLD` 到独立盘/主机上的受限目录，并生成文件清单、大小和 SHA-256；
-   同时保存 r17 kit、私有配置和上述身份材料；确认对应旧服务镜像可再次按digest取得，否则先离线保存该镜像。
-   不要对运行中的 RocksDB 使用普通 `cp/rsync` 并称为一致性备份。
-4. 如果只能同盘保存，可在干净停服后把整个 BH 根移动至上述保留目录，作为冻结的**唯一旧副本**。
-   这避免临时存两份 BH 的空间峰值，但不等于另一介质上的备份，不释放 BH 占用；不得把新服务指向此目录。
-5. 校验副本清单/哈希；用匹配旧版本工具对工作副本进行 DB 打开和 H 锚点检查，避免恢复检查改写唯一保留副本。
-   registry 若含外部路径引用，先核实并保存对应文件。完成后才执行清理表中的回收动作。
-6. `df` 复核至少1.5 TiB可用，确认新 BTC 目录无旧 blocks/chainstate/indexes，确认新 UTXO artifact 无预置文件，
-   然后执行新 installer、setup（选择 `/data/.usdb`）、doctor、up。
-
-本节是排期/审批清单，没有执行停服、复制、移动或删除，也没有生成可无条件运行的递归删除命令。
-
-### 4.4 独立交互式备份清理脚本
-
-已实现 [node_rebuild.py](../../docker/scripts/tools/node_rebuild.py)。这是单文件 Python 3/64位Linux 工具，
-可单独复制到旧节点，不依赖 r17 中缺少的新模块；同时进入后续 node-kit 打包及 Fast CI。
-**本轮仅实现和测试，尚未在 node1 执行备份或清理。**
-
-工具从 `--operator-home` 下当前 `node.env` 推导路径，只接受本手册对应的 v2/mainnet 数据布局。
-不会按目录名猜测 `/home/usdb/.usdb`、`/data/usdb` 等未确认路径的用途，也不会删除整个数据根。
-默认执行主机必须是 `bucky04`；其他已审查节点需要显式指定 `--expect-host`。
-
-| 命令/选项 | 行为 |
+| 对象 | 当前行为 |
 | --- | --- |
-| `plan` | 只读打印主机、路径、存在状态和每项保留范围；不创建备份目录、不停服、不删除 |
-| `run` | 先检查 controller 已禁用且停止、相关 Docker 服务停止；逐项备份，再逐项询问是否删除 |
-| `verify` | 完整读取已完成备份，重新核对文件清单与 SHA-256；不删除源目录 |
-| `--backup-dir` | 必填的绝对路径，空的专用目录或同一工具会话目录；位于活动数据、配置和 release 根之外，权限0700 |
-| `--bh-backup-mode copy` | 默认；完整复制 BH，完成后核对所有文件，再单独询问删除源目录；需要同时容纳原库和副本 |
-| `--bh-backup-mode move` | 仅 BH 使用；先校验再同文件系统 rename 到归档目录，保留唯一离线旧副本，不增加一整份 DB 空间，也不释放 BH 占用 |
+| `BH_OLD/db/balance_history` | 完整归档 RocksDB，含全部列族和数据库文件；只处理这个目录 |
+| BH 根下其他文件、日志、auxiliary registry、旧安装回退目录 | RocksDB 已归档且移出活动位置后，单独确认删除 BH 根；不作全量备份 |
+| BTC、indexer、chain、control-plane、secure、UTXO状态、旧 snapshot 下载目录 | 逐项确认删除，不要求身份或恢复备份 |
+| 旧 release kit、launcher、node 配置、controller unit | 逐项确认删除；会话只留不含凭据的路径布局以支持续跑 |
+| 本节点已退出的容器（含 SourceDAO helper） | 显示容器名、ID和挂载路径后逐项确认，使用 `docker rm`，不带 force/volume 删除参数 |
+| 镜像 | 仍按既有清单核对精确 ID 后单独处理，不执行全局 prune |
+| `--backup-dir` 和其内已有旧档案 | 不作为清理对象；v1留下的其他备份不再要求重复验证 |
+| 其他节点、宿主机工具、SSH/sudo、Docker、挂载 | 不属于清理范围 |
 
-每个备份/移动/删除提示均显示目标路径；输入 **`yes`** 才处理，直接回车或其他输入跳过，`q`/Ctrl-C退出。
-没有批量 `--yes` 开关，`run` 拒绝管道输入。复制备份与删除源路径是两次独立确认；
-移动模式的提示明确说明活动 BH 路径将消失。目标目录及既有备份从不作为清理对象。
+跳过 BH 归档时，BH数据库和其父服务目录都会保留，其余路径仍可分别处理。
+运行中的相关容器会阻止清理；拒绝移除的退出容器若仍引用目标路径，该路径也不会被强删。
 
-保留范围与删除条件：
+### 4.3 BH move/copy 与旧会话迁移
 
-- BH：整个根目录，包含 DB、registry、bootstrap、配置和日志。跳过/未完成/校验失败时不删除 BH；旧 snapshot artifact 清理也要求 BH 备份完整。
-- 配置、secure、control-plane、旧 release kit、controller unit、UTXO activation 状态：完整保留后才允许删除。
-- BTC：保留默认 `wallets`/`wallet.dat`、debug.log、settings.json 和 dataset marker；**不备份 blocks/indexes/chainstate**。
-- chain：保留 keystore、geth/nodekey、bootstrap、recovery 和 marker；**不备份 chaindata**。Indexer和旧下载包不做全库备份。
-- 容器和镜像：由既有停服/清理流程另行处理；本脚本不调用 prune、不删 Docker 根目录。
-  任意容器（包括已退出的 SourceDAO 容器）仍挂载将删除的路径时，脚本报告容器ID并拒绝删除；核实后单独移除该容器再续跑。
-- 系统 unit：逐项确认、备份通过后，仅该文件的删除和 daemon-reload 可能调用 sudo；其他服务/防火墙/挂载不改动。
+- `--bh-backup-mode move`：同一文件系统内 rename，保留文件 inode，并核对条目、大小、mtime和权限。
+  不复制数据库、不反复读取全库做SHA-256；这验证移动边界和元数据，不证明旧数据库无损坏或业务结果正确。
+  清理旧快照硬链接导致的ctime变化不算数据库内容变化。`verify` 对这种归档也只检查上述身份与元数据。
+- `--bh-backup-mode copy`：复制到独立目录，按文件SHA-256校验，可跨盘，需要同时容纳原库和副本；
+  `verify` 重新读取副本核对哈希。复制失败保留部分文件以便续跑。
+- 两种模式都先要求服务停止并检查数据库锁；每次移动/复制/删除都有独立确认，回车跳过，`q`退出。
+- 备份目录必须位于活动数据根之外。同盘移动不释放数据库占用；新setup仍需实测至少1.5TiB可用空间。
+- 移动前先记录意图，中断后可以核对归档续跑。不要先手工移动活动数据库再让脚本猜测其来源。
 
-先在开发机复制脚本（以下命令由操作员执行）：
+已有v1会话可以续用。`old_backup`中的`session.json`、`.lock`和`objects/`一起迁移后，传入新路径即可，
+无需编辑记录中的源路径或改变`copy/move`模式。尚未开始的BH归档自动缩小为RocksDB目录；
+已开始或完成的v1 BH归档保持原来的根目录边界并沿用原校验。
+
+最近只读观察，用户已迁移出`/home`，实际有会话文件的目录是：
+
+```text
+/data/usdb/old_backup/old_backup/session.json
+/data/usdb/old_backup/old_backup/objects/
+```
+
+外层`/data/usdb/old_backup`还有另一份`objects/`，但没有`session.json`。续跑应选内层会话目录，
+不合并两份对象，也不再次移动数据库。旧BH仍位于`/data/.usdb/datasets/balance-history/btc-mainnet/09ece7f367d1b0f266adcf9f999be5ca1cfb9cadf13fe66c1ddc907c3b0ca156`。
+源与内层会话均在`/data`文件系统，满足rename要求。脚本会在任何容器删除或归档扫描前检查这一条件。
+
+若另一节点尚未迁移，先确保目标目录不存在，再把整个旧会话移到同盘、活动数据根之外；
+尚无BH归档时迁移小型旧会话即可。已完成的v2 move归档依赖原inode，不能再用跨盘copy替换它并期待元数据验证通过。
+
+### 4.4 node1 续跑命令
+
+先在开发机更新独立脚本：
 
 ```bash
-scp -P 2224 /home/bucky/work/usdb/docker/scripts/tools/node_rebuild.py \
+scp /home/bucky/work/usdb/docker/scripts/tools/node_rebuild.py \
   usdb@192.168.1.119:/home/usdb/node_rebuild.py
 ssh usdb@192.168.1.119
 ```
 
-在 node1 选择备份位置并预览；`/mnt/backup` 是示例，需换成实际可用的备份盘：
+在node1预览实际会话。旧文件和会话有root所有的私有条目，所以独立工具使用sudo，操作员home仍显式指定：
 
 ```bash
-NODE_REBUILD_BACKUP=/mnt/backup/node1-pre-assumeutxo-20260913
-NODE_REBUILD_MODE=copy
+NODE_REBUILD_BACKUP=/data/usdb/old_backup/old_backup
 
-python3 /home/usdb/node_rebuild.py plan \
+sudo python3 /home/usdb/node_rebuild.py plan \
   --operator-home /home/usdb --backup-dir "$NODE_REBUILD_BACKUP" \
-  --bh-backup-mode "$NODE_REBUILD_MODE"
+  --bh-backup-mode move
 ```
 
-如使用本机 `/data` 的唯一旧副本归档，将上述两个变量改为：
+服务已经停止时直接续跑；若仍有服务，先用原操作员的正式`controller disable`和`down`停止。
+脚本自身不会启动、停止或强制删除运行中的服务：
 
 ```bash
-NODE_REBUILD_BACKUP=/data/usdb-reference/node1-pre-assumeutxo-20260913
-NODE_REBUILD_MODE=move
-```
-
-同盘归档仍受4.1节约370.05GiB总保留量约束。不要选 `/data/.usdb` 下面的备份位置。
-脚本必须放在旧 release 和其他待清目录之外；直接从待删 kit 运行会被拒绝。
-
-完成故障证据、G/H样本和备份介质检查后，使用**旧**入口干净停服，再运行交互处理：
-
-```bash
-/home/usdb/.local/bin/usdb-node controller disable
-/home/usdb/.local/bin/usdb-node down
-
-python3 /home/usdb/node_rebuild.py run \
+sudo python3 /home/usdb/node_rebuild.py run \
   --operator-home /home/usdb --backup-dir "$NODE_REBUILD_BACKUP" \
-  --bh-backup-mode "$NODE_REBUILD_MODE"
+  --bh-backup-mode move
 ```
 
-不要同时启动新的 `setup/up` 或手工 DB 进程。脚本会在操作前重查 controller、Docker挂载、数据库锁和路径；
-拒绝符号链接目标、备份目录重叠、目录中的挂载点和已被替换的源目录。复制备份不接受指向其他数据的硬链接。
-未完成的大文件复制保留在 `.partial`，重跑时核对已有文件后继续；不要手工混入其他文件或复用另一节点的目录。
-移动后的中断可依据持久记录复核归档；删除中断后重跑仍需确认，只接受原目录中未改变的剩余内容。
+依次确认归档目录、已退出的SourceDAO容器、BH RocksDB移动以及各清理路径。
+不再出现keystore、钱包、旧kit的BACKUP提示。默认目标库为：
 
-备份目录中的 `session.json` 记录身份、源文件状态、SHA-256、完成阶段和操作日志；`objects/` 保存实际副本。
-配置/钱包属于私有材料，整个目录须受限保存，不提交到 Git、不公开上传。源 node.env/旧kit删掉后，仍可从已保存配置恢复同一会话。
-复制/校验输出字节数和耗时，目录扫描/删除有持续心跳；校验可能多次读取大库，不预估未经测量的完成时间。
+```text
+/data/usdb/old_backup/old_backup/objects/balance-history/db/balance_history
+```
 
-可在首个 DELETE 提示输入 `q`，先安排离线 DB 打开/G/H 逻辑复核，之后用相同参数重新 `run`。
-也可单独复核已保存的全部字节：
+这是旧库的唯一离线保留副本，新服务不要指向这里。后续只读工具可将`objects/balance-history`作为服务根进行余额/commit查询；
+外部registry sidecar不在本次归档中，反查样本需使用已有映射或另行导出，不能声称保留了完整旧registry。
+如需重新检查归档，使用相同参数运行`verify`：
 
 ```bash
-python3 /home/usdb/node_rebuild.py verify \
+sudo python3 /home/usdb/node_rebuild.py verify \
   --operator-home /home/usdb --backup-dir "$NODE_REBUILD_BACKUP" \
-  --bh-backup-mode "$NODE_REBUILD_MODE"
+  --bh-backup-mode move
 ```
 
-这里的验证证明文件副本一致，**不证明原数据库没有既有损坏或业务承诺正确**，也不会修复当前 Core 的 LevelDB 错误。
-DB打开、固定锚点比较和磁盘健康检查仍按4.3节执行。结束时脚本打印空闲字节和仍保留的路径；
-某项选择跳过并不等于整机已清空，尤其要检查旧node.env、BTC数据及1.5TiB可用空间，再安装新 release。
-
-本地新增21项测试覆盖逐项确认、真实文件复制/校验/删除、移动与删除中断恢复、锁占用及读取后锁仍保持、空间不足、
-目录替换、链接/挂载防护和不泄露配置；测试只使用临时目录和模拟主机检查。
+节点本地的`session.json`会自动升级为v2，保存路径、原文件身份及完成状态，不保存新的RPC凭据或账户密钥。
+已有旧档案留在会话目录；本工具不会为了精简流程自动删除它们。
+本地测试覆盖真实临时文件的copy/move、旧会话迁移、删除后续跑、同盘预检、锁保护、逐容器确认及拒绝清理其他节点。
+本节命令由操作员执行，文档更新和本地测试不代表已在node1移动或删除数据。
 
 ## 5. 后续执行顺序与完成条件
 
 1. 补齐只读现场清单和比较采集工具；发布 workflow 原生输入接入已实现，待审查提交后生成经验证的原生 release/安装包。
-2. 从旧节点取得 G/H 参考材料、必要身份备份并移出目标节点，验证完整性；确定 chain 是同网络重同步还是保留旧链续跑。
-3. 明确重建窗口和实际路径清单后，使用旧节点正式入口停止 controller/服务并确认退出，再执行约定的配置重置与数据回收。
-4. 安装原生 release，正式 `setup/doctor/up`。只运行这一套主网服务；记录下载、Core 导入、BH 导入/重放和资源阶段切换。
-5. 核对 G 封存摘要及 H 的历史锚点/业务样本，再验收 chain/control-plane readiness 与其实际消费的承诺。
-   如果接口保留窗口不足，提前安排官方配置支持的固定高度阶段，不能等 H 已被回收后才取样。
+2. 按第4节归档完整BH RocksDB并验证，后续从离线旧库读取G/H参考材料；不做旧节点身份和恢复备份。
+3. 确认 controller/服务停止；逐项确认移除本节点遗留容器，再逐项清理相应旧目录/镜像。
+   清理BH活动目录以RocksDB归档验证通过为前提，其余测试节点数据不以完整备份为前提。
+   已有 `old_backup` 中的配置/kit 仅在导出工具仍依赖它们时暂留，导出完成后无需为恢复旧节点继续保留。
+4. 安装原生 release，正式 `setup/doctor/up`，重新输入矿工 address。只运行这一套主网服务；
+   记录下载、Core 导入、BH 导入/重放和资源阶段切换。
+5. 核对 G 封存摘要、`[G,H]` 的 BH commit 和固定高度余额/反查样本；新 indexer、chain、control-plane 验收正常运行及业务调用。
+   不要求保存或恢复这些下游服务的旧数据库；如果 BH 接口保留窗口不足，提前安排固定高度的比对阶段。
 6. 在同一部署验证重启与恢复，记录峰值磁盘/内存、各阶段实际耗时、前台就绪和后台历史验证进度。
    下载中断、错误签名/文件等优先复用小型自动化覆盖；需真实主网窗口的中断场景单独排期，避免反复重导入。
 

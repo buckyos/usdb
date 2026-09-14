@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactively preserve and remove v2 node paths before a clean installation.
+"""Archive only balance-history RocksDB, then interactively clear a test node.
 
 Standalone Python/Linux tool: no imports from the installed (possibly old) node kit.
 It never stops services, prunes Docker, or treats a live RocksDB copy as a backup.
@@ -26,7 +26,8 @@ import tempfile
 import threading
 import time
 
-SCHEMA = "usdb-node-rebuild:v1"
+SCHEMA = "usdb-node-rebuild:v2"
+LEGACY_SCHEMA = "usdb-node-rebuild:v1"
 CHUNK = 4 * 1024 * 1024
 
 
@@ -83,7 +84,7 @@ def sync_dir(path: Path):
 class Target:
     key: str
     path: Path
-    # None: discardable data; (): preserve entire target; otherwise selected identities.
+    # None: discardable test-node data; (): preserve the complete BH target.
     preserve: tuple[str, ...] | None
     link: str = ""
 
@@ -96,6 +97,8 @@ class Plan:
     env_path: Path
     targets: list[Target]
     env_sha256: str
+    bh_root: Path
+    layout: dict
 
 
 def build_plan(home: Path, bundle: str, backup: Path, unit_dir=Path("/etc/systemd/system")) -> Plan:
@@ -104,16 +107,25 @@ def build_plan(home: Path, bundle: str, backup: Path, unit_dir=Path("/etc/system
     require(re.fullmatch(r"usdb-(testnet|mainnet)-v[0-9]+", bundle), "Invalid bundle ID")
     config = home / ".config/usdb" / bundle
     env_path = config / "node.env"
+    saved = read_json(backup / "session.json") if (backup / "session.json").exists() else {}
+    require(saved or not (backup / "old_backup/session.json").is_file(),
+            f"Nested backup session found; use --backup-dir {backup / 'old_backup'} without merging objects directories")
     source = env_path if env_path.exists() else backup / "objects/config/node.env"
     safe_path(source)
     env = {}
-    env_content = source.read_bytes()
-    for line in env_content.decode().splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        key, separator, value = line.partition("=")
-        require(separator and key not in env, "Invalid or duplicate node.env field")
-        env[key] = value
+    if source.exists():
+        env_content = source.read_bytes()
+        env_sha256 = hashlib.sha256(env_content).hexdigest()
+        for line in env_content.decode().splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            key, separator, value = line.partition("=")
+            require(separator and key not in env, "Invalid or duplicate node.env field")
+            env[key] = value
+    else:
+        require(saved.get("layout"), "No node.env or saved rebuild layout; retain the old session when relocating old_backup")
+        env = saved["layout"]
+        env_sha256 = saved["identity"]["env_sha256"]
     require(env.get("USDB_DATA_LAYOUT") == "usdb-node-data-layout:v2", "Only reviewed v2 data layouts are supported")
     root = absolute(env["USDB_DATA_ROOT"])
     require(len(root.parts) >= 2 and root != home, "Data root must be a dedicated directory")
@@ -130,29 +142,36 @@ def build_plan(home: Path, bundle: str, backup: Path, unit_dir=Path("/etc/system
     }
     for key, path in expected.items():
         require(env.get(key) == str(path), f"Unexpected data path for {key}")
-    targets = [
-        Target("balance-history", bh, ()),
-        Target("bitcoin", expected["BTC_NODE_DATA_HOST_DIR"], ("wallets", "wallet.dat", "debug.log", "settings.json", ".usdb-dataset-identity.json")),
+    # A v1 move already in progress must retain its original whole-root boundary.
+    previous_bh = saved.get("items", {}).get("balance-history")
+    bh_source = bh if previous_bh and previous_bh["source"] == str(bh) else bh / "db/balance_history"
+    targets = [Target("balance-history", bh_source, ())]
+    if bh_source != bh:
+        targets.append(Target("balance-history-root", bh, None))
+    targets += [
+        Target("bitcoin", expected["BTC_NODE_DATA_HOST_DIR"], None),
         Target("indexer", indexer, None),
-        Target("chain", expected["USDB_CHAIN_DATA_HOST_DIR"], ("keystore", "geth/nodekey", "bootstrap", "recovery", ".usdb-dataset-identity.json")),
-        Target("control-plane", expected["CONTROL_PLANE_DATA_HOST_DIR"], ()),
+        Target("chain", expected["USDB_CHAIN_DATA_HOST_DIR"], None),
+        Target("control-plane", expected["CONTROL_PLANE_DATA_HOST_DIR"], None),
         Target("legacy-snapshots", expected["BH_SNAPSHOT_HOST_DIR"], None),
         Target("utxo-file", root / "artifacts/assumeutxo/mainnet-935000", None),
-        Target("utxo-state", network / "assumeutxo", ()),
-        Target("secure", network / "secure", ()),
+        Target("utxo-state", network / "assumeutxo", None),
+        Target("secure", network / "secure", None),
     ]
-    # Preserve every selected old kit; they are small and may be needed to read the old DB.
+    # Keep only path provenance for old kits; their binaries are not recovery backups.
     releases = home / ".local/share/usdb/releases"
     safe_path(releases)
     release_names = {p.name for p in releases.iterdir()} if releases.exists() else set()
-    if (backup / "session.json").exists():
-        release_names.update(read_json(backup / "session.json").get("sources", {}))
+    release_names.update(saved.get("sources", {}))
     for name in sorted(release_names):
         if re.fullmatch(re.escape(bundle) + r"-r[1-9][0-9]*", name):
             path = releases / name
             manifest = (path if path.exists() else backup / "objects" / name) / "release/usdb-release-manifest.json"
-            require(read_json(manifest)["release_id"] == name, "Release directory identity mismatch")
-            targets.append(Target(name, path, ()))
+            if manifest.exists():
+                require(read_json(manifest)["release_id"] == name, "Release directory identity mismatch")
+            else:
+                require(not path.exists() and name in saved.get("sources", {}), "Release directory identity unavailable")
+            targets.append(Target(name, path, None))
     launcher = home / ".local/bin/usdb-node"
     if launcher.is_symlink():
         link = os.readlink(launcher)
@@ -164,16 +183,30 @@ def build_plan(home: Path, bundle: str, backup: Path, unit_dir=Path("/etc/system
     else:
         require(not launcher.exists(), "Refusing a non-symlink launcher")
     unit = unit_dir / f"usdb-node-bootstrap-{bundle}.service"
-    targets += [Target("controller-unit", unit, ()), Target("config", config, ())]
+    targets += [Target("controller-unit", unit, None), Target("config", config, None)]
     for target in targets:
         safe_path(target.path, leaf_link=bool(target.link))
         require(not overlap(target.path, backup), f"Backup overlaps cleanup path: {target.path}")
         require(not overlap(target.path, Path(__file__).resolve()), "Copy this standalone script outside all cleanup targets before running it")
-    require(all(not overlap(left.path, right.path) for i, left in enumerate(targets) for right in targets[i + 1:]),
+    require(all(not overlap(left.path, right.path) or {left.key, right.key} == {"balance-history", "balance-history-root"}
+                for i, left in enumerate(targets) for right in targets[i + 1:]),
             "Cleanup targets overlap each other; this data layout needs manual review")
     require(not overlap(root, backup) and not overlap(config.parent, backup) and not overlap(releases, backup), "Backup must be outside the data, configuration and release roots")
     safe_path(backup)
-    return Plan(home, root, bundle, env_path, targets, hashlib.sha256(env_content).hexdigest())
+    layout = {key: env[key] for key in ("USDB_DATA_LAYOUT", "USDB_DATA_ROOT", "BH_DATA_HOST_DIR", "USDB_INDEXER_DATA_HOST_DIR", *expected)}
+    return Plan(home, root, bundle, env_path, targets, env_sha256, bh, layout)
+
+
+def check_move_filesystem(source: Path, destination: Path):
+    """Check rename feasibility before any archive scan or container removal."""
+    if not source.exists():
+        return
+    parent = destination
+    while not parent.exists():
+        parent = parent.parent
+    require(source.stat().st_dev == parent.stat().st_dev,
+            f"BH move requires the same filesystem: source={source}, archive={destination}. "
+            "Relocate old_backup onto the BH filesystem (for node1: /data/old_backup), keeping its session.json and objects together")
 
 
 def command(args: list[str], *, accepted=(0,)) -> str:
@@ -198,7 +231,7 @@ def containers() -> list[dict]:
     if not ids:
         return []
     # Never capture Config.Env or authenticated command arguments.
-    template = '{"id":{{json .Id}},"state":{{json .State.Status}},"mounts":{{json .Mounts}},"labels":{{json .Config.Labels}}}'
+    template = '{"id":{{json .Id}},"name":{{json .Name}},"state":{{json .State.Status}},"mounts":{{json .Mounts}},"labels":{{json .Config.Labels}}}'
     return [json.loads(line) for line in command(["docker", "inspect", "--format", template, *ids]).splitlines()]
 
 
@@ -221,6 +254,36 @@ def check_stopped(plan: Plan, *, deleting: Path | None = None):
                 f"Container still uses this node: {item['id'][:12]}; run the old usdb-node down first")
         require(not (deleting and any(overlap(deleting, s) for s in sources)),
                 f"Stopped container still references {deleting}: {item['id'][:12]}; review/remove that container separately")
+
+
+def selected_container(plan: Plan, item: dict) -> bool:
+    project = (item.get("labels") or {}).get("com.docker.compose.project", "")
+    if project:
+        return project in {plan.bundle, plan.bundle + "-bitcoin"}
+    # An unlabelled helper must bind a selected path or its child, never just /data or /home.
+    return any(Path(m["Source"]) == t.path or t.path in Path(m["Source"]).parents
+               for m in item["mounts"] if m.get("Source", "").startswith("/") for t in plan.targets)
+
+
+def remove_stopped_containers(plan: Plan):
+    """Offer each selected stopped container separately; Docker rm never forces or removes volumes."""
+    check_stopped(plan)
+    for item in containers():
+        if not selected_container(plan, item):
+            continue
+        require(item["state"] in {"exited", "created", "dead"}, "Selected container is running; stop it before rebuilding")
+        paths = [m["Source"] for m in item["mounts"] if m.get("Source", "").startswith("/")]
+        if not confirm("REMOVE STOPPED CONTAINER", item["id"],
+                       f"Name: {item.get('name', '')}; state: {item['state']}\nBind paths: " + ", ".join(paths)):
+            continue
+        check_stopped(plan)
+        current = next((c for c in containers() if c["id"] == item["id"]), None)
+        if current is None:
+            continue
+        require(selected_container(plan, current) and current["state"] in {"exited", "created", "dead"},
+                "Container changed after confirmation; inspect before retrying")
+        command(["docker", "rm", "--", item["id"]])
+        print(f"Removed stopped container: {item['id']}", flush=True)
 
 
 def stamp(path: Path) -> list[int]:
@@ -290,6 +353,18 @@ def verify_tree(path: Path, expected: dict, *, reject_hardlinks=False):
             entry["sha256"] = digest(file, progress)
     require(same_content(actual, expected), f"Backup content differs: {path}")
     progress.show("finished")
+
+
+def verify_rename(path: Path, expected: dict):
+    """Check retained inodes, sizes, mtimes and modes; rename/unlink of old hardlinks can change ctime."""
+    actual = inventory(path)
+    require(actual.keys() == expected.keys(), f"Moved archive entries changed: {path}")
+    for name, entry in actual.items():
+        old = expected[name]
+        left, right = entry["stamp"][:], old["stamp"][:]
+        left[4] = right[4]
+        require(entry["kind"] == old["kind"] and left == right, f"Moved archive identity or metadata changed: {path / name}")
+    print(f"Move verified: path={path}, entries={len(actual)}, verification=same_filesystem_inode_metadata", flush=True)
 
 
 def copy_tree(source: Path, destination: Path) -> dict:
@@ -373,7 +448,12 @@ def acquire_locks(path: Path, stack: ExitStack):
     """Hold both Unix lock variants on existing DB/control lock files while preserving data."""
     if not path.is_dir():
         return
-    for directory, dirs, files in os.walk(path, followlinks=False):
+
+    def scan_error(error):
+        # An unreadable container-owned directory may contain a live DB lock.
+        raise error
+
+    for directory, dirs, files in os.walk(path, followlinks=False, onerror=scan_error):
         dirs[:] = [name for name in dirs if not (Path(directory) / name).is_symlink()]
         for name in files:
             if name not in {"LOCK", ".lock"}:
@@ -417,10 +497,26 @@ class Session:
                         data_root=str(plan.root), bundle=plan.bundle, bh_backup_mode=mode, env_sha256=plan.env_sha256)
         if self.manifest.exists():
             self.state = read_json(self.manifest)
-            require(self.state["identity"] == identity, "Backup session belongs to another host, node or mode")
+            old_identity = self.state["identity"]
+            legacy = old_identity.get("schema_version") == LEGACY_SCHEMA
+            require(({**old_identity, "schema_version": SCHEMA} if legacy else old_identity) == identity,
+                    "Backup session belongs to another host, node or mode")
+            if legacy:
+                if not self.state["items"].get("balance-history"):
+                    old_source = self.state["sources"].get("balance-history")
+                    require(not plan.bh_root.exists() or stamp(plan.bh_root)[:2] == old_source,
+                            "Legacy BH source changed before session migration")
+                    source = plan.bh_root / "db/balance_history"
+                    require(not plan.bh_root.exists() or source.is_dir(), "Legacy BH RocksDB is missing; inspect before cleanup")
+                    self.state["sources"]["balance-history-root"] = old_source
+                    self.state["sources"]["balance-history"] = stamp(source)[:2] if source.exists() else None
+                self.state["identity"] = identity
+                self.state["layout"] = plan.layout
+                self.save()
+                print("Resumed v1 session: only BH is preserved; existing non-BH archives are left in old_backup", flush=True)
         else:
             require(all(p.name == ".lock" and p.is_file() and not p.is_symlink() for p in root.iterdir()), "Backup directory must be empty or contain this tool's session")
-            self.state = dict(identity=identity, items={}, events=[],
+            self.state = dict(identity=identity, layout=plan.layout, items={}, events=[],
                               sources={t.key: stamp(t.path)[:2] if t.path.exists() or t.path.is_symlink() else None for t in plan.targets})
             self.save()
         safe_path(root / "objects")
@@ -438,18 +534,30 @@ class Session:
         self.state["events"].append(dict(action=action, path=str(path), time=time.time()))
         self.save()
 
+    def destination(self, target: Target) -> Path:
+        root = self.root / "objects" / target.key
+        return root / "db/balance_history" if target.key == "balance-history" and target.path != self.plan.bh_root else root
+
+    def verify_record(self, target: Target, record: dict):
+        for relative, tree in record["trees"].items():
+            require(relative == ".", "Unexpected BH archive selection")
+            path = self.destination(target)
+            if record.get("verification") == "rename":
+                verify_rename(path, tree)
+            else:
+                verify_tree(path, tree, reject_hardlinks=record["mode"] == "copy")
+
     def preserve(self, target: Target) -> bool:
+        require(target.key == "balance-history", "Only balance-history is archived by this test-node rebuild")
         source = target.path
         self.check_target(target)
         previous = self.state["items"].get(target.key)
-        destination = self.root / "objects" / target.key
+        destination = self.destination(target)
         # A persisted intent precedes rename, allowing copy and move publication to reconcile.
         if previous and not previous.get("complete") and destination.exists():
             require(previous["source"] == str(source), "Backup source changed")
             require(previous["mode"] != "move" or not source.exists(), "Both source and moved destination exist; inspect before retrying")
-            for relative, tree in previous["trees"].items():
-                require(relative == "." or relative in (target.preserve or ()), "Unexpected backup selection")
-                verify_tree(destination if relative == "." else destination / relative, tree, reject_hardlinks=previous["mode"] == "copy")
+            self.verify_record(target, previous)
             previous["complete"] = True
             self.event("backup_reconciled", source)
         if previous and previous.get("complete"):
@@ -460,61 +568,49 @@ class Session:
             return False
         partial = destination.with_name(destination.name + ".partial")
         safe_path(partial)
-        moving = self.mode == "move" and target.key == "balance-history"
-        scope = "entire path" if not target.preserve else "selected identities/logs only: " + ", ".join(target.preserve)
+        moving = self.mode == "move"
+        if moving:
+            check_move_filesystem(source, destination)
+        scope = "complete RocksDB directory" if source != self.plan.bh_root else "previously selected v1 BH root"
         if not confirm("MOVE TO ARCHIVE" if moving else "BACKUP", source,
                        f"Destination: {destination}\nPreserve: {scope}" + ("; the active BH path will disappear, leaving one offline copy" if moving else "; source remains until separately confirmed cleanup")):
             return False
         check_stopped(self.plan)
+        safe_path(destination.parent)
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with ExitStack() as locks:
             acquire_locks(source, locks)
-            if self.mode == "move" and target.key == "balance-history":
-                require(source.stat().st_dev == destination.parent.stat().st_dev, "BH move requires the same filesystem")
+            if moving:
+                check_move_filesystem(source, destination)
                 require(not destination.exists() and not partial.exists(), "Move destination already exists")
-                progress = Progress("Verify before move", source)
+                progress = Progress("Inspect before move", source)
                 before = inventory(source)
-                for name, entry in before.items():
-                    if entry["kind"] == "file":
-                        entry["sha256"] = digest(source / name, progress)
                 progress.show("finished")
-                require(inventory(source) == {k: {a: b for a, b in v.items() if a != "sha256"} for k, v in before.items()}, "BH changed during move verification")
                 check_stopped(self.plan, deleting=source)
-                self.state["items"][target.key] = dict(source=str(source), mode="move", complete=False, trees={".": before})
+                self.state["items"][target.key] = dict(source=str(source), mode="move", verification="rename", complete=False, trees={".": before})
                 self.save()
                 os.rename(source, destination)
                 sync_dir(source.parent)
                 sync_dir(destination.parent)
-                verify_tree(destination, before)
+                verify_rename(destination, before)
                 trees = {".": before}
             else:
                 require(not destination.exists(), "Unverified final backup exists; preserve it and inspect before retrying")
-                trees = {}
-                if target.preserve:
-                    partial.mkdir(mode=0o700, exist_ok=True)
-                    for relative in target.preserve:
-                        item = source / relative
-                        safe_path(item)
-                        if item.exists():
-                            (partial / relative).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                            trees[relative] = copy_tree(item, partial / relative)
-                else:
-                    trees["."] = copy_tree(source, partial)
+                trees = {".": copy_tree(source, partial)}
                 check_stopped(self.plan)
                 self.state["items"][target.key] = dict(source=str(source), mode="copy", complete=False, trees=trees)
                 self.save()
                 os.rename(partial, destination)
                 sync_dir(destination.parent)
-            self.state["items"][target.key] = dict(source=str(source), mode="move" if target.key == "balance-history" and self.mode == "move" else "copy", complete=True, trees=trees)
+            self.state["items"][target.key] = dict(source=str(source), mode="move" if moving else "copy",
+                                                  verification="rename" if moving else "sha256", complete=True, trees=trees)
             self.event("backup_verified", source)
         return True
 
     def verify(self, target: Target):
         record = self.state["items"][target.key]
         require(record["complete"] and record["source"] == str(target.path), "No completed backup for target")
-        for relative, tree in record["trees"].items():
-            require(relative == "." or relative in (target.preserve or ()), "Unexpected backup selection")
-            path = self.root / "objects" / target.key
-            verify_tree(path if relative == "." else path / relative, tree, reject_hardlinks=record["mode"] == "copy")
+        self.verify_record(target, record)
 
     def clean(self, target: Target):
         source = target.path
@@ -525,10 +621,10 @@ class Session:
         if target.preserve is not None and not self.state["items"].get(target.key, {}).get("complete"):
             print(f"SKIPPED cleanup without verified backup: {source}")
             return
-        # Old registry artifacts are retained until a full BH backup exists.
-        if target.key == "legacy-snapshots" and not self.state["items"].get("balance-history", {}).get("complete"):
-            print(f"SKIPPED cleanup without BH/registry backup: {source}")
-            return
+        if target.key == "balance-history-root":
+            if not self.state["items"].get("balance-history", {}).get("complete") or (source / "db/balance_history").exists():
+                print(f"SKIPPED BH root cleanup until RocksDB has been archived and removed from the active path: {source}")
+                return
         backup_note = "No full data backup is made for this target." if target.preserve is None or target.preserve else "An independently verified full copy is retained."
         if not confirm("DELETE", source, "This removes the selected path permanently. " + backup_note):
             return
@@ -544,11 +640,9 @@ class Session:
                 for relative, tree in record["trees"].items():
                     original = source if relative == "." else source / relative
                     check_original(original, tree, recovering=recovering)
-                if target.preserve:
-                    present = {p for p in target.preserve if (source / p).exists()}
-                    require(present <= set(record["trees"]) if recovering else present == set(record["trees"]), "New identity material appeared after backup")
-            if target.key == "legacy-snapshots":
+            if target.key == "balance-history-root":
                 self.verify(next(t for t in self.plan.targets if t.key == "balance-history"))
+                require(not (source / "db/balance_history").exists(), "A new BH database appeared before root cleanup")
             if target.link:
                 require(os.readlink(source) == target.link, "Launcher changed after planning")
             self.check_target(target)
@@ -570,25 +664,29 @@ class Session:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "run", "verify"))
-    parser.add_argument("--backup-dir", required=True, type=Path, help="Dedicated directory outside all active node roots")
-    parser.add_argument("--operator-home", type=Path, default=Path.home())
+    parser.add_argument("--backup-dir", required=True, type=Path, help="BH archive/session directory outside active roots; an intact relocated old_backup can be reused")
+    parser.add_argument("--operator-home", type=Path, default=Path.home(), help="Node operator home; pass explicitly when running this standalone tool with sudo")
     parser.add_argument("--bundle-id", default="usdb-testnet-v0")
     parser.add_argument("--expect-host", default="bucky04", help="Execution host guard (node1 defaults to bucky04)")
-    parser.add_argument("--bh-backup-mode", choices=("copy", "move"), default="copy", help="move preserves a single offline BH copy on the same filesystem")
+    parser.add_argument("--bh-backup-mode", choices=("copy", "move"), default="copy", help="copy hashes file contents; move renames RocksDB on the same filesystem and verifies inode metadata")
     args = parser.parse_args()
     try:
         plan = build_plan(args.operator_home, args.bundle_id, args.backup_dir)
         print(f"Host={socket.gethostname()}, bundle={plan.bundle}, data_root={plan.root}, backup={args.backup_dir}")
+        print("Scope: preserve only BH RocksDB for comparison. Other old data, identities and configurations are deleted only after individual confirmation.")
         for t in plan.targets:
             scope = "none" if t.preserve is None else "entire path" if not t.preserve else ", ".join(t.preserve)
             print(f"{t.key}: {t.path}\n  preserve={scope}; exists={t.path.exists() or t.path.is_symlink()}")
+        if args.bh_backup_mode == "move":
+            check_move_filesystem(next(t.path for t in plan.targets if t.key == "balance-history"), args.backup_dir)
         if args.action == "plan":
             return 0
         require(socket.gethostname() == args.expect_host, "Host differs from --expect-host")
         if args.action == "run":
             require(sys.stdin.isatty() and sys.stdout.isatty(), "run requires an interactive terminal; no --yes or piped approval is supported")
             check_stopped(plan)
-            if not confirm("PREPARE BACKUP DIRECTORY", args.backup_dir, "Private configurations and keys will be stored here. Copy does not free space; move keeps only one offline BH copy."):
+            if not confirm("PREPARE BACKUP DIRECTORY", args.backup_dir,
+                           "Only BH RocksDB is archived. Old identities/configuration will not be backed up. Move keeps one offline DB without freeing its disk space."):
                 return 0
             args.backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         require(args.backup_dir.is_dir() and stat.S_IMODE(args.backup_dir.stat().st_mode) & 0o077 == 0, "Backup directory must be private (mode 0700)")
@@ -598,25 +696,30 @@ def main() -> int:
             lock = locks.enter_context((args.backup_dir / ".lock").open("a+"))
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             session = Session(plan, args.backup_dir, args.bh_backup_mode)
+            bh_target = next(t for t in plan.targets if t.key == "balance-history")
             if args.action == "verify":
-                require(any(r.get("complete") for r in session.state["items"].values()), "No completed backups; run again to resume preparation")
-                require(all(r.get("complete") for r in session.state["items"].values()), "An interrupted backup needs reconciliation with run")
-                for target in plan.targets:
-                    if session.state["items"].get(target.key, {}).get("complete"):
-                        session.verify(target)
+                require(session.state["items"].get("balance-history", {}).get("complete"), "No completed BH archive; run again to resume preparation")
+                session.verify(bh_target)
                 return 0
             operation_lock = plan.env_path.parent / ".usdb-node-operation.lock"
             if operation_lock.exists():
                 lock_file(operation_lock, locks)
-            # Preserve private config and old readers first, then the large database.
-            for target in sorted(plan.targets, key=lambda t: t.key == "balance-history"):
-                if target.preserve is not None:
-                    session.preserve(target)
+            for target in plan.targets:
+                session.check_target(target)
+            remove_stopped_containers(plan)
+            session.preserve(bh_target)
             for target in plan.targets:
                 session.clean(target)
             print(f"Finished selected operations. Free data bytes={shutil.disk_usage(plan.root).free}; setup requires {3 * 1024**4 // 2}. Inspect skipped paths before reinstalling.")
             print("Retained paths: " + ", ".join(str(t.path) for t in plan.targets if t.path.exists() or t.path.is_symlink()))
         return 0
+    except PermissionError as error:
+        print(f"Node rebuild failed: {error}", file=sys.stderr)
+        if os.geteuid() != 0:
+            print("Container-owned node files may require root access. Rerun this standalone tool with sudo and explicit "
+                  "--operator-home, keeping the same --backup-dir and --bh-backup-mode to resume. "
+                  "Unreadable paths must not be treated as empty or skipped during backup.", file=sys.stderr)
+        return 1
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"Node rebuild failed: {error}", file=sys.stderr)
         return 1

@@ -1,7 +1,10 @@
 """Disposable node filesystem for destructive-operation tests; no real host data."""
 
+import hashlib
 import json
 from pathlib import Path
+import shutil
+import socket
 
 
 class RebuildFixture:
@@ -58,3 +61,29 @@ class RebuildFixture:
     def session(self, tool, mode="copy"):
         self.backup.mkdir(mode=0o700, exist_ok=True)
         return tool.Session(self.plan(tool), self.backup, mode)
+
+    def legacy_session(self, tool, mode="move", *, completed_bh=False):
+        """Build a v1 archive with the old whole-root boundary and archived node.env."""
+        plan = self.plan(tool)
+        self.backup.mkdir(mode=0o700)
+        objects = self.backup / "objects"
+        objects.mkdir()
+        shutil.copytree(self.config, objects / "config")
+        shutil.copytree(self.release, objects / self.release.name)
+        sources = {t.key: tool.stamp(t.path)[:2] if t.path.exists() else None for t in plan.targets}
+        sources.pop("balance-history-root")
+        bh = self.paths["BH_DATA_HOST_DIR"]
+        sources["balance-history"] = tool.stamp(bh)[:2]
+        # An irrelevant unfinished v1 backup must not block the new BH-only policy.
+        items = {"config": dict(source=str(self.config), complete=False)}
+        if completed_bh:
+            trees = tool.inventory(bh)
+            for name, entry in trees.items():
+                if entry["kind"] == "file":
+                    entry["sha256"] = hashlib.sha256((bh / name).read_bytes()).hexdigest()
+            shutil.copytree(bh, objects / "balance-history")
+            items["balance-history"] = dict(source=str(bh), mode="copy", complete=True, trees={".": trees})
+        state = dict(identity=dict(schema_version=tool.LEGACY_SCHEMA, hostname=socket.gethostname(), home=str(self.home),
+            data_root=str(self.data), bundle=self.bundle, bh_backup_mode=mode, env_sha256=plan.env_sha256),
+            items=items, events=[], sources=sources)
+        tool.atomic_json(self.backup / "session.json", state)

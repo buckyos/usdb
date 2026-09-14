@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise backup integrity, interrupted moves, explicit consent and scoped removal."""
 
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -30,6 +31,9 @@ class RebuildTests(unittest.TestCase):
         capture = redirect_stdout(self.output)
         capture.__enter__()
         self.addCleanup(capture.__exit__, None, None, None)
+        container_patch = mock.patch.object(tool, "containers", return_value=[])
+        container_patch.start()
+        self.addCleanup(container_patch.stop)
 
     def target(self, session, key):
         return next(t for t in session.plan.targets if t.key == key)
@@ -66,22 +70,71 @@ class RebuildTests(unittest.TestCase):
 
         def choose(action, path, extra=""):
             prompts.append((action, path))
-            return action == "PREPARE BACKUP DIRECTORY" or (action == "BACKUP" and path == self.fixture.config)
+            return action == "PREPARE BACKUP DIRECTORY" or (action == "BACKUP" and path == self.fixture.paths["BH_DATA_HOST_DIR"] / "db/balance_history")
 
         with mock.patch.object(sys, "argv", argv), mock.patch.object(tool, "build_plan", return_value=plan), \
              mock.patch.object(tool, "check_stopped"), mock.patch.object(sys.stdin, "isatty", return_value=True), \
              mock.patch.object(self.output, "isatty", return_value=True), mock.patch.object(tool, "confirm", side_effect=choose):
             self.assertEqual(tool.main(), 0)
             self.assertEqual(tool.main(), 0)
-        self.assertTrue((self.fixture.backup / "objects/config/node.env").is_file())
+        self.assertTrue((self.fixture.backup / "objects/balance-history/db/balance_history/000001.sst").is_file())
+        self.assertFalse((self.fixture.backup / "objects/config").exists())
         self.assertTrue(self.fixture.paths["BH_DATA_HOST_DIR"].exists())
-        self.assertEqual(sum(action == "BACKUP" and path == self.fixture.config for action, path in prompts), 1)
+        self.assertEqual(sum(action == "BACKUP" for action, path in prompts), 1)
 
     def test_wrong_host_is_rejected_before_mutation(self):
         result = subprocess.run([sys.executable, tool.__file__, "run", "--operator-home", str(self.fixture.home),
             "--backup-dir", str(self.fixture.backup), "--expect-host", "not-this-host"], capture_output=True, text=True)
         self.assertIn("Host differs", result.stderr)
         self.assertFalse(self.fixture.backup.exists())
+
+    @unittest.skipIf(os.geteuid() == 0, "Requires an unprivileged process to exercise denied access")
+    def test_unreadable_directory_cannot_hide_database_locks(self):
+        chain = self.fixture.paths["USDB_CHAIN_DATA_HOST_DIR"]
+        locked = chain / "geth"
+        (locked / "LOCK").write_bytes(b"")
+        mode = locked.stat().st_mode & 0o777
+        try:
+            locked.chmod(0)
+            with ExitStack() as locks, self.assertRaises(PermissionError):
+                tool.acquire_locks(chain, locks)
+        finally:
+            locked.chmod(mode)
+
+    @unittest.skipIf(os.geteuid() == 0, "Requires an unprivileged process to exercise denied access")
+    def test_permission_failure_reports_sudo_and_preserves_resumable_session(self):
+        plan = self.fixture.plan(tool)
+        chain = self.fixture.paths["BH_DATA_HOST_DIR"] / "db/balance_history"
+        keystore = chain / "unreadable"
+        keystore.mkdir()
+        mode = keystore.stat().st_mode & 0o777
+        argv = [tool.__file__, "run", "--operator-home", str(self.fixture.home), "--backup-dir", str(self.fixture.backup),
+                "--expect-host", socket.gethostname()]
+        errors = io.StringIO()
+
+        def choose(action, path, extra=""):
+            return action == "PREPARE BACKUP DIRECTORY" or (action == "BACKUP" and path == chain)
+
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(tool, "build_plan", return_value=plan), \
+             mock.patch.object(tool, "check_stopped"), mock.patch.object(sys.stdin, "isatty", return_value=True), \
+             mock.patch.object(self.output, "isatty", return_value=True), mock.patch.object(tool, "confirm", side_effect=choose), \
+             redirect_stderr(errors):
+            try:
+                keystore.chmod(0)
+                self.assertEqual(tool.main(), 1)
+            finally:
+                keystore.chmod(mode)
+            self.assertIn(str(keystore), errors.getvalue())
+            self.assertIn("sudo", errors.getvalue())
+            self.assertIn("--operator-home", errors.getvalue())
+            self.assertNotIn("private chain key", errors.getvalue())
+            saved = json.loads((self.fixture.backup / "session.json").read_text())
+            self.assertNotIn("balance-history", saved["items"])
+            self.assertFalse(any(event["action"] == "delete_started" for event in saved["events"]))
+            self.assertFalse((self.fixture.backup / "objects/chain").exists())
+            self.assertEqual(tool.main(), 0)
+        self.assertEqual((self.fixture.backup / "objects/balance-history/db/balance_history/000001.sst").read_bytes(), b"coins" * 1000)
+        self.assertEqual((chain / "000001.sst").read_bytes(), b"coins" * 1000)
 
     def test_target_overlap_and_env_path_injection_are_rejected(self):
         for backup in (self.fixture.data, self.fixture.paths["BH_DATA_HOST_DIR"] / "backup", self.root):
@@ -120,37 +173,36 @@ class RebuildTests(unittest.TestCase):
                 self.assertEqual(outside.read_bytes(), b"keep")
                 (partial / "file").unlink()
 
-    def test_skipping_backup_prevents_bh_and_registry_deletion(self):
+    def test_skipping_backup_protects_bh_but_does_not_block_other_cleanup(self):
         session = self.fixture.session(tool)
         with self.operations(False):
             self.assertFalse(session.preserve(self.target(session, "balance-history")))
         with self.operations(True):
             session.clean(self.target(session, "balance-history"))
+            session.clean(self.target(session, "balance-history-root"))
             session.clean(self.target(session, "legacy-snapshots"))
         self.assertTrue(self.fixture.paths["BH_DATA_HOST_DIR"].exists())
-        self.assertTrue(self.fixture.paths["BH_SNAPSHOT_HOST_DIR"].exists())
+        self.assertFalse(self.fixture.paths["BH_SNAPSHOT_HOST_DIR"].exists())
 
-    def test_copy_verify_and_selected_cleanup_preserve_keys_and_other_paths(self):
+    def test_only_rocksdb_is_archived_and_other_selected_paths_need_no_backup(self):
         session = self.fixture.session(tool)
         outside = self.root / "unrelated"
         outside.write_bytes(b"preserve me")
         with self.operations():
-            for key in ("balance-history", "bitcoin", "chain", "config", self.fixture.release.name):
+            session.preserve(self.target(session, "balance-history"))
+            for key in ("balance-history", "balance-history-root", "bitcoin", "chain", "config", self.fixture.release.name):
                 target = self.target(session, key)
-                session.preserve(target)
-                session.verify(target)
                 session.clean(target)
         objects = self.fixture.backup / "objects"
-        self.assertEqual((objects / "balance-history/auxiliary/registry/000001.sst").read_bytes(), b"scripts")
-        self.assertEqual((objects / "bitcoin/wallet.dat").read_bytes(), b"private wallet")
-        self.assertFalse((objects / "bitcoin/blocks").exists())
-        self.assertEqual((objects / "chain/keystore/key").read_bytes(), b"private chain key")
-        self.assertFalse((objects / "chain/geth/chaindata").exists())
+        self.assertEqual((objects / "balance-history/db/balance_history/000001.sst").read_bytes(), b"coins" * 1000)
+        self.assertFalse((objects / "balance-history/auxiliary").exists())
+        self.assertEqual([p.name for p in objects.iterdir()], ["balance-history"])
         self.assertEqual(outside.read_bytes(), b"preserve me")
         self.assertNotIn("private-test-value", self.output.getvalue())
+        self.assertNotIn("private-test-value", (self.fixture.backup / "session.json").read_text())
         # Config and kit may already be deleted when an SSH session is interrupted.
         resumed = self.fixture.session(tool)
-        resumed.verify(self.target(resumed, self.fixture.release.name))
+        resumed.verify(self.target(resumed, "balance-history"))
         with self.operations():
             resumed.clean(self.target(resumed, "launcher"))
         self.assertFalse(self.fixture.launcher.is_symlink())
@@ -162,7 +214,7 @@ class RebuildTests(unittest.TestCase):
                 target = self.target(session, "balance-history")
                 with self.operations():
                     session.preserve(target)
-                    file = (self.fixture.backup / "objects/balance-history" if side == "backup" else target.path) / "config.toml"
+                    file = (session.destination(target) if side == "backup" else target.path) / "000001.sst"
                     original = file.read_bytes()
                     file.write_bytes(b"changed")
                     with self.assertRaisesRegex(ValueError, "differs|changed"):
@@ -173,20 +225,22 @@ class RebuildTests(unittest.TestCase):
                 if side == "backup":
                     session.verify(target)
 
-    def test_new_wallet_after_backup_blocks_bitcoin_cleanup(self):
+    def test_bitcoin_wallet_cleanup_requires_confirmation_but_no_backup(self):
         session = self.fixture.session(tool)
         target = self.target(session, "bitcoin")
-        with self.operations():
-            session.preserve(target)
+        with self.operations(False):
+            session.clean(target)
+        self.assertTrue((target.path / "wallet.dat").exists())
+        with self.operations(True):
             (target.path / "wallets").mkdir()
-            with self.assertRaisesRegex(ValueError, "New identity"):
-                session.clean(target)
-        self.assertTrue(target.path.exists())
+            session.clean(target)
+        self.assertFalse(target.path.exists())
+        self.assertFalse((self.fixture.backup / "objects/bitcoin").exists())
 
     def test_move_can_reconcile_interruption_after_rename(self):
         session = self.fixture.session(tool, "move")
         target = self.target(session, "balance-history")
-        with self.operations(), mock.patch.object(tool, "verify_tree", side_effect=KeyboardInterrupt):
+        with self.operations(), mock.patch.object(tool, "verify_rename", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 session.preserve(target)
         self.assertFalse(target.path.exists())
@@ -198,9 +252,110 @@ class RebuildTests(unittest.TestCase):
 
     def test_move_is_same_filesystem_only_and_uses_no_copy(self):
         session = self.fixture.session(tool, "move")
-        with self.operations(), mock.patch.object(tool, "copy_tree", side_effect=AssertionError("must not copy")):
+        target = self.target(session, "balance-history")
+        inode = (target.path / "000001.sst").stat().st_ino
+        with self.operations(), mock.patch.object(tool, "copy_tree", side_effect=AssertionError("must not copy")), \
+             mock.patch.object(tool, "digest", side_effect=AssertionError("must not hash all file contents during rename")):
+            session.preserve(target)
+            session.verify(target)
+        self.assertFalse(target.path.exists())
+        self.assertTrue(self.fixture.paths["BH_DATA_HOST_DIR"].exists())
+        self.assertEqual((session.destination(target) / "000001.sst").stat().st_ino, inode)
+
+    def test_cross_filesystem_move_fails_before_scanning_or_prompting(self):
+        session = self.fixture.session(tool, "move")
+        original = Path.stat
+
+        def other_device(path, *args, **kwargs):
+            value = original(path, *args, **kwargs)
+            return SimpleNamespace(st_dev=value.st_dev + 1, st_mode=value.st_mode) if path == self.fixture.backup or self.fixture.backup in path.parents else value
+
+        with self.operations(), mock.patch.object(Path, "stat", other_device), \
+             mock.patch.object(tool, "inventory", side_effect=AssertionError("must fail before scanning")), \
+             mock.patch.object(tool, "confirm", side_effect=AssertionError("must fail before confirmation")), \
+             self.assertRaisesRegex(ValueError, "same filesystem.*Relocate old_backup"):
             session.preserve(self.target(session, "balance-history"))
+        self.assertFalse((self.fixture.backup / "objects/balance-history").exists())
+
+    def test_changed_moved_database_blocks_bh_root_cleanup(self):
+        session = self.fixture.session(tool, "move")
+        target = self.target(session, "balance-history")
+        with self.operations():
+            session.preserve(target)
+            (session.destination(target) / "000001.sst").write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "metadata changed"):
+                session.clean(self.target(session, "balance-history-root"))
+        self.assertTrue(self.fixture.paths["BH_DATA_HOST_DIR"].exists())
+
+    def test_removing_old_snapshot_hardlinks_does_not_invalidate_the_moved_db(self):
+        session = self.fixture.session(tool, "move")
+        target = self.target(session, "balance-history")
+        os.link(target.path / "000001.sst", self.fixture.paths["BH_DATA_HOST_DIR"] / "old-snapshot.sst")
+        with self.operations():
+            session.preserve(target)
+            session.clean(self.target(session, "balance-history-root"))
+        session.verify(target)
+        self.assertEqual((session.destination(target) / "000001.sst").read_bytes(), b"coins" * 1000)
+
+    def test_relocated_v1_session_resumes_without_requiring_other_backups(self):
+        self.fixture.legacy_session(tool)
+        shutil.rmtree(self.fixture.config)
+        old_backup = self.fixture.backup
+        self.fixture.backup = self.root / "relocated-old-backup"
+        # Copying the archive changes its inodes, as a /home -> /data relocation does.
+        shutil.copytree(old_backup, self.fixture.backup)
+        shutil.rmtree(old_backup)
+        session = self.fixture.session(tool, "move")
+        self.assertEqual(session.state["identity"]["schema_version"], tool.SCHEMA)
+        self.assertNotIn("private-test-value", json.dumps(session.state["layout"]))
+        target = self.target(session, "balance-history")
+        self.assertEqual(target.path, self.fixture.paths["BH_DATA_HOST_DIR"] / "db/balance_history")
+        with self.operations():
+            session.preserve(target)
+            session.clean(self.target(session, "balance-history-root"))
+            session.clean(self.target(session, self.fixture.release.name))
+        # New sessions only need the saved path layout after config/kits are removed.
+        shutil.rmtree(self.fixture.backup / "objects/config")
+        shutil.rmtree(self.fixture.backup / "objects" / self.fixture.release.name)
+        resumed = self.fixture.session(tool, "move")
+        resumed.verify(self.target(resumed, "balance-history"))
         self.assertFalse(self.fixture.paths["BH_DATA_HOST_DIR"].exists())
+
+    def test_completed_v1_bh_archive_keeps_its_original_boundary(self):
+        self.fixture.legacy_session(tool, "copy", completed_bh=True)
+        session = self.fixture.session(tool)
+        target = self.target(session, "balance-history")
+        self.assertEqual(target.path, self.fixture.paths["BH_DATA_HOST_DIR"])
+        with self.operations():
+            session.preserve(target)
+            session.clean(target)
+        session.verify(target)
+        self.assertTrue((self.fixture.backup / "objects/balance-history/db/balance_history/000001.sst").exists())
+
+    def test_nested_archive_reports_the_actual_session_directory(self):
+        self.fixture.legacy_session(tool)
+        outer = self.root / "outer-backup"
+        outer.mkdir()
+        self.fixture.backup.rename(outer / "old_backup")
+        with self.assertRaisesRegex(ValueError, "Nested backup session.*outer-backup/old_backup"):
+            tool.build_plan(self.fixture.home, self.fixture.bundle, outer, self.fixture.units)
+        self.assertFalse((outer / "session.json").exists())
+
+    def test_old_session_rejects_changed_host_or_bh_source(self):
+        self.fixture.legacy_session(tool)
+        path = self.fixture.backup / "session.json"
+        original = path.read_text()
+        saved = json.loads(original)
+        saved["identity"]["hostname"] = "another-host"
+        path.write_text(json.dumps(saved))
+        with self.assertRaisesRegex(ValueError, "another host"):
+            self.fixture.session(tool, "move")
+        path.write_text(original)
+        source = self.fixture.paths["BH_DATA_HOST_DIR"]
+        source.rename(source.with_name("original"))
+        (source / "db/balance_history").mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, "Legacy BH source changed"):
+            self.fixture.session(tool, "move")
 
     def test_interrupted_copy_can_retry_without_deleting_source(self):
         session = self.fixture.session(tool)
@@ -209,7 +364,7 @@ class RebuildTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 session.preserve(target)
         self.assertTrue(target.path.exists())
-        self.assertFalse((self.fixture.backup / "objects/balance-history").exists())
+        self.assertFalse(session.destination(target).exists())
         with self.operations():
             session.preserve(target)
         session.verify(target)
@@ -220,7 +375,7 @@ class RebuildTests(unittest.TestCase):
         original = tool.sync_dir
 
         def interrupt(path):
-            if path == self.fixture.backup / "objects":
+            if path == session.destination(target).parent:
                 raise KeyboardInterrupt
             original(path)
 
@@ -236,7 +391,7 @@ class RebuildTests(unittest.TestCase):
         target = self.target(session, "balance-history")
 
         def interrupted_remove(path):
-            (path / "config.toml").unlink()
+            (path / "000001.sst").unlink()
             raise KeyboardInterrupt
 
         with self.operations():
@@ -269,7 +424,7 @@ class RebuildTests(unittest.TestCase):
     def test_active_rocksdb_lock_is_rejected(self):
         session = self.fixture.session(tool)
         target = self.target(session, "balance-history")
-        path = target.path / "db/balance_history/LOCK"
+        path = target.path / "LOCK"
         child = subprocess.Popen([sys.executable, "-c", "import fcntl,sys; f=open(sys.argv[1],'r+'); fcntl.lockf(f,fcntl.LOCK_EX); print('locked',flush=True); sys.stdin.read()", str(path)],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.addCleanup(lambda: child.poll() is None and child.kill())
@@ -312,6 +467,32 @@ class RebuildTests(unittest.TestCase):
             tool.confirm("DELETE", self.root)
         with mock.patch("builtins.input", side_effect=EOFError), self.assertRaises(EOFError):
             tool.confirm("DELETE", self.root)
+
+    def test_stopped_helper_removal_is_scoped_and_individually_confirmed(self):
+        plan = self.fixture.plan(tool)
+        helper = dict(id="a" * 64, name="sourcedao", state="exited", mounts=[dict(Source=str(self.fixture.release))], labels={})
+        broad = dict(id="b" * 64, state="exited", mounts=[dict(Source=str(self.root))], labels={})
+        other = dict(id="c" * 64, state="exited", mounts=helper["mounts"], labels={"com.docker.compose.project": "other-node"})
+        with mock.patch.object(tool, "containers", return_value=[helper, broad, other]), mock.patch.object(tool, "command") as execute:
+            with self.operations(False):
+                tool.remove_stopped_containers(plan)
+            execute.assert_not_called()
+            with self.operations(True):
+                tool.remove_stopped_containers(plan)
+            execute.assert_called_once_with(["docker", "rm", "--", helper["id"]])
+
+    def test_helper_started_after_confirmation_is_not_removed(self):
+        helper = dict(id="a" * 64, name="sourcedao", state="exited", mounts=[dict(Source=str(self.fixture.release))], labels={})
+
+        def start_after_confirmation(*_args):
+            helper["state"] = "running"
+            return True
+
+        with mock.patch.object(tool, "containers", return_value=[helper]), mock.patch.object(tool, "command") as execute, \
+             self.operations(), mock.patch.object(tool, "confirm", side_effect=start_after_confirmation), \
+             self.assertRaisesRegex(ValueError, "Container changed"):
+            tool.remove_stopped_containers(self.fixture.plan(tool))
+        execute.assert_not_called()
 
 
 if __name__ == "__main__":
