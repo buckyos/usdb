@@ -12,6 +12,15 @@ import usdb_node as NODE
 
 
 class ProgressDisplayTests(unittest.TestCase):
+    def test_unknown_service_phase_keeps_indeterminate_progress_renderable(self):
+        component = NODE._component_progress("balance_history", "IMPORTING", "waiting for progress")
+        component["progress_phase"] = None
+        report = dict(release_id="test", observed_at="now", overall_state="IMPORTING", components=[component])
+        rendered = NODE.render_node_progress(report, width=80)
+        self.assertIn("[      in progress       ]", rendered)
+        self.assertNotIn("0.00%", rendered)
+        self.assertNotIn("Stage elapsed=", rendered)
+
     def test_optional_start_time_probe_is_bounded_and_cannot_block_readiness(self):
         container = {"ID": "a" * 64, "Service": "btc-node", "State": "running", "Health": "healthy"}
         outputs = [subprocess.CompletedProcess([], 0, json.dumps(container)),

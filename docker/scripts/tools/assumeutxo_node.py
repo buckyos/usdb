@@ -5,11 +5,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import subprocess
 import time
 
 import usdb_node as node
+from bitcoin_import_progress import read_import_progress, timestamp
 
 
 def core_progress(layout) -> dict:
@@ -138,6 +140,54 @@ def read_progress(path: Path) -> dict:
         return dict(error="Progress file is unavailable or invalid")
 
 
+def _snapshot_component(phase, latest, imported, *, failed, complete, activated):
+    """Show phase-specific work; reading all coins is not snapshot activation."""
+    details = latest.get("details", {})
+    details = details if isinstance(details, dict) else {}
+    state = {"downloading": "INSTALLING", "verifying_file": "VERIFYING", "loading": "IMPORTING",
+             "load_requested": "IMPORTING", "load_uncertain": "BLOCKED", "load_failed": "FAILED"}.get(phase, "WAITING")
+    current = total = percent = None
+    unit = "bytes"
+    detail = f"Core UTXO preparation: {phase}"
+    if phase in {"downloading", "verifying_file"}:
+        current, total = details.get("bytes"), details.get("total_bytes")
+        detail = "Downloading snapshot" if phase == "downloading" else "Verifying downloaded file SHA-256"
+    elif phase in {"loading", "load_requested"}:
+        unit = "utxos"
+        stage = imported.get("phase", "loading")
+        phase = "core_" + stage
+        detail = {"reading": "Reading UTXOs (Core log)",
+                  "flushing_cache": "Writing UTXO batch to disk",
+                  "flushing": "Writing snapshot chainstate to disk; UTXO reading finished",
+                  "verifying": "Verifying snapshot UTXO hash",
+                  "activating": "Waiting for RPC confirmation of snapshot activation",
+                  "loading": "Core import in progress; detailed progress unavailable"}[stage]
+        current = imported.get("imported_coins")
+        if stage == "reading":
+            total, percent = imported.get("total_coins"), imported.get("progress_percent")
+        elif stage in {"verifying", "activating"}:
+            state = "VERIFYING"
+        # Do not turn a completed byte/coin counter into readiness or a 100% hash check.
+    elif phase in {"file_verified", "file_published"}:
+        detail = "Download verified; waiting for Core snapshot activation"
+    if complete:
+        state, phase, detail, percent = "READY", "ready", "Snapshot baseline and raw file ready", 100.0
+        current = total = None
+    elif activated and not failed and state not in {"FAILED", "BLOCKED"}:
+        if phase.startswith("core_") or phase in {"snapshot_active", "fully_validated_chain"}:
+            state, phase, detail = "STARTING", "core_activating", "Snapshot active; confirming readiness"
+            current = total = percent = None
+    item = node._component_progress("snapshot", "FAILED" if failed else state, detail,
+                                   current=current, total=total, progress_percent=percent, unit=unit)
+    item.update(label="UTXO snapshot", progress_phase=phase)
+    if phase.startswith("core_"):
+        start = imported.get("stage_started_at", latest.get("phase_started_at"))
+        if type(start) in (int, float) and math.isfinite(start):
+            item["stage_elapsed_secs"] = int(max(0, time.time() - start))
+        item["progress_source"] = "core_log" if imported else "activation_journal"
+    return item
+
+
 def collect_native_progress(layout) -> dict:
     """Expose import/replay plus independent Core foreground/background observations."""
     env = node.read_env(layout.node_env)
@@ -156,24 +206,34 @@ def collect_native_progress(layout) -> dict:
     loader = services.get("btc-snapshot-bootstrap", {})
     latest = download if download.get("updated_at", 0) > activation.get("updated_at", 0) else activation
     phase = latest.get("phase", "waiting_for_core")
-    details = latest.get("details", {})
-    details = details if isinstance(details, dict) else {}
     failed = loader.get("state") in {"dead", "restarting", "paused"} or (loader.get("state") == "exited" and loader.get("exit_code") not in (None, 0))
-    complete = core.get("bootstrap_ready") and loader.get("state") == "exited" and loader.get("exit_code") == 0
-    preparation_state = {"downloading": "INSTALLING", "verifying_file": "VERIFYING", "loading": "IMPORTING", "load_requested": "IMPORTING",
-                         "load_uncertain": "BLOCKED", "load_failed": "FAILED"}.get(phase, "WAITING")
-    # Download completion is not Core import progress; never reuse its 100% bar.
-    byte_phase = phase in {"downloading", "verifying_file"}
-    snapshot = node._component_progress("snapshot", "FAILED" if failed else "READY" if complete else preparation_state,
-                                       f"Core UTXO preparation: {phase}; elapsed_seconds={latest.get('elapsed_seconds')}",
-                                       current=details.get("bytes") if byte_phase else None,
-                                       total=details.get("total_bytes") if byte_phase else None, unit="bytes")
-    snapshot["label"] = "UTXO snapshot"
-    snapshot["progress_phase"] = phase
+    # RPC probes may straddle two tips after activation. Keep the observed chain
+    # identity distinct from the stricter readiness result of that probe. Snapshot
+    # preparation can stay ready; Bitcoin and controller gates still use readiness.
+    activated = core.get("snapshot_active") is True or core.get("bootstrap_ready") is True
+    complete = activated and loader.get("state") == "exited" and loader.get("exit_code") == 0
+    imported = {}
+    if phase in {"loading", "load_requested"} and not failed and not core.get("bootstrap_ready"):
+        process_start = timestamp(services.get("btc-node", {}).get("started_at"))
+        attempt_start = activation.get("phase_started_at", activation.get("started_at"))
+        if process_start is not None and type(attempt_start) in (int, float) and math.isfinite(attempt_start):
+            imported = read_import_progress(Path(env["BTC_NODE_DATA_HOST_DIR"]) / "debug.log",
+                layout.snapshot["contract"]["snapshot"]["base_hash"], max(process_start, attempt_start))
+    snapshot = _snapshot_component(phase, latest, imported, failed=failed, complete=complete, activated=activated)
     components = [snapshot, node._component_progress("script_registry", "SKIPPED", "Native observed-script registry is maintained by balance-history")]
+    pre_snapshot = not activated and core.get("rpc_available") is not False and not core.get("error") and type(core.get("active_height")) is int
+    sync_phase = "foreground" if activated else "pre_snapshot_ibd" if pre_snapshot else "unavailable"
+    sync_detail = (f"foreground={core.get('active_height')}; background={core.get('background_height')}; history_validated={core.get('history_validated', False)}"
+                   if activated else "Before snapshot activation: ordinary block sync" if pre_snapshot else "Waiting for Core chainstate observation")
     bitcoin = node._component_progress("bitcoin", "STARTING" if core.get("error_kind") == "rpc_unavailable" or core.get("rpc_available") is False else "BLOCKED" if core.get("error") else "READY" if core.get("tip_ready") else "SYNCING",
-                      core.get("error") or f"foreground={core.get('active_height')}; background={core.get('background_height')}; history_validated={core.get('history_validated', False)}",
+                      core.get("error") or sync_detail,
                       current=core.get("active_height"), total=core.get("headers"))
+    bitcoin["progress_phase"] = sync_phase
+    if pre_snapshot:
+        bitcoin["label"] = "Bitcoin (IBD)"
+    chains = core.get("chainstates", [])
+    if chains and isinstance(chains[-1], dict):
+        bitcoin["verification_progress"] = chains[-1].get("verificationprogress")
     # This observation is separate from foreground readiness and never gates startup.
     bitcoin["background_validation"] = dict(height=core.get("background_height"),
         target=int(env["BH_ASSUMEUTXO_BASE_HEIGHT"]), validated=core.get("history_validated") is True,
@@ -224,4 +284,4 @@ def collect_native_progress(layout) -> dict:
     return dict(schema_version=node.NODE_PROGRESS_SCHEMA_VERSION, release_id=layout.release_id, network_bundle_id=layout.bundle_id,
                 observed_at=observed_at, controller_state=node.controller_observed_state(layout),
                 overall_state=overall, auxiliary_state="READY", components=components, resources=resources, mining=mining,
-                native_bootstrap=dict(core=core, download=download, activation=activation, balance_history=bootstrap))
+                native_bootstrap=dict(core=core, download=download, activation=activation, import_progress=imported, balance_history=bootstrap))

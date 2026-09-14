@@ -81,4 +81,5 @@ jobs:
           python3 tests/test_snapshot_range_download.py
           python3 tests/test_assumeutxo_deployment.py
           python3 tests/test_assumeutxo_node.py
+          python3 tests/test_bitcoin_import_progress.py
           python3 docker/scripts/tools/test_testnet_bitcoin_release.py

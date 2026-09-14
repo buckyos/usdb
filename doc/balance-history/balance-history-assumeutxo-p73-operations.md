@@ -190,10 +190,18 @@ usdb-node status --watch
 
 - `download`：下载/校验字节、阶段、开始/更新时间、实际 elapsed。
 - `activation`：等待 RPC/headers、请求导入、Core 激活或已验证状态，以及来源校验记录。
+- `import_progress`：从本机 Core `debug.log` 读取本次进程/导入阶段的 UTXO 数量、读取百分比、落盘与校验阶段；仅供展示，不作为就绪依据。
 - `core`：foreground 高度、headers、background 高度、`history_validated`、`tip_ready`。
 - `balance_history`：imported coins、replay height/target、waiting/sealed、服务写出的实际 elapsed。
 
 部分旧观察记录可能没有 elapsed，界面不会补造预计完成时间。`waiting_for_blocks` 是等待后续块或 undo，不代表需要后台验证结束。
+下载完成后，UTXO 行切换为 Core 导入阶段：读取时显示 Core 报告的 UTXO 数量和百分比，
+批量落盘、最终落盘和 UTXO 哈希校验时显示 `in progress` 及阶段耗时，不把读取完成的 100% 当作快照就绪。
+只有 Core RPC 确认基线可用且准备容器正常退出后才显示 `READY`。日志缺失、权限不足或最近日志中没有导入记录时，
+显示详细进度不可用，保留 RPC/observer 的真实状态；不会阻止服务启动或重试导入。
+观察器按增量读取日志，首次/落后时最多读取末尾 8 MiB，日志轮转或 Core 重启会重置观测。
+快照激活前 Bitcoin 行标为 `Bitcoin (IBD)`，并注明尚未激活快照，表示普通区块同步；其区块百分比独立于 UTXO 导入进度。
+激活后恢复前台追平和后台历史验证的独立显示。
 旧 snapshot-loader/registry/paired-checkpoint marker 不参与新模式启动条件；反向 script 查询来自 BH 原生 observed-script registry。
 
 若 observer 下载失败或退出非零，controller 停止推进并保留证据。先查看日志，再显式重试。

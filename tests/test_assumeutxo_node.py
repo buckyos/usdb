@@ -198,7 +198,8 @@ class NativeBundleTests(unittest.TestCase):
         download_path.parent.mkdir()
         activation_path = Path(env["BTC_ASSUMEUTXO_STATE_HOST_DIR"]) / "activation.json"
         bh_path = Path(env["BH_DATA_HOST_DIR"]) / "bootstrap-progress.json"
-        services = {"btc-node": dict(state="running"), "btc-snapshot-bootstrap": dict(state="running"),
+        started = "2026-09-14T08:30:00+00:00"
+        services = {"btc-node": dict(state="running", started_at=started), "btc-snapshot-bootstrap": dict(state="running"),
                     "balance-history": dict(state="running")}
         core = dict(bootstrap_ready=False, tip_ready=False, history_validated=False,
                     active_height=1, headers=966674, background_height=None)
@@ -212,13 +213,53 @@ class NativeBundleTests(unittest.TestCase):
             report = node.collect_node_progress(layout)
             self.assertEqual(report["components"][0]["progress_percent"], 50)
             download_path.write_text(json.dumps(dict(phase="file_verified", updated_at=2, details=dict(bytes=100, total_bytes=100))))
-            activation_path.write_text(json.dumps(dict(phase="loading", updated_at=3)))
+            activation_path.write_text(json.dumps(dict(phase="loading", updated_at=3, phase_started_at=native.timestamp(started))))
             report = node.collect_node_progress(layout)
             self.assertEqual(report["components"][0]["state"], "IMPORTING")
             self.assertIsNone(report["components"][0]["current"])
             self.assertIsNone(report["components"][0]["progress_percent"])
+            self.assertIn("[      in progress       ]", node.render_node_progress(report, width=80))
+            self.assertEqual(report["components"][2]["label"], "Bitcoin (IBD)")
+            self.assertNotIn("foreground=", report["components"][2]["detail"])
+            core["rpc_available"] = False
+            self.assertEqual(node.collect_node_progress(layout)["components"][2]["label"], "Bitcoin")
+            del core["rpc_available"]
+            log_path = Path(env["BTC_NODE_DATA_HOST_DIR"]) / "debug.log"
+            base = layout.snapshot["contract"]["snapshot"]["base_hash"]
+            log_path.write_text(f"2026-09-14T08:30:01Z [snapshot] loading 2000000 coins from snapshot {base}\n")
+            for message, state, percent, phase in (
+                ("[snapshot] 1000000 coins loaded (50.00%, 120 MB)", "IMPORTING", 50, "reading"),
+                ("FlushSnapshotToDisk: flushing coins cache (120 MB) started", "IMPORTING", None, "flushing_cache"),
+                (f"[snapshot] loaded 2000000 (120 MB) coins from snapshot {base}", "IMPORTING", None, "flushing"),
+                ("FlushSnapshotToDisk: saving snapshot chainstate (120 MB) completed (100ms)", "VERIFYING", None, "verifying"),
+                (f"[snapshot] successfully activated snapshot {base}", "VERIFYING", None, "activating"),
+            ):
+                with self.subTest(phase=phase):
+                    with log_path.open("a") as output:
+                        output.write(f"2026-09-14T08:30:02Z {message}\n")
+                    report = node.collect_node_progress(layout)
+                    snapshot = report["components"][0]
+                    self.assertEqual(snapshot["state"], state)
+                    self.assertEqual(snapshot["progress_percent"], percent)
+                    self.assertEqual(snapshot["progress_phase"], "core_" + phase)
+                    self.assertEqual(snapshot["progress_source"], "core_log")
+                    self.assertIn("Stage elapsed=", node.render_node_progress(report, width=80))
+                    self.assertNotEqual(report["overall_state"], "READY")
+            # Neither activation logs nor even RPC readiness bypass the preparation exit gate.
+            core.update(bootstrap_ready=True)
+            self.assertEqual(node.collect_node_progress(layout)["components"][0]["state"], "STARTING")
             core.update(bootstrap_ready=True, tip_ready=True, active_height=966674, background_height=105439)
             services["btc-snapshot-bootstrap"].update(state="exited", exit_code=0)
+            report = node.collect_node_progress(layout)
+            self.assertEqual(report["components"][0]["state"], "READY")
+            self.assertEqual(report["components"][2]["label"], "Bitcoin")
+            core.update(bootstrap_ready=False, tip_ready=False, snapshot_active=True, phase="chain_changed_during_probe")
+            report = node.collect_node_progress(layout)
+            self.assertEqual(report["components"][0]["state"], "READY")
+            self.assertEqual(report["components"][2]["label"], "Bitcoin")
+            self.assertEqual(report["components"][2]["progress_phase"], "foreground")
+            self.assertNotEqual(report["overall_state"], "READY")
+            core.update(bootstrap_ready=True, tip_ready=True)
             for phase, fields, state in (("importing", dict(imported_coins=123456), "IMPORTING"),
                                          ("replaying", dict(height=949400, target=963800), "SYNCING"),
                                          ("waiting_for_blocks", dict(height=949400, target=963800), "SYNCING"),

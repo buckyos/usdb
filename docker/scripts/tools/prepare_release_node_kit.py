@@ -35,6 +35,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/assumeutxo_bootstrap.py",
     "docker/scripts/tools/assumeutxo_deployment.py",
     "docker/scripts/tools/assumeutxo_node.py",
+    "docker/scripts/tools/bitcoin_import_progress.py",
     "docker/scripts/tools/artifact_signing.py",
     "docker/scripts/tools/bitcoin_release.py",
     "docker/scripts/data/assumeutxo/mainnet-935000.json",

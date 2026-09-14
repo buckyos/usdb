@@ -4446,7 +4446,7 @@ def render_node_progress(
             bar = "#" * filled + "-" * (bar_width - filled)
             percent_text = f"{bounded:6.2f}%"
         else:
-            bar = "-" * bar_width
+            bar = "in progress".center(bar_width) if component["state"] in {"IMPORTING", "VERIFYING", "INSTALLING", "SYNCING", "STARTING"} else "-" * bar_width
             percent_text = "    -- "
         current = component.get("current")
         total = component.get("total")
@@ -4469,6 +4469,9 @@ def render_node_progress(
         if len(detail) > available:
             detail = detail[: max(0, available - 3)] + "..."
         lines.append(prefix + detail)
+        progress_phase = component.get("progress_phase")
+        if isinstance(progress_phase, str) and progress_phase.startswith("core_") and "stage_elapsed_secs" in component:
+            lines.append(f"  Stage elapsed={_duration_text(component['stage_elapsed_secs'])} | ETA=-- (not reported by Core)")
         background = component.get("background_validation")
         if isinstance(background, dict):
             if not background["available"]:
