@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "snapshot-file-completion-progress",
+  "type": "fixed",
+  "scopes": ["node-runtime", "documentation", "testing"],
+  "summary": "Retain snapshot file completion when waiting for headers and importing into Core",
+  "details": [
+    "Display completed file download and SHA-256 verification separately from the current snapshot activation stage, including after reopening status --watch.",
+    "Label the wait for the configured baseline block header and use a waiting bar instead of an empty progress bar. Explain that subsequent Core import counters describe a new stage.",
+    "Use matching download records and file metadata for display only; do not rescan snapshot contents or change startup readiness, import decisions or failure states."
+  ],
+  "operator_actions": [
+    "Read the file completion lines separately from the current-stage percentage. Waiting for baseline headers does not require downloading the snapshot again.",
+    "Use logs --bitcoin to observe header synchronization while waiting; Core import resumes automatically when its baseline header is available."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

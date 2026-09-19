@@ -51,6 +51,7 @@ usdb-node status --watch
 | --- | --- | --- |
 | `Container images`：`INSTALLING` | 准备 Bitcoin Core 和 USDB 运行镜像 | 看当前镜像组、阶段累计耗时；分层下载量见 controller 日志。需使用包含镜像进度展示改进的工具 |
 | `UTXO snapshot`：下载 / 校验 | 准备启动文件 | 看字节进度和当前阶段；下载完成后仍需校验和导入 |
+| `UTXO snapshot`：`WAITING` / 等待基线区块头 | 文件已准备后，等待 Core 识别快照对应的区块头 | 看文件完成提示和目标基线高度；不会因此重新下载，也无需先同步完此前所有完整区块 |
 | `UTXO snapshot`：导入 | Bitcoin 导入启动数据 | 看导入状态与 Bitcoin 日志；r25 不一定有详细导入百分比 |
 | `Bitcoin` | Bitcoin 前台同步 | 看当前高度、目标高度及连接情况 |
 | `Core background history` | Bitcoin 后台验证较早历史 | 单独观察其高度和 `VALIDATED` 状态 |
@@ -67,6 +68,25 @@ Bitcoin 前台可以先就绪，后台历史验证继续进行。**总体可用�
 r27 等旧版会在 `down → up` 后重新校验本地文件，因此短暂出现 `UTXO snapshot VERIFYING`、下游服务 `WAITING`；这本身不表示重新下载、重新导入或丢失同步进度。复用优化需要更新配套节点工具与 Bitcoin 镜像后生效。
 
 旧 BH snapshot 的 loader/registry 不是原生流程的手工补装步骤。原生面板中相应辅助项显示跳过，并不表示安装缺少组件。
+
+### 快照下载完成后，为什么进度条变了
+
+快照依次经历下载文件、校验文件 SHA-256、等待基线区块头、导入 Core，以及导入后的落盘和 UTXO 状态校验。主行的百分比只表示**当前阶段**；下载完成不等于已经导入，进入新的校验或导入阶段后，其计数可以从头开始。
+
+包含文件完成提示改进的工具，会在主行下面保留已完成的文件阶段。下载并校验完成、等待基线区块头时，显示类似：
+
+```text
+UTXO snapshot     WAITING    [        waiting         ]     --  Waiting for baseline block header before Core import
+  File: download complete (8.7GiB)
+  File SHA-256: verified
+  Next: Core import after baseline block header 935000 is available
+```
+
+`waiting` 和 `--` 表示此刻在等待依赖，不表示下载归零。文件完成提示来自对应快照的持久化进度记录，重新打开观察窗口也能看到；记录缺失、基线不匹配或文件缺失时，不会推断为完成。查询这些提示只读取记录和文件大小，不重新扫描整个快照。
+
+文件仍在校验时，会保留 `File: download complete`，并显示 `File SHA-256: verification in progress`。进入导入后，文件完成提示继续保留，`Progress above: Core import stage; file download is complete` 说明主行计数属于 Core 导入阶段。仅当快照准备流程完成后，组件才显示 `READY`；导入失败或结果不确定时仍显示 `FAILED` / `BLOCKED`。
+
+等待基线区块头时，可用 `usdb-node logs --bitcoin` 查看 `Pre-synchronizing blockheaders` 等日志是否推进；区块头预同步期间，Bitcoin 主行仍可能显示 `0/0`。基线区块头可用后，启动任务会自动继续导入，不需要重新下载或手工提交导入请求。r28 的原始面板缺少上述文件完成提示，容易把阶段切换看成进度丢失。
 
 ### 镜像下载慢、快照还没开始时
 

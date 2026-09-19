@@ -265,8 +265,44 @@ class NativeBundleTests(unittest.TestCase):
             download_path.write_text(json.dumps(dict(phase="downloading", updated_at=1, details=dict(bytes=50, total_bytes=100))))
             report = node.collect_node_progress(layout)
             self.assertEqual(report["components"][0]["progress_percent"], 50)
-            download_path.write_text(json.dumps(dict(phase="file_verified", updated_at=2, details=dict(bytes=100, total_bytes=100))))
-            activation_path.write_text(json.dumps(dict(phase="loading", updated_at=3, phase_started_at=native.timestamp(started))))
+            # The file milestone survives a new observer and later activation journals.
+            artifact = download_path.parent.with_name("mainnet-935000-utxos.dat")
+            with artifact.open("wb") as output:
+                output.truncate(artifacts.UTXO_SIZE)
+            download = dict(schema_version="usdb-bitcoin-assumeutxo:v1", phase="verifying_file", updated_at=2,
+                identity=dict(snapshot={**layout.snapshot["contract"]["snapshot"], "size_bytes": artifacts.UTXO_SIZE}),
+                details=dict(bytes=0, total_bytes=artifacts.UTXO_SIZE))
+            download_path.write_text(json.dumps(download))
+            report = node.collect_node_progress(layout)
+            self.assertEqual(report["components"][0]["progress_percent"], 0)
+            rendered = node.render_node_progress(report, width=80)
+            self.assertIn("File: download complete", rendered)
+            self.assertIn("File SHA-256: verification in progress", rendered)
+            services["btc-snapshot-bootstrap"].update(state="exited", exit_code=1)
+            failed = node.collect_node_progress(layout)
+            self.assertEqual(failed["overall_state"], "FAILED")
+            self.assertIn("File SHA-256: not confirmed", node.render_node_progress(failed, width=80))
+            services["btc-snapshot-bootstrap"].update(state="running", exit_code=0)
+            download.update(phase="file_published", details=dict(bytes=artifacts.UTXO_SIZE, total_bytes=artifacts.UTXO_SIZE))
+            download_path.write_text(json.dumps(download))
+            activation_path.write_text(json.dumps(dict(phase="waiting_for_headers", updated_at=3)))
+            report = node.NodeProgressHistory().apply(node.collect_node_progress(layout))
+            self.assertEqual(report["components"][0]["state"], "WAITING")
+            self.assertIsNone(report["components"][0]["progress_percent"])
+            rendered = node.render_node_progress(report, width=80)
+            self.assertIn("[        waiting         ]", rendered)
+            self.assertIn("File: download complete", rendered)
+            self.assertIn("File SHA-256: verified", rendered)
+            self.assertIn("Next: Core import after baseline block header 935000 is available", rendered)
+            self.assertNotIn("0.00%", next(line for line in rendered.splitlines() if line.startswith("UTXO snapshot")))
+            self.assertNotEqual(report["overall_state"], "READY")
+            for failed_phase, failed_state in (("load_failed", "FAILED"), ("load_uncertain", "BLOCKED")):
+                activation_path.write_text(json.dumps(dict(phase=failed_phase, updated_at=3)))
+                failed = node.collect_node_progress(layout)
+                self.assertEqual(failed["overall_state"], failed_state)
+                self.assertIn("File SHA-256: verified", node.render_node_progress(failed, width=80))
+                self.assertNotIn("Next: Core import after", node.render_node_progress(failed, width=80))
+            activation_path.write_text(json.dumps(dict(phase="loading", updated_at=4, phase_started_at=native.timestamp(started))))
             report = node.collect_node_progress(layout)
             self.assertEqual(report["components"][0]["state"], "IMPORTING")
             self.assertIsNone(report["components"][0]["current"])
@@ -296,7 +332,10 @@ class NativeBundleTests(unittest.TestCase):
                     self.assertEqual(snapshot["progress_percent"], percent)
                     self.assertEqual(snapshot["progress_phase"], "core_" + phase)
                     self.assertEqual(snapshot["progress_source"], "core_log")
-                    self.assertIn("Stage elapsed=", node.render_node_progress(report, width=80))
+                    rendered = node.render_node_progress(report, width=80)
+                    self.assertIn("Stage elapsed=", rendered)
+                    self.assertIn("File SHA-256: verified", rendered)
+                    self.assertIn("Progress above: Core import stage; file download is complete", rendered)
                     self.assertNotEqual(report["overall_state"], "READY")
             # Neither activation logs nor even RPC readiness bypass the preparation exit gate.
             core.update(bootstrap_ready=True)
@@ -342,6 +381,35 @@ class NativeBundleTests(unittest.TestCase):
                         self.assertLess(components["balance_history"]["progress_percent"], 100)
             core.update(history_validated=True, background_height=None)
             self.assertIn("VALIDATED through baseline 935000", node.render_node_progress(node.collect_node_progress(layout), width=80))
+
+    def test_file_milestone_requires_matching_completion_record_and_file(self):
+        artifact = self.root / "snapshot.dat"
+        artifact.write_bytes(b"x" * 20)
+        expected = dict(base_height=935000, base_hash="a" * 64, file_sha256="b" * 64)
+        record = dict(schema_version="usdb-bitcoin-assumeutxo:v1", phase="file_published",
+                      identity=dict(snapshot={**expected, "size_bytes": 20}), details=dict(bytes=20, total_bytes=20))
+        with mock.patch.object(native, "UTXO_SIZE", 20):
+            self.assertEqual(native._snapshot_file_milestone(record, artifact, expected)["state"], "VERIFIED")
+            for changes in (dict(phase="downloading"), dict(schema_version="old"), dict(identity=[]),
+                            dict(identity=dict(snapshot={**expected, "file_sha256": "c" * 64, "size_bytes": 20})),
+                            dict(details=dict(bytes=19, total_bytes=20)), dict(details=[])):
+                with self.subTest(changes=changes):
+                    self.assertIsNone(native._snapshot_file_milestone({**record, **changes}, artifact, expected))
+            artifact.write_bytes(b"short")
+            self.assertIsNone(native._snapshot_file_milestone(record, artifact, expected))
+            artifact.unlink()
+            self.assertIsNone(native._snapshot_file_milestone(record, artifact, expected))
+            part = artifact.with_name(artifact.name + ".download") / "snapshot.part"
+            part.parent.mkdir()
+            part.write_bytes(b"x" * 20)
+            self.assertIsNone(native._snapshot_file_milestone(record, artifact, expected))
+            verifying = {**record, "phase": "verifying_file", "details": dict(bytes=0, total_bytes=20)}
+            self.assertEqual(native._snapshot_file_milestone(verifying, artifact, expected)["state"], "VERIFYING")
+            part.unlink()
+            target = self.root / "other-file"
+            target.write_bytes(b"x" * 20)
+            artifact.symlink_to(target)
+            self.assertIsNone(native._snapshot_file_milestone(record, artifact, expected))
 
     def test_failed_or_uncertain_core_import_is_visible_in_progress(self):
         layout = native_kit(self.root)

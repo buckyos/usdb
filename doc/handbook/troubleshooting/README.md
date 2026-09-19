@@ -178,6 +178,7 @@ usdb-node controller logs --follow
 | `phase=images`，Bitcoin 和快照 `WAITING` | 正在准备运行镜像；看当前镜像组和 controller 日志，累计耗时本身不能证明下载推进 |
 | 旧版快照 `waiting_for_core`，Bitcoin 提示 `invalid JSON` | 先看 controller 是否仍在拉取镜像；Core 容器还没创建也可能触发旧提示。若容器已运行，继续排查具体探测或服务错误 |
 | 下载 100%，仍未就绪 | 后面还有文件校验和导入，查看当前阶段 |
+| 快照下载完成后显示 `WAITING` / `waiting_for_headers`，进度像归零 | 正在等待 Core 识别基线区块头；查看文件完成提示及 Bitcoin 区块头日志。下载成果仍保留，详见[快照阶段说明](../node/status.md#快照下载完成后为什么进度条变了) |
 | 导入阶段没有百分比 | r25 不一定提供详细导入进度；看阶段、耗时和 Bitcoin 日志 |
 | BH 重放结束后仍等待 | 可能在校验、落盘或等待服务开放查询，看最新日志 |
 | `waiting_for_blocks` | 在等待所需区块或相关数据；同时观察 Bitcoin 是否继续推进 |

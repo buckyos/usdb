@@ -12,6 +12,7 @@ import time
 
 import usdb_node as node
 from bitcoin_import_progress import read_import_progress, timestamp
+from bitcoin_release import UTXO_SIZE
 
 
 class CoreProbeError(ValueError):
@@ -146,7 +147,7 @@ def read_progress(path: Path) -> dict:
         return dict(error="Progress file is unavailable or invalid")
 
 
-def _snapshot_component(phase, latest, imported, *, failed, complete, activated):
+def _snapshot_component(phase, latest, imported, *, failed, complete, activated, base_height=None):
     """Show phase-specific work; reading all coins is not snapshot activation."""
     details = latest.get("details", {})
     details = details if isinstance(details, dict) else {}
@@ -178,6 +179,10 @@ def _snapshot_component(phase, latest, imported, *, failed, complete, activated)
         detail = "Download verified; waiting for Core snapshot activation"
     elif phase == "waiting_for_core":
         detail = "Waiting for Bitcoin Core startup"
+    elif phase == "waiting_for_headers":
+        detail = "Waiting for baseline block header before Core import"
+    elif phase == "waiting_for_rpc":
+        detail = "Waiting for Core RPC before snapshot activation"
     if complete:
         state, phase, detail, percent = "READY", "ready", "Snapshot baseline and raw file ready", 100.0
         report = details.get("report")
@@ -191,12 +196,41 @@ def _snapshot_component(phase, latest, imported, *, failed, complete, activated)
     item = node._component_progress("snapshot", "FAILED" if failed else state, detail,
                                    current=current, total=total, progress_percent=percent, unit=unit)
     item.update(label="UTXO snapshot", progress_phase=phase)
+    if phase == "waiting_for_headers" and type(base_height) is int:
+        item["baseline_header_height"] = base_height
     if phase.startswith("core_"):
         start = imported.get("stage_started_at", latest.get("phase_started_at"))
         if type(start) in (int, float) and math.isfinite(start):
             item["stage_elapsed_secs"] = int(max(0, time.time() - start))
         item["progress_source"] = "core_log" if imported else "activation_journal"
     return item
+
+
+def _snapshot_file_milestone(download, artifact, expected):
+    """Retain file completion across activation phases without rescanning its bytes."""
+    phase = download.get("phase")
+    if phase not in {"verifying_file", "file_verified", "file_published"}:
+        return None
+    identity = download.get("identity", {})
+    snapshot = identity.get("snapshot", {}) if isinstance(identity, dict) else {}
+    details = download.get("details", {})
+    if (download.get("schema_version") != "usdb-bitcoin-assumeutxo:v1"
+            or not isinstance(snapshot, dict) or not isinstance(details, dict)
+            or any(snapshot.get(key) != expected[key] for key in ("base_height", "base_hash", "file_sha256"))
+            or snapshot.get("size_bytes") != UTXO_SIZE or details.get("total_bytes") != UTXO_SIZE):
+        return None
+    if phase != "verifying_file" and details.get("bytes") != UTXO_SIZE:
+        return None
+    candidates = [artifact]
+    if phase != "file_published":
+        candidates.append(artifact.with_name(artifact.name + ".download") / "snapshot.part")
+    for path in candidates:
+        try:
+            if not path.is_symlink() and path.is_file() and path.stat().st_size == UTXO_SIZE:
+                return dict(state="VERIFYING" if phase == "verifying_file" else "VERIFIED", size_bytes=UTXO_SIZE)
+        except OSError:
+            continue
+    return None
 
 
 def _height(value):
@@ -321,7 +355,12 @@ def collect_native_progress(layout) -> dict:
         if process_start is not None and type(attempt_start) in (int, float) and math.isfinite(attempt_start):
             imported = read_import_progress(Path(env["BTC_NODE_DATA_HOST_DIR"]) / "debug.log",
                 layout.snapshot["contract"]["snapshot"]["base_hash"], max(process_start, attempt_start))
-    snapshot = _snapshot_component(phase, latest, imported, failed=failed, complete=complete, activated=activated)
+    expected = layout.snapshot["contract"]["snapshot"]
+    snapshot = _snapshot_component(phase, latest, imported, failed=failed, complete=complete, activated=activated,
+                                   base_height=expected["base_height"])
+    file_milestone = _snapshot_file_milestone(download, artifact, expected)
+    if file_milestone:
+        snapshot["file_preparation"] = file_milestone
     # Preparation is a completed job; current Core health is shown separately.
     # Require both a matching completion record and a successful loader exit when
     # RPC is unavailable. Neither observation authorizes startup or mining.

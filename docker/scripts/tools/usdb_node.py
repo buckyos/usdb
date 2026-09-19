@@ -4479,6 +4479,10 @@ def render_node_progress(
         else:
             if component.get("observation_unavailable"):
                 bar = "unavailable".center(bar_width)
+            elif component["id"] == "snapshot" and component["state"] == "WAITING" and (
+                component.get("file_preparation") or component.get("progress_phase") == "waiting_for_headers"
+            ):
+                bar = "waiting".center(bar_width)
             elif component["state"] in {"IMPORTING", "VERIFYING", "INSTALLING", "SYNCING", "STARTING"}:
                 bar = "in progress".center(bar_width)
             else:
@@ -4505,6 +4509,17 @@ def render_node_progress(
         if len(detail) > available:
             detail = detail[: max(0, available - 3)] + "..."
         lines.append(prefix + detail)
+        file_preparation = component.get("file_preparation")
+        if isinstance(file_preparation, dict):
+            lines.append(f"  File: download complete ({_human_size(file_preparation['size_bytes'])})")
+            verification = ("verified" if file_preparation["state"] == "VERIFIED" else
+                            "verification in progress" if component["state"] == "VERIFYING" else "not confirmed")
+            lines.append(f"  File SHA-256: {verification}")
+        baseline_height = component.get("baseline_header_height")
+        if type(baseline_height) is int and component["state"] == "WAITING":
+            lines.append(f"  Next: Core import after baseline block header {baseline_height} is available")
+        if file_preparation and str(component.get("progress_phase")).startswith("core_"):
+            lines.append("  Progress above: Core import stage; file download is complete")
         if component.get("last_observed_at"):
             lines.append(f"  Last observed: {component['last_observed_at']} "
                          f"({component['stale_age_secs']}s ago, state={component['last_observed_state']})")
