@@ -2496,20 +2496,12 @@ def _start_node(
             "pulling digest-pinned Bitcoin and USDB runtime images",
             output_to_stderr=output_to_stderr,
         )
-        run_helper(
-            layout,
-            "run_testnet_bitcoin.sh",
-            ["pull"],
-            output_to_stderr=output_to_stderr,
-            quiet_progress=progress_monitor.enabled,
-        )
-        run_helper(
-            layout,
-            "run_testnet_runtime.sh",
-            ["pull"],
-            output_to_stderr=output_to_stderr,
-            quiet_progress=progress_monitor.enabled,
-        )
+        from node_image_progress import ImagePreparation
+        with ImagePreparation(layout) as preparation:
+            for group, helper in (("bitcoin", "run_testnet_bitcoin.sh"), ("runtime", "run_testnet_runtime.sh")):
+                preparation.set_group(group)
+                run_helper(layout, helper, ["pull"], output_to_stderr=output_to_stderr,
+                           quiet_progress=progress_monitor.enabled)
     if read_env(layout.node_env).get("SNAPSHOT_MODE") == "assumeutxo":
         from assumeutxo_node import start_native_node
         start_native_node(layout, sync_timeout_secs=sync_timeout_secs, output_to_stderr=output_to_stderr, progress_monitor=progress_monitor)
@@ -4221,6 +4213,12 @@ def _mining_progress(layout, services, chain_component, components, overall):
 
 
 def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
+    """Combine service observations with a live startup image-preparation stage."""
+    from node_image_progress import add_image_preparation
+    return add_image_preparation(layout, _collect_node_progress(layout))
+
+
+def _collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
     if layout.node_env.is_file() and read_env(layout.node_env).get("SNAPSHOT_MODE") == "assumeutxo":
         from assumeutxo_node import collect_native_progress
         return collect_native_progress(layout)
@@ -4460,6 +4458,8 @@ def render_node_progress(
     width: int = 120,
 ) -> str:
     resource_phase = report.get("resources", {}).get("phase")
+    if report.get("image_preparation"):
+        phase = "images"
     lines = [
         f"USDB node progress | {report['release_id']} | phase={phase}",
         f"Observed {report['observed_at']} | overall={report['overall_state']} | "
@@ -4525,6 +4525,9 @@ def render_node_progress(
             if component.get("sync_target_source") == "last_observed_bitcoin_headers":
                 lines.append("  Using last observed Bitcoin headers; current Core RPC unavailable")
         progress_phase = component.get("progress_phase")
+        if component["id"] == "images":
+            lines.append(f"  Stage elapsed={_duration_text(component['stage_elapsed_secs'])} | ETA=-- (not estimated)")
+            lines.append("  Layer progress: usdb-node controller logs --follow")
         if isinstance(progress_phase, str) and progress_phase.startswith("core_") and "stage_elapsed_secs" in component:
             lines.append(f"  Stage elapsed={_duration_text(component['stage_elapsed_secs'])} | ETA=-- (not reported by Core)")
         background = component.get("background_validation")
@@ -4536,6 +4539,8 @@ def render_node_progress(
                     history = f"STALE {background['height']}/{background['target']} (last observed syncing)"
                 else:
                     history = "STALE: last waiting for snapshot activation"
+            elif background.get("waiting_for_start"):
+                history = "WAITING for Core startup"
             elif not background["available"]:
                 history = "UNAVAILABLE"
             elif background["validated"]:
@@ -5752,12 +5757,12 @@ workflow:
     status_output.add_argument(
         "--progress-json",
         action="store_true",
-        help="emit one machine-readable five-component progress observation",
+        help="emit one machine-readable startup and service progress observation",
     )
     status_output.add_argument(
         "--watch",
         action="store_true",
-        help="continuously render snapshot, Bitcoin, indexer and chain progress",
+        help="continuously render image preparation, snapshot and service progress",
     )
     status.add_argument(
         "--refresh-secs",

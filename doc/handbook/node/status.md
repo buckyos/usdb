@@ -49,6 +49,7 @@ usdb-node status --watch
 
 | 面板组件或阶段 | 正在做什么 | 怎样观察 |
 | --- | --- | --- |
+| `Container images`：`INSTALLING` | 准备 Bitcoin Core 和 USDB 运行镜像 | 看当前镜像组、阶段累计耗时；分层下载量见 controller 日志。需使用包含镜像进度展示改进的工具 |
 | `UTXO snapshot`：下载 / 校验 | 准备启动文件 | 看字节进度和当前阶段；下载完成后仍需校验和导入 |
 | `UTXO snapshot`：导入 | Bitcoin 导入启动数据 | 看导入状态与 Bitcoin 日志；r25 不一定有详细导入百分比 |
 | `Bitcoin` | Bitcoin 前台同步 | 看当前高度、目标高度及连接情况 |
@@ -67,6 +68,22 @@ r27 等旧版会在 `down → up` 后重新校验本地文件，因此短暂出�
 
 旧 BH snapshot 的 loader/registry 不是原生流程的手工补装步骤。原生面板中相应辅助项显示跳过，并不表示安装缺少组件。
 
+### 镜像下载慢、快照还没开始时
+
+首次 `up` 会先准备 **Bitcoin Core 镜像，再准备 USDB chain / services 镜像**，之后启动 Core 和快照准备任务。Core RPC 可用后才开始下载 UTXO 快照；不需要先追完 Bitcoin 历史区块。国内环境拉取镜像较慢时，快照在这段时间没有字节进度是正常的。
+
+包含镜像进度展示改进的工具会显示 `phase=images`，并增加 `Container images INSTALLING` 一行，说明当前拉取的是哪组镜像。`Stage elapsed` 是整个镜像准备阶段的累计耗时；重新打开 `status --watch` 仍可看到。此时尚未启动的 Bitcoin 和快照显示 `WAITING`，分别等待镜像准备、Core 启动，不再因为容器尚不存在而报 `invalid JSON`。镜像准备结束后，这一行消失，面板继续展示实际启动和同步进度。
+
+没有可靠总量时，镜像行不显示百分比或 ETA。累计耗时增加只说明准备任务仍在运行，不能证明下载量在增长；查看具体镜像层的下载、解压、重试或失败信息：
+
+```bash
+usdb-node controller logs --follow
+```
+
+如果下载量或解压日志继续变化，可以继续等待。若同一网络错误反复出现或任务已失败，按[下载问题](../troubleshooting/README.md#下载失败或校验不通过)检查。正常拉取期间不需要重复 `up`、清空 Docker 缓存或重建节点数据。
+
+r28 及更早的工具可能只显示 `phase=bootstrap-controller`、快照 `waiting_for_core`，以及 `Native Bitcoin readiness helper returned invalid JSON`。如果同时在 controller 日志看到镜像仍在拉取，可能是 Core 容器还没创建；不能单凭这句旧提示判断 Bitcoin 数据有问题。上述展示改进需要安装包含修复的工具版本，并按[升级步骤](maintenance.md#升级节点)切换后生效。
+
 ### RPC 暂不可用时怎样读面板
 
 包含观测状态改进的工具会区分“准备工作完成”和“当前查询是否成功”：
@@ -75,6 +92,8 @@ r27 等旧版会在 `down → up` 后重新校验本地文件，因此短暂出�
 - `Bitcoin STALE` 表示本轮未取得新的 RPC 状态，面板暂时保留上次成功查询的前台和后台高度。`Last observed` 显示观测时间、距今秒数及上次状态，`Latest probe` 单独显示本次查询失败原因；这些旧高度不能证明现在仍在追块。
 - `Core background history: STALE 844060/935000` 表示上次查到后台验证高度为 `844060`、目标为 `935000`。它与 Bitcoin 主行使用同一次旧观测，不会一处显示旧高度、另一处直接丢掉该高度。恢复查询后才显示新的 `SYNCING` 或 `VALIDATED`。
 - 连续观察只保留 **60 秒以内**的旧高度；超过时限或检测到进程重启、服务失败、基线错误后，旧值会清除。没有可用历史观测时显示 `UNAVAILABLE`，不再把一次 RPC 查询失败直接显示成 Bitcoin 正在启动。重新打开 `--watch` 不保留上一个观察窗口的高度缓存。
+
+工具确认 Core 容器尚未创建或尚未启动时，Bitcoin 显示 `WAITING`，后台历史行显示 `WAITING for Core startup`。如果 Docker 容器查询失败，或运行中的 Core 探测失败，仍展示观测异常；如果容器启动失败，则显示 `FAILED`，不能作为正常等待忽略。
 
 `STALE` 和 `UNAVAILABLE` 都不代表当前服务已就绪，面板中的旧数据也不会用于放行启动或挖矿。快照 100% 表示准备任务完成，前台高度 100% 表示曾追到当时目标，都不表示后台历史验证已经结束。
 

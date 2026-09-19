@@ -176,6 +176,8 @@ def _snapshot_component(phase, latest, imported, *, failed, complete, activated)
         # Do not turn a completed byte/coin counter into readiness or a 100% hash check.
     elif phase in {"file_verified", "file_published"}:
         detail = "Download verified; waiting for Core snapshot activation"
+    elif phase == "waiting_for_core":
+        detail = "Waiting for Bitcoin Core startup"
     if complete:
         state, phase, detail, percent = "READY", "ready", "Snapshot baseline and raw file ready", 100.0
         report = details.get("report")
@@ -277,12 +279,19 @@ def _balance_history_progress(item, readiness, bootstrap, core, activation, *, b
 def collect_native_progress(layout) -> dict:
     """Expose import/replay plus independent Core foreground/background observations."""
     env = node.read_env(layout.node_env)
+    services_available = True
     try:
         services = node._collect_compose_services(layout, command_timeout_secs=8, include_started_at=True)
     except (OSError, ValueError, subprocess.TimeoutExpired):
         services = {}
+        services_available = False
+    btc_service = services.get("btc-node")
+    not_started = services_available and (btc_service is None or (
+        btc_service.get("state") == "created" and not node._container_start_failed(btc_service)))
     try:
-        core = core_progress(layout)
+        # Missing containers are a startup wait, not a malformed RPC response.
+        # A failed inventory is not evidence that the container is absent.
+        core = dict(bootstrap_ready=False, tip_ready=False) if not_started else core_progress(layout)
     except (OSError, subprocess.TimeoutExpired) as error:
         core = dict(error=str(error), error_kind="rpc_unavailable", rpc_available=False)
     except CoreProbeError as error:
@@ -330,13 +339,15 @@ def collect_native_progress(layout) -> dict:
                                         activation.get("started_at")]
     components = [snapshot, node._component_progress("script_registry", "SKIPPED", "Native observed-script registry is maintained by balance-history")]
     pre_snapshot = not activated and core.get("rpc_available") is not False and not core.get("error") and type(core.get("active_height")) is int
-    sync_phase = "foreground" if activated else "pre_snapshot_ibd" if pre_snapshot else "unavailable"
+    sync_phase = "not_started" if not_started else "foreground" if activated else "pre_snapshot_ibd" if pre_snapshot else "unavailable"
     sync_detail = (f"foreground={core.get('active_height')}; background={core.get('background_height')}; history_validated={core.get('history_validated', False)}"
                    if activated else "Before snapshot activation: ordinary block sync" if pre_snapshot else "Waiting for Core chainstate observation")
     bitcoin = node._component_progress("bitcoin", "STARTING" if unavailable else "BLOCKED" if core.get("error") else "READY" if core.get("tip_ready") else "SYNCING",
                       core.get("error") or sync_detail,
                       current=core.get("active_height"), total=core.get("headers"))
     bitcoin["progress_phase"] = sync_phase
+    if not_started:
+        bitcoin.update(state="WAITING", detail="Bitcoin Core container has not started")
     bitcoin["observation_identity"] = [layout.release_id, env["BTC_NODE_DATA_HOST_DIR"],
                                         services.get("btc-node", {}).get("started_at")]
     if unavailable:
@@ -349,8 +360,9 @@ def collect_native_progress(layout) -> dict:
     # This observation is separate from foreground readiness and never gates startup.
     bitcoin["background_validation"] = dict(height=core.get("background_height"),
         target=int(env["BH_ASSUMEUTXO_BASE_HEIGHT"]), validated=core.get("history_validated") is True,
-        available=not core.get("error") and core.get("rpc_available") is not False)
-    if services.get("btc-node", {}).get("state") in {"dead", "exited", "restarting", "paused"}:
+        available=not not_started and not core.get("error") and core.get("rpc_available") is not False,
+        waiting_for_start=not_started)
+    if node._container_start_failed(btc_service) or (btc_service or {}).get("state") in {"dead", "exited", "restarting", "paused"}:
         bitcoin.update(state="FAILED", detail="Core is not running; inspect its persistent log")
         bitcoin.pop("display_state", None)
         bitcoin.pop("observation_unavailable", None)

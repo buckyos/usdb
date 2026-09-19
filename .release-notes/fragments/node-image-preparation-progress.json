@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-image-preparation-progress",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime", "documentation", "testing"],
+  "summary": "Show image preparation and distinguish unstarted Core containers from probe failures",
+  "details": [
+    "Expose the current image group and cumulative preparation time in up and independent status observers, including slow pulls before any container exists. Ignore records from exited processes or previous configurations.",
+    "Show WAITING for native Core and its background history only when Docker confirms the container has not started; preserve inventory, probe and container failure observations.",
+    "Package the display helper and add slow-pull, independent-observer and startup-wait regressions plus operator guidance."
+  ],
+  "operator_actions": [
+    "Use controller logs --follow to inspect image-layer transfers and retries; elapsed preparation time alone does not prove download progress.",
+    "Install and activate a release containing this fix to use the updated tools. The image preparation stage is recorded by subsequent up operations; an already running older controller does not emit this record."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

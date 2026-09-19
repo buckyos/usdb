@@ -62,7 +62,7 @@ class NativeBundleTests(unittest.TestCase):
         node._validate_node_config(layout, require_runtime=True, require_bitcoin_runtime=True)
         self.assertEqual(node._snapshot_lifecycle_status(layout, env)["state"], "native")
         tool_dir = layout.kit_root / "docker/scripts/tools"
-        result = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import usdb_node, assumeutxo_node; print(usdb_node.load_release_layout(__import__('pathlib').Path(sys.argv[2])).snapshot['status'])", str(tool_dir), str(layout.kit_root)],
+        result = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import usdb_node, assumeutxo_node, node_image_progress; print(usdb_node.load_release_layout(__import__('pathlib').Path(sys.argv[2])).snapshot['status'])", str(tool_dir), str(layout.kit_root)],
                                 cwd=self.root, capture_output=True, text=True, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "native")
@@ -131,7 +131,7 @@ class NativeBundleTests(unittest.TestCase):
         env = node.read_env(layout.node_env)
         progress = Path(env["BH_DATA_HOST_DIR"]) / "bootstrap-progress.json"
         progress.write_text(json.dumps(dict(phase="sealed", published=True, height=963800, elapsed_seconds=60)))
-        services = {"balance-history": dict(state="running"), "btc-snapshot-bootstrap": dict(state="exited", exit_code=0)}
+        services = {"btc-node": dict(state="running"), "balance-history": dict(state="running"), "btc-snapshot-bootstrap": dict(state="exited", exit_code=0)}
         core = dict(bootstrap_ready=True, tip_ready=True, history_validated=False, active_height=966674, headers=966674, background_height=105439)
         with mock.patch.object(node, "_collect_compose_services", return_value=services), \
              mock.patch.object(native, "core_progress", return_value=core), \
@@ -145,6 +145,52 @@ class NativeBundleTests(unittest.TestCase):
         self.assertEqual(components["balance_history"]["state"], "STARTING")
         self.assertNotEqual(report["overall_state"], "READY")
         self.assertEqual(report["native_bootstrap"]["balance_history"]["phase"], "sealed")
+
+    def test_native_progress_distinguishes_startup_wait_from_probe_and_container_failures(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        # This is the real helper result observed before the first container exists.
+        probe_failure = subprocess.CompletedProcess([], 1, "", 'service "btc-node" is not running\n')
+        cases = [({}, None, "WAITING", False),
+                 ({"btc-node": dict(state="created")}, None, "WAITING", False),
+                 ({"btc-node": dict(state="running")}, None, "STARTING", True),
+                 ({}, ValueError("Docker inventory unavailable"), "STARTING", True),
+                 ({"btc-node": dict(state="created", container_error="OCI runtime failed")}, None, "FAILED", True),
+                 ({"btc-node": dict(state="exited", exit_code=1)}, None, "FAILED", True)]
+        for services, inventory_error, expected, should_probe in cases:
+            with self.subTest(services=services, inventory_error=inventory_error), \
+                 mock.patch.object(node, "_collect_compose_services", return_value=services, side_effect=inventory_error), \
+                 mock.patch.object(node, "run_helper", return_value=probe_failure) as helper, \
+                 mock.patch.object(node, "_read_service_readiness", return_value=(None, "RPC unavailable")), \
+                 mock.patch.object(node, "_chain_component", return_value=node._component_progress("usdb_chain", "WAITING", "not started")), \
+                 mock.patch.object(node, "_resource_progress", return_value=({}, False)), \
+                 mock.patch.object(node, "controller_observed_state", return_value="active"):
+                report = node.collect_node_progress(layout)
+                components = {item["id"]: item for item in report["components"]}
+                bitcoin = components["bitcoin"]
+                self.assertEqual(bitcoin["state"], expected)
+                self.assertEqual(helper.called, should_probe)
+                self.assertFalse(bitcoin["background_validation"]["available"])
+                rendered = node.render_node_progress(report, width=180)
+                if expected == "WAITING":
+                    self.assertIn("Bitcoin Core container has not started", rendered)
+                    self.assertIn("Core background history: WAITING for Core startup", rendered)
+                    self.assertNotIn("invalid JSON", rendered)
+                    self.assertFalse(report["native_bootstrap"]["core"]["bootstrap_ready"])
+                    from node_image_progress import ImagePreparation
+                    with ImagePreparation(layout) as preparation:
+                        preparation.set_group("runtime")
+                        pulling = node.collect_node_progress(layout)
+                    self.assertEqual(pulling["overall_state"], "INSTALLING")
+                    self.assertIn("Waiting for container images before snapshot download",
+                                  node.render_node_progress(pulling, width=180))
+                elif expected == "STARTING":
+                    self.assertEqual(bitcoin["display_state"], "UNAVAILABLE")
+                    self.assertIn("invalid JSON", rendered)
+                    self.assertNotIn("WAITING for Core startup", rendered)
+                else:
+                    self.assertNotIn("display_state", bitcoin)
+                    self.assertEqual(report["overall_state"], "FAILED")
 
     def test_installer_setup_and_doctor_accept_native_release_before_download(self):
         layout = native_kit(self.root)
@@ -302,7 +348,7 @@ class NativeBundleTests(unittest.TestCase):
         self.configure(layout)
         env = node.read_env(layout.node_env)
         activation = Path(env["BTC_ASSUMEUTXO_STATE_HOST_DIR"]) / "activation.json"
-        services = {"btc-snapshot-bootstrap": dict(state="running")}
+        services = {"btc-node": dict(state="running"), "btc-snapshot-bootstrap": dict(state="running")}
         core = {}
         with mock.patch.object(node, "_collect_compose_services", return_value=services), \
              mock.patch.object(native, "core_progress", return_value=core), \
