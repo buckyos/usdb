@@ -318,11 +318,66 @@ class NativeBundleTests(unittest.TestCase):
             core.update(error="Core RPC timed out", error_kind="rpc_unavailable", rpc_available=False)
             snapshot = node.collect_node_progress(layout)["components"][0]
             self.assertEqual(snapshot["state"], "STARTING")
-            self.assertEqual(snapshot["display_state"], "UNKNOWN")
+            self.assertEqual(snapshot["display_state"], "UNAVAILABLE")
             self.assertTrue(snapshot["observation_unavailable"])
             self.assertIsNone(snapshot["progress_percent"])
             core.update(error="Core baseline mismatch", error_kind="identity_or_configuration")
             self.assertEqual(node.collect_node_progress(layout)["components"][0]["state"], "BLOCKED")
+
+    def test_completed_preparation_survives_rpc_outage_without_claiming_core_readiness(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        env = node.read_env(layout.node_env)
+        activation = Path(env["BTC_ASSUMEUTXO_STATE_HOST_DIR"]) / "activation.json"
+        record = dict(schema_version="usdb-bitcoin-assumeutxo:v1", phase="snapshot_active", updated_at=2,
+                      identity=dict(snapshot=layout.snapshot["contract"]["snapshot"]),
+                      details=dict(report=dict(bootstrap_ready=True)))
+        activation.write_text(json.dumps(record))
+        services = {"btc-snapshot-bootstrap": dict(state="exited", exit_code=0),
+                    "btc-node": dict(state="running", started_at="2026-09-15T04:46:47Z")}
+        core = dict(error="Core RPC timed out", error_kind="rpc_unavailable", rpc_available=False)
+        with mock.patch.object(node, "_collect_compose_services", return_value=services), \
+             mock.patch.object(native, "core_progress", return_value=core) as probe, \
+             mock.patch.object(node, "_read_service_readiness", return_value=(None, "RPC unavailable")), \
+             mock.patch.object(node, "_chain_component", return_value=node._component_progress("usdb_chain", "WAITING", "not started")), \
+             mock.patch.object(node, "_resource_progress", return_value=({}, False)), \
+             mock.patch.object(node, "controller_observed_state", return_value="failed"):
+            # A newly opened watch has no memory cache; the completed job is still observable.
+            for failure in (None, native.CoreProbeError("Incompatible Core response")):
+                probe.side_effect = failure
+                report = node.collect_node_progress(layout)
+                snapshot, bitcoin = report["components"][0], report["components"][2]
+                self.assertEqual(snapshot["state"], "READY")
+                self.assertEqual(snapshot["progress_percent"], 100)
+                self.assertEqual(snapshot["completion_source"], "bootstrap_job")
+                self.assertEqual(bitcoin["state"], "STARTING")
+                self.assertEqual(bitcoin["display_state"], "UNAVAILABLE")
+                self.assertNotEqual(report["overall_state"], "READY")
+                self.assertFalse(report["native_bootstrap"]["core"].get("bootstrap_ready", False))
+                self.assertIn("controller=failed", node.render_node_progress(report))
+            probe.side_effect = None
+            for state, exit_code in (("running", None), ("created", None), ("exited", 1)):
+                services["btc-snapshot-bootstrap"].update(state=state, exit_code=exit_code)
+                self.assertNotEqual(node.collect_node_progress(layout)["components"][0]["state"], "READY")
+            services["btc-snapshot-bootstrap"].update(state="exited", exit_code=0)
+            wrong_snapshot = {**record["identity"]["snapshot"], "base_hash": "f" * 64}
+            for fields in (dict(identity={}), dict(identity=dict(snapshot=wrong_snapshot)),
+                           dict(phase="loading"), dict(details={}), dict(schema_version="old")):
+                activation.write_text(json.dumps({**record, **fields}))
+                self.assertNotEqual(node.collect_node_progress(layout)["components"][0]["state"], "READY")
+            activation.write_text(json.dumps(record))
+            probe.return_value = dict(rpc_available=True, bootstrap_ready=False, snapshot_active=False,
+                                      tip_ready=False, active_height=100, headers=967114)
+            self.assertNotEqual(node.collect_node_progress(layout)["components"][0]["state"], "READY")
+            probe.return_value = core
+            core.update(error="Core baseline mismatch", error_kind="identity_or_configuration")
+            self.assertEqual(node.collect_node_progress(layout)["components"][0]["state"], "BLOCKED")
+            self.assertEqual(node.collect_node_progress(layout)["components"][2]["state"], "BLOCKED")
+            core.update(error="Core RPC timed out", error_kind="rpc_unavailable")
+            services["btc-node"].update(state="exited")
+            bitcoin = node.collect_node_progress(layout)["components"][2]
+            self.assertEqual(bitcoin["state"], "FAILED")
+            self.assertNotIn("display_state", bitcoin)
 
     def test_balance_history_keeps_one_range_through_genesis_and_live_catchup(self):
         core = dict(headers=966950)

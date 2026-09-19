@@ -202,6 +202,19 @@ def _height(value):
     return value if type(value) is int and value >= 0 else None
 
 
+def _recorded_preparation_complete(activation, expected):
+    """Recognize a completed preparation job for display, never for live readiness."""
+    identity = activation.get("identity", {})
+    snapshot = identity.get("snapshot", {}) if isinstance(identity, dict) else {}
+    details = activation.get("details", {})
+    report = details.get("report", {}) if isinstance(details, dict) else {}
+    return (activation.get("schema_version") == "usdb-bitcoin-assumeutxo:v1"
+            and activation.get("phase") in {"snapshot_active", "fully_validated_chain"}
+            and isinstance(snapshot, dict)
+            and all(snapshot.get(key) == expected[key] for key in ("base_height", "base_hash", "file_sha256"))
+            and isinstance(report, dict) and report.get("bootstrap_ready") is True)
+
+
 def _balance_history_progress(item, readiness, bootstrap, core, activation, *, base, origin, stable_lag, max_height=0xFFFFFFFF):
     """Use one block range across origin replay and live sync, with an origin milestone."""
     if item["state"] in {"FAILED", "BLOCKED"}:
@@ -272,8 +285,12 @@ def collect_native_progress(layout) -> dict:
         core = core_progress(layout)
     except (OSError, subprocess.TimeoutExpired) as error:
         core = dict(error=str(error), error_kind="rpc_unavailable", rpc_available=False)
+    except CoreProbeError as error:
+        core = dict(error=str(error), error_kind="probe_failed", rpc_available=False)
     except ValueError as error:
         core = dict(error=str(error), error_kind="identity_or_configuration")
+    unavailable = (core.get("error_kind") != "identity_or_configuration"
+                   and (core.get("error_kind") in {"rpc_unavailable", "probe_failed"} or core.get("rpc_available") is False))
     artifact = Path(env["BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR"]) / "mainnet-935000-utxos.dat"
     download = read_progress(artifact.with_name(artifact.name + ".download") / "progress.json")
     activation = read_progress(Path(env["BTC_ASSUMEUTXO_STATE_HOST_DIR"]) / "activation.json")
@@ -286,7 +303,8 @@ def collect_native_progress(layout) -> dict:
     # identity distinct from the stricter readiness result of that probe. Snapshot
     # preparation can stay ready; Bitcoin and controller gates still use readiness.
     activated = core.get("snapshot_active") is True or core.get("bootstrap_ready") is True
-    complete = activated and loader.get("state") == "exited" and loader.get("exit_code") == 0
+    recorded = latest is activation and _recorded_preparation_complete(activation, layout.snapshot["contract"]["snapshot"])
+    complete = (activated or (unavailable and recorded)) and loader.get("state") == "exited" and loader.get("exit_code") == 0
     imported = {}
     if phase in {"loading", "load_requested"} and not failed and not core.get("bootstrap_ready"):
         process_start = timestamp(services.get("btc-node", {}).get("started_at"))
@@ -295,14 +313,18 @@ def collect_native_progress(layout) -> dict:
             imported = read_import_progress(Path(env["BTC_NODE_DATA_HOST_DIR"]) / "debug.log",
                 layout.snapshot["contract"]["snapshot"]["base_hash"], max(process_start, attempt_start))
     snapshot = _snapshot_component(phase, latest, imported, failed=failed, complete=complete, activated=activated)
-    # Completion remains an RPC observation. A failed probe cannot mean a new
-    # import, and a completed journal alone cannot assert current readiness.
+    # Preparation is a completed job; current Core health is shown separately.
+    # Require both a matching completion record and a successful loader exit when
+    # RPC is unavailable. Neither observation authorizes startup or mining.
     if not failed and core.get("error_kind") == "identity_or_configuration":
         snapshot.update(state="BLOCKED", detail=core["error"], progress_percent=None)
-    elif not failed and (core.get("error_kind") == "rpc_unavailable" or core.get("rpc_available") is False):
+    elif complete and unavailable:
+        snapshot.update(detail="Snapshot preparation completed; live Core status shown below",
+                        completion_source="bootstrap_job", completion_observed_at=activation.get("updated_at"))
+    elif not failed and unavailable:
         if phase in {"snapshot_active", "fully_validated_chain"}:
-            snapshot.update(state="STARTING", display_state="UNKNOWN", progress_phase="observation_unavailable",
-                            observation_unavailable=True, detail="Core RPC unavailable; completion observation pending",
+            snapshot.update(state="STARTING", display_state="UNAVAILABLE", progress_phase="observation_unavailable",
+                            observation_unavailable=True, detail="Snapshot completion not confirmed; Core probe unavailable",
                             current=None, total=None, progress_percent=None)
     snapshot["observation_identity"] = [layout.release_id, services.get("btc-node", {}).get("started_at"),
                                         activation.get("started_at")]
@@ -311,10 +333,14 @@ def collect_native_progress(layout) -> dict:
     sync_phase = "foreground" if activated else "pre_snapshot_ibd" if pre_snapshot else "unavailable"
     sync_detail = (f"foreground={core.get('active_height')}; background={core.get('background_height')}; history_validated={core.get('history_validated', False)}"
                    if activated else "Before snapshot activation: ordinary block sync" if pre_snapshot else "Waiting for Core chainstate observation")
-    bitcoin = node._component_progress("bitcoin", "STARTING" if core.get("error_kind") == "rpc_unavailable" or core.get("rpc_available") is False else "BLOCKED" if core.get("error") else "READY" if core.get("tip_ready") else "SYNCING",
+    bitcoin = node._component_progress("bitcoin", "STARTING" if unavailable else "BLOCKED" if core.get("error") else "READY" if core.get("tip_ready") else "SYNCING",
                       core.get("error") or sync_detail,
                       current=core.get("active_height"), total=core.get("headers"))
     bitcoin["progress_phase"] = sync_phase
+    bitcoin["observation_identity"] = [layout.release_id, env["BTC_NODE_DATA_HOST_DIR"],
+                                        services.get("btc-node", {}).get("started_at")]
+    if unavailable:
+        bitcoin.update(observation_unavailable=True, display_state="UNAVAILABLE")
     if pre_snapshot:
         bitcoin["label"] = "Bitcoin (IBD)"
     chains = core.get("chainstates", [])
@@ -326,6 +352,8 @@ def collect_native_progress(layout) -> dict:
         available=not core.get("error") and core.get("rpc_available") is not False)
     if services.get("btc-node", {}).get("state") in {"dead", "exited", "restarting", "paused"}:
         bitcoin.update(state="FAILED", detail="Core is not running; inspect its persistent log")
+        bitcoin.pop("display_state", None)
+        bitcoin.pop("observation_unavailable", None)
     components.append(bitcoin)
     for component, service, action in (("balance_history", "balance-history", "data-status"), ("usdb_indexer", "usdb-indexer", "indexer-status")):
         readiness, error = node._read_service_readiness(layout, "run_testnet_runtime.sh", [action], service)

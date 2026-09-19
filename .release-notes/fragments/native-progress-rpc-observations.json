@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "native-progress-rpc-observations",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Distinguish completed snapshot preparation from unavailable Bitcoin progress observations",
+  "details": [
+    "A matching preparation completion record and a successfully exited bootstrap job keep the snapshot preparation stage complete during Core probe outages; fresh identity or preparation failures remain visible.",
+    "Native Bitcoin progress shows STALE or UNAVAILABLE instead of implying process startup after an unsuccessful probe, while preserving current container failures.",
+    "Bounded watch history retains foreground and background progress from the same successful observation, with explicit time, age, last state and the latest probe error on separate lines.",
+    "Restart and release identity changes clear cached observations; stale values never authorize startup or mining and never produce synchronization ETA estimates."
+  ],
+  "operator_actions": [
+    "Use the updated node tools and reopen status --watch; persistent RPC or controller failures still require log inspection."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

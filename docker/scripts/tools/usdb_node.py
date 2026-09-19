@@ -4481,6 +4481,10 @@ def render_node_progress(
         if len(detail) > available:
             detail = detail[: max(0, available - 3)] + "..."
         lines.append(prefix + detail)
+        if component.get("last_observed_at"):
+            lines.append(f"  Last observed: {component['last_observed_at']} "
+                         f"({component['stale_age_secs']}s ago, state={component['last_observed_state']})")
+            lines.append(f"  Latest probe: {component['latest_probe_detail']}")
         milestone = component.get("genesis_milestone")
         if isinstance(milestone, dict):
             # Partial observations may retain a milestone without its range metadata.
@@ -4501,7 +4505,14 @@ def render_node_progress(
             lines.append(f"  Stage elapsed={_duration_text(component['stage_elapsed_secs'])} | ETA=-- (not reported by Core)")
         background = component.get("background_validation")
         if isinstance(background, dict):
-            if not background["available"]:
+            if background.get("stale"):
+                if background["validated"]:
+                    history = f"STALE: last validated through baseline {background['target']}"
+                elif type(background.get("height")) is int:
+                    history = f"STALE {background['height']}/{background['target']} (last observed syncing)"
+                else:
+                    history = "STALE: last waiting for snapshot activation"
+            elif not background["available"]:
                 history = "UNAVAILABLE"
             elif background["validated"]:
                 history = f"VALIDATED through baseline {background['target']}"
@@ -4612,9 +4623,9 @@ class NodeProgressHistory:
                 continue
 
             state = component.get("state")
-            if component_id == "snapshot":
+            if component_id in {"snapshot", "bitcoin"}:
                 cached = self._last_good.get(component_id)
-                if ((not component.get("observation_unavailable") and state != "READY")
+                if ((component_id == "snapshot" and not component.get("observation_unavailable") and state != "READY")
                         or (cached is not None and cached[2].get("observation_identity") != component.get("observation_identity"))):
                     self._last_good.pop(component_id, None)
             if state in {"SYNCING", "READY"} and self._has_progress(component):
@@ -4640,6 +4651,16 @@ class NodeProgressHistory:
                             f"STALE from {cached_observed_at}: {cached_component['detail']}; "
                             f"latest probe: {component['detail']}"
                         )
+                        if component_id in {"snapshot", "bitcoin"} and component.get("observation_unavailable"):
+                            component.update(display_state="STALE", last_observed_at=cached_observed_at,
+                                             stale_age_secs=int(max(0, now - cached_at)),
+                                             last_observed_state=cached_component["state"],
+                                             latest_probe_detail=original["detail"], detail=cached_component["detail"])
+                            background = cached_component.get("background_validation")
+                            if isinstance(background, dict) and background.get("available"):
+                                # Foreground and background must describe the same last-good probe.
+                                component["background_validation"] = {**background, "available": False,
+                                    "stale": True, "observed_at": cached_observed_at}
                     else:
                         self._last_good.pop(component_id, None)
             components.append(component)

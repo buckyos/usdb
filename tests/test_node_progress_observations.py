@@ -66,7 +66,7 @@ class NodeProgressObservationTests(unittest.TestCase):
         fresh = NODE._component_progress("snapshot", "READY", "Snapshot baseline and raw file ready", progress_percent=100)
         fresh["observation_identity"] = ["r25", "core-start", 1000]
         unavailable = NODE._component_progress("snapshot", "STARTING", "Core RPC unavailable")
-        unavailable.update(observation_unavailable=True, display_state="UNKNOWN", observation_identity=fresh["observation_identity"])
+        unavailable.update(observation_unavailable=True, display_state="UNAVAILABLE", observation_identity=fresh["observation_identity"])
         report = dict(release_id="r25", observed_at="now", overall_state="STARTING", components=[fresh])
         history = NODE.NodeProgressHistory(max_stale_age_secs=60)
         history.apply(report, observed_monotonic=0)
@@ -75,12 +75,77 @@ class NodeProgressObservationTests(unittest.TestCase):
         self.assertEqual(component["progress_percent"], 100)
         self.assertEqual(component["state"], "STARTING")
         self.assertEqual(observed["overall_state"], "STARTING")
-        self.assertIn("STALE", component["detail"])
-        self.assertIn("UNKNOWN", NODE.render_node_progress(observed))
+        self.assertEqual(component["display_state"], "STALE")
+        self.assertEqual(component["last_observed_at"], "now")
+        self.assertIn("STALE", NODE.render_node_progress(observed))
+        self.assertNotIn("UNKNOWN", NODE.render_node_progress(observed))
         self.assertIsNone(unavailable["progress_percent"])
         expired = history.apply({**report, "components": [unavailable]}, observed_monotonic=61)
         self.assertIsNone(expired["components"][0]["progress_percent"])
         self.assertIn("unavailable", NODE.render_node_progress(expired))
+
+    def test_native_bitcoin_outage_retains_foreground_and_background_from_one_probe(self):
+        fresh = NODE._component_progress("bitcoin", "READY", "foreground=967114; background=844060",
+                                         current=967114, total=967114)
+        fresh.update(observation_identity=["r27", "/bitcoin", "core-start"],
+                     background_validation=dict(height=844060, target=935000, validated=False, available=True))
+        unavailable = NODE._component_progress("bitcoin", "STARTING", "Bitcoin getchainstates RPC timeout")
+        unavailable.update(observation_identity=fresh["observation_identity"], observation_unavailable=True,
+                           display_state="UNAVAILABLE",
+                           background_validation=dict(height=None, target=935000, validated=False, available=False))
+        report = dict(release_id="r27", observed_at="2026-09-15T11:06:13Z", overall_state="READY", components=[fresh])
+        pending = {**report, "observed_at": "2026-09-15T11:06:47Z", "overall_state": "STARTING",
+                   "controller_state": "failed", "components": [unavailable]}
+        original = copy.deepcopy(pending)
+        history = NODE.NodeProgressHistory(max_stale_age_secs=60)
+        history.apply(report, observed_monotonic=0)
+        for elapsed in (34, 50):
+            observed = history.apply(pending, observed_monotonic=elapsed)
+            component = observed["components"][0]
+            self.assertEqual(component["display_state"], "STALE")
+            self.assertEqual(component["state"], "STARTING")
+            self.assertEqual(component["current"], 967114)
+            self.assertEqual(component["last_observed_state"], "READY")
+            self.assertEqual(component["stale_age_secs"], elapsed)
+            self.assertEqual(component["background_validation"]["height"], 844060)
+            self.assertFalse(component["background_validation"]["available"])
+            self.assertEqual(observed["overall_state"], "STARTING")
+            self.assertIsNone(component["timing"]["eta_secs"])
+            rendered = NODE.render_node_progress(observed, width=80)
+            self.assertIn("Core background history: STALE 844060/935000", rendered)
+            self.assertIn("2026-09-15T11:06:13Z", rendered)
+            self.assertIn("Latest probe: Bitcoin getchainstates RPC timeout", rendered)
+            self.assertIn("controller=failed", rendered)
+            self.assertNotIn("Core background history: UNAVAILABLE", rendered)
+        self.assertEqual(pending, original)
+        expired = history.apply(pending, observed_monotonic=61)
+        self.assertIsNone(expired["components"][0]["current"])
+        self.assertIsNone(expired["components"][0]["background_validation"]["height"])
+        self.assertIn("Core background history: UNAVAILABLE", NODE.render_node_progress(expired))
+        recovered = history.apply(report, observed_monotonic=62)
+        self.assertNotIn("STALE", NODE.render_node_progress(recovered))
+        self.assertIn("Core background history: SYNCING 844060/935000", NODE.render_node_progress(recovered))
+
+    def test_bitcoin_restart_or_failure_discards_previous_chainstate_progress(self):
+        fresh = NODE._component_progress("bitcoin", "SYNCING", "syncing", current=940000, total=950000)
+        fresh.update(observation_identity=["r27", "core-start"],
+                     background_validation=dict(height=None, target=935000, validated=True, available=True))
+        unavailable = NODE._component_progress("bitcoin", "STARTING", "Core RPC unavailable")
+        unavailable.update(observation_unavailable=True, display_state="UNAVAILABLE",
+                           observation_identity=fresh["observation_identity"],
+                           background_validation=dict(height=None, target=935000, validated=False, available=False))
+        report = dict(release_id="r27", observed_at="now", overall_state="STARTING", components=[fresh])
+        for change in (dict(state="FAILED"), dict(state="BLOCKED"),
+                       dict(observation_identity=["r27", "restarted"]), dict(observation_identity=["r28", "core-start"])):
+            with self.subTest(change=change):
+                history = NODE.NodeProgressHistory()
+                history.apply(report, observed_monotonic=0)
+                stale = history.apply({**report, "components": [unavailable]}, observed_monotonic=1)
+                self.assertIn("STALE: last validated through baseline 935000", NODE.render_node_progress(stale))
+                history.apply({**report, "components": [{**unavailable, **change}]}, observed_monotonic=2)
+                after = history.apply({**report, "components": [unavailable]}, observed_monotonic=3)
+                self.assertIsNone(after["components"][0]["current"])
+                self.assertNotIn("STALE", NODE.render_node_progress(after))
 
     def test_snapshot_restart_failure_or_new_import_clears_cached_completion(self):
         fresh = NODE._component_progress("snapshot", "READY", "ready", progress_percent=100)
