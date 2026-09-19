@@ -28,25 +28,31 @@ class ImageProgressTests(unittest.TestCase):
         self.layout = SimpleNamespace(node_env=env, release_id="r-test", bundle_id="test-bundle")
 
     def test_slow_pull_is_observable_from_another_process_and_clears_after_success(self):
-        with images.ImagePreparation(self.layout) as preparation:
-            preparation.set_group("bitcoin")
-            started = preparation.record["started_monotonic"]
-            # More than 24 minutes is still a valid preparation observation.
-            preparation.record["started_monotonic"] = max(0, started - 1500)
-            preparation.set_group("runtime")
-            result = subprocess.run([sys.executable, "-c",
-                "import json, sys; from pathlib import Path; from types import SimpleNamespace; "
-                "sys.path.insert(0, sys.argv[1]); import node_image_progress as images; "
-                "print(json.dumps(images.read_image_preparation(SimpleNamespace("
-                "node_env=Path(sys.argv[2]), release_id='r-test', bundle_id='test-bundle'))))",
-                str(TOOLS), str(self.layout.node_env)], capture_output=True, text=True, timeout=10)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            observed = json.loads(result.stdout)
-            self.assertEqual(observed["group"], "runtime")
-            self.assertGreaterEqual(observed["elapsed_secs"], 1500)
-            self.assertEqual(images._path(self.layout).stat().st_mode & 0o777, 0o600)
-        self.assertIsNone(images.read_image_preparation(self.layout))
-        self.assertFalse(images._path(self.layout).exists())
+        # Advance the same simulated clock in both processes; a fresh CI runner
+        # cannot backdate a real monotonic timestamp by 25 minutes. Replace only
+        # this module's clock so subprocess timeouts still use real time.
+        for started, elapsed in ((0, 0), (80, 0), (80, 1500), (100000, 1500)):
+            with self.subTest(started=started, elapsed=elapsed), \
+                 mock.patch.object(images, "time", SimpleNamespace(monotonic=lambda: started)):
+                with images.ImagePreparation(self.layout) as preparation:
+                    preparation.set_group("bitcoin")
+                    preparation.set_group("runtime")
+                    self.assertEqual(preparation.record["started_monotonic"], started)
+                    result = subprocess.run([sys.executable, "-c",
+                        "import json, sys; from pathlib import Path; from types import SimpleNamespace; "
+                        "sys.path.insert(0, sys.argv[1]); import node_image_progress as images; "
+                        "images.time = SimpleNamespace(monotonic=lambda: float(sys.argv[3])); "
+                        "print(json.dumps(images.read_image_preparation(SimpleNamespace("
+                        "node_env=Path(sys.argv[2]), release_id='r-test', bundle_id='test-bundle'))))",
+                        str(TOOLS), str(self.layout.node_env), str(started + elapsed)],
+                        capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    observed = json.loads(result.stdout)
+                    self.assertEqual(observed["group"], "runtime")
+                    self.assertEqual(observed["elapsed_secs"], elapsed)
+                    self.assertEqual(images._path(self.layout).stat().st_mode & 0o777, 0o600)
+                self.assertIsNone(images.read_image_preparation(self.layout))
+                self.assertFalse(images._path(self.layout).exists())
 
     def test_obsolete_or_invalid_records_never_report_pulling(self):
         with images.ImagePreparation(self.layout) as preparation:
