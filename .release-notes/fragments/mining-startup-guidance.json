@@ -1,0 +1,22 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "mining-startup-guidance",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Report chain startup before checking mining resource limits and explain preflight output",
+  "details": [
+    "Mining preflight reports CHAIN_NOT_RUNNING with container and process observations plus retry guidance before checking runtime resource limits.",
+    "Absent containers no longer look like unbounded-memory containers; running chains retain memory and CPU eligibility checks.",
+    "The operator handbook explains mining eligibility, amount units, global supply inputs, conditional first-block issuance estimates, bootstrap progress, and startup troubleshooting."
+  ],
+  "operator_actions": [
+    "Use the updated node tools for corrected startup diagnostics; wait for chain startup before retrying mining check or enable."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

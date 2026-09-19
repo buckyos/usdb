@@ -518,9 +518,15 @@ def preflight(layout: node.ReleaseLayout, address: str, *, threads: int = 1, fir
     if any(arg.startswith(RESERVED) for arg in shlex.split(env.get("USDB_CHAIN_EXTRA_ARGS", ""))):
         raise ValueError("CONFLICTING_EXTRA_ARGS: remove identity, discovery or mining overrides")
     runtime = inspect_chain(layout)
-    cpus = check_resources(layout, env, runtime, threads)
+    # An absent container has no memory observation; report startup before
+    # interpreting missing runtime limits as a resource configuration error.
     if runtime["state"] != "running" or not runtime["argv"]:
-        raise ValueError("CHAIN_NOT_RUNNING: start the full node before enabling mining")
+        raise ValueError(
+            f"CHAIN_NOT_RUNNING: usdb-chain is not ready (container={runtime['state']}, "
+            f"geth={'observed' if runtime['argv'] else 'not observed'}); "
+            "watch 'usdb-node status --watch' and retry after chain startup; "
+            "use 'usdb-node up' if the node is stopped")
+    cpus = check_resources(layout, env, runtime, threads)
     data_binding = binding(layout, env)
     chain = chain_view(layout)
     peer = peer_check(layout, env, chain, data_binding, first_node)

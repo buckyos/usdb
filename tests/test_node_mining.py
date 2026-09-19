@@ -188,6 +188,36 @@ class MiningTests(unittest.TestCase):
         with MiningFixture() as f, self.assertRaisesRegex(ValueError, "INVALID_THREADS"):
             MINING.preflight(f.layout, ADDRESS, first_node=True, threads=0)
 
+    def test_chain_startup_reports_runtime_state_without_submitting_mining(self):
+        for state in ("absent", "created", "restarting", "exited", "paused", "running"):
+            with self.subTest(state=state), MiningFixture() as f:
+                before = f.layout.node_env.read_bytes()
+                if state == "absent":
+                    f.runtime = {"state": state, "environment": {}, "argv": []}
+                else:
+                    f.runtime.update(state=state, argv=[])
+                with self.assertRaisesRegex(ValueError, "CHAIN_NOT_RUNNING") as caught:
+                    f.enable()
+                self.assertIn(f"container={state}", str(caught.exception))
+                self.assertIn("geth=not observed", str(caught.exception))
+                self.assertIn("usdb-node status --watch", str(caught.exception))
+                self.assertIn("usdb-node up", str(caught.exception))
+                self.assertEqual(f.layout.node_env.read_bytes(), before)
+                self.assertFalse(MINING.state_path(f.layout).exists())
+                self.assertEqual(f.calls, [])
+                f.adopt()
+                self.assertEqual(MINING.preflight(f.layout, ADDRESS, first_node=True)["state"], "READY")
+
+    def test_running_chain_without_memory_limit_still_cannot_enable_mining(self):
+        with MiningFixture() as f:
+            before = f.layout.node_env.read_bytes()
+            f.runtime["memory"] = 0
+            with self.assertRaisesRegex(ValueError, "RESOURCE_LIMIT_REQUIRED"):
+                f.enable()
+            self.assertEqual(f.layout.node_env.read_bytes(), before)
+            self.assertFalse(MINING.state_path(f.layout).exists())
+            self.assertEqual(f.calls, [])
+
     def test_peer_source_required_and_joiner_never_falls_back(self):
         with MiningFixture() as f:
             with self.assertRaisesRegex(ValueError, "PEER_SOURCE_REQUIRED"):

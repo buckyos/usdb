@@ -57,6 +57,55 @@ usdb-node mining status --watch
 
 确认链持续出块后，立即按[网络启动后初始化 SourceDAO](../network-admin/sourcedao.md)完成初始化和验证。初始化交易需要矿工持续提供区块。
 
+## 读懂预检输出
+
+`mining check` 显示 `state=READY`，表示本次预检通过，可以继续执行 `mining enable`。它不会自动开启挖矿，也不表示收益已经到账。`enable` 会重新检查当时的状态。
+
+### 地址、资格和链状态
+
+| 输出 | 面向使用者的含义 |
+| --- | --- |
+| `Address` / `CPU workers` | 挖矿收益地址和请求使用的 CPU 工作线程数 |
+| `Pass` / `candidates` | 工具自动选中的 pass，以及与收益地址匹配的候选数量；多个候选不表示同时使用多个 pass 挖矿 |
+| `state=active/standard` | 选中的 pass 当前有效，类型为可直接挖矿的 Standard pass |
+| `energy` / `level` / `difficulty` | 有效能量、对应等级及难度系数；`10000 bps` 表示完整基础难度，`5000 bps` 表示基础难度的 50%，不是成功率 |
+| `BTC height` | 本次矿工资格和经济数据使用的 BTC 稳定状态高度，可能落后于 Bitcoin 前台链尖端 |
+| `Chain ... height` / `peers` | USDB 链当前高度和连接的节点数量；链高度为 `0` 表示尚未产生创世块之后的区块 |
+| `impact` | 执行角色切换的影响范围；`Recreate only usdb-chain` 表示只重建链服务，保留数据和上游进程 |
+
+零能量的有效 Active Standard pass 仍可参与挖矿。`energy=0、level=0、difficulty=10000 bps` 表示按完整基础难度挖矿。
+
+### economics：余额、供应量和首块发行估算
+
+金额单位：**1 USDB = 10¹⁸ atoms，1 BTC = 10⁸ sats**。`atoms` 是 USDB 的最小单位；输出中使用十进制字符串保存大整数，以免丢失精度。
+
+| 字段 | 含义 | 示例换算 |
+| --- | --- | --- |
+| `total_miner_btc_sats` | 全网所有活跃 Standard / Collab pass 的不同 owner 的 BTC 余额合计，使用本次查询的稳定状态；不是单个收益地址的 USDB 余额 | `18894` = **0.00018894 BTC** |
+| `unit_sats` | 能量增长的余额单位；每个 owner 按 `floor(BTC 余额 sats / unit_sats)` 得到整数单位数 | `100000` = **0.001 BTC** |
+| `issued_usdb_atoms` | 全链累计已发行量，包含创世初始分配和此前各块新增发行；普通转账不改变该值，销毁也不从中扣除 | `10000000000000000000` = **10 USDB** |
+| `target_usdb_atoms` | 按当前活跃矿工 BTC 总余额与协议价格计算的目标供应量，会随输入变化；不是本次到账奖励或固定供应上限 | `18894000000000000000` = **18.894 USDB** |
+| `first_block_emission_atoms` | 满足 `estimate_assumption` 所列条件时，USDB 首个区块的新增发行估算，不含交易手续费；不是钱包当前余额或每块固定奖励 | `56405377980720` = **0.000056405377980720 USDB** |
+
+例如，链高度为 `0`，累计已发行 `10 USDB`，活跃矿工 owner 总余额为 `18894 sats`。当前 v1 协议采用固定价格 **100000 USDB/BTC**；这是发行计算参数，不是市场报价。按首块 `K=1`、BTC 状态不变计算：
+
+```text
+目标供应量 = 0.00018894 BTC × 100000 USDB/BTC = 18.894 USDB
+待发行差额 = max(18.894 − 10, 0) = 8.894 USDB
+首块新增量 = 待发行差额 / 157680，按 atoms 向下取整
+           = 0.000056405377980720 USDB
+```
+
+`157680` 是当前协议用于平滑发行的参数，不表示每隔这么多块才发一次奖励。后续每块会根据当时的余额总量、已发行量和 `K` 系数重新计算。目标供应量不高于已发行量时，新增发行量为零。
+
+`unit_sats` **不是挖矿最低余额门槛**。余额不足 `100000 sats` 时没有新的余额单位用于增长能量，但仍按实际 sats 计入上述供应量计算；新增加的余额需要先进入稳定状态，再随 BTC 区块积累能量。因此零能量与正的发行估算可以同时出现。
+
+当前工具只在链高度为 `0` 且使用受支持的 v1 策略时展示这组首块估算；开始出块后，相关估算字段可能不再出现。若显示 `estimate_unavailable`，表示估算信息暂不可用，不等于矿工资格无效。实际出块和收益以链上结果为准。
+
+### bootstrap：网络初始化进度
+
+`fee_split_block` 是手续费分成开始生效的 USDB 区块高度，`blocks_remaining` 是到该高度还剩多少块；例如链高为 `0`、`fee_split_block=8192` 时，剩余 `8192` 块。`bootstrap_finalized=false` 表示 SourceDAO 初始化尚未完成。网络初始化负责人应在链开始出块后按 [SourceDAO 章节](../network-admin/sourcedao.md)操作，不要等到第 `8192` 块才开始初始化；普通矿工无需执行该管理操作。
+
 ## 判断是否已经在挖矿
 
 ```bash
@@ -107,12 +156,16 @@ usdb-node mining status --watch
 | `BITCOIN_RPC_AUTH_FAILED` | 核对节点的 Bitcoin RPC 认证配置；等待同步不能解决认证错误 |
 | `BITCOIN_RPC_INVALID_RESPONSE`、`BITCOIN_RPC_ERROR` | RPC 返回格式或错误码异常；核对工具与运行镜像版本，并保存脱敏诊断信息 |
 | `BITCOIN_PROBE_TIMEOUT`、`BITCOIN_PROBE_FAILED` | 探测程序整体超时、未能执行或输出无法解析；核对 Docker 可用性、访问权限和工具/镜像版本 |
-| `CHAIN_NOT_RUNNING` | 先启动 full 节点并检查链及上游状态 |
+| `CHAIN_NOT_RUNNING` | 链容器或 geth 进程尚未就绪。若刚执行 `up`，运行 `usdb-node status --watch`，等待链服务启动后重试；若节点已停止，先执行 `usdb-node up`。持续无法启动时检查 `usdb-node logs usdb-chain` |
+| `RESOURCE_LIMIT_REQUIRED` | 链已运行，但容器没有内存上限；按[调整资源预算](maintenance.md#调整资源预算)核对并应用资源配置，再重试预检 |
+| `RESOURCE_TRANSITION_PENDING` | 自动资源配置仍在切换，等待状态面板显示 steady 阶段后重试 |
 | 长期 `WARMING_UP` | 检查 `usdb-node logs usdb-chain`、CPU/内存及上游进度，不只凭哈希率为零判断失败 |
 | 任务失败或配置漂移 | 保存 `mining status --json` 和链日志；解决具体错误后按同一目标重试 enable/disable |
 | 上游回滚或停链标记阻断 | 保留现场，按网络事故流程处理，不清除标记强行恢复 |
 
 在 AssumeUTXO 模式下，Bitcoin 基线和前台链尖端必须就绪，BH 与 indexer 也必须通过共识就绪检查。Bitcoin 后台历史验证可以继续运行，`history_validated=false` 本身不阻止挖矿预检。
+
+旧版工具可能在链容器尚未创建时误报 `RESOURCE_LIMIT_REQUIRED`。若刚启动节点，先观察启动进度并在链就绪后重试；不能仅凭这条旧提示认定内存配置有误。包含启动诊断修复的版本会先检查链是否运行，再检查实际资源限制。
 
 **r25 已知问题**：挖矿预检错误地使用旧版 Bitcoin 状态解析器，可能在状态面板显示 Bitcoin READY 时仍报 `BITCOIN_NOT_READY`。若 `native_bootstrap.core.bootstrap_ready` 和 `tip_ready` 都为 `true`，向网络运维方取得包含该修复的工具版本；单纯等待后台历史验证完成不能修复这个版本问题。不要修改快照模式或启用 txindex 来绕过。
 
