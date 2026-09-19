@@ -4,10 +4,12 @@
 
 本章介绍测试网发布包提供的 `usdb-node mining` 操作。默认使用本机 CPU、1 个挖矿工作线程。节点先以 `full` 角色启动，通过检查后再启用挖矿。
 
+还没有矿工证时，先阅读[矿工证介绍](../miner-pass/README.md)和[钱包铸造步骤](../miner-pass/mint.md)。铸造完成后需要等待稳定高度和索引确认，钱包显示铸造成功不等于已经具备挖矿资格。
+
 ## 启用前准备
 
 - 普通加入节点先按[安装与入网](install.md)完成同步和连接；网络首节点按本页的独立分支操作。
-- 准备与已生效的 **Active Standard pass** 对应的 `usdb_main` 收益地址。工具自动选择符合条件的 pass，无需手填 pass ID。
+- 准备与已生效的 **Active Standard pass（活跃标准矿工证）** 对应的 `usdb_main` 收益地址。工具自动选择符合条件的 pass，无需手填 pass ID；协作矿工证不能用于独立挖矿。
 - 原运维账号具有 Docker 权限，后台 controller 已安装，主机有可用 CPU 资源。
 - 没有正在运行的 SourceDAO 初始化任务或尚未完成的节点配置任务。
 
@@ -149,7 +151,7 @@ usdb-node mining status --watch
 
 | 现象 | 检查与处理 |
 | --- | --- |
-| 没有合格 pass 或收益地址不匹配 | 核对地址和 pass 的生效状态，等待上游索引追平后重新检查 |
+| 没有合格 pass 或收益地址不匹配 | 按[确认矿工证生效](../miner-pass/mint.md#确认矿工证生效)核对地址、状态与稳定高度；转让或重新铸造后还需核对当前生效的证 |
 | `PEER_SOURCE_REQUIRED`、无 peers 或仍在同步 | 普通加入节点先完成入网；确认负责创建网络的首节点使用本页的[首节点分支](#网络首节点启用挖矿) |
 | `BITCOIN_NOT_READY` | 新版 AssumeUTXO 检查已取得 Bitcoin 状态，但基线或前台链尚未就绪；查看提示中的高度、headers、连接数和链头年龄 |
 | `BITCOIN_RPC_TIMEOUT`、`BITCOIN_RPC_UNAVAILABLE` | 未取得可靠的 RPC 结果，不能据此判断追块进度；查看失败方法、尝试次数和 Bitcoin 日志，待 RPC 恢复后重试 |

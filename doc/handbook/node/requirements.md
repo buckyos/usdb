@@ -62,7 +62,7 @@ sudo apt-get install -y ca-certificates curl python3 tar coreutils bash
 | `8333/TCP` | Bitcoin 入站连接，可选；普通节点保持默认不公开即可 |
 | `8332`、`8545`、`8546`、`28010`、`28020`、`28040` | 私有服务接口，不开放到公网 |
 
-公网浏览器和公共 RPC 应通过专用服务提供，不能直接公开节点的 `8545/8546`。
+公网浏览器和公共 RPC 应通过专用服务提供，不能直接公开节点的 `8545/8546`。同机或独立部署的入口与查询节点要求见 [USDB Explorer](../services/explorer.md)。
 
 配置向导提供两种防火墙方式：
 

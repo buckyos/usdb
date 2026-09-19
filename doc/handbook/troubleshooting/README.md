@@ -2,7 +2,7 @@
 
 [返回手册首页](../README.md) · [版本与验证范围](../networks/testnet.md#版本与验证范围)
 
-先执行 `usdb-node status`，记录版本、`Overall` 和第一项明确失败。正常同步或等待入网不需要重新安装。以下命令均在原运维账号下执行；跟随日志和进度的命令用 Ctrl+C 退出。
+节点问题先执行 `usdb-node status`，记录版本、`Overall` 和第一项明确失败。正常同步或等待入网不需要重新安装。以下命令均在原运维账号下执行；跟随日志和进度的命令用 Ctrl+C 退出。仅涉及钱包铸造、还没有节点时，直接进入下表的矿工证排查入口。
 
 ## 按现象查找
 
@@ -19,9 +19,12 @@
 | `AWAITING_PEERS`、没有实际连接 | [入网问题](#等待-peers-或一直没有连接) |
 | 后台任务失败、服务不健康、`BLOCKED` | [后台或服务失败](#后台任务或服务失败) |
 | 更新工具后要求激活或提示不兼容 | [升级问题](#升级后要求激活或兼容检查失败) |
+| 铭文铸造成功但没有矿工资格、矿工证无效或能量为零 | [铸造后常见问题](../miner-pass/mint.md#铸造后常见问题) |
+| 转让后不能挖矿、继承失败或协作未生效 | [矿工证管理常见问题](../miner-pass/manage.md#常见问题) |
 | 矿工预检失败、长期等待工作、无法确认本机产块 | [矿工常见问题](../node/mining.md#常见问题) |
 | SourceDAO 初始化失败、等待回执或导出/验证失败 | [SourceDAO 中断与失败恢复](../network-admin/sourcedao.md#中断与失败恢复) |
 | `A SourceDAO task is active`，停机或升级被拒绝 | [SourceDAO 任务互斥](../network-admin/sourcedao.md#维护期间的互斥与备份) |
+| Explorer 预检结果不清楚、check 超时或页面数据失败 | [浏览器与公共 RPC 手册入口](../services/explorer.md#对应章节) |
 
 ## 找不到 usdb-node 命令
 
