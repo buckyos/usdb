@@ -389,10 +389,12 @@ def resolve_distribution(mode: str, url: str, manifest_url: str, manifest_file: 
 def activate(snapshot: Snapshot, source: Path, rpc: Rpc, state_dir: Path, *, url: str = "",
              poll_seconds: float = 5, wait_seconds: float = 0, retry_interrupted: bool = False,
              reserve_bytes: int = 1024**3, distribution: dict | None = None,
-             ensure_snapshot_file: bool = False) -> dict:
+             ensure_snapshot_file: bool = False, reuse_active_snapshot_file: bool = False) -> dict:
     """Reconcile before every load; uncertain requests require observation or explicit recovery."""
     if not source.is_absolute() or not state_dir.is_absolute() or state_dir == Path("/") or not math.isfinite(poll_seconds) or not math.isfinite(wait_seconds) or poll_seconds <= 0 or wait_seconds < 0:
         raise ValueError("Invalid source path or bootstrap wait intervals")
+    if reuse_active_snapshot_file and not ensure_snapshot_file:
+        raise ValueError("Active snapshot file reuse requires downstream file preparation")
     identity = dict(snapshot=asdict(snapshot), source=str(source), rpc_target_sha256=hashlib.sha256(rpc.url.encode()).hexdigest())
     with exclusive_directory(state_dir):
         journal = Journal(state_dir / "activation.json", identity)
@@ -416,7 +418,19 @@ def activate(snapshot: Snapshot, source: Path, rpc: Rpc, state_dir: Path, *, url
             try:
                 report = core_status(rpc, snapshot)
                 if ensure_snapshot_file and not prepared:
-                    download_snapshot(snapshot, source, url, reserve_bytes=reserve_bytes)
+                    # Core authenticates the live baseline. Native BH independently
+                    # verifies both source hashes if it still needs to import; sealed
+                    # BH databases never reopen the source. Do not rescan it here.
+                    reuse = reuse_active_snapshot_file and report["bootstrap_ready"]
+                    if reuse:
+                        regular_file(source)
+                        reuse = source.is_file()
+                        if reuse and source.stat().st_size != snapshot.size_bytes:
+                            raise ValueError("UTXO snapshot file size mismatch")
+                    if reuse:
+                        report["snapshot_file_reused"] = True
+                    else:
+                        download_snapshot(snapshot, source, url, reserve_bytes=reserve_bytes)
                     prepared = True
                 if report["bootstrap_ready"]:
                     journal.phase(report["phase"], report=report)
@@ -489,11 +503,15 @@ def main() -> int:
                         help="After inspecting Core, allow a new load if an earlier request has no known outcome and no active load is visible")
     parser.add_argument("--require-tip", action="store_true", help="For status: require foreground tip, peers, age and canonical USDB origin; do not wait for background validation")
     parser.add_argument("--ensure-snapshot-file", action="store_true", help="Prepare the raw file for BH even when Core already has a usable chain")
+    parser.add_argument("--reuse-active-snapshot-file", action="store_true",
+                        help="With --ensure-snapshot-file, skip rescanning an existing file after Core confirms the baseline; downstream consumers must verify their own imports")
     args = parser.parse_args()
     try:
         snapshot = pinned_snapshot(os.environ)
         if args.reserve_bytes < 0:
             raise ValueError("Download reserve must not be negative")
+        if args.reuse_active_snapshot_file and (args.command != "bootstrap" or not args.ensure_snapshot_file):
+            raise ValueError("--reuse-active-snapshot-file requires bootstrap --ensure-snapshot-file")
         if args.command != "status" and args.snapshot_file is None:
             raise ValueError("BTC_ASSUMEUTXO_SNAPSHOT_FILE or --snapshot-file is required")
         distribution = None
@@ -513,7 +531,8 @@ def main() -> int:
                 report = activate(snapshot, args.snapshot_file, rpc, args.state_dir, url=args.source_url,
                                   poll_seconds=args.poll_seconds, wait_seconds=args.wait_seconds,
                                   retry_interrupted=args.retry_interrupted_load, reserve_bytes=args.reserve_bytes, distribution=distribution,
-                                  ensure_snapshot_file=args.ensure_snapshot_file)
+                                  ensure_snapshot_file=args.ensure_snapshot_file,
+                                  reuse_active_snapshot_file=args.reuse_active_snapshot_file)
             print(json.dumps(report, sort_keys=True))
             ready = report.get("tip_ready", False) if args.require_tip else report["bootstrap_ready"]
             return 0 if ready else 1

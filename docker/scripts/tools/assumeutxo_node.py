@@ -178,6 +178,9 @@ def _snapshot_component(phase, latest, imported, *, failed, complete, activated)
         detail = "Download verified; waiting for Core snapshot activation"
     if complete:
         state, phase, detail, percent = "READY", "ready", "Snapshot baseline and raw file ready", 100.0
+        report = details.get("report")
+        if isinstance(report, dict) and report.get("snapshot_file_reused") is True:
+            detail = "Existing snapshot baseline reused; no file rescan needed"
         current = total = None
     elif activated and not failed and state not in {"FAILED", "BLOCKED"}:
         if phase.startswith("core_") or phase in {"snapshot_active", "fully_validated_chain"}:

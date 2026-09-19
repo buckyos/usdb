@@ -59,6 +59,12 @@ usdb-node status --watch
 
 Bitcoin 前台可以先就绪，后台历史验证继续进行。**总体可用和后台验证完成分别观察**；不要为了消除后台进度而停止验证。
 
+重启时，包含快照复用优化的版本会查询 Bitcoin 当前基线。如果基线已可用、原始快照文件仍存在且大小匹配，`UTXO snapshot` 会显示 `READY` 和 `Existing snapshot baseline reused; no file rescan needed`，不再重复扫描整个文件。后台历史验证尚未完成不影响这条复用路径。
+
+首次导入 Bitcoin 前仍需完整校验；原文件缺失时仍会下载并校验，以供尚未完成导入的 balance-history 使用。balance-history 在需要导入时独立核对文件 SHA-256 和 UTXO 状态哈希，已完成导入的数据库则验证持久化状态后继续运行。
+
+r27 等旧版会在 `down → up` 后重新校验本地文件，因此短暂出现 `UTXO snapshot VERIFYING`、下游服务 `WAITING`；这本身不表示重新下载、重新导入或丢失同步进度。复用优化需要更新配套节点工具与 Bitcoin 镜像后生效。
+
 旧 BH snapshot 的 loader/registry 不是原生流程的手工补装步骤。原生面板中相应辅助项显示跳过，并不表示安装缺少组件。
 
 ## 看上去没动时如何判断

@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "reuse-active-utxo-snapshot",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Reuse an active Bitcoin baseline without rescanning the retained UTXO snapshot on restart",
+  "details": [
+    "Native node startup skips the redundant raw-file SHA-256 scan when live Core RPC confirms the pinned baseline and the existing regular file has the expected size.",
+    "First-time Core loads and missing-file downloads retain full verification. Native balance-history independently verifies both source hashes when importing, while sealed databases retain their existing state and identity checks.",
+    "Standalone file preparation remains strict by default; the native Compose configuration explicitly enables reuse for independently verifying downstream consumers.",
+    "Progress reports identify the reused baseline as ready instead of showing another file verification stage. Background historical validation remains independent."
+  ],
+  "operator_actions": [
+    "Upgrade the node kit and Bitcoin runtime image together; the bundled native startup configuration enables this optimization."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

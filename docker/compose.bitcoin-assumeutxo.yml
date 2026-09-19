@@ -19,7 +19,8 @@ services:
   btc-snapshot-bootstrap:
     image: ${USDB_BITCOIN_IMAGE:?USDB_BITCOIN_IMAGE must reference a digest-pinned release image}
     entrypoint: ["/usr/bin/tini", "--", "/opt/usdb/docker/scripts/entrypoints/bootstrap_bitcoin_core.sh"]
-    command: ["--ensure-snapshot-file"]
+    # Native BH verifies its own import; an already active Core baseline needs no file rescan.
+    command: ["--ensure-snapshot-file", "--reuse-active-snapshot-file"]
     restart: "no"
     user: ${BTC_CONTAINER_UID:-1000}:${BTC_CONTAINER_GID:-1000}
     security_opt:

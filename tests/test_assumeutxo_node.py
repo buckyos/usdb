@@ -33,6 +33,13 @@ from common.p2p import HOST, V6
 
 
 class NativeBundleTests(unittest.TestCase):
+    def test_reused_snapshot_is_ready_without_displaying_another_hash_scan(self):
+        latest = dict(phase="snapshot_active", details=dict(report=dict(snapshot_file_reused=True)))
+        item = native._snapshot_component("snapshot_active", latest, {}, failed=False, complete=True, activated=True)
+        self.assertEqual(item["state"], "READY")
+        self.assertIn("reused", item["detail"])
+        self.assertEqual(item["progress_percent"], 100.0)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="usdb-native-bundle-")
         self.addCleanup(temporary.cleanup)
@@ -429,6 +436,7 @@ class NativeBundleTests(unittest.TestCase):
                 self.assertEqual(services["btc-node"]["environment"]["BTC_TXINDEX"], "0")
                 self.assertEqual(int(services["btc-snapshot-bootstrap"]["mem_limit"]), 128 * policy.MIB)
                 self.assertIn("--ensure-snapshot-file", services["btc-snapshot-bootstrap"]["command"])
+                self.assertIn("--reuse-active-snapshot-file", services["btc-snapshot-bootstrap"]["command"])
 
 
 class NativeControllerTests(unittest.TestCase):

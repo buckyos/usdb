@@ -153,6 +153,83 @@ class BitcoinBootstrapTests(unittest.TestCase):
         self.assertTrue(self.activate(rpc, ensure_snapshot_file=True)["bootstrap_ready"])
         self.assertEqual(core.calls["loadtxoutset"], 0)
 
+    def test_restart_reuses_active_baseline_without_reading_or_loading_source(self):
+        core, rpc = self.core()
+        self.source.write_bytes(self.payload)
+        with mock.patch.object(BOOT, "verify_snapshot", wraps=BOOT.verify_snapshot) as verify:
+            self.assertTrue(self.activate(rpc, ensure_snapshot_file=True, reuse_active_snapshot_file=True)["bootstrap_ready"])
+            self.assertEqual(verify.call_count, 1)
+        initial_loads = core.calls["loadtxoutset"]
+        for validated in (False, True):
+            core.validated = validated
+            with self.subTest(history_validated=validated), \
+                    mock.patch.object(BOOT, "download_snapshot", side_effect=AssertionError("Unexpected source scan")):
+                report = self.activate(rpc, ensure_snapshot_file=True, reuse_active_snapshot_file=True)
+            self.assertTrue(report["snapshot_file_reused"])
+            self.assertEqual(report["history_validated"], validated)
+            self.assertEqual(core.calls["loadtxoutset"], initial_loads)
+            saved = json.loads((self.state / "activation.json").read_text())
+            self.assertTrue(saved["details"]["report"]["snapshot_file_reused"])
+
+    def test_reuse_policy_never_skips_verification_before_a_new_core_import(self):
+        core, rpc = self.core()
+        self.source.write_bytes(b"x" * len(self.payload))
+        with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+            self.activate(rpc, ensure_snapshot_file=True, reuse_active_snapshot_file=True)
+        self.assertEqual(core.calls["loadtxoutset"], 0)
+
+    def test_reuse_requires_a_live_matching_core_baseline_not_old_journals(self):
+        core, rpc = self.core()
+        core.active = True
+        self.source.write_bytes(self.payload)
+        self.activate(rpc, ensure_snapshot_file=True, reuse_active_snapshot_file=True)
+        core.canonical_hash = "d" * 64
+        with mock.patch.object(BOOT, "download_snapshot", side_effect=AssertionError("Source preparation before identity check")), \
+                self.assertRaisesRegex(ValueError, "canonical baseline"):
+            self.activate(rpc, ensure_snapshot_file=True, reuse_active_snapshot_file=True)
+        core.canonical_hash = self.snapshot.base_hash
+        core.active = False
+        self.source.write_bytes(b"x" * len(self.payload))
+        with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+            self.activate(rpc, ensure_snapshot_file=True, reuse_active_snapshot_file=True)
+        self.assertEqual(core.calls["loadtxoutset"], 0)
+
+    def test_missing_source_is_downloaded_and_verified_for_downstream_import(self):
+        core, rpc = self.core()
+        core.active = True
+        origin = self.origin()
+        with mock.patch.object(BOOT, "verify_snapshot", wraps=BOOT.verify_snapshot) as verify:
+            report = self.activate(rpc, url=origin.url, ensure_snapshot_file=True, reuse_active_snapshot_file=True)
+            self.assertEqual(verify.call_count, 1)
+        self.assertTrue(report["bootstrap_ready"])
+        self.assertNotIn("snapshot_file_reused", report)
+        self.assertEqual(self.source.read_bytes(), self.payload)
+        self.assertEqual(core.calls["loadtxoutset"], 0)
+
+    def test_reused_file_has_only_metadata_checks_consumers_own_content_validation(self):
+        core, rpc = self.core()
+        core.active = True
+        # A running Core baseline authenticates its database, not these bytes.
+        # Native BH's scan_snapshot verifies both hashes if it still imports them.
+        self.source.write_bytes(b"x" * len(self.payload))
+        with mock.patch.object(BOOT, "verify_snapshot", side_effect=AssertionError("Unexpected hash scan")):
+            report = self.activate(rpc, ensure_snapshot_file=True, reuse_active_snapshot_file=True)
+        self.assertTrue(report["snapshot_file_reused"])
+        self.source.write_bytes(b"short")
+        with self.assertRaisesRegex(ValueError, "file size mismatch"):
+            self.activate(rpc, ensure_snapshot_file=True, reuse_active_snapshot_file=True)
+        self.source.unlink()
+        self.source.symlink_to(self.root / "missing-source")
+        with self.assertRaisesRegex(ValueError, "regular file"):
+            self.activate(rpc, ensure_snapshot_file=True, reuse_active_snapshot_file=True)
+        self.assertEqual(core.calls["loadtxoutset"], 0)
+
+    def test_reuse_mode_requires_explicit_downstream_file_preparation(self):
+        core, rpc = self.core()
+        with self.assertRaisesRegex(ValueError, "requires downstream"):
+            self.activate(rpc, reuse_active_snapshot_file=True)
+        self.assertEqual(core.calls, {})
+
     def test_wrong_network_pruning_or_baseline_never_loads(self):
         core, rpc = self.core()
         for attribute, value in (("chain", "test"), ("pruned", True), ("version", 280100)):
