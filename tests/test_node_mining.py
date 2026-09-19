@@ -40,8 +40,8 @@ class MiningTests(unittest.TestCase):
         cases = [(dict(tip_ready=False), "BITCOIN_NOT_READY"),
                  (dict(bootstrap_ready=False), "BITCOIN_NOT_READY"),
                  (dict(tip_ready="true"), "BITCOIN_NOT_READY"),
-                 (dict(rpc_available=False), "BITCOIN_NOT_READY"),
-                 (dict(error="RPC unavailable", error_kind="rpc_unavailable"), "BITCOIN_NOT_READY"),
+                 (dict(rpc_available=False), "BITCOIN_RPC_UNAVAILABLE"),
+                 (dict(error="RPC unavailable", error_kind="rpc_unavailable"), "BITCOIN_RPC_UNAVAILABLE"),
                  (dict(schema_version="usdb-bitcoin-readiness:v1"), "incompatible response"),
                  (dict(error="baseline mismatch", error_kind="identity_or_configuration"), "configured chain")]
         for change, message in cases:
@@ -66,7 +66,7 @@ class MiningTests(unittest.TestCase):
         with MiningFixture() as f:
             f.update_env(SNAPSHOT_MODE="assumeutxo")
             with mock.patch.object(NATIVE, "core_progress", side_effect=subprocess.TimeoutExpired("probe", 45)), \
-                    self.assertRaisesRegex(ValueError, "BITCOIN_NOT_READY.*timed out"):
+                    self.assertRaisesRegex(ValueError, "BITCOIN_PROBE_TIMEOUT.*timed out"):
                 MINING.preflight(f.layout, ADDRESS, first_node=True)
 
     def test_private_geth_files_preserve_binding_across_chain_stop_and_restart(self):

@@ -29,6 +29,9 @@ VIEW = "uip-0006-usdb-economic-state-view:v1"
 RULE = "uip-0006:effective-energy-desc-pass-id-asc:v1"
 ROLE_KEYS = ("USDB_NODE_ROLE", "USDB_MINER_ADDRESS", "USDB_MINER_THREADS")
 TERMINAL = {"APPLIED", "FAILED", "CANCELLED"}
+BITCOIN_PROBE_ATTEMPTS = 3
+BITCOIN_PROBE_BUDGET_SECS = 45
+BITCOIN_PROBE_RETRY_SECS = 2
 ISSUED_SLOT = "0xdd1651483272028cad87b8ab291a694a9deb1d7f6b60efe175f823c406233da2"
 HASH = re.compile(r"(?:0x)?[0-9a-f]{64}")
 PASS = re.compile(r"[0-9a-f]{64}i[0-9]+")
@@ -295,6 +298,65 @@ def guard_check(layout: node.ReleaseLayout, env, epoch=None):
             raise ValueError("DEEP_REORG_EPOCH_CHANGED: current upstream epoch differs from the chain baseline")
 
 
+def _bitcoin_rpc_failure(bitcoin: dict) -> tuple[str, bool]:
+    """Format allowlisted diagnostics; older runtime reports remain retryable but unspecific."""
+    detail = bitcoin.get("rpc_failure")
+    if not isinstance(detail, dict):
+        return "BITCOIN_RPC_UNAVAILABLE: Bitcoin RPC readiness could not be observed", True
+    kind = detail.get("kind")
+    codes = {"timeout": "BITCOIN_RPC_TIMEOUT", "authentication": "BITCOIN_RPC_AUTH_FAILED",
+             "connection": "BITCOIN_RPC_UNAVAILABLE", "warmup": "BITCOIN_RPC_UNAVAILABLE",
+             "service_unavailable": "BITCOIN_RPC_UNAVAILABLE", "invalid_response": "BITCOIN_RPC_INVALID_RESPONSE",
+             "tls": "BITCOIN_RPC_ERROR", "http_error": "BITCOIN_RPC_ERROR", "rpc_error": "BITCOIN_RPC_ERROR"}
+    fields = [f"kind={kind}" if isinstance(kind, str) and kind in codes else "kind=unknown"]
+    method = detail.get("method")
+    if method in ("getblockchaininfo", "getnetworkinfo", "getchainstates", "getblockhash", "getblockheader"):
+        fields.append(f"method={method}")
+    if type(detail.get("code")) is int:
+        fields.append(f"code={detail['code']}")
+    prefix = codes.get(kind, "BITCOIN_RPC_ERROR") if isinstance(kind, str) else "BITCOIN_RPC_ERROR"
+    retryable = (kind in ("timeout", "connection", "warmup", "service_unavailable")
+                 and detail.get("retryable") is True)
+    return f"{prefix}: Bitcoin RPC readiness could not be observed ({', '.join(fields)})", retryable
+
+
+def _mining_bitcoin_progress(layout: node.ReleaseLayout) -> dict:
+    """Retry only failed observations, within one deadline; never reuse a prior ready report."""
+    from assumeutxo_node import CoreProbeError, core_progress
+    started = time.monotonic()
+    deadline = started + BITCOIN_PROBE_BUDGET_SECS
+    message, attempts = "BITCOIN_PROBE_TIMEOUT: native Bitcoin readiness probe timed out", 0
+    for attempt in range(1, BITCOIN_PROBE_ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        attempts = attempt
+        try:
+            bitcoin = core_progress(layout, command_timeout_secs=remaining)
+        except subprocess.TimeoutExpired:
+            message, retryable = "BITCOIN_PROBE_TIMEOUT: native Bitcoin readiness probe timed out", True
+        except (OSError, CoreProbeError) as error:
+            description = "returned an incompatible response" if isinstance(error, CoreProbeError) else "could not run"
+            raise ValueError(f"BITCOIN_PROBE_FAILED: native Bitcoin readiness helper {description}; inspect the installed tool/runtime and Docker access") from error
+        else:
+            if bitcoin.get("error_kind") == "probe_failed":
+                raise ValueError("BITCOIN_PROBE_FAILED: native Bitcoin readiness helper returned invalid JSON; inspect the installed tool/runtime and Docker access")
+            if bitcoin.get("rpc_available") is not False and bitcoin.get("error_kind") != "rpc_unavailable":
+                return bitcoin
+            message, retryable = _bitcoin_rpc_failure(bitcoin)
+        remaining = deadline - time.monotonic()
+        if not retryable or attempt == BITCOIN_PROBE_ATTEMPTS or remaining <= BITCOIN_PROBE_RETRY_SECS:
+            break
+        print(f"{message}; retrying readiness probe ({attempt}/{BITCOIN_PROBE_ATTEMPTS} failed, "
+              f"next attempt in {BITCOIN_PROBE_RETRY_SECS}s)", file=sys.stderr, flush=True)
+        time.sleep(BITCOIN_PROBE_RETRY_SECS)
+    elapsed = time.monotonic() - started
+    guidance = ("Check Bitcoin RPC authentication configuration." if message.startswith("BITCOIN_RPC_AUTH_FAILED:") else
+                "Inspect usdb-node status --progress-json and usdb-node logs --bitcoin before retrying.")
+    raise ValueError(f"{message}; attempts={attempts}, elapsed={elapsed:.1f}s. "
+                     f"Readiness is unknown; this does not mean background history must finish. {guidance}")
+
+
 def bitcoin_check(layout: node.ReleaseLayout, env):
     """Use the selected bootstrap mode's readiness contract before resolving a miner."""
     if env.get("SNAPSHOT_MODE") != "assumeutxo":
@@ -302,19 +364,17 @@ def bitcoin_check(layout: node.ReleaseLayout, env):
         if not bitcoin or bitcoin.get("ready") is not True:
             raise ValueError("BITCOIN_NOT_READY: full Bitcoin readiness is required")
         return
-    from assumeutxo_node import core_progress
-    try:
-        bitcoin = core_progress(layout)
-    except subprocess.TimeoutExpired as error:
-        raise ValueError("BITCOIN_NOT_READY: native Bitcoin readiness probe timed out; retry after RPC recovers") from error
-    except OSError as error:
-        raise ValueError("BITCOIN_NOT_READY: native Bitcoin readiness probe could not run") from error
-    if bitcoin.get("rpc_available") is False or bitcoin.get("error_kind") == "rpc_unavailable":
-        raise ValueError("BITCOIN_NOT_READY: Bitcoin RPC is unavailable; retry after RPC recovers")
+    bitcoin = _mining_bitcoin_progress(layout)
     # Match native startup: require the verified baseline and current foreground
     # tip; background historical validation and txindex are independent.
     if bitcoin.get("bootstrap_ready") is not True or bitcoin.get("tip_ready") is not True:
-        raise ValueError("BITCOIN_NOT_READY: native Bitcoin baseline and foreground tip must be ready; inspect status --progress-json")
+        fields = [f"baseline_ready={bitcoin.get('bootstrap_ready') is True}",
+                  f"foreground_tip_ready={bitcoin.get('tip_ready') is True}"]
+        for key in ("active_height", "headers", "connections", "tip_age_seconds", "background_height"):
+            if type(bitcoin.get(key)) is int:
+                fields.append(f"{key}={bitcoin[key]}")
+        raise ValueError(f"BITCOIN_NOT_READY: Bitcoin RPC responded, but baseline or foreground tip is not ready "
+                         f"({', '.join(fields)}); background historical validation is not required. Inspect status --progress-json")
 
 
 def upstream_candidate(layout: node.ReleaseLayout, address, expect_pass=None):

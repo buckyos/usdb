@@ -102,7 +102,11 @@ usdb-node mining status --watch
 | --- | --- |
 | 没有合格 pass 或收益地址不匹配 | 核对地址和 pass 的生效状态，等待上游索引追平后重新检查 |
 | `PEER_SOURCE_REQUIRED`、无 peers 或仍在同步 | 普通加入节点先完成入网；确认负责创建网络的首节点使用本页的[首节点分支](#网络首节点启用挖矿) |
-| `BITCOIN_NOT_READY` | 查看 `usdb-node status --progress-json` 的 Bitcoin 状态；AssumeUTXO 模式及 r25 已知问题见下方说明 |
+| `BITCOIN_NOT_READY` | 新版 AssumeUTXO 检查已取得 Bitcoin 状态，但基线或前台链尚未就绪；查看提示中的高度、headers、连接数和链头年龄 |
+| `BITCOIN_RPC_TIMEOUT`、`BITCOIN_RPC_UNAVAILABLE` | 未取得可靠的 RPC 结果，不能据此判断追块进度；查看失败方法、尝试次数和 Bitcoin 日志，待 RPC 恢复后重试 |
+| `BITCOIN_RPC_AUTH_FAILED` | 核对节点的 Bitcoin RPC 认证配置；等待同步不能解决认证错误 |
+| `BITCOIN_RPC_INVALID_RESPONSE`、`BITCOIN_RPC_ERROR` | RPC 返回格式或错误码异常；核对工具与运行镜像版本，并保存脱敏诊断信息 |
+| `BITCOIN_PROBE_TIMEOUT`、`BITCOIN_PROBE_FAILED` | 探测程序整体超时、未能执行或输出无法解析；核对 Docker 可用性、访问权限和工具/镜像版本 |
 | `CHAIN_NOT_RUNNING` | 先启动 full 节点并检查链及上游状态 |
 | 长期 `WARMING_UP` | 检查 `usdb-node logs usdb-chain`、CPU/内存及上游进度，不只凭哈希率为零判断失败 |
 | 任务失败或配置漂移 | 保存 `mining status --json` 和链日志；解决具体错误后按同一目标重试 enable/disable |
@@ -112,7 +116,11 @@ usdb-node mining status --watch
 
 **r25 已知问题**：挖矿预检错误地使用旧版 Bitcoin 状态解析器，可能在状态面板显示 Bitcoin READY 时仍报 `BITCOIN_NOT_READY`。若 `native_bootstrap.core.bootstrap_ready` 和 `tip_ready` 都为 `true`，向网络运维方取得包含该修复的工具版本；单纯等待后台历史验证完成不能修复这个版本问题。不要修改快照模式或启用 txindex 来绕过。
 
-若当前报告是 `rpc_unavailable`，则这次查询确实没有取得就绪证据。查看 `usdb-node logs --bitcoin`：Core 大规模写入 UTXO 数据时可能暂时无法响应 RPC，应等待该操作结束后重试检查，不能仅凭容器仍在运行认定就绪。
+包含 RPC 诊断改进的版本会将上述错误分别报告；r27 等旧版可能统一显示 `BITCOIN_NOT_READY: Bitcoin RPC is unavailable`，其中还可能包括探测输出解析失败。这条旧提示不表示后台历史区块必须全部追完。
+
+新版每轮 Bitcoin 探测对短暂超时、连接失败或 Core 正在初始化等情况最多尝试 3 次，重试间隔 2 秒，共用 45 秒等待上限；这不是整个 mining 命令的总耗时上限。重试进度写入标准错误，不混入 JSON 输出。每次都重新查询，认证失败、响应格式异常和基线身份不匹配不会通过重试放行。
+
+若当前报告是 `rpc_unavailable`，说明这次查询没有取得就绪证据。查看 `usdb-node logs --bitcoin`：Core 大规模写入 UTXO 数据或核对快照时可能暂时无法响应 RPC，应等待该操作结束后重试检查，不能仅凭容器仍在运行认定就绪。新版 JSON 的 `native_bootstrap.core.rpc_failure` 会提供失败方法、分类、错误码及是否可重试，不包含 RPC 密码或原始服务端错误内容；旧镜像没有这些字段时，新工具仍能给出通用的 RPC 不可用提示并有限重试。
 
 `Artifact signature verified` 表示发布材料签名验证成功。旧版工具在多个检查入口重复打印相同提示，不表示重复下载或重新执行 BH 基线核对。
 

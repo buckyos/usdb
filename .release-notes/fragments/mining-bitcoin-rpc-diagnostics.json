@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "mining-bitcoin-rpc-diagnostics",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Distinguish Bitcoin RPC failures from mining readiness and retry transient observations",
+  "details": [
+    "AssumeUTXO mining checks distinguish RPC timeouts, authentication and response errors, helper failures, and confirmed baseline or foreground unreadiness.",
+    "Transient Bitcoin observations receive at most three fresh attempts within a shared 45-second deadline; permanent failures and identity mismatches remain blocking.",
+    "Bitcoin status exposes safe method, failure kind and error-code metadata; older runtime reports retain generic diagnostics and bounded retries.",
+    "Background historical validation remains independent of mining readiness throughout the role-switch transaction."
+  ],
+  "operator_actions": [
+    "Install the updated node tools and activate the matching release to receive detailed diagnostics from the Bitcoin runtime."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

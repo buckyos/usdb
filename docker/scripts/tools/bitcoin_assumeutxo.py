@@ -17,6 +17,7 @@ import queue
 import re
 import shutil
 import signal
+import ssl
 import stat
 import sys
 import tempfile
@@ -230,9 +231,17 @@ def download_snapshot(snapshot: Snapshot, destination: Path, url: str, *, reserv
 
 
 class RpcFailure(Exception):
-    def __init__(self, method: str, code: int | None = None):
-        self.code = code
-        super().__init__(f"Bitcoin RPC {method} failed" + (f" (code {code})" if code is not None else " (transport or response unavailable)"))
+    """Carry safe failure metadata without endpoints, credentials or server messages."""
+    def __init__(self, method: str, code: int | None = None, *, kind: str = "rpc_error"):
+        self.method, self.kind = method, kind
+        self.code = code if type(code) is int else None
+        self.retryable = kind in {"timeout", "connection", "warmup", "service_unavailable"}
+        super().__init__(f"Bitcoin RPC {method} failed ({kind}" +
+                         (f", code {self.code}" if self.code is not None else "") + ")")
+
+    def diagnostic(self) -> dict:
+        """Return additive status fields understood by newer host tools."""
+        return dict(method=self.method, kind=self.kind, code=self.code, retryable=self.retryable)
 
 
 class NoRpcRedirect(urllib.request.HTTPRedirectHandler):
@@ -255,6 +264,9 @@ class Rpc:
             credential = self.cookie.read_text().strip() if self.cookie else f"{self.user}:{self.password}"
             if ":" not in credential or (not self.cookie and (not self.user or not self.password)):
                 raise ValueError("Bitcoin RPC authentication is required")
+        except (OSError, ValueError) as error:
+            raise RpcFailure(method, kind="authentication") from error
+        try:
             headers = {"Authorization": "Basic " + base64.b64encode(credential.encode()).decode(), "Content-Type": "application/json"}
             body = json.dumps(dict(jsonrpc="2.0", id="usdb-assumeutxo", method=method, params=params or [])).encode()
             # Core has no redirect responses; bypass ambient proxy configuration for this private RPC.
@@ -264,20 +276,29 @@ class Rpc:
                 response = opener.open(request, timeout=timeout)
             except urllib.error.HTTPError as error:
                 if error.code != 500:
-                    raise RpcFailure(method, error.code) from error
+                    kind = ("authentication" if error.code in {401, 403} else
+                            "service_unavailable" if error.code in {429, 502, 503, 504} else "http_error")
+                    raise RpcFailure(method, error.code, kind=kind) from error
                 response = error
             with response:
                 value = json.load(response)
             if not isinstance(value, dict) or value.get("id") != "usdb-assumeutxo":
-                raise RpcFailure(method)
+                raise RpcFailure(method, kind="invalid_response")
             if value.get("error") is not None:
                 error = value["error"]
-                raise RpcFailure(method, error.get("code") if isinstance(error, dict) else None)
+                code = error.get("code") if isinstance(error, dict) else None
+                if type(code) is not int:
+                    raise RpcFailure(method, kind="invalid_response")
+                raise RpcFailure(method, code, kind="warmup" if code == -28 else "rpc_error")
             return value["result"]
         except RpcFailure:
             raise
         except (OSError, ValueError, KeyError) as error:
-            raise RpcFailure(method) from error
+            reason = error.reason if isinstance(error, urllib.error.URLError) else error
+            kind = ("timeout" if isinstance(reason, TimeoutError) else
+                    "tls" if isinstance(reason, ssl.SSLError) else
+                    "connection" if isinstance(error, (OSError, urllib.error.URLError)) else "invalid_response")
+            raise RpcFailure(method, kind=kind) from error
 
 
 def core_status(rpc: Rpc, snapshot: Snapshot) -> dict:
@@ -498,8 +519,11 @@ def main() -> int:
             return 0 if ready else 1
     except (OSError, ValueError, KeyError, TypeError, RpcFailure) as error:
         if args.command == "status":
-            print(json.dumps(dict(schema_version=SCHEMA, bootstrap_ready=False, tip_ready=False, error=str(error),
-                                  error_kind="rpc_unavailable" if isinstance(error, RpcFailure) else "identity_or_configuration")))
+            report = dict(schema_version=SCHEMA, bootstrap_ready=False, tip_ready=False, error=str(error),
+                          error_kind="rpc_unavailable" if isinstance(error, RpcFailure) else "identity_or_configuration")
+            if isinstance(error, RpcFailure):
+                report.update(rpc_available=False, rpc_failure=error.diagnostic())
+            print(json.dumps(report))
         else:
             print(f"Bitcoin bootstrap failed: {error}", file=sys.stderr)
         return 1

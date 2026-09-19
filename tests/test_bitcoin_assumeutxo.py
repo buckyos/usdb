@@ -182,7 +182,7 @@ class BitcoinBootstrapTests(unittest.TestCase):
         core, rpc = self.core()
         core.drop_before_activation = True
         self.source.write_bytes(self.payload)
-        with self.assertRaisesRegex(ValueError, "transport"):
+        with self.assertRaisesRegex(ValueError, "connection"):
             self.activate(rpc)
         core.warmup_remaining = 2
         with self.assertRaisesRegex(ValueError, "retry-interrupted-load"):

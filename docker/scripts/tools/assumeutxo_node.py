@@ -14,15 +14,21 @@ import usdb_node as node
 from bitcoin_import_progress import read_import_progress, timestamp
 
 
-def core_progress(layout) -> dict:
+class CoreProbeError(ValueError):
+    """The helper response cannot be interpreted as a native readiness report."""
+
+
+def core_progress(layout, *, command_timeout_secs: float = 45) -> dict:
     """An unsuccessful probe is pending; a reported identity error is a hard failure."""
-    result = node.run_helper(layout, "run_testnet_bitcoin.sh", ["progress"], check=False, capture_output=True, command_timeout_secs=45)
+    result = node.run_helper(layout, "run_testnet_bitcoin.sh", ["progress"], check=False,
+                             capture_output=True, command_timeout_secs=command_timeout_secs)
     try:
         value = json.loads(result.stdout)
     except ValueError:
-        return dict(rpc_available=False, bootstrap_ready=False, tip_ready=False)
+        return dict(bootstrap_ready=False, tip_ready=False, error_kind="probe_failed",
+                    error="Native Bitcoin readiness helper returned invalid JSON", probe_exit_code=result.returncode)
     if not isinstance(value, dict) or value.get("schema_version") != "usdb-bitcoin-assumeutxo:v1":
-        raise ValueError("Core native probe returned an incompatible response")
+        raise CoreProbeError("Core native probe returned an incompatible response")
     if value.get("error") and value.get("error_kind") != "rpc_unavailable":
         raise ValueError("Core native probe rejected the configured chain: " + value["error"])
     return value
