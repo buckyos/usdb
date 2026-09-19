@@ -4,7 +4,7 @@
 
 适用范围：全新 Linux 主机上的 AssumeUTXO 发布包、`full` 节点、加入已有测试网。已有配置的节点按[日常维护](maintenance.md)操作，不重复执行 `setup`。
 
-**先检查[版本页](../networks/testnet.md#版本与验证范围)。截至 2026-09-14，公开的 r25 有首次配置阻断，不能按本页完成全新部署。** 以下是取得已修复且经网络运维方确认的安装版本后的操作顺序；本页不表示已有后续版本通过冷启动验收。
+**先检查[版本页](../networks/testnet.md#版本与验证范围)，使用网络运维方指定版本。** r28 已确认安装和首次配置通过；同步和入网仍按本页逐项确认。r28 的 IPv6 配置方式与包含新向导提示的版本有所不同，见第 4 步。
 
 ## 1. 确认安装输入
 
@@ -16,10 +16,10 @@
 
 打开第 1 步选定的 Release 页面，找到 **Release-bound installer**，复制其中的完整命令，在节点的普通运维账号下执行即可。
 
-例如，[r25 Release 页面](https://github.com/buckyos/usdb/releases/tag/usdb-testnet-v0-r25)提供的命令为：
+例如，[r28 Release 页面](https://github.com/buckyos/usdb/releases/tag/usdb-testnet-v0-r28)提供的命令为：
 
 ```bash
-bash <(curl -fsSL https://github.com/buckyos/usdb/releases/download/usdb-testnet-v0-r25/install-usdb-testnet-v0-r25.sh)
+bash <(curl -fsSL https://github.com/buckyos/usdb/releases/download/usdb-testnet-v0-r28/install-usdb-testnet-v0-r28.sh)
 ```
 
 每个 Release 的命令都已绑定对应版本，安装器自动完成下载和校验。安装其他版本时，直接复制该版本页面中的命令。下载失败或校验不通过时，按[下载故障](../troubleshooting/README.md#下载失败或校验不通过)处理。
@@ -50,6 +50,8 @@ usdb-node host check
 
 **完成标志**：主机检查通过，当前账号可以访问 Docker。新会话仍提示权限问题时，见[Docker 权限](../troubleshooting/README.md#docker-权限或主机检查失败)。
 
+需要通过 IPv6 入网时，还要核对[双栈准备检查](requirements.md#双栈准备检查)。`P2P_IPV4_FALLBACK` 表示自动配置会使用 IPv4；基础依赖通过后仍需先处理这项网络问题。
+
 ## 4. 配置节点
 
 ```bash
@@ -63,6 +65,7 @@ usdb-node setup
 | `Host data root` | 填写已准备的数据目录，例如 `/data/usdb`；确认显示的是正确磁盘 |
 | `Node role` | `full` |
 | `Seed enode(s)` | 填写同网 Seed 完整地址；多条以逗号分隔。暂缺时可留空，但之后必须补充才能入网 |
+| `USDB P2P address family`（包含向导改进的版本） | 默认 `auto`；明确需要 IPv6 时选 `dual`（双栈）或 `ipv6`。所选模式不满足主机条件时，按提示修复 |
 | `Provide full Explorer support` | 普通节点选 `n`；专用查询节点应在首次同步前另行规划 |
 | `Accept inbound Bitcoin peers` | 默认 `n`，不影响 Bitcoin 出站同步 |
 | `Manage this host firewall ... UFW` | 已有云或主机规则选 `n`；需要工具管理 UFW 时选 `y`，并确认实际 SSH 服务端口 |
@@ -70,6 +73,17 @@ usdb-node setup
 | `Write this node configuration` | 核对目录、角色及网络暴露后确认写入 |
 
 工具会生成私有凭据、保存配置，并安装后台启动管理服务。sudo 提示要求当前运维账号的密码。首次部署采用默认后台方式，不使用 `--no-controller`。
+
+**r28 及此前的向导没有地址族交互项，摘要中的 `USDB P2P: public TCP/UDP 31303` 只说明端口。** 首次部署且需要双栈时，使用以下命令代替上面的普通 `setup`；主机检查应先通过：
+
+```bash
+read -r -p 'This node stable IPv6 address: ' USDB_NODE_IPV6
+usdb-node setup --p2p-ip-family dual --advertise-ipv6 "$USDB_NODE_IPV6"
+```
+
+包含向导改进的版本会在确认写入前列出 `requested`、最终 `family`、公告地址及自动回退原因。看到 `P2P_IPV6_SEED_UNREACHABLE` 时，说明当前 IPv4 链容器无法连接填写的 IPv6 Seed；取消写入并修复，或取得可达的 IPv4 Seed。`auto` 只选择并保存一次，主机 IPv6 后来恢复也不会自动切换。
+
+已经完成 `setup` 的节点按[已部署节点修改地址族](peers.md#已部署节点修改地址族)处理，不重新执行配置向导。
 
 **完成标志**：向导正常结束，显示后续检查和启动命令。出现 `node is already configured` 时，不删除配置重新开始；按[已有配置](../troubleshooting/README.md#提示已有配置)处理。
 

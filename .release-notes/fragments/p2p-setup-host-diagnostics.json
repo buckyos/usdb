@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "p2p-setup-host-diagnostics",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime", "documentation", "testing"],
+  "summary": "Explain dual-stack readiness during host preparation and setup",
+  "details": [
+    "Add a read-only automatic P2P selection preview after CLI host prerequisite checks, including IPv4 fallback reasons and interface-specific RA recovery guidance.",
+    "Add an address-family choice to setup and show resolved families, advertised endpoints and incompatible IPv6 seeds before write confirmation. Reject a changed selection before configuration is written.",
+    "Document first-time and existing-node configuration, persistent RA settings, container inspection and actual IPv6 peer connection checks, including the limits of r28 and earlier prompts."
+  ],
+  "operator_actions": [
+    "Review P2P warnings even when host software checks pass. If IPv6 is required, repair the host checks and explicitly select dual or ipv6.",
+    "For an existing node, apply repaired transport settings with peers configure; host checks do not change saved configuration or network policy."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

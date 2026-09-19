@@ -142,7 +142,13 @@ def select(requested, *, advertise_ipv4="", advertise_ipv6="", advertise_port=31
     family = requested
     if requested == "auto":
         family = "dual" if ipv6 and host["ipv6_default_route"] else "ipv4"
-        reason = "stable IPv6 address and default route found" if family == "dual" else "no usable IPv6 address/default route"
+        reason = "stable IPv6 address and default route found"
+        if host.get("errors"):
+            family, reason = "ipv4", "host inspection failed: " + "; ".join(host["errors"])
+        elif not ipv6:
+            reason = "no usable stable IPv6 address"
+        elif not host["ipv6_default_route"]:
+            reason = "no IPv6 default route"
     if family in {"ipv6", "dual"}:
         try:
             if not ipv6 or ipv6 not in host["ipv6"] or not host["ipv6_default_route"]:
@@ -167,6 +173,51 @@ def select(requested, *, advertise_ipv4="", advertise_ipv6="", advertise_port=31
                "USDB_P2P_ADVERTISE_DISCOVERY_PORT": str(discovery_port if discovery_port is not None else advertise_port)}
     validate(updates)
     return updates, reason
+
+
+def diagnostic_guidance(reason):
+    """Explain host repairs without changing sysctls, routes or firewall policy."""
+    lines = ["Check: ip -6 address show scope global", "Check: ip -6 route show default"]
+    ra = re.search(r"net\.ipv6\.conf\.([A-Za-z0-9_.:-]+)\.accept_ra=2", reason)
+    if ra:
+        key = f"net.ipv6.conf.{ra[1]}.accept_ra"
+        lines += [f"Check: sysctl {key}", f"Administrator action: sudo sysctl -w {key}=2",
+                  "Persist this setting for the actual uplink in /etc/sysctl.d/ or its network manager; recheck the IPv6 address and default route."]
+    if "Docker" in reason or "docker" in reason or "P2P_IPV6_ENGINE_REQUIRED" in reason:
+        lines.append("Check: docker version; docker compose version; docker info (rootful Linux, Engine >= 28.0.0, Compose >= 2.33.1).")
+    lines.append("Handbook: https://github.com/buckyos/usdb/blob/master/doc/handbook/node/peers.md")
+    return "\n".join(lines)
+
+
+def selection_report(updates, reason, *, bootnodes=""):
+    """Render the resolved transport and actionable warnings before configuration consent."""
+    family, requested = updates["USDB_P2P_IP_FAMILY"], updates["USDB_P2P_REQUESTED_FAMILY"]
+    lines = [f"USDB P2P: public TCP/UDP 31303; family={family} (requested={requested})",
+             f"  Selection: {reason}"]
+    for af in (4, 6):
+        address = updates[f"USDB_P2P_ADVERTISE_IPV{af}"]
+        if address:
+            lines.append(f"  Advertised IPv{af}: {address}; TCP {updates['USDB_P2P_ADVERTISE_PORT']}, UDP {updates['USDB_P2P_ADVERTISE_DISCOVERY_PORT']}")
+    if requested == "auto" and family == "ipv4":
+        lines += ["WARNING P2P_IPV4_FALLBACK: automatic selection will use IPv4 only; IPv6 peers require fixing the checks above.",
+                  diagnostic_guidance(reason)]
+    seed_hosts = [urlsplit(seed.strip()).hostname or "" for seed in bootnodes.split(",") if seed.strip()]
+    if family == "ipv4" and any(":" in host for host in seed_hosts):
+        lines.append("WARNING P2P_IPV6_SEED_UNREACHABLE: the configured IPv6 seed endpoints cannot be reached by an IPv4-only chain container; fix IPv6 and select dual/ipv6, or obtain a reachable IPv4 seed.")
+    lines += ["  Address family is saved once; it will not automatically change when IPv6 becomes available.",
+              "  Local checks do not verify public TCP/UDP reachability or peer connections."]
+    return "\n".join(lines)
+
+
+def host_preflight_report():
+    """Preview automatic P2P selection separately from mandatory package readiness."""
+    updates, reason = select("auto")
+    return "\n".join([
+        "P2P host check (read-only preview; existing node configuration is unchanged):",
+        selection_report(updates, reason),
+        "New node requiring IPv6: usdb-node setup --p2p-ip-family dual --advertise-ipv6 ADDRESS",
+        "Existing node after host repair: usdb-node peers configure --ip-family dual --advertise-ipv6 ADDRESS",
+    ])
 
 
 def check_host(env):

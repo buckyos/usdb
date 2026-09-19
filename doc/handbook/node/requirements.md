@@ -73,4 +73,14 @@ Docker 的端口发布可能绕过普通 UFW 规则，不能只凭一条 deny �
 
 IPv6 节点还需要主机具备可用的 IPv6 地址和默认路由，并在对应地址族放行 P2P。只有 IPv6 Seed、没有实际 IPv6 出站能力的节点无法连接它。
 
+## 双栈准备检查
+
+包含双栈准备提示改进的版本，会在 `prepare-host`、`host check` 和 `host install` 的基础依赖检查通过后显示 `P2P host check`，预览当前主机在 `auto` 模式下将选择的地址族。它只检查，不修改网卡、路由、sysctl 或已有节点配置。
+
+- `family=dual`：当前本机检查通过；仍需确认容器网络、防火墙与真实 peer 连接。
+- `WARNING P2P_IPV4_FALLBACK`：当前自动配置会选择 IPv4。根据提示检查稳定 IPv6 地址、默认路由、RA 接收策略以及 Docker 运行时。
+- 基础软件检查通过不代表 IPv6 就绪。只使用 IPv4 的节点可以继续；需要连接 IPv6 Seed 时，应先修复问题，再在向导中明确选择 `dual` 或 `ipv6`。
+
+**r28 及此前版本没有这组主机准备提示。** 这些版本需要自行执行地址和路由检查，并在首次 `setup` 时传入 `--p2p-ip-family dual`；已配置节点使用 `peers configure`。具体命令、`accept_ra=2` 的持久配置及恢复标志见[IPv6 诊断与恢复](peers.md#ipv6-诊断与恢复)。
+
 完成以上准备后，继续[安装与入网](install.md)。

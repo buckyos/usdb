@@ -1103,9 +1103,13 @@ def configure_node(
     resource_management: str = "manual",
     resource_caps: dict[str, str] | None = None,
     p2p_options: dict[str, Any] | None = None,
+    expected_p2p: dict[str, str] | None = None,
     explorer_queries: bool = False,
 ) -> Path:
-    """Create node configuration, optionally enabling both full Explorer RPC capabilities."""
+    """Create node configuration, optionally enabling both full Explorer RPC capabilities.
+
+    expected_p2p pins the setup preview: recheck selection before writing any files.
+    """
     if layout.node_env.exists():
         raise ValueError(
             f"refusing to replace existing node configuration: {layout.node_env}; "
@@ -1120,7 +1124,10 @@ def configure_node(
     if p2p_options is not None:
         import usdb_p2p
         p2p_updates, reason = usdb_p2p.select(**p2p_options)
-        print(f"P2P family={p2p_updates['USDB_P2P_IP_FAMILY']}: {reason}", file=sys.stderr)
+        if expected_p2p is not None and p2p_updates != expected_p2p:
+            raise ValueError("P2P_HOST_CHANGED: address family or advertised endpoints changed after the setup preview; rerun setup to review them before writing configuration")
+        if expected_p2p is None:
+            print(usdb_p2p.selection_report(p2p_updates, reason, bootnodes=bootnodes), file=sys.stderr)
     if bitcoin_p2p not in {"private", "public"}:
         raise ValueError("bitcoin P2P mode must be private or public")
     _require_firewall_mode(firewall_mode)
@@ -1390,6 +1397,18 @@ def setup_node(
         if not bootnodes:
             print("No seed configured: upstream sync can proceed; network membership will remain SEED_REQUIRED. "
                   "Only the network founder uses mining enable --first-node.", file=output)
+    import usdb_p2p
+    p2p_options = dict(p2p_options or {"requested": "auto"})
+    print("Choose dual/ipv6 when IPv6 is required; auto may fall back to IPv4 if host checks fail.", file=output)
+    p2p_options["requested"] = _prompt_choice(
+        "USDB P2P address family", usdb_p2p.FAMILIES,
+        default=p2p_options["requested"], input_fn=input_fn, output=output,
+    )
+    try:
+        p2p_updates, p2p_reason = usdb_p2p.select(**p2p_options)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(usdb_p2p.diagnostic_guidance(str(error)), file=output)
+        raise
     explorer_queries = _prompt_yes_no(
         "Provide full Explorer support (archive + private tracing)",
         default=False,
@@ -1459,7 +1478,7 @@ def setup_node(
     print(f"Role: {role}", file=output)
     print("Explorer support: " + ("archive + private HTTP tracing" if explorer_queries
                                  else "disabled (full state mode, tracing off)"), file=output)
-    print("USDB P2P: public TCP/UDP 31303", file=output)
+    print(usdb_p2p.selection_report(p2p_updates, p2p_reason, bootnodes=bootnodes), file=output)
     print(f"Bitcoin P2P: {'public' if bitcoin_public else 'private'}", file=output)
     print(f"Host firewall: {firewall_mode}", file=output)
     if manage_firewall:
@@ -1474,6 +1493,7 @@ def setup_node(
     path = configure_node(
         layout,
         p2p_options=p2p_options,
+        expected_p2p=p2p_updates,
         data_root=data_root,
         role=role,
         miner_address=miner_address,
@@ -1993,6 +2013,8 @@ def prepare_host(
 ) -> None:
     result = run_host_action(layout, "check", docker_user=docker_user, check=False)
     if result.returncode == 0:
+        import usdb_p2p
+        print(usdb_p2p.host_preflight_report(), file=output)
         return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise ValueError("host prerequisites failed; run 'usdb-node host install' explicitly")
@@ -2004,6 +2026,8 @@ def prepare_host(
     ):
         raise ValueError("host preparation cancelled; no packages were installed")
     run_host_action(layout, "install", docker_user=docker_user, docker_mirror=docker_mirror)
+    import usdb_p2p
+    print(usdb_p2p.host_preflight_report(), file=output)
 
 
 def run_firewall_action(
@@ -5847,12 +5871,14 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         if _warn_pending_docker_session():
             print("USDB host packages are ready; refresh this session for Docker access.")
         else:
-            print("USDB host prerequisites are ready.")
+            print("USDB host software prerequisites are ready; review the P2P checks above before setup.")
     elif args.command == "host":
         run_host_action(
             layout, args.host_action, docker_user=args.docker_user,
             docker_mirror=getattr(args, "docker_mirror", "auto"),
         )
+        import usdb_p2p
+        print(usdb_p2p.host_preflight_report())
     elif args.command == "setup":
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise ValueError("setup requires an interactive terminal; use configure for automation")

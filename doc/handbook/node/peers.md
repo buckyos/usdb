@@ -73,7 +73,22 @@ usdb-node host check
 
 宿主机能使用 IPv6，不等于链容器也能使用 IPv6。配置完成后还必须查看 `peers network --json`：链容器应有 IPv6 地址、IPv6 网关及所选地址族的 TCP/UDP 发布记录。
 
-如果工具报告 `P2P_IPV6_RA_REQUIRED`，由主机管理员在提供 IPv6 默认路由的实际接口上持久设置 `accept_ra=2`，然后恢复并核对地址与路由。接口可能是物理网卡，也可能是 `vmbr0` 等网桥，不要照抄另一台机器的接口名。
+如果工具报告 `P2P_IPV6_RA_REQUIRED`，按下方[IPv6 诊断与恢复](#ipv6-诊断与恢复)检查实际接口并持久设置，再恢复和核对地址与路由。
+
+### 首次配置选择地址族
+
+`setup` 默认使用 `auto`：找到稳定 IPv6 地址和默认路由，并通过 RA 和 Docker 检查后选择 `dual`；检查不满足时可以回退为 `ipv4`。明确选择 `dual` 或 `ipv6` 时，失败会报错，不自动改成 IPv4。
+
+包含准备提示和向导改进的版本增加地址族选择项，并在最终确认前显示实际 `family`、公告地址及回退原因。`prepare-host` / `host check` 的 `P2P host check` 是当时的自动选择预览；已经安装的节点仍以 `peers network --json` 显示的保存配置为准。
+
+**r28 及此前的向导没有这个交互项。** 首次配置可显式传入参数：
+
+```bash
+read -r -p 'This node stable IPv6 address: ' USDB_NODE_IPV6
+usdb-node setup --p2p-ip-family dual --advertise-ipv6 "$USDB_NODE_IPV6"
+```
+
+输入本机地址，不带方括号。有多块网卡或多个稳定地址时，用参数明确指定要公告的地址。需要公告 NAT 后的 IPv4 地址时，同时传入 `--advertise-ipv4`。`Explorer support`、Bitcoin 入站公开与 USDB 地址族是分别配置的项目。
 
 ### 已部署节点修改地址族
 
@@ -101,6 +116,83 @@ usdb-node peers enode --family ipv6
 运行中的节点会只重建链服务，短暂中断 USDB P2P/RPC，保留链数据、节点身份、Seed 和已授权矿工配置，上游同步继续。原本停止的节点只保存配置，之后仍需 `usdb-node up`。这一网络配置操作不需要清空数据，也无需额外执行整套 `down → up`。
 
 `auto` 只在执行配置时选择并保存一次地址族；后来增加 IPv6 地址，不会自动把已保存的 IPv4 配置切成双栈。明确要求 IPv6 时选择 `ipv6` 或 `dual`，并检查实际结果。
+
+## IPv6 诊断与恢复
+
+### 1. 分别检查宿主机与保存配置
+
+```bash
+ip -6 address show scope global
+ip -6 route show default
+usdb-node host check
+```
+
+已有配置时另执行：
+
+```bash
+usdb-node peers network --json
+```
+
+| 检查结果 | 操作 |
+| --- | --- |
+| 没有可用稳定 IPv6 地址 | 检查主机、上级路由器或云网络的 IPv6 配置；不要使用临时地址、链路本地地址或容器地址作为公告地址 |
+| 有 IPv6 地址，但没有默认路由 | 检查路由器公告或网络管理员提供的静态路由；填一个 IPv6 地址不能替代路由 |
+| `P2P_IPV6_RA_REQUIRED` | 按下一步检查错误指出的实际接口 |
+| Docker 版本、rootless 或访问权限检查失败 | 按[环境与主机准备](requirements.md)修复，再用原运维账号检查 |
+| `host inspection failed` | 根据附带原因处理地址/路由读取失败；探测失败不能视作 IPv6 已就绪 |
+| 主机检查可选 `dual`，但 `peers network` 的 `family` 仍为 `ipv4` | 旧配置不会自动改变；修复后显式执行 `peers configure` |
+| `P2P_IPV6_SEED_UNREACHABLE` | 当前保存/预览的 IPv4 链网络无法使用 IPv6 Seed；修复并切换地址族，或换用可达的 IPv4 Seed |
+
+### 2. 修复 RA 接收策略
+
+只对使用路由器公告（RA）获取默认路由的接口执行这一步。`ip -6 route show default` 通常显示 `proto ra`，工具错误也会给出接口名。接口可能是 `enp170s0`、`eth0` 或 `vmbr0`，以本机为准。
+
+Linux 的 `accept_ra=1` 仅在未开启转发时接收 RA，`2` 允许在转发开启时继续接收。USDB 双栈检查要求 RA 接口为 `2`，避免 Docker 启用 IPv6 转发后影响路由续期。[Linux 内核说明](https://docs.kernel.org/networking/ip-sysctl.html)。
+
+先输入实际接口并检查当前值；若错误涉及多个上联网卡，应分别处理：
+
+```bash
+read -r -p 'IPv6 default-route interface: ' USDB_IPV6_INTERFACE
+ip link show dev "$USDB_IPV6_INTERFACE"
+sysctl "net.ipv6.conf.${USDB_IPV6_INTERFACE}.accept_ra"
+```
+
+临时应用并核对：
+
+```bash
+sudo sysctl -w "net.ipv6.conf.${USDB_IPV6_INTERFACE}.accept_ra=2"
+ip -6 address show dev "$USDB_IPV6_INTERFACE" scope global
+ip -6 route show default
+```
+
+临时值重启后可能丢失。由管理员检查已有 `/etc/sysctl.d/` 和网络管理器配置，将以下示例中的 `实际接口` 替换后写入适用配置，避免留下互相覆盖的旧值：
+
+```text
+# /etc/sysctl.d/90-usdb-ipv6-ra.conf
+net.ipv6.conf.实际接口.accept_ra=2
+```
+
+使用上述文件时，应用它并再次核对：
+
+```bash
+sudo sysctl -p /etc/sysctl.d/90-usdb-ipv6-ra.conf
+sysctl "net.ipv6.conf.${USDB_IPV6_INTERFACE}.accept_ra"
+```
+
+如果网络管理器会重设这个值，还需在其实际接口配置中保持一致。已有地址或默认路由已经过期时，仅修改 sysctl 不保证立即恢复；检查上级路由器是否提供 RA。已安装 `ndisc6` 的主机可执行 `sudo rdisc6 -1 "$USDB_IPV6_INTERFACE"` 请求一次 RA，之后重新检查地址和路由。
+
+### 3. 应用到节点并确认恢复
+
+已有节点使用本页的 `peers configure --ip-family dual --advertise-ipv6 ...`；未配置节点使用带相应参数的 `setup`。这一步不会要求重新下载 Bitcoin 或 BH 数据。
+
+等待配置操作 `APPLIED`。节点尚未启动时，`peers network` 可以显示 `family=dual` 但状态仍为 `WAITING`；此时还不能验证容器的 IPv6。按安装流程完成 `doctor` 和 `up`，链服务启动后检查：
+
+```bash
+usdb-node peers network --json
+usdb-node peers status --json
+```
+
+**恢复标志**：本机地址和默认路由正常、所选模式已应用、链容器具有 IPv6 地址及网关、TCP/UDP 发布符合所选模式，并且实际连接的 `remoteAddress` 使用目标 IPv6。只看到 `family=dual` 或宿主机 TCP 测试成功，还不能认定已经完成 IPv6 入网。
 
 ## 第二台通过 IPv6 加入
 

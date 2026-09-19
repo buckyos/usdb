@@ -49,6 +49,11 @@ class UsdbNodeTests(unittest.TestCase):
         self.capacity_patcher.start()
         self.memory_patcher = mock.patch.object(NODE, "effective_memory_bytes", return_value=64 * 1024**3)
         self.memory_patcher.start()
+        host_patcher = mock.patch.object(P2P, "host_capabilities", return_value={
+            **HOST, "ipv6": [], "ipv6_default_route": False,
+        })
+        host_patcher.start()
+        self.addCleanup(host_patcher.stop)
         self.root = Path(self.temporary.name) / "usdb-node-kit"
         self.bundle = self.root / "docker/networks/usdb-testnet-v0"
         self.bundle.parent.mkdir(parents=True)
@@ -233,6 +238,7 @@ class UsdbNodeTests(unittest.TestCase):
                 "full",
                 VALID_SEED,
                 "",
+                "",
                 "n",
                 "n",
                 "n",
@@ -271,7 +277,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_enables_full_explorer_support_in_initial_configuration(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "explorer-setup"
-        answers = iter([str(data_root), "full", "", "y", "n", "n", "n", "y"])
+        answers = iter([str(data_root), "full", "", "", "y", "n", "n", "n", "y"])
         prompts = []
 
         def answer(prompt: str) -> str:
@@ -305,7 +311,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_explorer_validation_failure_removes_initial_config_and_credentials(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "explorer-setup-failure"
-        answers = iter([str(data_root), "full", "", "y", "n", "n", "n", "y"])
+        answers = iter([str(data_root), "full", "", "", "y", "n", "n", "n", "y"])
 
         def fail_validation(_layout: object, **_kwargs: object) -> None:
             env = NODE.read_env(self.node_env)
@@ -471,7 +477,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_cancellation_writes_no_config_or_credentials(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "cancelled-data"
-        answers = iter([str(data_root), "full", "", "y", "n", "n", "n", "n"])
+        answers = iter([str(data_root), "full", "", "", "y", "n", "n", "n", "n"])
         with self.assertRaisesRegex(ValueError, "setup cancelled"):
             NODE.setup_node(
                 layout,
@@ -505,7 +511,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_can_select_the_release_approved_snapshot(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "snapshot-setup-data"
-        answers = iter([str(data_root), "full", "", "n", "n", "n", "y", "y"])
+        answers = iter([str(data_root), "full", "", "", "n", "n", "n", "y", "y"])
         with mock.patch.object(
             NODE,
             "_disk_free_bytes",
@@ -526,7 +532,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_can_select_managed_ufw(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "managed-firewall-data"
-        answers = iter([str(data_root), "full", "", "n", "n", "y", "22", "n", "y"])
+        answers = iter([str(data_root), "full", "", "", "n", "n", "y", "22", "n", "y"])
 
         result = NODE.setup_node(
             layout,
