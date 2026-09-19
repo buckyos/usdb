@@ -115,6 +115,8 @@ usdb-node peers add "$USDB_SEED_ENODE"
 usdb-node peers status --watch
 ```
 
+通过 IPv6 入网时，先按[节点地址与连接管理](peers.md)核对双方链容器的 IPv6 能力。首节点使用 `usdb-node peers enode --family ipv6` 导出可分享地址；不要直接复制带 `127.0.0.1` 的原始 enode。
+
 可以在上游同步期间补充 Seed。运行中的链应用新配置时会有短暂 RPC/P2P 中断；节点同步数据保留。命令返回任务已提交或配置 `APPLIED`，还需要继续观察实际连接。
 
 `AWAITING_PEERS` 表示数据服务已经运行但尚未确认入网；处理连接问题即可，不需要重下启动文件。普通加入节点不使用 `--first-node`。

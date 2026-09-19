@@ -14,6 +14,7 @@
 | 准备一台节点服务器 | [环境与主机准备](node/requirements.md) |
 | 安装普通节点并加入已有测试网 | [安装与入网](node/install.md) |
 | 判断同步是否正常、节点是否已经可用 | [状态与同步进度](node/status.md) |
+| 查询本机 enode、配置双栈或通过 IPv6 入网 | [节点地址与连接管理](node/peers.md) |
 | 启用、停止 CPU 挖矿并核对本机产块 | [CPU 挖矿](node/mining.md) |
 | 网络开始出块后初始化 SourceDAO | [SourceDAO 初始化与验证](network-admin/sourcedao.md) |
 | 使用或部署浏览器、公共 RPC 与专用查询节点 | [USDB Explorer](services/explorer.md) |

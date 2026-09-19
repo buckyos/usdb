@@ -231,6 +231,84 @@ class P2PTests(unittest.TestCase):
             with mock.patch.object(MINING, "chain_view", side_effect=ValueError("CHAIN_IDENTITY_MISMATCH: wrong genesis")):
                 self.assertEqual(P2P.endpoint_report(f.layout)["state"], "BLOCKED")
 
+    def test_first_node_status_shares_both_families_without_reusing_rpc_loopback(self):
+        with P2PFixture() as f:
+            f.chain["enode"] = f"enode://{PUBLIC_KEY}@127.0.0.1:31303"
+            f.configure(advertise_ipv4=V4, advertise_port=41303, discovery_port=41304)
+            f.run_peers()
+            f.run_peers()
+            f.enable()
+            f.run()
+            before_env, before_calls = f.layout.node_env.read_bytes(), f.calls[:]
+            with mock.patch.object(MINING, "chain_view", return_value=deepcopy(f.chain)) as probe:
+                report = PEERS.observe(f.layout, connected=True)
+                probe.assert_called_once_with(f.layout)
+            self.assertEqual(report["membership"]["reason"], "FIRST_NODE")
+            self.assertEqual(report["local"]["state"], "CONFIGURED")
+            self.assertEqual(report["local"]["reachability"], "unverified")
+            expected = [f"enode://{PUBLIC_KEY}@{V4}:41303?discport=41304",
+                        f"enode://{PUBLIC_KEY}@[{V6}]:41303?discport=41304"]
+            self.assertEqual([item["enode"] for item in report["local"]["endpoints"]], expected)
+            rendered = PEERS.render_report(report, connected=True)
+            for endpoint in expected:
+                self.assertIn(endpoint, rendered)
+            self.assertNotIn("127.0.0.1", rendered)
+            self.assertNotIn("use usdb-node peers add ENODE", rendered)
+            self.assertIn("public reachability unverified", rendered)
+            self.assertEqual(f.layout.node_env.read_bytes(), before_env)
+            self.assertEqual(f.calls, before_calls)
+
+    def test_status_keeps_membership_when_local_endpoint_probe_fails(self):
+        with P2PFixture() as f:
+            f.update_env(USDB_BOOTNODES=SEED6)
+            f.chain["peers"] = 1
+            f.configure()
+            f.run_peers()
+            f.run_peers()
+            f.host["ipv6"] = []
+            report = PEERS.observe(f.layout, connected=True)
+            self.assertEqual(report["state"], "READY")
+            self.assertEqual(report["local"]["state"], "BLOCKED")
+            self.assertEqual(report["local"]["endpoints"], [])
+            self.assertIn("P2P_IPV6_HOST_CHANGED", report["local"]["error"])
+            with mock.patch.object(P2P, "endpoint_report", side_effect=ValueError("invalid P2P setting")):
+                report = PEERS.observe(f.layout, connected=True)
+            self.assertEqual(report["state"], "READY")
+            self.assertEqual(report["local"]["state"], "UNAVAILABLE")
+            self.assertIn("invalid P2P setting", PEERS.render_report(report, connected=True))
+
+    def test_status_hides_pending_enodes_and_exposes_actual_connected_address(self):
+        with P2PFixture() as f:
+            f.update_env(USDB_BOOTNODES=SEED6)
+            f.chain["peers"] = 1
+            remote = "[2001:db8::1]:31303"
+            peer = {"id": "ab" * 32, "enode": f"enode://{PUBLIC_KEY}@192.0.2.1:31303",
+                    "network": {"remoteAddress": remote}}
+            f.configure()
+            with mock.patch.object(MINING, "rpc", return_value=[peer]):
+                report = PEERS.observe(f.layout, connected=True)
+            self.assertEqual(report["local"]["desired_family"], "dual")
+            self.assertEqual(report["local"]["endpoints"], [])
+            rendered = PEERS.render_report(report, connected=True)
+            self.assertIn("Pending family: dual", rendered)
+            self.assertIn(f"remote={remote}", rendered)
+            self.assertIn("P2P_OPERATION_PENDING", rendered)
+
+    def test_status_json_includes_local_endpoint_but_seed_list_does_not_probe_it(self):
+        with P2PFixture() as f, mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            f.configure("ipv6")
+            f.run_peers()
+            f.run_peers()
+            args = NODE.build_parser().parse_args(["peers", "status", "--json"])
+            self.assertEqual(PEERS.execute(f.layout, args), 0)
+            local = json.loads(out.getvalue())["local"]
+            self.assertEqual(local["endpoints"][0]["family"], "ipv6")
+            self.assertEqual(local["state"], "CONFIGURED")
+            with mock.patch.object(P2P, "endpoint_report") as probe, mock.patch.object(MINING, "chain_view") as rpc:
+                self.assertNotIn("local", PEERS.observe(f.layout))
+                probe.assert_not_called()
+                rpc.assert_not_called()
+
     def test_commands_execute_transport_selection_and_family_filter(self):
         with P2PFixture() as f, mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             args = NODE.build_parser().parse_args(["peers", "configure", "--ip-family", "ipv6", "--json"])

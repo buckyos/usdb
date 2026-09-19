@@ -142,4 +142,6 @@ usdb-node peers status --json
 
 `status --json` 用于总体状态和下一步建议；`--progress-json` 用于分组件进度；peers 输出用于实际连接和入网状态。采集系统应允许同步期间返回非零退出码，并将正常等待与明确故障区分开。
 
+需要取得本机供其他节点连接的地址，使用 `usdb-node peers enode --family ipv6`，或不指定地址族查看全部候选。包含本机地址展示改进的版本也会在 `peers status` / `--watch` 中显示 `Local P2P`，JSON 对应 `local` 字段；其状态与 `membership` 分开判断。地址生成、IPv6 配置和连接验证见[节点地址与连接管理](peers.md)。
+
 输出和日志可能包含本机路径、节点地址等运维信息。对外提交前按[求助信息清单](../troubleshooting/README.md#需要协助时提供什么)检查。

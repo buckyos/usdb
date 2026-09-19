@@ -359,6 +359,7 @@ def observe(layout, *, connected=False):
               "operation": {k: operation[k] for k in ("operation_id", "phase", "error") if k in operation},
               "state": "CONFIGURED", "connected": []}
     if connected:
+        chain = None
         try:
             chain = mining.chain_view(layout)
             peers = mining.rpc(layout, "admin_peers")
@@ -374,6 +375,23 @@ def observe(layout, *, connected=False):
             report.update(state="BLOCKED" if mismatch else "WAITING",
                           reason="CHAIN_IDENTITY_MISMATCH" if mismatch else "OBSERVATION_UNAVAILABLE", detail=str(error))
         report["membership"] = {key: report[key] for key in ("state", "reason", "detail")}
+        # Endpoint inspection has its own outcome: a host/Docker probe failure
+        # must not erase a successful peer observation or imply disconnection.
+        local = {"state": "UNAVAILABLE", "family": env.get("USDB_P2P_IP_FAMILY", "ipv4"),
+                 "endpoints": [], "reachability": "unverified",
+                 "guidance": "Inspect local endpoints with usdb-node peers network --json."}
+        if chain is None:
+            local["error"] = report["detail"]
+        else:
+            local["node_id"] = chain["node_id"]
+            try:
+                endpoints = p2p.endpoint_report(layout, chain=chain)
+                local.update({key: endpoints[key] for key in (
+                    "state", "family", "endpoints", "reachability", "desired_family",
+                    "operation", "error", "guidance", "warnings") if key in endpoints})
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                local["error"] = str(error)
+        report["local"] = local
         if operation and operation["phase"] != "APPLIED" and report["state"] != "BLOCKED":
             report.update(state="BLOCKED" if operation.get("error") else "STARTING",
                           reason="PEER_OPERATION_BLOCKED" if operation.get("error") else "APPLYING_SEEDS",
@@ -387,7 +405,7 @@ def add_parser(subparsers):
     descriptions = {"list": "List desired and applied seed configuration without RPC",
                     "add": "Persist a seed and submit controller application",
                     "remove": "Remove a seed endpoint (does not ban a peer)",
-                    "status": "Observe application, membership and live peers",
+                    "status": "Observe local enodes, application, membership and live peers",
                     "apply": "Retry an unfinished seed application",
                     "configure": "Select P2P address family and advertised addresses",
                     "enode": "Show IPv4/IPv6 enode candidates and actual container transport",
@@ -409,16 +427,36 @@ def add_parser(subparsers):
 def render_report(report, *, connected):
     """Keep desired settings, current settings, and live membership distinct."""
     lines = [f"Peers | {report['state']} | {report.get('reason', '')}",
-             f"Operation: {json.dumps(report['operation'])}", "Configured seed endpoints:"]
+             f"Operation: {json.dumps(report['operation'])}"]
+    if connected and "local" in report:
+        local = report["local"]
+        lines.append(f"Local P2P: {local['state']} | family={local['family']} | public reachability unverified")
+        if local.get("desired_family"):
+            lines.append(f"  Pending family: {local['desired_family']}; phase={local['operation']['phase']}")
+        for endpoint in local["endpoints"]:
+            lines.append(f"  {endpoint['family']} enode: {endpoint['enode']}")
+        if not local["endpoints"]:
+            lines.append("  No local enode available; inspect usdb-node peers network --json")
+        if local.get("error"):
+            lines.append(f"  {local['error']}")
+        lines.extend(f"  Warning: {warning}" for warning in local.get("warnings", []))
+        lines.append("  IPv6 endpoint details: usdb-node peers enode --family ipv6")
+    lines.append("Configured seed endpoints:")
     lines.extend(f"  {endpoint}" for endpoint in report["configured"])
     if not report["configured"]:
-        lines.append("  (none) — use usdb-node peers add ENODE")
+        founder = report.get("membership", {}).get("reason") == "FIRST_NODE"
+        lines.append("  (none; expected for the acknowledged first node)" if founder else
+                     "  (none) — use usdb-node peers add ENODE")
     if report["configured"] != report["applied_config"]:
         lines.append("Current node.env seed endpoints (application pending):")
         lines.extend(f"  {endpoint}" for endpoint in report["applied_config"] or ["(none)"])
     if connected:
         lines.append(f"Connected: {len(report['connected'])}; height={report.get('height', 'unknown')}")
-        lines.extend(f"  {peer.get('enode') or peer.get('id')}" for peer in report["connected"])
+        for peer in report["connected"]:
+            lines.append(f"  {peer.get('enode') or peer.get('id')}")
+            network = peer.get("network")
+            if isinstance(network, dict) and network.get("remoteAddress"):
+                lines.append(f"    remote={network['remoteAddress']}")
         lines.append(report.get("detail", ""))
     return "\n".join(lines)
 

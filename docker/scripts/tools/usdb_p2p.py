@@ -212,8 +212,8 @@ def transport_ready(env, runtime):
     return True
 
 
-def endpoint_report(layout):
-    """Return shareable address candidates with runtime evidence and explicit reachability limits."""
+def endpoint_report(layout, *, chain=None):
+    """Inspect endpoint candidates, optionally reusing a network-validated chain observation."""
     import usdb_node as node
     import usdb_mining as mining
     import usdb_peers as peers
@@ -237,7 +237,8 @@ def endpoint_report(layout):
             report.update(state="BLOCKED" if operation.get("error") else "WAITING",
                           error=operation.get("error", f"P2P_OPERATION_PENDING: phase={operation['phase']}; observe peers status"))
             return report
-        chain = mining.chain_view(layout)
+        if chain is None:
+            chain = mining.chain_view(layout)
         raw = chain.get("enode", "")
         key = peers.normalize_enode(raw).split("@")[0]
     except (OSError, ValueError, subprocess.SubprocessError) as error:

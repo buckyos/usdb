@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "peer-status-local-enodes",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime", "documentation", "testing"],
+  "summary": "Show local IPv4 and IPv6 enodes in peer status",
+  "details": [
+    "Peer status and watch reuse the existing endpoint inspection to show local address candidates, applied and pending families, and local probe failures separately from network membership.",
+    "JSON status adds a local endpoint report. Connected peer text includes the actual remote socket address, and acknowledged first nodes no longer receive an unnecessary add-seed hint.",
+    "Reuse the validated chain observation without a second chain RPC probe; suppress local candidates when identity is unavailable or transport changes are pending, and retain explicit public reachability limits.",
+    "Add an operator handbook chapter covering enode export, IPv6 and dual-stack configuration, seed connection verification, and legacy release limitations."
+  ],
+  "operator_actions": [
+    "Use peers status or peers status --watch to inspect local enodes after installing a release containing this display change. Existing IPv6-capable releases can export the same candidates with peers enode --family ipv6.",
+    "Verify IPv6 routing in the chain container and actual peer connections; an IPv6 route on the host alone does not upgrade an older IPv4-only deployment."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

@@ -173,7 +173,8 @@ class PeerTests(unittest.TestCase):
             f.run_peers()
             f.runtime.update(state="restarting", exit_code=1, argv=[])
             self.assertEqual(f.run_peers(), NODE.CONTROLLER_MANUAL_EXIT_CODE)
-            self.assertEqual(PEERS.observe(f.layout, connected=True)["state"], "BLOCKED")
+            with mock.patch.object(PEERS.p2p, "endpoint_report", return_value={"state": "WAITING"}):
+                self.assertEqual(PEERS.observe(f.layout, connected=True)["state"], "BLOCKED")
             self.assertEqual(NODE._chain_component(f.layout, f.env, f.runtime)["state"], "BLOCKED")
             self.assertEqual(f.container_number, 1)
             PEERS.submit(f.layout, "apply")
@@ -218,7 +219,12 @@ class PeerTests(unittest.TestCase):
         with PeerFixture() as f:
             for error, expected in (("RPC timeout", "WAITING"), ("CHAIN_IDENTITY_MISMATCH: wrong genesis", "BLOCKED")):
                 with mock.patch.object(MINING, "chain_view", side_effect=ValueError(error)):
-                    self.assertEqual(PEERS.observe(f.layout, connected=True)["state"], expected)
+                    with mock.patch.object(PEERS.p2p, "endpoint_report") as endpoints:
+                        report = PEERS.observe(f.layout, connected=True)
+                        self.assertEqual(report["state"], expected)
+                        self.assertEqual(report["local"]["state"], "UNAVAILABLE")
+                        self.assertEqual(report["local"]["endpoints"], [])
+                        endpoints.assert_not_called()
 
     def test_last_joiner_miner_seed_cannot_be_removed(self):
         with PeerFixture() as f:
