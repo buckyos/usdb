@@ -216,7 +216,7 @@ class NodeProgressObservationTests(unittest.TestCase):
         self.assertIn("STALE", displayed["detail"])
         self.assertIn("timed out", displayed["detail"])
         self.assertIsNone(timeout_component["current"])
-        self.assertEqual(controller.call_count, 2)
+        controller.assert_not_called()
         status.assert_called_once_with(layout)
         self.assertEqual(result["outcome"], "controller_detached")
         self.assertEqual(code, 0)

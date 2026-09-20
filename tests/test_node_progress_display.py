@@ -1,6 +1,9 @@
 """Exercise Docker timing observations, stale RPCs and the terminal dashboard."""
 
 import json
+import io
+from contextlib import redirect_stdout
+from types import SimpleNamespace
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +15,40 @@ import usdb_node as NODE
 
 
 class ProgressDisplayTests(unittest.TestCase):
+    def test_network_identity_is_visible_without_chain_rpc(self):
+        layout = SimpleNamespace(bundle_id="usdb-testnet-v0", network_identity={
+            "chain_id": 202608250, "network_id": 202608250,
+            "genesis_block_hash": "0x" + "ab" * 32, "btc_network_id": "btc-mainnet"})
+        identity = NODE._status_network_identity(layout)
+        report = dict(release_id="test", observed_at="now", overall_state="STARTING", components=[],
+                      network=identity, node_role="full", checks={}, next_actions=[], operator_guidance=[],
+                      up={"mode": "observe", "summary": "waiting"})
+        output = io.StringIO()
+        with redirect_stdout(output):
+            NODE._print_node_status_report(report)
+        for rendered in (output.getvalue(), NODE.render_node_progress(report, width=80)):
+            self.assertIn("Network: usdb-testnet-v0 | Chain ID: 202608250 | Role: full", rendered)
+            self.assertIn("Genesis: 0x" + "ab" * 32, rendered)
+            self.assertIn("P2P network ID: 202608250 | Bitcoin source: btc-mainnet", rendered)
+        self.assertEqual(identity["source"], "release_bundle")
+
+    def test_up_watch_continues_through_ready_and_failure_until_detached(self):
+        observations = [dict(release_id="test", observed_at="now", components=[], overall_state=state)
+                        for state in ("SYNCING", "READY", "READY", "FAILED")]
+        with mock.patch.object(NODE, "collect_node_progress", side_effect=[*observations, KeyboardInterrupt]), \
+             mock.patch.object(NODE, "collect_node_status", return_value={"overall_state": "DEGRADED"}), \
+             mock.patch.object(NODE, "TerminalProgressDisplay") as display, \
+             mock.patch.object(NODE.time, "sleep"), \
+             mock.patch.object(NODE, "stop_controller_unit") as stop, \
+             mock.patch.object(NODE, "start_controller_unit") as start:
+            result, code = NODE.follow_submitted_controller(object(), {})
+        self.assertEqual(code, 0)
+        self.assertEqual(result["outcome"], "controller_detached")
+        self.assertEqual(display.return_value.render.call_count, 4)
+        display.return_value.close.assert_called_once()
+        start.assert_not_called()
+        stop.assert_not_called()
+
     def test_genesis_milestone_renders_without_optional_range_metadata(self):
         component = NODE._component_progress("balance_history", "STARTING", "RPC unavailable")
         component["genesis_milestone"] = dict(height=963800, state="last observed available; RPC unavailable")

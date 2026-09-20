@@ -310,7 +310,7 @@ def _balance_history_progress(item, readiness, bootstrap, core, activation, *, b
     return item
 
 
-def collect_native_progress(layout) -> dict:
+def collect_native_progress(layout, *, controller_state: str | None = None) -> dict:
     """Expose import/replay plus independent Core foreground/background observations."""
     env = node.read_env(layout.node_env)
     services_available = True
@@ -452,6 +452,6 @@ def collect_native_progress(layout) -> dict:
         if service.get("state") == "running" and elapsed is not None:
             item.update(service_started_at=service["started_at"], service_elapsed_secs=elapsed)
     return dict(schema_version=node.NODE_PROGRESS_SCHEMA_VERSION, release_id=layout.release_id, network_bundle_id=layout.bundle_id,
-                observed_at=observed_at, controller_state=node.controller_observed_state(layout),
+                observed_at=observed_at, controller_state=(controller_state if controller_state is not None else node.controller_observed_state(layout)),
                 overall_state=overall, auxiliary_state="READY", components=components, resources=resources, mining=mining,
                 native_bootstrap=dict(core=core, download=download, activation=activation, import_progress=imported, balance_history=bootstrap))

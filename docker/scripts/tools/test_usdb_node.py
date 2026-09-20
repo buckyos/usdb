@@ -2686,6 +2686,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_detaching_progress_does_not_stop_controller(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         progress = {
+            "observed_at": "now",
             "overall_state": "SYNCING",
             "components": [],
         }
@@ -2712,6 +2713,54 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(return_code, 0)
         self.assertEqual(detached["outcome"], "controller_detached")
         stop.assert_not_called()
+
+    def test_controller_finishes_successfully_while_configured_peers_connect_or_sync(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        for reason in ("WAITING_FOR_PEERS", "SYNCING", "SEED_REQUIRED", "UNKNOWN"):
+            with self.subTest(reason=reason):
+                awaiting = {"overall_state": "AWAITING_PEERS", "checks": {
+                    "runtime": {"state": "ready"},
+                    "network_membership": {"state": "WAITING", "reason": reason}}}
+                reports = [{"overall_state": "STARTING"}, {"overall_state": "STARTING"}, awaiting]
+                with mock.patch.object(NODE, "collect_node_status", side_effect=reports), \
+                     mock.patch.object(NODE, "start_node") as start, \
+                     mock.patch.object(NODE, "print_up_result") as printed:
+                    code = NODE.run_bootstrap_controller(layout, sync_timeout_secs=60, pull=False)
+                start.assert_called_once()
+                if reason in {"WAITING_FOR_PEERS", "SYNCING"}:
+                    self.assertEqual(code, 0)
+                    self.assertEqual(printed.call_args.args[0]["outcome"], "awaiting_peers")
+                else:
+                    self.assertEqual(code, NODE.CONTROLLER_MANUAL_EXIT_CODE)
+                    self.assertEqual(printed.call_args.args[0]["outcome"], "manual_action_required")
+
+    def test_repeated_up_does_not_restart_services_already_joining(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        report = {"overall_state": "AWAITING_PEERS", "checks": {
+            "runtime": {"state": "ready"}, "network_membership": {"reason": "SYNCING"}}}
+        with mock.patch.object(NODE, "collect_node_status", return_value=report), \
+             mock.patch.object(NODE, "start_controller_unit") as start:
+            result, code = NODE.submit_up_to_controller(layout, dry_run=False, allow_activation=False)
+        self.assertEqual((result["outcome"], code), ("awaiting_peers", 0))
+        self.assertEqual(result["status"]["overall_state"], "AWAITING_PEERS")
+        start.assert_not_called()
+
+    def test_interactive_up_watches_ready_nodes_but_explicit_nonwatch_modes_return(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        for options, tty, expected_watch in (([], True, True), (["--foreground"], True, True),
+                                            (["--no-watch"], True, False), (["--json"], True, False),
+                                            (["--dry-run"], True, False), ([], False, False)):
+            with self.subTest(options=options, tty=tty):
+                args = NODE.build_parser().parse_args(["up", *options])
+                result = {"outcome": "ready", "initial_state": "READY", "status": {"overall_state": "READY"}}
+                with mock.patch.object(NODE, "submit_up_to_controller", return_value=(result, 0)), \
+                     mock.patch.object(NODE, "up_node", return_value=(result, 0)), \
+                     mock.patch.object(NODE, "follow_submitted_controller", return_value=(result, 0)) as follow, \
+                     mock.patch.object(NODE, "print_up_result"), \
+                     mock.patch.object(NODE.sys.stdout, "isatty", return_value=tty), \
+                     mock.patch.object(NODE, "_terminal_refresh_supported", return_value=True):
+                    self.assertEqual(NODE._execute_command(layout, args), 0)
+                self.assertEqual(follow.called, expected_watch)
 
     def test_up_requires_explicit_activation(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

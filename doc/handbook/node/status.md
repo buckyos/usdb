@@ -12,6 +12,10 @@ usdb-node status
 
 先读 `Overall`，再读失败检查项及 `Next actions`。命令只有在 `READY` 时返回退出码 0；正在同步或等待入网时的非零退出码，不单独代表服务崩溃。
 
+包含网络身份展示改进的工具，会在 `status` 和 `status --watch` 顶部显示网络名称、`Chain ID`、节点角色、完整 genesis 哈希、P2P network ID 和 Bitcoin 数据来源。例如 `Network: usdb-testnet-v0 | Chain ID: 202608250 | Role: full`。这些信息来自当前 release 的网络配置，链 RPC 尚未启动时也能核对；它们不替代实际运行与入网检查。
+
+`Bitcoin source: btc-mainnet` 表示本网络使用 Bitcoin 主网数据，不表示 USDB 本身是主网。`Role: full` 是普通同步验证节点；是否实际挖矿仍看 `Mining` 状态。连接其他节点前，应确认双方 USDB 网络名称、Chain ID 和 genesis 一致。
+
 | `Overall` | 含义 | 下一步 |
 | --- | --- | --- |
 | `UNCONFIGURED` | 当前账号下还没有本网络配置 | 新节点按安装流程配置；已有节点先确认账号和配置路径 |
@@ -58,6 +62,8 @@ usdb-node status --watch
 | `balance-history` | 导入、重放、校验后提供数据服务 | 看阶段和已处理数量；重放完成后仍可能处于校验或等待服务启动 |
 | `usdb-indexer` | 等待可查询的上游数据，然后继续索引 | 上游尚未可查询时等待是正常依赖关系 |
 | `USDB chain` | 等待上游就绪，再连接并同步 USDB 网络 | 上游完成后看链高度与 peers 状态 |
+
+包含持续观察改进的工具中，交互式 `usdb-node up` 使用相同的观察面板：到达 `READY` 或后台编排结束后仍继续显示，直到 Ctrl+C。观察期间出现失败会保留面板并提示检查，不会自动恢复服务。节点已经运行时再次 `up` 也可以进入观察；只想提交启动后返回终端，使用 `usdb-node up --no-watch`。JSON、非交互式调用和 `--dry-run` 不进入持续观察。r28 的原始工具会在就绪或 controller 结束后退出面板，这是旧行为，不表示节点停止。
 
 Bitcoin 前台可以先就绪，后台历史验证继续进行。**总体可用和后台验证完成分别观察**；不要为了消除后台进度而停止验证。
 
@@ -165,6 +171,10 @@ r25 中可能出现缺少详细进度、RPC 暂不可用时状态变化、等待
 
 状态说明还会显示开机启动是否启用。若显示 `automatic startup after reboot is disabled`，手动 `up` 仍可启动，但不会恢复开机启动；仅在希望恢复开机启动时执行提示中的 `controller install`。该操作不会由状态查询自动执行。
 
+包含持续观察改进的工具会让进度面板和普通 `status` 使用相同的 controller 诊断。r28 可能在核心服务已启动、正连接已配置的 peer 或追块时，以退出码 2 结束编排；链随后自行同步到 `READY`，systemd 仍保留 `failed`。新版此时显示 `controller=idle`，同时保留 `systemd=failed | last exit=2` 和历史结果说明，不会在查询时清除记录。真实异常退出仍显示失败并提供日志检查入口。
+
+新版编排会把核心服务健康、已有 seed、正在连接或同步视为启动已完成，以成功状态退出；节点总体仍可为 `AWAITING_PEERS`，继续看连接数和链高度即可。缺少 seed、查询失败或服务故障仍需按提示处理。旧工具还可能因 systemd 的 PATH 没有包含 `~/.local/bin`，把标准安装误报为 `REVIEW_REQUIRED`；新版会识别标准安装路径。只为处理这些旧显示问题，不需要重建数据或重启已正常同步的链。
+
 **普通 rN 升级不要求每次重装 controller。** 稳定命令入口、配置路径和 unit 模板仍匹配时可以复用；支持的自定义超时和 `--skip-pull` 不会被误判为版本过旧。需要刷新时，提示命令保留这些选项。手工编辑或 systemd 覆盖配置需要自行核对。
 
 `Controller` 是独立的运维检查，不改变核心服务的 `Overall` 或状态命令退出码。因此节点可能同时显示 `Overall READY` 和 controller 需要维护；监控应同时检查 `checks.controller.action_required`。JSON 中还包含 `configuration_state`、`runtime_state`、`autostart`、退出结果及建议操作。
@@ -180,6 +190,8 @@ usdb-node peers status --json
 ```
 
 `status --json` 用于总体状态和下一步建议；`--progress-json` 用于分组件进度；peers 输出用于实际连接和入网状态。采集系统应允许同步期间返回非零退出码，并将正常等待与明确故障区分开。
+
+包含网络身份展示改进的工具在两种 status JSON 中增加 `network` 和 `node_role`；`network.source=release_bundle` 表明身份信息来自 release 配置。进度 JSON 的 `controller_state` 保留原始运行状态，详细诊断和展示状态见 `controller.runtime_state`、`controller.display_state`、`controller.exit_status` 和 `controller.action_required`。
 
 需要取得本机供其他节点连接的地址，使用 `usdb-node peers enode --family ipv6`，或不指定地址族查看全部候选。包含本机地址展示改进的版本也会在 `peers status` / `--watch` 中显示 `Local P2P`，JSON 对应 `local` 字段；其状态与 `membership` 分开判断。地址生成、IPv6 配置和连接验证见[节点地址与连接管理](peers.md)。
 

@@ -259,6 +259,8 @@ usdb-node controller logs --follow
 
 如果 controller 只是 `inactive (dead)`，先核对节点是否已 `READY` 或正在等待 peers；这可能是本轮编排正常结束。
 
+如果是 r28 的 `Overall READY`、`controller=failed`，先核对最后一次 controller 日志和退出码。日志若在 `AWAITING_PEERS` 以退出码 2 结束，而现在链已连上并追平，这是旧版将正常入网等待作为人工处理退出后留下的 systemd 记录。包含持续观察改进的工具会显示 `idle` 并保留原始退出结果；新版编排也不再因正常连接或追块而失败。其他退出原因仍需排查，不能仅凭 `Overall READY` 忽略真实错误。旧版因 PATH 缺少 `~/.local/bin` 导致的标准安装 `REVIEW_REQUIRED` 也已修正；无需为这些显示问题反复重装 controller 或重启链。见[后台任务状态](../node/status.md#后台任务状态)。
+
 **恢复标志**：明确失败已消除，服务继续推进并最终恢复整体运行；只提交成功或容器重新出现不算恢复完成。仍失败时按下面的求助清单提供信息。
 
 ## 升级后要求激活或兼容检查失败

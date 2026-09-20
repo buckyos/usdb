@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-identity-and-persistent-startup-watch",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime", "documentation"],
+  "summary": "Show chain identity and keep startup observation open after the node joins",
+  "details": [
+    "Both lifecycle status and progress expose the configured network name, chain ID, genesis, P2P network ID, Bitcoin source and node role, including before chain RPC is available.",
+    "Interactive up uses the same persistent observer as status --watch and remains open after readiness or controller exit until Ctrl+C. Use up --no-watch for one-shot interactive submission; JSON and non-interactive calls remain one-shot.",
+    "Healthy services waiting for configured peers to connect or synchronize complete startup successfully without claiming overall readiness. Missing seeds, unavailable observations and service failures retain their recovery requirements.",
+    "The progress header uses controller diagnostics, distinguishes a historical manual exit followed by READY from a real failure, and preserves raw systemd state and exit status. Standard installations are recognized even when systemd PATH omits the user's local bin directory."
+  ],
+  "operator_actions": [
+    "After installing the updated node tools, reopen status --watch to see the new identity and controller diagnostics. No data rebuild or chain restart is needed solely to correct the old display.",
+    "Use up --no-watch when an interactive startup command should return without attaching the persistent progress view."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

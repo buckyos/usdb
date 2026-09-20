@@ -100,7 +100,6 @@ SNAPSHOT_IMPORT_MARKER_SCHEMA_VERSION = "balance-history-core-install-marker:v1"
 CONTROLLER_MANUAL_EXIT_CODE = 2
 CONTROLLER_UNIT_PREFIX = "usdb-node-bootstrap"
 CONTROLLER_RESTART_SECS = 30
-CONTROLLER_START_GRACE_SECS = 10
 CONTROLLER_START_LIMIT_INTERVAL_SECS = 1800
 CONTROLLER_START_LIMIT_BURST = 20
 DEFAULT_SYNC_TIMEOUT_SECS = 604800
@@ -218,10 +217,10 @@ def _controller_launcher_path(launcher: Path | None = None) -> Path:
         else:
             discovered = shutil.which("usdb-node")
             if discovered is None:
-                raise ValueError(
-                    "the stable usdb-node launcher is unavailable; install the release node kit first"
-                )
-            candidate = Path(discovered)
+                # systemd preserves HOME but need not include the user's bin in PATH.
+                candidate = Path.home() / ".local/bin/usdb-node"
+            else:
+                candidate = Path(discovered)
     path = candidate.expanduser().absolute()
     if not path.is_file() or not os.access(path, os.X_OK):
         raise ValueError(f"usdb-node launcher is not executable: {path}")
@@ -4215,15 +4214,50 @@ def _mining_progress(layout, services, chain_component, components, overall):
 def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
     """Combine service observations with a live startup image-preparation stage."""
     from node_image_progress import add_image_preparation
-    return add_image_preparation(layout, _collect_node_progress(layout))
+    from node_controller_status import inspect_controller, apply_controller_guidance
+    controller = inspect_controller(layout, node=sys.modules[__name__])
+    # Share one bounded systemd observation between progress and diagnostic details.
+    controller_state = (controller["runtime_state"] if controller.get("observation_available") else
+                        "uninstalled" if controller["state"] == "missing" else "unavailable")
+    report = add_image_preparation(layout, _collect_node_progress(layout, controller_state=controller_state))
+    report["network"] = _status_network_identity(layout)
+    try:
+        report["node_role"] = read_env(layout.node_env).get("USDB_NODE_ROLE", "unknown")
+    except (OSError, ValueError):
+        report["node_role"] = "unconfigured"
+    guidance = dict(overall_state=report["overall_state"], checks={"controller": controller},
+                    next_actions=[], operator_guidance=[])
+    apply_controller_guidance(guidance)
+    report["controller"] = controller
+    return report
 
 
-def _collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
+def _status_network_identity(layout: ReleaseLayout) -> dict[str, Any]:
+    """Expose the configured public identity even before chain RPC becomes available."""
+    identity = getattr(layout, "network_identity", {})
+    return {"name": layout.bundle_id, "source": "release_bundle",
+            "chain_id": identity.get("chain_id"), "network_id": identity.get("network_id"),
+            "genesis_hash": identity.get("genesis_block_hash"),
+            "bitcoin_network": identity.get("btc_network_id")}
+
+
+def _network_status_lines(report: dict[str, Any]) -> list[str]:
+    """Render configured chain identity without inferring it from the Bitcoin source."""
+    network = report.get("network")
+    if not network:
+        return []
+    return [f"Network: {network['name']} | Chain ID: {network.get('chain_id')} | Role: {report.get('node_role', 'unknown')}",
+            f"Genesis: {network.get('genesis_hash') or 'unknown'}",
+            f"P2P network ID: {network.get('network_id')} | Bitcoin source: {network.get('bitcoin_network') or 'unknown'}"]
+
+
+def _collect_node_progress(layout: ReleaseLayout, *, controller_state: str | None = None) -> dict[str, Any]:
     if layout.node_env.is_file() and read_env(layout.node_env).get("SNAPSHOT_MODE") == "assumeutxo":
         from assumeutxo_node import collect_native_progress
-        return collect_native_progress(layout)
+        return collect_native_progress(layout, controller_state=controller_state)
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    controller_state = controller_observed_state(layout)
+    if controller_state is None:
+        controller_state = controller_observed_state(layout)
     if not layout.node_env.is_file():
         components = [
             _component_progress(component_id, "WAITING", "node configuration is missing")
@@ -4462,10 +4496,17 @@ def render_node_progress(
         phase = "images"
     lines = [
         f"USDB node progress | {report['release_id']} | phase={phase}",
+        *_network_status_lines(report),
         f"Observed {report['observed_at']} | overall={report['overall_state']} | "
-        f"controller={report.get('controller_state', 'unknown')}"
+        f"controller={report.get('controller', {}).get('display_state', report.get('controller_state', 'unknown'))}"
         + (f" | resources={resource_phase}" if resource_phase else ""),
     ]
+    controller = report.get("controller", {})
+    if controller.get("action_required") or controller.get("runtime_state") == "failed":
+        lines.append(f"Controller: {controller['summary']}")
+        if controller.get("observation_available"):
+            lines.append(f"  systemd={controller['runtime_state']} | last exit={controller.get('exit_status', 'unknown')}")
+        lines.extend(f"  Action: {action}" for action in controller.get("actions", []))
     if "observation_elapsed_secs" in report:
         lines.append(f"Watching: {_duration_text(report['observation_elapsed_secs'])} | ETA~ is an estimate for each current stage")
     bar_width = 24
@@ -4939,6 +4980,11 @@ def _finish_node_status(
         "summary": recovery["up_summary"],
     }
     report["operator_guidance"] = [*recovery["guidance"], *additional_guidance]
+    if _startup_completed_outcome(report) == "awaiting_peers":
+        report["up"] = {"mode": "observe", "summary": "Services are running; the chain will continue connecting and synchronizing."}
+        report["next_actions"] = ["usdb-node peers status", "usdb-node status --watch"]
+        report["operator_guidance"] = ["Observe peer connections and chain height; no repeated up or service restart is needed.",
+                                       *additional_guidance]
     registry = report["checks"].get("script_registry")
     if isinstance(registry, dict):
         report["auxiliary_state"] = (
@@ -4971,6 +5017,8 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
         "schema_version": NODE_STATUS_SCHEMA_VERSION,
         "release_id": layout.release_id,
         "network_bundle_id": layout.bundle_id,
+        "network": _status_network_identity(layout),
+        "node_role": "unconfigured",
         "overall_state": "BLOCKED",
         "checks": checks,
         "next_actions": [],
@@ -4996,6 +5044,7 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
             ),
         )
 
+    report["node_role"] = env.get("USDB_NODE_ROLE", "unknown")
     checks["configuration"] = {
         "state": "ok",
         "summary": "private node configuration is present and parseable",
@@ -5150,6 +5199,8 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
 
 def _print_node_status_report(report: dict[str, Any]) -> None:
     print(f"USDB node lifecycle status: {report['release_id']}")
+    for line in _network_status_lines(report):
+        print(line)
     labels = {
         "release": "Release kit",
         "configuration": "Node config",
@@ -5161,6 +5212,7 @@ def _print_node_status_report(report: dict[str, Any]) -> None:
         "resources": "Resources",
         "runtime": "Runtime",
         "mining": "Mining",
+        "network_membership": "Network peers",
     }
     for key, label in labels.items():
         check = report["checks"].get(key)
@@ -5200,6 +5252,17 @@ def _up_action(report: dict[str, Any], allow_activation: bool) -> str | None:
         return "snapshot-install"
     if state in {"READY_TO_START", "STARTING"}:
         return "up"
+    return None
+
+
+def _startup_completed_outcome(report: dict[str, Any]) -> str | None:
+    """Healthy services can finish startup while configured peers connect or sync."""
+    if report["overall_state"] == "READY":
+        return "ready"
+    checks = report.get("checks", {})
+    if (report["overall_state"] == "AWAITING_PEERS" and checks.get("runtime", {}).get("state") == "ready"
+            and checks.get("network_membership", {}).get("reason") in {"WAITING_FOR_PEERS", "SYNCING"}):
+        return "awaiting_peers"
     return None
 
 
@@ -5245,8 +5308,8 @@ def up_node(
         result["outcome"] = "dry_run"
         result["planned_actions"] = [action] if action is not None else []
         return result, 0
-    if initial["overall_state"] == "READY":
-        result["outcome"] = "ready"
+    if completed_outcome := _startup_completed_outcome(initial):
+        result["outcome"] = completed_outcome
         return result, 0
     if action is None:
         result["outcome"] = "manual_action_required"
@@ -5262,8 +5325,8 @@ def up_node(
         report = collect_node_status(layout)
         with output_context:
             for _transition in range(MAX_UP_TRANSITIONS):
-                if report["overall_state"] == "READY":
-                    result["outcome"] = "ready"
+                if completed_outcome := _startup_completed_outcome(report):
+                    result["outcome"] = completed_outcome
                     result["completed_actions"] = completed
                     result["status"] = report
                     return result, 0
@@ -5401,8 +5464,8 @@ def submit_up_to_controller(
         "completed_actions": [],
         "status": initial,
     }
-    if initial["overall_state"] == "READY":
-        result["outcome"] = "ready"
+    if completed_outcome := _startup_completed_outcome(initial):
+        result["outcome"] = completed_outcome
         return result, 0
 
     report = initial
@@ -5418,8 +5481,8 @@ def submit_up_to_controller(
                 result["completed_actions"].append("activate-release")
             report = collect_node_status(layout)
 
-    if report["overall_state"] == "READY":
-        result["outcome"] = "ready"
+    if completed_outcome := _startup_completed_outcome(report):
+        result["outcome"] = completed_outcome
         result["status"] = report
         return result, 0
     if _up_action(report, False) is None:
@@ -5445,64 +5508,15 @@ def follow_submitted_controller(
     *,
     refresh_secs: float = DEFAULT_PROGRESS_REFRESH_SECS,
 ) -> tuple[dict[str, Any], int]:
-    """Render controller progress until READY, a manual stop, or operator detach."""
-    output = sys.stderr
-    display = TerminalProgressDisplay(output)
-    history = NodeProgressHistory()
-    started_at = time.monotonic()
-    observed_running = False
-    display.start()
-    try:
-        while True:
-            progress = collect_node_progress(layout)
-            display.render(
-                render_node_progress(
-                    history.apply(progress),
-                    phase="bootstrap-controller",
-                    width=shutil.get_terminal_size(fallback=(120, 24)).columns,
-                )
-            )
-
-            if progress["overall_state"] == "READY":
-                result["outcome"] = "ready"
-                result["status"] = collect_node_status(layout)
-                return result, 0
-
-            state = controller_active_state(layout)
-            if state in {"active", "activating", "reloading"}:
-                observed_running = True
-            elif (
-                not observed_running
-                and time.monotonic() - started_at < CONTROLLER_START_GRACE_SECS
-            ):
-                time.sleep(refresh_secs)
-                continue
-            else:
-                report = collect_node_status(layout)
-                result["status"] = report
-                if report["overall_state"] == "READY":
-                    result["outcome"] = "ready"
-                    return result, 0
-                result["outcome"] = "controller_stopped"
-                result["controller_state"] = state
-                result["operator_guidance"] = [
-                    "The bootstrap controller stopped before the node became ready.",
-                    "Inspect usdb-node controller status and controller logs before restarting it.",
-                ]
-                return result, 1
-            time.sleep(refresh_secs)
-    except KeyboardInterrupt:
-        result["outcome"] = "controller_detached"
-        result["status"] = collect_node_status(layout)
-        result["operator_guidance"] = [
-            "The bootstrap controller is still running under systemd.",
-            "Use usdb-node status --watch to reattach without starting another controller.",
-        ]
-        output.write("\n")
-        output.flush()
-        return result, 0
-    finally:
-        display.close()
+    """Use the same persistent observer as status --watch; Ctrl+C only detaches."""
+    code = print_progress_status(layout, json_output=False, watch=True, refresh_secs=refresh_secs)
+    result["outcome"] = "controller_detached"
+    result["status"] = collect_node_status(layout)
+    result["operator_guidance"] = [
+        "Closing this view does not stop node services or the bootstrap controller.",
+        "Use usdb-node status --watch to reattach.",
+    ]
+    return result, code
 
 
 def print_up_result(result: dict[str, Any], *, json_output: bool) -> None:
@@ -5763,6 +5777,8 @@ workflow:
     )
     up.add_argument("--sync-timeout-secs", type=int, default=DEFAULT_SYNC_TIMEOUT_SECS)
     up.add_argument("--skip-pull", action="store_true")
+    up.add_argument("--no-watch", action="store_true",
+                    help="return after submitting startup; interactive up otherwise watches until Ctrl+C")
     status = subparsers.add_parser(
         "status",
         help="Show node installation, activation, snapshot and runtime lifecycle state",
@@ -6072,14 +6088,14 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
                 dry_run=args.dry_run,
                 allow_activation=args.activate_release,
             )
-            if (
-                return_code == 0
-                and result["outcome"] == "controller_started"
-                and not args.json
-                and sys.stdout.isatty()
-                and _terminal_refresh_supported(sys.stderr)
-            ):
-                result, return_code = follow_submitted_controller(layout, result)
+        if (
+            return_code == 0
+            and result["outcome"] in {"controller_started", "ready", "awaiting_peers"}
+            and not args.json and not args.dry_run and not args.no_watch
+            and sys.stdout.isatty()
+            and _terminal_refresh_supported(sys.stderr)
+        ):
+            result, return_code = follow_submitted_controller(layout, result)
         print_up_result(result, json_output=args.json)
         return return_code
     elif args.command == "status":

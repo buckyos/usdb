@@ -27,6 +27,7 @@ import resource_policy as policy
 import usdb_node as node
 import usdb_p2p as p2p
 from runtime_compatibility import build_runtime_compatibility
+from common.controller_status import ControllerStatusFixture
 from common.native_node import NativeRuntime, ORIGIN, native_kit
 from common.native_docker import install_docker_recorder
 from common.p2p import HOST, V6
@@ -450,12 +451,15 @@ class NativeBundleTests(unittest.TestCase):
         services = {"btc-snapshot-bootstrap": dict(state="exited", exit_code=0),
                     "btc-node": dict(state="running", started_at="2026-09-15T04:46:47Z")}
         core = dict(error="Core RPC timed out", error_kind="rpc_unavailable", rpc_available=False)
-        with mock.patch.object(node, "_collect_compose_services", return_value=services), \
+        with ControllerStatusFixture() as controller, \
+             mock.patch.object(node, "_collect_compose_services", return_value=services), \
              mock.patch.object(native, "core_progress", return_value=core) as probe, \
              mock.patch.object(node, "_read_service_readiness", return_value=(None, "RPC unavailable")), \
              mock.patch.object(node, "_chain_component", return_value=node._component_progress("usdb_chain", "WAITING", "not started")), \
-             mock.patch.object(node, "_resource_progress", return_value=({}, False)), \
-             mock.patch.object(node, "controller_observed_state", return_value="failed"):
+             mock.patch.object(node, "_resource_progress", return_value=({}, False)):
+            controller.layout = layout
+            controller.write_unit()
+            controller.properties.update(ActiveState="failed", Result="exit-code", ExecMainCode="1", ExecMainStatus="1")
             # A newly opened watch has no memory cache; the completed job is still observable.
             for failure in (None, native.CoreProbeError("Incompatible Core response")):
                 probe.side_effect = failure

@@ -3,6 +3,7 @@
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -15,6 +16,49 @@ from common.controller_status import ControllerStatusFixture
 
 
 class ControllerStatusTests(unittest.TestCase):
+    def test_standard_launcher_is_recognized_without_user_bin_in_path(self):
+        with ControllerStatusFixture() as fixture:
+            stable = fixture.root / ".local/bin/usdb-node"
+            stable.parent.mkdir(parents=True)
+            stable.symlink_to(fixture.launcher)
+            fixture.launcher = stable
+            fixture.write_unit()
+            with mock.patch.dict(os.environ, {"USDB_NODE_LAUNCHER": ""}), \
+                 mock.patch.object(Path, "home", return_value=fixture.root), \
+                 mock.patch.object(NODE.shutil, "which", side_effect=lambda command:
+                                   str(fixture.docker) if command == "docker" else None):
+                report = fixture.report()
+            self.assertEqual(report["checks"]["controller"]["configuration_state"], "current")
+            self.assertEqual(report["next_actions"], [])
+
+    def test_progress_distinguishes_historical_manual_exit_from_real_failure(self):
+        for exit_status, expected in (("2", "idle"), ("1", "failed")):
+            with self.subTest(exit_status=exit_status), ControllerStatusFixture() as fixture:
+                fixture.properties.update(ActiveState="failed", Result="exit-code", ExecMainCode="1", ExecMainStatus=exit_status)
+                base = dict(release_id="test", observed_at="now", overall_state="READY",
+                            components=[], controller_state="failed")
+                with mock.patch.object(NODE, "_collect_node_progress", return_value=base):
+                    progress = NODE.collect_node_progress(fixture.layout)
+                rendered = NODE.render_node_progress(progress)
+                self.assertIn("controller=" + expected, rendered)
+                self.assertIn("systemd=failed | last exit=" + exit_status, rendered)
+                self.assertEqual(progress["overall_state"], "READY")
+                self.assertEqual(progress["controller_state"], "failed")
+                self.assertEqual(progress["controller"]["action_required"], exit_status == "1")
+
+    def test_progress_keeps_controller_probe_failure_actionable(self):
+        with ControllerStatusFixture() as fixture:
+            fixture.run.side_effect = subprocess.TimeoutExpired("systemctl", 5)
+            base = dict(release_id="test", observed_at="now", overall_state="READY", components=[])
+            with mock.patch.object(NODE, "_collect_node_progress", return_value=base) as collect:
+                progress = NODE.collect_node_progress(fixture.layout)
+            collect.assert_called_once_with(fixture.layout, controller_state="unavailable")
+            self.assertEqual(fixture.run.call_count, 1)
+            rendered = NODE.render_node_progress(progress)
+            self.assertIn("controller=unavailable", rendered)
+            self.assertIn("Action: usdb-node controller status", rendered)
+            self.assertEqual(progress["overall_state"], "READY")
+
     def test_completed_controller_is_visible_without_downgrading_ready_node(self):
         with ControllerStatusFixture() as fixture:
             report = fixture.report()
