@@ -8,10 +8,9 @@ from pathlib import Path
 import time
 
 from ord_runtime import FIELDS, SCHEMA, STATES
+from ord_release import IDENTITY, LEGACY_IDENTITY, LEGACY_VERSION, VERSION
 from resource_policy import GIB, memory_bytes
 
-IDENTITY = {"schema_version": "usdb-ord-dataset:v1", "bitcoin_network": "main",
-            "ord_version": "0.23.3", "indexes": ["inscriptions", "addresses"]}
 GUIDANCE = {
     "DISABLED": "Run usdb-node down, then set-minting --enabled on and up to enable the local backend.",
     "WAITING_CORE": "Waiting for the Bitcoin foreground chain to catch up; USDB startup remains independent.",
@@ -35,8 +34,8 @@ def enabled(env):
     return value == "1"
 
 
-def data_path(root):
-    return Path(root) / "datasets" / "ord" / "btc-mainnet" / "ord-0.23.3"
+def data_path(root, version=VERSION):
+    return Path(root) / "datasets" / "ord" / "btc-mainnet" / f"ord-{version}"
 
 
 def environment(root, active, *, legacy_txindex="0"):
@@ -46,7 +45,8 @@ def environment(root, active, *, legacy_txindex="0"):
             "ORD_INDEX_CACHE_BYTES": str(GIB), "ORD_MIN_FREE_BYTES": str(50 * GIB)}
 
 
-def validate(env):
+def validate(env, *, require_current=False):
+    """Accept the recognized older path for activation, but never for startup."""
     if not enabled(env):
         return
     if env.get("BTC_TXINDEX") != "1":
@@ -54,8 +54,12 @@ def validate(env):
     if any(arg.lstrip("-").split("=", 1)[0].removeprefix("no") in {"txindex", "prune"}
            for arg in env.get("BTC_EXTRA_ARGS", "").split()):
         raise ValueError("BTC_EXTRA_ARGS cannot override txindex or pruning for local minting")
-    if Path(env.get("ORD_DATA_HOST_DIR", "")) != data_path(env["USDB_DATA_ROOT"]):
+    configured = Path(env.get("ORD_DATA_HOST_DIR", ""))
+    allowed = {data_path(env["USDB_DATA_ROOT"]), data_path(env["USDB_DATA_ROOT"], LEGACY_VERSION)}
+    if configured not in allowed:
         raise ValueError("ORD_DATA_HOST_DIR must use the versioned Bitcoin mainnet dataset")
+    if require_current and configured != data_path(env["USDB_DATA_ROOT"]):
+        raise ValueError(f"Ord {VERSION} requires a separate index; run usdb-node activate-release while stopped. The old Ord dataset is preserved.")
     limit = memory_bytes(env.get("ORD_MEMORY_LIMIT", "4g"), "ORD_MEMORY_LIMIT")
     for key, default in (("ORD_INDEX_CACHE_BYTES", GIB), ("ORD_MIN_FREE_BYTES", 50 * GIB)):
         if not env.get(key, str(default)).isascii() or not env.get(key, str(default)).isdigit():
@@ -68,7 +72,7 @@ def validate(env):
 
 def prepare(env):
     """Claim only a new or matching dataset; never replace an existing index."""
-    validate(env)
+    validate(env, require_current=True)
     if not enabled(env):
         return
     root = data_path(env["USDB_DATA_ROOT"])
@@ -86,12 +90,33 @@ def prepare(env):
             json.dump(IDENTITY, output)
 
 
+def activation_updates(env):
+    """Select a fresh versioned index; never open, move or delete the older DB."""
+    value = env.get("ORD_DATA_HOST_DIR")
+    if not value or Path(value) == data_path(env["USDB_DATA_ROOT"]):
+        return {}
+    legacy = data_path(env["USDB_DATA_ROOT"], LEGACY_VERSION)
+    if Path(value) != legacy:
+        raise ValueError("Unknown Ord dataset path; release activation will not migrate it")
+    if any(path.is_symlink() for path in (legacy, *legacy.parents)):
+        raise ValueError("Refusing symlinked Ord data directory")
+    if legacy.exists():
+        marker = legacy / "identity.json"
+        if marker.is_symlink() or (marker.exists() and json.loads(marker.read_text()) != LEGACY_IDENTITY):
+            raise ValueError("Legacy Ord dataset identity differs; existing data was preserved")
+        if not marker.exists() and any(legacy.iterdir()):
+            raise ValueError("Refusing nonempty unmarked legacy Ord dataset; existing data was preserved")
+    return {"ORD_DATA_HOST_DIR": str(data_path(env["USDB_DATA_ROOT"]))}
+
+
 def progress(env, *, now_ms=None):
     """Old successful observations cannot authorize a capability after a restart."""
     active = enabled(env)
     result = dict(enabled=active, state="UNAVAILABLE" if active else "DISABLED",
                   backend_ready=False, transactions_enabled=False)
     if active:
+        if Path(env.get("ORD_DATA_HOST_DIR", "")) != data_path(env["USDB_DATA_ROOT"]):
+            return dict(result, state="BLOCKED_CONFIG", guidance=f"Run usdb-node down, then activate-release to select the Ord {VERSION} dataset; the older index is retained.")
         now_ms = int(time.time() * 1000) if now_ms is None else now_ms
         try:
             path = data_path(env["USDB_DATA_ROOT"]) / "progress.json"

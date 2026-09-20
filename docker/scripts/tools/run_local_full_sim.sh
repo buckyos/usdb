@@ -181,7 +181,7 @@ build_images() {
   WORLD_SIM_TOOLS_IMAGE="$(env_get WORLD_SIM_TOOLS_IMAGE usdb-world-sim-tools:local)" \
   ORD_IMAGE="$(env_get ORD_IMAGE usdb-world-sim-tools:local)" \
   WORLD_SIM_RELEASE_ORD_SOURCE="$(env_get WORLD_SIM_RELEASE_ORD_SOURCE git-tag)" \
-  WORLD_SIM_RELEASE_ORD_VERSION="$(env_get WORLD_SIM_RELEASE_ORD_VERSION 0.23.3)" \
+  WORLD_SIM_RELEASE_ORD_VERSION="$(env_get WORLD_SIM_RELEASE_ORD_VERSION 0.29.0)" \
   "${docker_dir}/scripts/tools/build_world_sim_images.sh"
 
   build_ethw_image

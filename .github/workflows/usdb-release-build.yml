@@ -65,12 +65,20 @@ jobs:
     needs:
       - release_ref
       - fast
+      - ord_compatibility
     permissions:
       attestations: write
       contents: read
       id-token: write
       packages: write
     uses: ./.github/workflows/usdb-services-image.yml
+
+  ord_compatibility:
+    name: Ord and Bitcoin release compatibility
+    needs: release_ref
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ord-compatibility.yml
 
   publish_bitcoin_image:
     name: Publish Bitcoin Core image

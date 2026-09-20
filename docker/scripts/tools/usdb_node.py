@@ -1663,6 +1663,19 @@ def activate_release(layout: ReleaseLayout) -> None:
         **layout.images,
         "USDB_FIREWALL_MODE": configured_firewall_mode(layout),
     }
+    import usdb_minting
+    env = read_env(layout.node_env)
+    ord_updates = usdb_minting.activation_updates(env)
+    if ord_updates:
+        if any(item.get("state") not in {"exited", "dead", "created"}
+               for item in _collect_compose_services(layout).values()):
+            raise ValueError("Stop the node with usdb-node down before selecting the new Ord dataset")
+        usdb_minting.prepare({**env, **ord_updates})
+        backup = layout.node_env.with_name(layout.node_env.name + ".ord-upgrade-backup")
+        if backup.is_symlink():
+            raise ValueError("Ord upgrade backup must not be a symlink")
+        _atomic_write_private(backup, original)
+        updates.update(ord_updates)
     updated = upsert_env(original, updates)
     try:
         _atomic_write_private(layout.node_env, updated)
@@ -1675,6 +1688,10 @@ def activate_release(layout: ReleaseLayout) -> None:
     except BaseException:
         _atomic_write_private(layout.node_env, original)
         raise
+    if ord_updates:
+        print(f"Selected Ord {usdb_minting.VERSION} dataset: {ord_updates['ORD_DATA_HOST_DIR']}; old index retained at {env['ORD_DATA_HOST_DIR']}.")
+        if usdb_minting.enabled(env):
+            print("Ord will rebuild its optional index from existing Bitcoin blocks; Bitcoin, BH and USDB data are unchanged.")
 
 
 def _snapshot_trusted_keys(layout: ReleaseLayout) -> Path:

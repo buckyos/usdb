@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "ord-029-service-upgrade",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Upgrade the optional external Ord service to 0.29.0 with Bitcoin Core 31.1 qualification",
+  "details": [
+    "Build Ord from the verified official 0.29.0 commit using a reviewed dependency lock and auditable services binary. Source-built USDB world-sim uses the same version and lock; the embedded Indexer parser is unchanged.",
+    "Ord index schema changes from 30 to 34. Release activation selects a separate versioned Ord directory, backs up the old node configuration and retains the old index. Enabled Ord rebuilds from existing Bitcoin blocks; Bitcoin, BH and USDB datasets are preserved.",
+    "Disabled Ord remains disabled, with no index creation. Default CPU, RAM and cache limits are unchanged; enabled upgrades require indexing time and space for both retained and new Ord indexes.",
+    "A release gate tests the pinned Ord and Bitcoin binaries for inscription creation, content and address APIs, canonical reorg recovery and restart persistence in isolated regtest."
+  ],
+  "operator_actions": [
+    "Stop the node, install the new node kit, activate-release, then doctor and up. For enabled Ord, reserve disk for the new index and monitor minting-status until it catches up; retain the old directory and node.env.ord-upgrade-backup for rollback."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": true,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": ["https://github.com/ordinals/ord/releases/tag/0.29.0"]
+}

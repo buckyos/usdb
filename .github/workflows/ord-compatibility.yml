@@ -1,0 +1,51 @@
+name: Ord and Bitcoin Compatibility
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/ord-compatibility.yml
+      - docker/Dockerfile.usdb-services
+      - docker/Dockerfile.bitcoin-core
+      - docker/bitcoin-source.json
+      - docker/locks/ord-*.Cargo.lock
+      - docker/scripts/tools/ord_*.py
+      - docker/scripts/tools/usdb_minting.py
+      - tests/ord_release_smoke.py
+
+permissions:
+  contents: read
+
+jobs:
+  regtest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the pinned release binaries without publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --target ord-builder -f docker/Dockerfile.usdb-services -t usdb-ord-compat .
+          docker build --target verifier -f docker/Dockerfile.bitcoin-core -t usdb-core-compat .
+          mkdir -p "$RUNNER_TEMP/ord-compat"
+          ord_container="$(docker create usdb-ord-compat)"
+          core_container="$(docker create usdb-core-compat /bin/true)"
+          trap 'docker rm -f "$ord_container" "$core_container" >/dev/null' EXIT
+          docker cp "$ord_container:/opt/ord/bin/ord" "$RUNNER_TEMP/ord-compat/ord"
+          docker cp "$core_container:/opt/bitcoin/bin/bitcoind" "$RUNNER_TEMP/ord-compat/bitcoind"
+      - name: Verify indexing, inscription APIs, reorg and restart
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 tests/ord_release_smoke.py \
+            --ord "$RUNNER_TEMP/ord-compat/ord" \
+            --bitcoind "$RUNNER_TEMP/ord-compat/bitcoind" \
+            --report "$RUNNER_TEMP/ord-compat/report.json"
+      - name: Upload compatibility evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ord-bitcoin-compatibility-${{ github.sha }}
+          path: ${{ runner.temp }}/ord-compat/report.json
+          if-no-files-found: error

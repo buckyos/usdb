@@ -1,7 +1,8 @@
-FROM rust:1.89.0-bookworm AS ord-builder
+FROM rust:1.91.0-bookworm AS ord-builder
 
 ARG ORD_BUILD_MODE=staged-binary
-ARG ORD_VERSION=0.23.3
+ARG ORD_VERSION=0.29.0
+ARG ORD_REVISION=7e37a3bd3391044b39f5f11f20dfdb8b3764cd0e
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -12,6 +13,7 @@ RUN apt-get update \
 
 WORKDIR /tmp
 COPY docker/.build-world-sim/ord/bin/ord /tmp/staged-ord/ord
+COPY docker/locks/ord-0.29.0.Cargo.lock /tmp/ord-release.Cargo.lock
 
 RUN mkdir -p /opt/ord/bin \
     && case "${ORD_BUILD_MODE}" in \
@@ -21,7 +23,10 @@ RUN mkdir -p /opt/ord/bin \
       git-tag) \
         git clone --branch "${ORD_VERSION}" --depth 1 https://github.com/ordinals/ord.git /tmp/ord-src \
         && cd /tmp/ord-src \
-        && cargo build --bin ord --release \
+        && test "$(git rev-parse HEAD)" = "${ORD_REVISION}" \
+        && cp /tmp/ord-release.Cargo.lock Cargo.lock \
+        && cargo build --locked --bin ord --release \
+        && test "$(target/release/ord --version)" = "ord ${ORD_VERSION}" \
         && install -m 0755 /tmp/ord-src/target/release/ord /opt/ord/bin/ord \
         ;; \
       *) \

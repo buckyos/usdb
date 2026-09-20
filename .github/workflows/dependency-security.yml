@@ -62,7 +62,7 @@ jobs:
             echo "## Rust dependency security"
             echo
           } >>"$GITHUB_STEP_SUMMARY"
-          for lockfile in src/btc/Cargo.lock docker/locks/ord-0.23.3.Cargo.lock; do
+          for lockfile in src/btc/Cargo.lock docker/locks/ord-0.29.0.Cargo.lock; do
             name="${lockfile//\//_}"
             report_path="${report_dir}/${name}.json"
             stderr_path="${report_dir}/${name}.stderr.log"
