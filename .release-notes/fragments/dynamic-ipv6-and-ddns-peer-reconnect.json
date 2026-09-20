@@ -1,0 +1,25 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "dynamic-ipv6-and-ddns-peer-reconnect",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime", "documentation"],
+  "summary": "Follow changing host IPv6 addresses and re-resolve DDNS peers on reconnect",
+  "details": [
+    "New setup and peer configuration default to --advertise-ipv6 auto. Startup checks and local enode observations select a current non-temporary public address on a default uplink without persisting transient IPs, recreating containers or invalidating mining authorization. Existing explicit IP settings remain pinned.",
+    "The paired go-ethereum change preserves hostnames from configured enode URLs and resolves them again on every dial attempt. Multiple DNS addresses share a bounded cancellable dial budget and each resolved address is checked against netrestrict. Failed lookups retain the domain for subsequent retries without dialing stale cached IPs.",
+    "Configured DNS bootstrap nodes are retained as persistent dial targets so reconnection remains possible with an empty discovery table. Existing healthy connections are not disconnected solely because DNS changes. Initial URL parsing at chain startup still requires DNS resolution.",
+    "Peer status exposes automatic versus fixed IPv6 selection and the currently resolved local address. The handbook explains paired upgrades, DDNS enode sharing and recovery boundaries. Control-plane behavior is unchanged."
+  ],
+  "operator_actions": [
+    "Deploy the paired node kit and chain image on the affected nodes; the connecting node requires the updated chain image for DDNS reconnection. No network reset or data rebuild is required.",
+    "For an existing host with changing IPv6, run usdb-node peers configure --ip-family dual --advertise-ipv6 auto, retaining existing advertised IPv4 and custom port options. Wait for APPLIED and run usdb-node up if startup had already stopped.",
+    "Share an enode containing the node's unchanged public key, DDNS hostname and P2P ports. Maintain the DNS records externally and verify peers status remoteAddress from the connecting node."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": []
+}

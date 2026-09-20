@@ -112,7 +112,7 @@ class P2PSetupTests(unittest.TestCase):
             f.configure.assert_not_called()
 
     def test_changed_auto_selection_after_review_is_rejected_before_writing(self):
-        for change in ({"ipv6_default_route": False}, {"ipv6": ["2001:4860::2"]}):
+        for change in ({"ipv6_default_route": False}, {"ipv6": []}):
             with self.subTest(change=change), SetupFixture() as f:
                 reviewed, _ = P2P.select("auto")
                 f.host.update(change)

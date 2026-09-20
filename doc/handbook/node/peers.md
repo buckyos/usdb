@@ -60,7 +60,7 @@ usdb-node peers enode --family ipv6
 ### 准备条件
 
 - 使用支持 IPv6 的配套节点工具与链镜像；完成[主机检查](requirements.md)，Docker Engine 至少 `28.0.0`，Compose 至少 `2.33.1`。
-- 宿主机具有已分配、稳定的 IPv6 地址和默认路由。不要使用 `fe80::` 链路本地地址、临时地址或 Docker 内部地址作为公网入口。
+- 宿主机具有已分配、非临时的公网 IPv6 地址和默认路由。不要使用 `fe80::` 链路本地地址、临时地址或 Docker 内部地址作为公网入口。运营商可能改变地址前缀；这种环境按下方的动态地址方式配置。
 - 需要被其他节点连接时，主机防火墙、云安全组或路由器放行实际 P2P 端口，默认 **TCP 与 UDP 31303**。IPv6 不使用 IPv4 的端口转发规则。
 
 先在宿主机查看：
@@ -115,7 +115,63 @@ usdb-node peers enode --family ipv6
 
 运行中的节点会只重建链服务，短暂中断 USDB P2P/RPC，保留链数据、节点身份、Seed 和已授权矿工配置，上游同步继续。原本停止的节点只保存配置，之后仍需 `usdb-node up`。这一网络配置操作不需要清空数据，也无需额外执行整套 `down → up`。
 
-`auto` 只在执行配置时选择并保存一次地址族；后来增加 IPv6 地址，不会自动把已保存的 IPv4 配置切成双栈。明确要求 IPv6 时选择 `ipv6` 或 `dual`，并检查实际结果。
+`--ip-family auto` 只在执行配置时选择并保存一次**地址族**；后来增加 IPv6 地址，不会自动把已保存的 IPv4 配置切成双栈。它与下方 `--advertise-ipv6 auto` 的**地址自动跟随**是两个不同选项。
+
+## 动态 IPv6 和 DDNS
+
+**本节需要包含动态 IPv6/DDNS 改进的配套节点工具与链镜像；r28 不支持地址自动跟随和域名自动重连。** 先按[升级说明](maintenance.md#升级节点)安装包含此改进的版本，不要只把旧版参数中的 IP 换成 `auto`。
+
+### 本机自动跟随地址变化
+
+首次安装时可使用：
+
+```bash
+usdb-node setup --p2p-ip-family dual --advertise-ipv6 auto
+```
+
+新版在未指定 IPv6 地址时也默认采用自动模式。已有配置中的具体 IP 仍按固定地址处理，升级不会自动改写；地址经常变化的主机需要显式切换一次：
+
+```bash
+usdb-node peers configure --ip-family dual --advertise-ipv6 auto
+usdb-node peers status --watch
+```
+
+保留已有的 `--advertise-ipv4` 和自定义端口参数。首次切换沿用上面的链服务重建流程；等待 `APPLIED` 后，若原节点因旧地址失效而停止启动，再执行 `usdb-node up`。
+
+自动模式优先选择默认上联网卡上的有效公网地址，排除临时、尚未就绪或已弃用的地址。每次启动检查和本机地址查询都重新选择；`peers status` 显示 `IPv6 address: auto; current=...`，`peers network --json` 提供 `ipv6_address_mode` 和 `resolved_ipv6`。地址前缀变化后无需再次配置，也不会因此重建容器、重同步数据或使矿工授权失效。
+
+双栈端口已经监听 `[::]:31303`。`::` 只用于监听，不能作为其他节点连接的地址。若公网 IPv6 或默认路由完全消失，工具仍会明确报告缺少网络条件，不会假装正常或悄悄切换地址族。多网卡环境需要固定指定入口时，仍可使用 `--advertise-ipv6 <具体地址>`。
+
+### 用 DDNS 提供长期分享的 enode
+
+自动选址解决本机配置过期；DDNS 让连接方保留同一个域名入口。由你现有的 DDNS 服务更新域名的 AAAA 记录，节点工具不代管域名或 DNS 凭据。
+
+1. 在提供入口的节点执行 `usdb-node peers enode --family ipv6`，取得完整 enode。
+2. 保留 `@` 前的完整公钥和端口，把 `@[IPv6地址]` 替换成 `@node.example.org`。域名不加方括号；若有 `?discport=...` 后缀，完整保留。
+3. 在**需要连接它的另一台节点**添加这个域名 enode：
+
+```bash
+usdb-node peers add 'enode://<提供入口的节点公钥>@node.example.org:31303'
+usdb-node peers status --watch
+```
+
+这里的公钥、域名和端口都要换成自己的实际值。域名不填入 `--advertise-ipv6`；本机自动模式和连接方域名 enode 分别配置。`peers enode` 输出的是当前 IP 候选，分享域名时按上述步骤替换。
+
+包含此改进的链镜像会保留域名，在每轮重连时重新解析；TCP 连接失败时，会尝试本次解析得到的其他 A/AAAA 地址。域名种子即使暂时没有其他已连接节点，也会继续尝试连接。DNS 临时失败不会丢掉保存的域名，也不会退回已经缓存的旧地址。
+
+运行中的连接不会仅因 DNS 记录变化而被主动断开；恢复时间取决于连接断开检测、DNS 缓存和重连间隔。链启动时首次解析域名仍须成功。仅支持 IPv6 入站时，建议使用专门的 AAAA 域名，避免无效的 IPv4 记录拖慢连接。
+
+### 确认连接与排查
+
+```bash
+getent ahostsv6 node.example.org
+usdb-node peers status --json
+usdb-node peers network --json
+```
+
+在入口节点核对 DNS 的 AAAA 是否对应主机当前公网 IPv6；在连接方核对 `connected[].network.remoteAddress` 是否为更新后的地址。`ping` 成功只证明 ICMP 路径可用，仍需放行 TCP/UDP P2P 端口并确认实际 peer 连接。
+
+若 DNS 已更新但仍连接旧地址，先确认连接方使用的是包含此修复的链镜像，且保存的 Seed 是域名而非旧 IP。查看链日志中的 `DNS peer lookup failed`、`DNS peer has no allowed addresses`、`Dialing DNS peer`（这些为 debug 级日志），并检查域名解析、IPv6 路由和防火墙。地址变化后无需删除链数据或重新下载快照。
 
 ## IPv6 诊断与恢复
 
@@ -238,7 +294,8 @@ usdb-node peers status --json
 | 原始 enode 是 `127.0.0.1`，但网络已经是双栈 | 使用 `peers enode --family ipv6` 查询对外候选，并核对 `peers network --json`；不凭原始公告值判断监听失败 |
 | `peers status` 没显示本机 enode | 旧版需额外使用 `peers enode`；包含本机地址展示改进的版本会直接显示 `Local P2P` |
 | `dual` 模式只列出 IPv6 | 检查是否有可确认的对外 IPv4；双栈端口发布和对外地址生成是两项检查 |
-| `P2P_IPV6_HOST_REQUIRED` / `P2P_IPV6_HOST_CHANGED` | 检查本机配置的 IPv6 是否仍存在、默认路由是否正常；地址变化后重新配置并重新导出 enode |
+| `P2P_IPV6_HOST_REQUIRED` | 自动模式没有有效公网 IPv6 或默认路由时，先恢复网络；固定模式则核对指定地址是否存在 |
+| `P2P_IPV6_HOST_CHANGED` | 保存的固定地址已失效；动态地址主机升级后切换 `--advertise-ipv6 auto`，对外使用域名 enode；继续固定模式则重新配置并分享新地址 |
 | `P2P_IPV6_RA_REQUIRED` | 由管理员检查实际接口的 RA 接收配置；恢复路由后重试 |
 | `P2P_TRANSPORT_MISMATCH` | 实际容器的地址、网关或 TCP/UDP 发布与配置不符；核对配套版本与网络配置，修复后用 `peers apply` 重试 |
 | 本机 enode 检查失败，但已有连接仍正常 | 分别查看 `local` 和 `membership`；本机探测失败不等于已有连接断开，也不能据此确认新入站可用 |

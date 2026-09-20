@@ -21,7 +21,8 @@ def add_options(parser, *, setup=False):
     parser.add_argument("--p2p-ip-family" if setup else "--ip-family", dest="p2p_ip_family",
                         choices=FAMILIES, default="auto")
     parser.add_argument("--advertise-ipv4", default="", help="Externally reachable IPv4 address, including a router's mapped address")
-    parser.add_argument("--advertise-ipv6", default="", help="Stable IPv6 address assigned to this host")
+    parser.add_argument("--advertise-ipv6", default="auto",
+                        help="auto follows current non-temporary global IPv6 addresses (default); an explicit IP pins the address")
     parser.add_argument("--advertise-port", type=int, default=31303, help="External TCP port, after any router forwarding")
     parser.add_argument("--advertise-discovery-port", type=int, help="External UDP port; defaults to advertised TCP port")
 
@@ -64,11 +65,12 @@ def validate(env):
     for af in (4, 6):
         value = env.get(f"USDB_P2P_ADVERTISE_IPV{af}", "")
         if value:
-            usable_ip(value, af)
+            if not (af == 6 and value == "auto"):
+                usable_ip(value, af)
             if family not in {f"ipv{af}", "dual"}:
                 raise ValueError(f"P2P_FAMILY_CONFLICT: cannot advertise IPv{af} in {family} mode")
     if family in {"ipv6", "dual"} and not env.get("USDB_P2P_ADVERTISE_IPV6"):
-        raise ValueError("P2P_IPV6_HOST_REQUIRED: configure a stable IPv6 address with peers configure")
+        raise ValueError("P2P_IPV6_HOST_REQUIRED: configure auto or a fixed IPv6 address with peers configure")
     for key in KEYS[-2:]:
         value = env.get(key, "31303")
         if not re.fullmatch(r"[0-9]+", value) or not 1 <= int(value) <= 65535:
@@ -80,6 +82,7 @@ def host_capabilities():
     report = {"ipv4": [], "ipv6": [], "ipv6_default_route": False, "ipv6_ra_interfaces": [], "errors": []}
     try:
         interfaces = command_json(["ip", "-j", "address", "show", "up"])
+        ipv6_by_interface = {}
         for interface in interfaces:
             if interface.get("link_type") == "loopback" or interface.get("ifname", "").startswith(("docker", "br-", "veth")):
                 continue
@@ -93,9 +96,15 @@ def host_capabilities():
                     continue
                 address = usable_ip(entry["local"], af)
                 report[f"ipv{af}"].append(address)
+                if af == 6:
+                    ipv6_by_interface.setdefault(interface.get("ifname"), []).append(address)
         routes = command_json(["ip", "-j", "-6", "route", "show", "default"])
-        report["ipv6_default_route"] = any(route.get("dev") and route.get("type", "unicast") == "unicast"
-            and "linkdown" not in route.get("flags", []) for route in routes)
+        usable_routes = sorted((route for route in routes if route.get("dev")
+            and route.get("type", "unicast") == "unicast" and "linkdown" not in route.get("flags", [])),
+            key=lambda route: route.get("metric", 0))
+        report["ipv6_default_route"] = bool(usable_routes)
+        report["ipv6_uplink_addresses"] = list(dict.fromkeys(address for route in usable_routes
+            for address in sorted(ipv6_by_interface.get(route["dev"], []))))
         for name in sorted({route["dev"] for route in routes if route.get("dev") and route.get("protocol") == "ra"}):
             accept_ra = Path(f"/proc/sys/net/ipv6/conf/{name}/accept_ra").read_text().strip()
             report["ipv6_ra_interfaces"].append({"interface": name, "accept_ra": accept_ra})
@@ -128,16 +137,24 @@ def engine_capabilities():
     return {"engine": server["Version"], "compose": compose}
 
 
-def select(requested, *, advertise_ipv4="", advertise_ipv6="", advertise_port=31303,
+def automatic_ipv6(host):
+    """Select a usable public address on the default uplink when interface data is available."""
+    candidates = host["ipv6"]
+    if "ipv6_uplink_addresses" in host:
+        candidates = host["ipv6_uplink_addresses"]
+    return next((value for value in candidates if ipaddress.ip_address(value).is_global), "")
+
+
+def select(requested, *, advertise_ipv4="", advertise_ipv6="auto", advertise_port=31303,
            discovery_port=None, host=None):
-    """Resolve auto once and persist the decision; explicit IPv6 never falls back."""
+    """Persist the address family and selection policy, not a transient automatic IPv6."""
     if requested not in FAMILIES:
         raise ValueError("invalid P2P address family")
     host = host if host is not None else host_capabilities()
     ipv4 = usable_ip(advertise_ipv4, 4) if advertise_ipv4 else next(
         (value for value in host["ipv4"] if ipaddress.ip_address(value).is_global), "")
-    ipv6 = usable_ip(advertise_ipv6, 6) if advertise_ipv6 else next(
-        (value for value in host["ipv6"] if ipaddress.ip_address(value).is_global), "")
+    pinned_ipv6 = advertise_ipv6 not in {"", "auto"}
+    ipv6 = usable_ip(advertise_ipv6, 6) if pinned_ipv6 else automatic_ipv6(host)
     reason = "explicit address family"
     family = requested
     if requested == "auto":
@@ -156,11 +173,11 @@ def select(requested, *, advertise_ipv4="", advertise_ipv6="", advertise_port=31
             check_router_advertisements(host)
             engine_capabilities()
         except (OSError, ValueError, subprocess.SubprocessError) as error:
-            if requested != "auto" or advertise_ipv6:
+            if requested != "auto" or pinned_ipv6:
                 raise
             family, reason = "ipv4", f"IPv6 unavailable: {error}"
     if family == "ipv4":
-        if advertise_ipv6:
+        if pinned_ipv6:
             raise ValueError("P2P_FAMILY_CONFLICT: IPv6 advertisement requires ipv6 or dual")
         ipv6 = ""
     if family == "ipv6":
@@ -168,7 +185,8 @@ def select(requested, *, advertise_ipv4="", advertise_ipv6="", advertise_port=31
             raise ValueError("P2P_FAMILY_CONFLICT: IPv4 advertisement requires ipv4 or dual")
         ipv4 = ""
     updates = {"USDB_P2P_REQUESTED_FAMILY": requested, "USDB_P2P_IP_FAMILY": family,
-               "USDB_P2P_ADVERTISE_IPV4": ipv4, "USDB_P2P_ADVERTISE_IPV6": ipv6,
+               "USDB_P2P_ADVERTISE_IPV4": ipv4,
+               "USDB_P2P_ADVERTISE_IPV6": ("auto" if ipv6 and not pinned_ipv6 else ipv6),
                "USDB_P2P_ADVERTISE_PORT": str(advertise_port),
                "USDB_P2P_ADVERTISE_DISCOVERY_PORT": str(discovery_port if discovery_port is not None else advertise_port)}
     validate(updates)
@@ -197,6 +215,9 @@ def selection_report(updates, reason, *, bootnodes=""):
     for af in (4, 6):
         address = updates[f"USDB_P2P_ADVERTISE_IPV{af}"]
         if address:
+            if af == 6 and address == "auto":
+                current = automatic_ipv6(host_capabilities()) or "unavailable; recheck before startup"
+                address = f"{current} (auto; follows address changes without recreating containers)"
             lines.append(f"  Advertised IPv{af}: {address}; TCP {updates['USDB_P2P_ADVERTISE_PORT']}, UDP {updates['USDB_P2P_ADVERTISE_DISCOVERY_PORT']}")
     if requested == "auto" and family == "ipv4":
         lines += ["WARNING P2P_IPV4_FALLBACK: automatic selection will use IPv4 only; IPv6 peers require fixing the checks above.",
@@ -215,22 +236,29 @@ def host_preflight_report():
     return "\n".join([
         "P2P host check (read-only preview; existing node configuration is unchanged):",
         selection_report(updates, reason),
-        "New node requiring IPv6: usdb-node setup --p2p-ip-family dual --advertise-ipv6 ADDRESS",
-        "Existing node after host repair: usdb-node peers configure --ip-family dual --advertise-ipv6 ADDRESS",
+        "New node requiring IPv6: usdb-node setup --p2p-ip-family dual --advertise-ipv6 auto",
+        "Existing node after host repair: usdb-node peers configure --ip-family dual --advertise-ipv6 auto",
     ])
 
 
-def check_host(env):
-    """Recheck explicit transport requirements before creating/recreating chain."""
+def check_host(env, *, host=None):
+    """Recheck transport requirements and resolve auto without rewriting operator settings."""
     validate(env)
     family = env.get("USDB_P2P_IP_FAMILY", "ipv4")
     if family == "ipv4":
         return
-    host = host_capabilities()
-    if not host["ipv6_default_route"] or env.get("USDB_P2P_ADVERTISE_IPV6") not in host["ipv6"]:
-        raise ValueError("P2P_IPV6_HOST_CHANGED: configured IPv6 address/route is unavailable; rerun peers configure")
+    host = host if host is not None else host_capabilities()
+    configured = env.get("USDB_P2P_ADVERTISE_IPV6")
+    address = automatic_ipv6(host) if configured == "auto" else configured
+    if not host["ipv6_default_route"] or address not in host["ipv6"]:
+        if configured == "auto":
+            raise ValueError("P2P_IPV6_HOST_REQUIRED: automatic IPv6 needs a usable public address and default route; "
+                             "check ip -6 address / ip -6 route; no fixed address needs updating")
+        raise ValueError("P2P_IPV6_HOST_CHANGED: pinned IPv6 address/route is unavailable; restore it or use "
+                         "peers configure --ip-family " + family + " --advertise-ipv6 auto")
     check_router_advertisements(host)
     engine_capabilities()
+    return address
 
 
 def container_view(layout):
@@ -273,6 +301,7 @@ def endpoint_report(layout, *, chain=None):
     host = host_capabilities()
     report = {"family": env.get("USDB_P2P_IP_FAMILY", "ipv4"), "host": host, "endpoints": [],
               "reachability": "unverified", "state": "WAITING"}
+    report["ipv6_address_mode"] = "auto" if env.get("USDB_P2P_ADVERTISE_IPV6") == "auto" else "fixed"
     operation = peers.read_state(layout)
     pending_transport = operation.get("transport_updates") and operation.get("phase") != "APPLIED"
     if pending_transport:
@@ -280,7 +309,8 @@ def endpoint_report(layout, *, chain=None):
         report["operation"] = {key: operation[key] for key in ("operation_id", "phase", "error") if key in operation}
     report["guidance"] = "Verify these candidates from another host; local port configuration does not prove public TCP/UDP reachability."
     try:
-        check_host(env)
+        resolved_ipv6 = check_host(env, host=host)
+        report["resolved_ipv6"] = resolved_ipv6
         runtime = container_view(layout)
         report["container"] = runtime
         report["state"] = "CONFIGURED" if transport_ready(env, runtime) else "WAITING"
@@ -303,6 +333,8 @@ def endpoint_report(layout, *, chain=None):
             continue
         address = env.get(f"USDB_P2P_ADVERTISE_IPV{af}", "")
         source = "configured"
+        if af == 6 and address == "auto":
+            address, source = resolved_ipv6, "host-auto"
         if not address and af == 4 and env.get("USDB_NAT", "").startswith("extip:"):
             try:
                 address = usable_ip(env["USDB_NAT"][6:], 4)

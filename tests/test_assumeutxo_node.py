@@ -237,7 +237,7 @@ class NativeBundleTests(unittest.TestCase):
         env = node.read_env(installed.node_env)
         self.assertEqual({key: env[key] for key in p2p.KEYS}, {
             "USDB_P2P_IP_FAMILY": "dual", "USDB_P2P_REQUESTED_FAMILY": "auto",
-            "USDB_P2P_ADVERTISE_IPV4": "", "USDB_P2P_ADVERTISE_IPV6": V6,
+            "USDB_P2P_ADVERTISE_IPV4": "", "USDB_P2P_ADVERTISE_IPV6": "auto",
             "USDB_P2P_ADVERTISE_PORT": "31303", "USDB_P2P_ADVERTISE_DISCOVERY_PORT": "31303",
         })
         self.assertEqual(template_path.read_bytes(), original_template)

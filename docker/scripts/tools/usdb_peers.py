@@ -431,6 +431,8 @@ def render_report(report, *, connected):
     if connected and "local" in report:
         local = report["local"]
         lines.append(f"Local P2P: {local['state']} | family={local['family']} | public reachability unverified")
+        if local.get("family") in {"ipv6", "dual"}:
+            lines.append(f"  IPv6 address: {local.get('ipv6_address_mode', 'fixed')}; current={local.get('resolved_ipv6') or 'unavailable'}")
         if local.get("desired_family"):
             lines.append(f"  Pending family: {local['desired_family']}; phase={local['operation']['phase']}")
         for endpoint in local["endpoints"]:

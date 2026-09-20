@@ -22,6 +22,73 @@ from common.mining import RuntimeHelperFixture
 
 
 class P2PTests(unittest.TestCase):
+    def test_auto_address_follows_prefix_changes_without_mutation_or_miner_drift(self):
+        with P2PFixture() as f:
+            f.configure(advertise_ipv6="auto")
+            f.run_peers()
+            f.run_peers()
+            f.enable()
+            f.run()
+            before = f.layout.node_env.read_bytes()
+            calls = list(f.calls)
+            old_report = P2P.endpoint_report(f.layout)
+            self.assertEqual(old_report["resolved_ipv6"], V6)
+            f.host["ipv6"] = ["2001:4860::99"]
+            self.assertEqual(P2P.check_host(NODE.read_env(f.layout.node_env)), "2001:4860::99")
+            report = P2P.endpoint_report(f.layout)
+            self.assertEqual(report["state"], "CONFIGURED")
+            self.assertEqual(report["ipv6_address_mode"], "auto")
+            self.assertIn("@[2001:4860::99]:31303", report["endpoints"][0]["enode"])
+            MINING.validate_start(f.layout)
+            self.assertEqual(f.layout.node_env.read_bytes(), before)
+            self.assertEqual(f.calls, calls)
+
+    def test_fixed_address_still_requires_explicit_reconfiguration(self):
+        with P2PFixture() as f:
+            f.configure(advertise_ipv6=V6)
+            f.run_peers()
+            f.run_peers()
+            f.host["ipv6"] = ["2001:4860::99"]
+            report = P2P.endpoint_report(f.layout)
+            self.assertEqual(report["state"], "BLOCKED")
+            self.assertEqual(report["endpoints"], [])
+            self.assertIn("P2P_IPV6_HOST_CHANGED", report["error"])
+            self.assertIn("--advertise-ipv6 auto", report["error"])
+
+    def test_auto_address_requires_current_route_and_public_address(self):
+        with P2PFixture() as f:
+            env, _ = P2P.select("dual")
+            self.assertEqual(env["USDB_P2P_ADVERTISE_IPV6"], "auto")
+            for update in ({"ipv6": []}, {"ipv6": ["fd12::1"]}, {"ipv6_default_route": False}):
+                with self.subTest(update=update):
+                    host = {**deepcopy(HOST), **update}
+                    with self.assertRaisesRegex(ValueError, "P2P_IPV6_HOST_REQUIRED"):
+                        P2P.check_host(env, host=host)
+            self.assertEqual(P2P.check_host(env, host=deepcopy(HOST)), V6)
+
+    def test_automatic_address_changes_preserve_reviewed_policy(self):
+        with P2PFixture() as f:
+            reviewed, _ = P2P.select("dual")
+            f.host["ipv6"] = ["2001:4860::99"]
+            self.assertEqual(P2P.select("dual")[0], reviewed)
+            text = P2P.selection_report(reviewed, "explicit address family")
+            self.assertIn("2001:4860::99 (auto; follows address changes", text)
+
+    def test_auto_address_uses_default_uplink_and_cli_policy(self):
+        items = [{"ifname": name, "addr_info": [{"family": "inet6", "scope": "global", "local": address}]}
+                 for name, address in (("lan0", "2001:4860::1"), ("wan0", "2001:4860::2"),
+                                       ("wan1", "2001:4860::3"))]
+        routes = [{"dev": "wan1", "metric": 200}, {"dev": "wan0", "metric": 100}]
+        with mock.patch.object(P2P, "command_json", side_effect=[items, routes]):
+            host = P2P.host_capabilities()
+        self.assertEqual(P2P.automatic_ipv6(host), "2001:4860::2")
+        for command in (["setup", "--p2p-ip-family", "dual"],
+                        ["peers", "configure", "--ip-family", "dual", "--advertise-ipv6", "auto"]):
+            args = NODE.build_parser().parse_args(command)
+            with mock.patch.object(P2P, "engine_capabilities"):
+                updates, _ = P2P.select(**P2P.options(args), host=host)
+            self.assertEqual(updates["USDB_P2P_ADVERTISE_IPV6"], "auto")
+
     def test_ra_route_must_survive_docker_enabling_forwarding(self):
         with P2PFixture() as f:
             f.host["ipv6_ra_interfaces"] = [{"interface": "eth0", "accept_ra": "1"}]
@@ -98,6 +165,7 @@ class P2PTests(unittest.TestCase):
         with mock.patch.object(P2P, "command_json", side_effect=[items, [{"dev": "eth0"}]]):
             report = P2P.host_capabilities()
         self.assertEqual(report["ipv6"], [V6])
+        self.assertEqual(report["ipv6_uplink_addresses"], [V6])
         self.assertTrue(report["ipv6_default_route"])
         with mock.patch.object(P2P, "command_json", side_effect=[items, [{"dev": "eth0", "protocol": "ra"}]]), \
                 mock.patch.object(Path, "read_text", return_value="1\n"):
@@ -270,7 +338,7 @@ class P2PTests(unittest.TestCase):
             self.assertEqual(report["state"], "READY")
             self.assertEqual(report["local"]["state"], "BLOCKED")
             self.assertEqual(report["local"]["endpoints"], [])
-            self.assertIn("P2P_IPV6_HOST_CHANGED", report["local"]["error"])
+            self.assertIn("P2P_IPV6_HOST_REQUIRED", report["local"]["error"])
             with mock.patch.object(P2P, "endpoint_report", side_effect=ValueError("invalid P2P setting")):
                 report = PEERS.observe(f.layout, connected=True)
             self.assertEqual(report["state"], "READY")
