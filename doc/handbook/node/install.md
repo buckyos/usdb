@@ -2,7 +2,7 @@
 
 [返回手册首页](../README.md) · 上一步：[环境与主机准备](requirements.md)
 
-适用范围：全新 Linux 主机上的 AssumeUTXO 发布包、`full` 节点、加入已有测试网。已有配置的节点按[日常维护](maintenance.md)操作，不重复执行 `setup`。
+适用范围：全新 Linux 主机上的 AssumeUTXO 发布包、`full` 节点、加入已有测试网。已有配置的节点按[日常维护](maintenance.md)操作；需要修改配置时，支持编辑的新版工具可在停机后重新运行 [`setup`](maintenance.md#编辑已有配置)。
 
 **先检查[版本页](../networks/testnet.md#版本与验证范围)，使用网络运维方指定版本。** r28 已确认安装和首次配置通过；同步和入网仍按本页逐项确认。r28 的 IPv6 配置方式与包含新向导提示的版本有所不同，见第 4 步。
 

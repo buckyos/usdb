@@ -28,9 +28,11 @@ def add_options(parser, *, setup=False):
 
 
 def options(args):
-    return {"requested": args.p2p_ip_family, "advertise_ipv4": args.advertise_ipv4,
-            "advertise_ipv6": args.advertise_ipv6, "advertise_port": args.advertise_port,
-            "discovery_port": args.advertise_discovery_port}
+    """Omit unspecified setup flags so existing-node edits can distinguish intent."""
+    values = {"requested": args.p2p_ip_family, "advertise_ipv4": args.advertise_ipv4,
+              "advertise_ipv6": args.advertise_ipv6, "advertise_port": args.advertise_port,
+              "discovery_port": args.advertise_discovery_port}
+    return {key: value for key, value in values.items() if value is not None}
 
 
 def command_json(arguments):

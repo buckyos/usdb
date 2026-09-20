@@ -25,6 +25,48 @@ free -h
 
 矿工节点另查 `usdb-node mining status`；执行过网络初始化的节点另查 `usdb-node sourcedao status`。主节点 `READY` 不替代这两类任务的结果。
 
+## 编辑已有配置
+
+新版 `usdb-node setup` 会识别已有 `node.env` 并进入编辑模式，以当前配置为默认值。旧版若仍提示
+`node is already configured`，先升级 node kit，或继续使用下表中的独立命令。
+
+```bash
+usdb-node down
+usdb-node setup
+usdb-node doctor
+usdb-node up
+usdb-node status --watch
+```
+
+必须停止整个节点，不能使用 `down --keep-bitcoin` 代替。向导不会自动停止服务；容器仍在运行、
+状态无法确认，或存在未完成的 Peer、Mining、SourceDAO 操作时，会拒绝修改并提示处理方法。
+
+向导支持以下配置；原有独立命令继续可用：
+
+| 配置 | 向导行为 | 独立入口 |
+| --- | --- | --- |
+| 完整 Explorer 支持 | 同时启用 archive 和私有 tracing；已有独立组合默认保留 | `set-query-mode` |
+| 本机铸造后端 | 开关 txindex + Ord，调整 Ord 内存、缓存和磁盘预留 | `set-minting --enabled on/off`、`minting-status` |
+| 整机资源 | 保留当前 auto/manual，按需调整预算或显式重算 | `set-resource-policy`、`set-bitcoin-profile`、`resources` |
+| Bitcoin 入站连接 | 选择本机访问或公开 P2P 监听，保留已有端口 | 原有配置文件中的 Bitcoin P2P 设置 |
+| 主机防火墙 | 修改 external/managed 策略和运维 SSH 端口 | `set-firewall-mode`、`firewall apply/check` |
+
+直接回车保留当前值；全程不修改选项时，不改写文件、不重算资源、不重置进度记录。启用/关闭 Ord、
+修改资源输入或明确选择重算时，才重新计算预算并清理旧资源切换记录；自动模式从启动阶段重新判断实际同步进度，保留已有链数据和索引。
+开启 archive 不会恢复已裁剪历史；开启 Ord 后仍需等待历史验证、txindex 和 Ord 索引完成，详见[本机铸造后端](../services/control-plane.md#可选的本机铸造后端)。
+
+保存前显示修改摘要并校验完整候选配置。取消或校验失败保留原配置；成功保存时，将此前配置备份为同目录的
+`node.env.setup-backup`，权限为 `0600`，下一次保存会替换这份备份。数据目录、RPC 凭据、矿工地址、节点身份、
+Seed、P2P 地址族、快照选择和 release 镜像保持原值。角色/挖矿变更仍使用 `set-role` 或 `mining enable/disable`，
+Seed/P2P 变更使用 `peers` 命令；编辑已有节点时不要给 `setup` 传首次安装的 P2P 参数。
+
+**Node 的修改在下一次 `up` 时使用，不需要 Explorer 的 `prepare --replace`。** 编辑不会重装 controller，也不会直接修改系统防火墙。
+若改动影响 managed 防火墙，先按向导提示执行 `usdb-node firewall apply --confirm` 并用 `usdb-node firewall check` 验证，再运行 `doctor/up`。
+改成 external 不会移除已经存在的 UFW 规则，需要按实际主机策略维护。原本未安装 controller 的节点继续使用 `up --foreground`，或显式执行 `controller install` 后使用后台启动。
+
+升级 release 与编辑配置是两件事：安装新工具后，先按[升级步骤](#升级节点)激活目标 release，再按需运行 `setup`。
+编辑向导不会替你切换镜像；发现仍引用旧 release 时，会提示 `activate-release`。
+
 ## 持续观察与告警
 
 无人值守节点应将[状态采集](status.md#自动采集)接入自己的监控系统。至少关注以下变化：

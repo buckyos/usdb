@@ -1848,7 +1848,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertTrue(progress.progress_json)
         setup = NODE.build_parser().parse_args(["setup"])
         self.assertIsNone(setup.bitcoin_profile)
-        self.assertEqual(setup.resource_mode, "auto")
+        self.assertIsNone(setup.resource_mode)
         policy = NODE.build_parser().parse_args(["set-resource-policy", "--mode", "auto", "--bh-memory-cap", "96g"])
         self.assertEqual(NODE._resource_caps_from_args(policy), {"USDB_BH_MEMORY_CAP": "96g"})
         profile = NODE.build_parser().parse_args(

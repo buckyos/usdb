@@ -173,6 +173,7 @@ class SetupResult:
     node_env: Path
     apply_firewall: bool
     install_snapshot: bool
+    edited: bool = False
 
 
 @dataclass(frozen=True)
@@ -1326,15 +1327,19 @@ def setup_node(
     *,
     input_fn: Any = input,
     output: Any = sys.stdout,
-    bitcoin_resource_profile: str = DEFAULT_BITCOIN_RESOURCE_PROFILE,
-    resource_management: str = "manual",
+    bitcoin_resource_profile: str | None = None,
+    resource_management: str | None = None,
     resource_caps: dict[str, str] | None = None,
     p2p_options: dict[str, Any] | None = None,
 ) -> SetupResult:
-    if layout.node_env.exists():
-        raise ValueError(
-            f"node is already configured: {layout.node_env}; use set-role or activate-release"
-        )
+    if layout.node_env.exists() or layout.node_env.is_symlink():
+        import usdb_setup
+        usdb_setup.edit(layout, sys.modules[__name__], input_fn=input_fn, output=output,
+                        resource_mode=resource_management, bitcoin_profile=bitcoin_resource_profile,
+                        caps=resource_caps, p2p_options=p2p_options)
+        return SetupResult(layout.node_env, False, False, edited=True)
+    bitcoin_resource_profile = bitcoin_resource_profile or DEFAULT_BITCOIN_RESOURCE_PROFILE
+    resource_management = resource_management or "manual"
     print(f"USDB node setup for immutable release {layout.release_id}", file=output)
     data_root = Path(
         _prompt(
@@ -1408,7 +1413,7 @@ def setup_node(
             print("No seed configured: upstream sync can proceed; network membership will remain SEED_REQUIRED. "
                   "Only the network founder uses mining enable --first-node.", file=output)
     import usdb_p2p
-    p2p_options = dict(p2p_options or {"requested": "auto"})
+    p2p_options = {"requested": "auto", **{key: value for key, value in (p2p_options or {}).items() if value is not None}}
     print("Choose dual/ipv6 when IPv6 is required; auto may fall back to IPv4 if host checks fail.", file=output)
     p2p_options["requested"] = _prompt_choice(
         "USDB P2P address family", usdb_p2p.FAMILIES,
@@ -5675,12 +5680,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     setup = subparsers.add_parser(
         "setup",
-        help="Interactively configure the node and install its bootstrap controller",
+        help="Create or edit node configuration; install the controller on first setup only",
+        description=("Create a new node, or edit current settings after usdb-node down. "
+                     "Edits preserve identity, data, release images and controller units. "
+                     "P2P flags apply to first setup; use peers configure for existing nodes."),
     )
     setup.add_argument(
         "--no-controller",
         action="store_true",
-        help="write configuration without installing the default systemd controller",
+        help="first setup only: skip installing the default systemd controller; edits preserve it",
     )
     setup.add_argument(
         "--bitcoin-profile",
@@ -5690,11 +5698,14 @@ def build_parser() -> argparse.ArgumentParser:
             "manual resource mode only: select a fixed Bitcoin memory profile"
         ),
     )
-    setup.add_argument("--resource-mode", choices=("auto", "manual"), default="auto",
-                       help="controller-managed whole-node budgets (default) or fixed operator settings")
+    setup.add_argument("--resource-mode", choices=("auto", "manual"), default=None,
+                       help="resource mode: auto on first setup; retain current mode when editing")
     _add_resource_cap_arguments(setup)
     import usdb_p2p
     usdb_p2p.add_options(setup, setup=True)
+    # Omitted options must not replace existing values during an edit.
+    setup.set_defaults(p2p_ip_family=None, advertise_ipv4=None, advertise_ipv6=None,
+                       advertise_port=None, advertise_discovery_port=None)
 
     configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
     configure.add_argument("--minting", choices=("on", "off"), default="off", help="Enable optional private Ord and early Bitcoin txindex")
@@ -5994,8 +6005,10 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             raise ValueError("A peer operation is pending; finish it with usdb-node peers apply before changing node configuration")
         if usdb_mining.pending(layout):
             raise ValueError("A mining operation is pending; finish it or use mining disable before changing node configuration")
-    if args.command in {"setup", "configure"} and args.resource_mode == "auto" and args.bitcoin_profile is not None:
-        raise ValueError("--bitcoin-profile requires --resource-mode manual; automatic mode manages all Bitcoin phases")
+    if args.command in {"setup", "configure"}:
+        editing = args.command == "setup" and (layout.node_env.exists() or layout.node_env.is_symlink())
+        if not editing and (args.resource_mode or "auto") == "auto" and args.bitcoin_profile is not None:
+            raise ValueError("--bitcoin-profile requires --resource-mode manual; automatic mode manages all Bitcoin phases")
     if args.command == "prepare-host":
         prepare_host(layout, docker_user=args.docker_user, docker_mirror=args.docker_mirror)
         if _warn_pending_docker_session():
@@ -6012,12 +6025,17 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
     elif args.command == "setup":
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise ValueError("setup requires an interactive terminal; use configure for automation")
-        if not args.no_controller:
+        if not editing and not args.no_controller:
             _controller_install_context()
         import usdb_p2p
-        result = setup_node(layout, bitcoin_resource_profile=args.bitcoin_profile or AUTO_BITCOIN_RESOURCE_PROFILE,
-                            resource_management=args.resource_mode, resource_caps=_resource_caps_from_args(args),
-                            p2p_options=usdb_p2p.options(args))
+        result = setup_node(
+            layout,
+            bitcoin_resource_profile=args.bitcoin_profile if editing else args.bitcoin_profile or AUTO_BITCOIN_RESOURCE_PROFILE,
+            resource_management=args.resource_mode if editing else args.resource_mode or "auto",
+            resource_caps=_resource_caps_from_args(args), p2p_options=usdb_p2p.options(args),
+        )
+        if result.edited:
+            return 0
         print(f"Configured {layout.release_id} node: {result.node_env}")
         if result.apply_firewall:
             print(

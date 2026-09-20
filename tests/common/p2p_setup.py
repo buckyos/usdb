@@ -33,6 +33,8 @@ class SetupFixture:
         answers = iter([str(self.root / "data"), "full", seeds, family, "n", "n", "n", confirm])
 
         def answer(prompt):
+            if prompt.startswith("Enable local minting backend"):
+                return "n"
             if prompt.startswith("Write this node configuration") and before_confirm:
                 before_confirm(self.output.getvalue())
             return next(answers)

@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "editable-node-setup",
+  "type": "added",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Allow interactive setup to edit an existing stopped node without recreating its identity",
+  "details": [
+    "Existing setup loads current defaults for Explorer queries, optional Ord, resources, Bitcoin inbound access and firewall policy. Dedicated configuration commands remain available; role, mining identity and peer changes retain their dedicated flows.",
+    "Unchanged answers preserve the configuration and resource journal. Confirmed edits validate a private candidate, retain a mode-0600 backup and replace node.env without regenerating credentials, moving data, selecting release images or reinstalling controllers.",
+    "Running or unobservable services and pending node operations block edits. Changes apply on the next startup; release activation and host firewall application remain explicit actions with command guidance."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

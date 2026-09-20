@@ -135,7 +135,9 @@ usdb-node status --watch
 已有未剪枝 Bitcoin 数据可用于补建 txindex，无需重新导入 UTXO 快照或执行全量 `-reindex`。
 关闭时执行同样的 `down → set-minting --enabled off → up`，在 AssumeUTXO 部署中将 txindex 设为 0、停止运行 Ord，但保留索引文件供以后复用。
 旧式非 AssumeUTXO 部署仍保留其原有的 `txindex=1` 就绪要求，关闭 Ord 不会移除这一历史依赖。
-`setup` 不覆盖已有配置，后续调整请使用 `set-minting`。
+支持编辑的新版 node kit 也可在停机后运行 `usdb-node setup`，在本机铸造后端问题中选择 `y`；
+其他选项直接回车会保留当前配置。保存后执行 `doctor → up`，无需 `prepare --replace`。
+`set-minting` 继续作为独立入口，详见[编辑已有配置](../node/maintenance.md#编辑已有配置)。
 
 本阶段完成的是索引后端和能力检查。**正式钱包签名、PSBT 交易构建、广播和铸造仍未开放**。
 `backend_ready=true` 只表示本机依赖满足；`transactions_enabled` 保持 `false`。未来交易流程还需重新校验

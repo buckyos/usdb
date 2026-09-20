@@ -102,8 +102,8 @@ usdb-node host install
 如果机器连 release installer 所需的 `curl`/Python 都没有，仍需先使用主机软件基线文档中的独立
 `prepare_usdb_host.sh` bootstrap 路径。
 
-`setup` 只询问无法从 release 或主机安全推导的值：数据根、节点角色、miner 地址/线程、joiner
-bootnode、是否开放 Bitcoin 入站 P2P，以及 firewall mode。只有选择 managed UFW 时，它才从当前
+首次 `setup` 询问数据根、非挖矿节点角色、Seed、P2P 地址族、完整 Explorer 支持、可选 Ord、
+是否开放 Bitcoin 入站 P2P，以及 firewall mode。挖矿在节点就绪后通过 `mining enable` 单独开启。只有选择 managed UFW 时，它才从当前
 `SSH_CONNECTION` 检测宿主机 SSH server port 并要求确认；这里不是客户端临时端口或云 NAT 外部端口。
 默认使用 `~/.usdb`、full role、Bitcoin private P2P 和 external firewall。
 
@@ -112,7 +112,7 @@ bootnode、是否开放 Bitcoin 入站 P2P，以及 firewall mode。只有选择
 长期运行建议容量。常见标称 `2 TB` 磁盘格式化后约为 `1.8 TiB`，可通过硬下限但会显示低于建议值的警告。
 底层 `configure --data-root` 执行相同硬检查，自动化不能绕过。
 
-它自动完成：
+首次配置自动完成：
 
 - 从 manifest 写入三张 image digest；
 - 校验 data root 所在文件系统的总容量和当前可用空间；
@@ -139,7 +139,7 @@ usdb-node set-firewall-mode --mode managed
 usdb-node firewall apply --confirm
 ```
 
-默认 `setup` 为安装 systemd unit 要求 operator 是 root，或拥有可用密码和 sudo 权限；sudo 验证当前 operator
+首次默认 `setup` 为安装 systemd unit 要求 operator 是 root，或拥有可用密码和 sudo 权限；sudo 验证当前 operator
 密码，不接受 root 密码。`setup --no-controller` 的 external firewall 模式不需要 sudo，但该 operator 为控制
 Docker 仍需加入 Docker group，而 Docker group 本身具备等价 root 的主机控制能力。
 
@@ -147,7 +147,13 @@ managed 模式的完整 firewall check 依据 `node.env` 对照 SSH、USDB P2P�
 实际 bind policy。external 模式的 `doctor/up` 跳过 UFW inspection，但相同的 bind policy 校验不会跳过。
 高级入口为 `set-firewall-mode`、`firewall check` 和 `firewall apply --confirm`。
 
-`setup` 拒绝覆盖已有 `node.env` 或 `rpcauth`。非挖矿角色切换使用 `set-role`，挖矿启停使用 `mining enable/disable`，不重新生成 secret。
+已有 `node.env` 时，`setup` 进入停机编辑模式，以当前值为默认值，支持 query mode、Ord、资源和主机入口策略。
+完整候选配置验证通过并确认后才替换配置，并保留权限为 `0600` 的 `node.env.setup-backup`。
+直接回车不重写配置或重算资源；编辑不执行首次安装的空闲空间门槛，不生成新 `rpcauth`，不改变数据目录、
+release 镜像、矿工身份或 P2P 设置，不安装 controller 或应用系统防火墙。
+保存后的配置由下一次 `up` 使用，无需 `prepare --replace`；同契约换版仍由 `activate-release` 独立处理。
+非挖矿角色切换使用 `set-role`，挖矿启停使用 `mining enable/disable`，Seed/P2P 使用 `peers`。
+详细流程见[运维手册：编辑已有配置](../handbook/node/maintenance.md#编辑已有配置)。
 
 旧 BH 数据库 snapshot 是可选启动加速器。legacy release manifest 已冻结经过 review 的 content-addressed record、
 高度、BTC block hash、core snapshot ID、core/可选 registry 下载规模和 trusted-key catalog。交互式 `setup` 会显示这些信息并
