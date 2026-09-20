@@ -248,7 +248,7 @@ class UsdbNodeTests(unittest.TestCase):
         output = io.StringIO()
         result = NODE.setup_node(
             layout,
-            input_fn=lambda _prompt: next(answers),
+            input_fn=lambda prompt: "n" if prompt.startswith("Enable local minting backend") else next(answers),
             output=output,
         )
         env = NODE.read_env(layout.node_env)
@@ -282,7 +282,7 @@ class UsdbNodeTests(unittest.TestCase):
 
         def answer(prompt: str) -> str:
             prompts.append(prompt)
-            return next(answers)
+            return "n" if prompt.startswith("Enable local minting backend") else next(answers)
 
         output = io.StringIO()
         args = NODE.build_parser().parse_args([
@@ -321,7 +321,7 @@ class UsdbNodeTests(unittest.TestCase):
 
         with mock.patch.object(NODE, "_validate_node_config", side_effect=fail_validation):
             with self.assertRaisesRegex(ValueError, "query setup validation failed"):
-                NODE.setup_node(layout, input_fn=lambda _prompt: next(answers), output=io.StringIO())
+                NODE.setup_node(layout, input_fn=lambda prompt: "n" if prompt.startswith("Enable local minting backend") else next(answers), output=io.StringIO())
         self.assertFalse(self.node_env.exists())
         self.assertFalse((NODE.network_secure_dir(data_root, layout.bundle_id) / "bitcoin-mainnet-rpcauth").exists())
 
@@ -468,7 +468,7 @@ class UsdbNodeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "insufficient available space"):
                 NODE.setup_node(
                     layout,
-                    input_fn=lambda _prompt: next(answers),
+                    input_fn=lambda prompt: "n" if prompt.startswith("Enable local minting backend") else next(answers),
                     output=io.StringIO(),
                 )
         self.assertFalse(layout.node_env.exists())
@@ -481,7 +481,7 @@ class UsdbNodeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "setup cancelled"):
             NODE.setup_node(
                 layout,
-                input_fn=lambda _prompt: next(answers),
+                input_fn=lambda prompt: "n" if prompt.startswith("Enable local minting backend") else next(answers),
                 output=io.StringIO(),
             )
         self.assertFalse(layout.node_env.exists())
@@ -519,7 +519,7 @@ class UsdbNodeTests(unittest.TestCase):
         ):
             result = NODE.setup_node(
                 layout,
-                input_fn=lambda _prompt: next(answers),
+                input_fn=lambda prompt: "n" if prompt.startswith("Enable local minting backend") else next(answers),
                 output=io.StringIO(),
             )
         self.assertTrue(result.install_snapshot)
@@ -536,7 +536,7 @@ class UsdbNodeTests(unittest.TestCase):
 
         result = NODE.setup_node(
             layout,
-            input_fn=lambda _prompt: next(answers),
+            input_fn=lambda prompt: "n" if prompt.startswith("Enable local minting backend") else next(answers),
             output=io.StringIO(),
         )
 

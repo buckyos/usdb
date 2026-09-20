@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "optional-local-minting-backend",
+  "type": "added",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Add opt-in private Ord indexing with early txindex configuration and independent readiness",
+  "details": [
+    "Setup defaults local minting support off. Enabling it configures txindex before Bitcoin starts, while preserving independent AssumeUTXO foreground, balance-history, indexer and chain startup.",
+    "Start the private Ord index only after Core foreground readiness, historical validation and txindex coverage. Verify Ord height and a canonical sampled block hash; expired observations never retain capability readiness.",
+    "Reserve Ord memory across all resource phases, bound its CPU and index cache, pause on low disk space, and retain versioned index data when disabled. CLI and private console expose separate history, txindex, Ord and disk observations.",
+    "Production wallet signing and broadcast remain disabled; indexing backend readiness does not authorize mint transactions. Existing developer Ord deployments retain their separate Compose configuration."
+  ],
+  "operator_actions": [
+    "Upgrade the node kit and services image together. To enable on an existing node, run down, set-minting --enabled on, then up; monitor minting-status and plan additional disk capacity for txindex and Ord.",
+    "Use set-minting --enabled off while stopped to disable the optional backend without deleting its index."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": []
+}

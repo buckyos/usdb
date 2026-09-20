@@ -16,6 +16,24 @@ pub struct MonitorSnapshot {
     pub report: Option<Value>,
 }
 
+/// Ord readiness expires independently of the host observer's own heartbeat.
+pub fn minting_backend_ready(snapshot: &MonitorSnapshot, now_ms: u64) -> bool {
+    let Some(report) = snapshot.report.as_ref() else {
+        return false;
+    };
+    let minting = &report["minting"];
+    snapshot.status == "available"
+        && minting["enabled"] == true
+        && minting["state"] == "READY"
+        && minting["canonical"] == true
+        && minting["history_validated"] == true
+        && minting["txindex_synced"] == true
+        && minting["backend_ready"] == true
+        && minting["observed_at_ms"]
+            .as_u64()
+            .is_some_and(|observed| observed <= now_ms && now_ms - observed <= 60_000)
+}
+
 fn classify(value: Value, now_ms: u64) -> MonitorSnapshot {
     let observed = value["observed_at_ms"].as_u64();
     if value["schema_version"] != "usdb-console-monitor:v1"
@@ -89,6 +107,31 @@ pub async fn read_snapshot(root: &Path, now_ms: u64) -> MonitorSnapshot {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn minting_readiness_requires_both_freshness_and_all_dependencies() {
+        let report = json!({"schema_version":"usdb-console-monitor:v1", "observed_at_ms":1000,
+            "observation_available":true, "overall_state":"READY", "components":[],
+            "minting":{"enabled":true, "state":"READY", "canonical":true,
+                "history_validated":true, "txindex_synced":true, "backend_ready":true,
+                "observed_at_ms":1000}});
+        assert!(minting_backend_ready(&classify(report.clone(), 1001), 1001));
+        assert!(!minting_backend_ready(
+            &classify(report.clone(), 62000),
+            62000
+        ));
+        for field in [
+            "enabled",
+            "canonical",
+            "history_validated",
+            "txindex_synced",
+            "backend_ready",
+        ] {
+            let mut changed = report.clone();
+            changed["minting"][field] = json!(false);
+            assert!(!minting_backend_ready(&classify(changed, 1001), 1001));
+        }
+    }
 
     #[test]
     fn stale_ready_report_is_not_a_fresh_observation() {

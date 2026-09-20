@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { MintingBackend } from './MintingBackend'
 import { useI18n } from '../i18n/provider'
 import type { MonitorSnapshot } from '../lib/types'
 
@@ -49,6 +50,7 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
           <summary>{zh ? '容器内存上限（配置值，并非实时占用）' : 'Container memory ceilings (configured, not live usage)'}</summary>
           <dl className="mt-3 grid gap-2 sm:grid-cols-2">{Object.entries(report.resources.configured_limits_bytes).map(([name, bytes]) => <div key={name}><dt>{name}</dt><dd>{(bytes / 1024 ** 3).toFixed(2)} GiB</dd></div>)}</dl>
         </details>}
+        <MintingBackend snapshot={snapshot} />
         <div className="grid gap-4 lg:grid-cols-2">
           {report.components?.map(component => <article key={component.id} className="rounded border border-[color:var(--cp-border)] p-4">
             <div className="flex justify-between gap-2"><h3>{labels[component.id]?.[zh ? 1 : 0] ?? component.label ?? component.id}</h3><strong>{fresh ? (component.display_state ?? component.state) : 'STALE'}</strong></div>

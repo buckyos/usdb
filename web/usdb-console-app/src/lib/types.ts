@@ -11,6 +11,12 @@ export interface MonitorSnapshot {
     controller?: { state?: string }
     resources?: { mode?: string; phase?: string; transition_pending?: boolean; configured_limits_bytes?: Record<string, number>; host_memory_bytes?: number }
     mining?: { state?: string }
+    minting?: {
+      enabled?: boolean; state?: string; backend_ready?: boolean; transactions_enabled?: boolean; observed_at_ms?: number
+      core_height?: number; history_height?: number; txindex_height?: number; ord_height?: number; ord_gap?: number
+      history_validated?: boolean; txindex_synced?: boolean; canonical?: boolean
+      disk_free_bytes?: number; disk_required_bytes?: number; index_file_bytes?: number
+    }
     components: Array<{
       id: string; label?: string; state: string; display_state?: string; progress_phase?: string
       current?: number; total?: number; progress_percent?: number; unit?: string

@@ -757,7 +757,7 @@ async fn prepare_btc_mint_context(
     request: &BtcMintPrepareRequest,
 ) -> Result<PreparedBtcMintContext, (StatusCode, Json<ApiError>)> {
     let services = build_services_summary(state).await;
-    let capabilities = build_capabilities_summary(&services);
+    let capabilities = build_capabilities_summary(&services, state.config.development_mint.enabled);
     let btc_network_name = resolve_runtime_btc_network_name(&services).ok_or_else(|| {
         let error =
             "Failed to resolve the active BTC runtime network from btc-node or balance-history"
@@ -833,6 +833,9 @@ async fn prepare_btc_mint_context(
     };
 
     let mut blockers = Vec::new();
+    if !state.config.development_mint.enabled {
+        blockers.push("Production wallet signing and broadcast are not enabled. Ord readiness alone does not enable transactions.".to_string());
+    }
     if capabilities.btc_console_mode != "inscription_enabled" {
         blockers.push(
             "The current BTC runtime is still in read-only mode. Start an inscription-enabled runtime before preparing mint flow."
@@ -976,7 +979,7 @@ async fn post_usdb_indexer_rpc(
 
 async fn build_overview(state: &AppState) -> OverviewResponse {
     let services = build_services_summary(state).await;
-    let capabilities = build_capabilities_summary(&services);
+    let capabilities = build_capabilities_summary(&services, state.config.development_mint.enabled);
     let bootstrap = build_bootstrap_summary(state);
     let explorers = build_explorer_links(state);
     let apps = build_app_entries(&services, &capabilities, &bootstrap, &explorers);
@@ -2002,7 +2005,10 @@ async fn build_services_summary(state: &AppState) -> ServicesSummary {
     summary
 }
 
-fn build_capabilities_summary(services: &ServicesSummary) -> CapabilitiesSummary {
+fn build_capabilities_summary(
+    services: &ServicesSummary,
+    development_enabled: bool,
+) -> CapabilitiesSummary {
     let ord_available = services.ord.reachable
         && services
             .ord
@@ -2034,7 +2040,7 @@ fn build_capabilities_summary(services: &ServicesSummary) -> CapabilitiesSummary
         btc_runtime_profile,
         usdb_chain_runtime_profile,
         usdb_economic_state_view,
-        btc_console_mode: if ord_available {
+        btc_console_mode: if ord_available && development_enabled {
             "inscription_enabled".to_string()
         } else {
             "read_only".to_string()
@@ -2382,6 +2388,69 @@ async fn probe_usdb_chain(state: &AppState) -> ServiceProbe<UsdbChainServiceSumm
 
 async fn probe_ord(state: &AppState) -> ServiceProbe<OrdServiceSummary> {
     let rpc_url = state.config.rpc.ord_url.clone();
+    // Release deployments consume the independently gated host observation.
+    // Legacy regtest development retains its existing direct probe behavior.
+    if !state.config.development_mint.enabled {
+        let now = current_unix_ms();
+        let snapshot = crate::monitor::read_snapshot(
+            state
+                .config
+                .monitor_dir
+                .as_deref()
+                .unwrap_or(&state.config.root_dir),
+            now,
+        )
+        .await;
+        let ready = crate::monitor::minting_backend_ready(&snapshot, now);
+        let report = snapshot.report.as_ref().map(|report| &report["minting"]);
+        let summary = report
+            .and_then(|value| value["state"].as_str())
+            .unwrap_or("UNAVAILABLE");
+        let fresh = snapshot.status == "available"
+            && report.is_some_and(|value| {
+                value["observed_at_ms"]
+                    .as_u64()
+                    .is_some_and(|observed| observed <= now && now - observed <= 60_000)
+            });
+        return ServiceProbe {
+            name: "ord".to_string(),
+            rpc_url,
+            reachable: fresh && matches!(summary, "READY" | "INDEXING"),
+            latency_ms: None,
+            error: if ready {
+                None
+            } else {
+                Some(format!(
+                    "Optional minting backend: {}",
+                    if fresh || summary == "DISABLED" {
+                        summary
+                    } else {
+                        "UNAVAILABLE"
+                    }
+                ))
+            },
+            data: Some(OrdServiceSummary {
+                http_status: None,
+                backend_ready: Some(ready),
+                query_ready: Some(ready),
+                synced_block_height: if fresh {
+                    report.and_then(|v| v["ord_height"].as_u64())
+                } else {
+                    None
+                },
+                btc_tip_height: if fresh {
+                    report.and_then(|v| v["core_height"].as_u64())
+                } else {
+                    None
+                },
+                sync_gap: if fresh {
+                    report.and_then(|v| v["ord_gap"].as_u64())
+                } else {
+                    None
+                },
+            }),
+        };
+    }
     let blockcount_url = format!("{}/blockcount", rpc_url.trim_end_matches('/'));
     let started = Instant::now();
     let (probe, ord_height, btc_tip_height) = tokio::join!(

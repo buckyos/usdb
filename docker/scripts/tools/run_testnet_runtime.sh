@@ -27,6 +27,7 @@ Actions:
                  Start one managed stage without waiting for a snapshot import.
   native-start-data
                  Start native BH/indexer after Core baseline and UTXO preparation.
+  up-ord         Start the optional Ord supervisor; never wait for its dependencies.
   up-console     Start only the private console, without upstream readiness gates.
   quiesce-data   Gracefully stop dependent services for a managed resource transition.
   container-ids  Print this project's container IDs for resource inspection.
@@ -116,6 +117,9 @@ compose() {
   local family
   local -a transport_files=()
   local -a native_files=()
+  if [[ "$(node_env_value USDB_MINTING_ENABLED)" == "1" ]]; then
+    native_files+=(-f "${docker_dir}/compose.runtime-ord.yml")
+  fi
   if [[ "$(node_env_value SNAPSHOT_MODE)" == "assumeutxo" ]]; then
     native_files+=(-f "${docker_dir}/compose.runtime-assumeutxo.yml")
   fi
@@ -190,6 +194,13 @@ quiesce_runtime_services() {
 }
 
 case "${action}" in
+  up-ord)
+    require_node_env
+    if [[ "$(node_env_value USDB_MINTING_ENABLED)" == "1" ]]; then
+      compose up -d --no-deps ord-server
+      restore_runtime_restart_policy ord-server
+    fi
+    ;;
   up-console)
     require_node_env
     USDB_TESTNET_BUNDLE_DIR="${bundle_dir}" USDB_TESTNET_NODE_ENV="${node_env}" "${bitcoin_runner}" ensure-network

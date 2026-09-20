@@ -809,6 +809,8 @@ def validate_node_env(
         "BTC_RESOURCE_PROFILE",
         DEFAULT_BITCOIN_RESOURCE_PROFILE,
     )
+    from usdb_minting import validate as validate_minting
+    validate_minting(env)
     validate_resource_environment(env)
     if resource_mode(env) == "manual":
         require(

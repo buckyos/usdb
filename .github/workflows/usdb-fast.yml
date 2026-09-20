@@ -61,6 +61,7 @@ jobs:
           python3 docker/scripts/tools/test_node_progress_timing.py
           python3 tests/test_node_progress_display.py
           python3 tests/test_control_plane_monitor.py
+          python3 tests/test_node_minting.py
           python3 tests/test_node_image_progress.py
           python3 tests/test_node_controller_status.py
           python3 tests/test_node_rebuild.py

@@ -1,3 +1,4 @@
+import { MintingBackend } from '../components/MintingBackend'
 import { NavLink, useParams } from 'react-router-dom'
 import { InlineHelpTooltip } from '../components/InlineHelpTooltip'
 import { FieldValueList } from '../components/FieldValueList'
@@ -562,6 +563,7 @@ function renderServiceContent(
         </article>
       )
     case 'ord':
+      if (!data?.development_enabled) return <MintingBackend snapshot={data?.node_monitor} />
       return (
         <article className="console-card">
           <div className="mb-4">
@@ -645,7 +647,8 @@ export function ServicesPage({ data, locale, t }: ServicesPageProps) {
             {SERVICE_IDS.map((serviceId) => {
               const probe = getProbe(serviceId, data)
               const serviceMeta = getServiceMeta(serviceId, t)
-              const tone = probe ? serviceTone(probe) : 'neutral'
+              const optional = serviceId === 'ord' && !data?.development_enabled
+              const tone = optional ? 'neutral' : probe ? serviceTone(probe) : 'neutral'
               return (
                 <NavLink
                   key={serviceId}
@@ -666,7 +669,7 @@ export function ServicesPage({ data, locale, t }: ServicesPageProps) {
                       </p>
                     </div>
                     <span className="status-pill shrink-0" data-tone={tone}>
-                      {probe ? serviceLabel(probe, t) : t('common.notYetAvailable')}
+                      {optional ? (locale === 'zh-CN' ? '可选服务' : 'Optional') : probe ? serviceLabel(probe, t) : t('common.notYetAvailable')}
                     </span>
                   </div>
                 </NavLink>

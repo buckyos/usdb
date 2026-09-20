@@ -1,5 +1,6 @@
 """Opt-in browser regression; requires built web apps, Rust binary and Playwright."""
 import json
+import time
 from common.control_plane_web import console_server
 
 
@@ -21,16 +22,36 @@ def main():
             page.get_by_label("访问令牌").fill(token)
             page.get_by_role("button", name="登录", exact=True).click()
             expect(page.get_by_role("heading", name="节点监控")).to_be_visible(timeout=15000)
-            expect(page.get_by_role("status")).to_contain_text("采集正常")
+            expect(page.get_by_role("status").first).to_contain_text("采集正常")
             expect(page.get_by_text("下载及 SHA-256 校验完成", exact=False)).to_be_visible()
             expect(page.get_by_text("Bitcoin 后台历史校验（不阻塞前台就绪）")).to_be_visible()
             assert token not in page.evaluate("JSON.stringify(localStorage) + JSON.stringify(sessionStorage) + document.cookie")
             assert all(cookie["httpOnly"] and cookie["sameSite"] == "Strict" for cookie in context.cookies())
+            panel = page.get_by_role("region", name="本机铸造后端", exact=True)
+            for stage, label in [("DISABLED", "未启用"), ("WAITING_HISTORY", "等待 Bitcoin 历史校验"), ("READY", "索引后端已就绪")]:
+                report["observed_at_ms"] = int(time.time() * 1000)
+                report["minting"] = dict(enabled=stage != "DISABLED", state=stage,
+                    observed_at_ms=report["observed_at_ms"], core_height=100, history_height=100,
+                    txindex_height=100, ord_height=100, ord_gap=0, canonical=stage == "READY",
+                    txindex_synced=True, history_validated=True, backend_ready=stage == "READY",
+                    transactions_enabled=False, disk_free_bytes=100 * 1024**3)
+                snapshot.write_text(json.dumps(report))
+                page.reload()
+                expect(panel.get_by_role("status")).to_have_text(label, timeout=15000)
+                expect(panel).to_contain_text("正式钱包签名和广播尚未开放")
+            page.wait_for_function("async () => (await (await fetch('/api/system/overview')).json()).services.ord.data.query_ready === true")
+            data = page.evaluate("fetch('/api/system/overview').then(r => r.json())")
+            assert data["capabilities"]["btc_console_mode"] == "read_only"
+            report["minting"]["observed_at_ms"] -= 65000
+            snapshot.write_text(json.dumps(report))
+            page.reload()
+            expect(panel.get_by_role("status")).to_have_text("当前状态未知", timeout=15000)
+            page.wait_for_function("async () => (await (await fetch('/api/system/overview')).json()).services.ord.data.query_ready === false")
             report["observed_at_ms"] -= 130000
             snapshot.write_text(json.dumps(report))
             page.reload()
-            expect(page.get_by_role("status")).to_contain_text("数据已过期", timeout=15000)
-            expect(page.get_by_role("status")).to_contain_text("当前状态未知")
+            expect(page.get_by_role("status").first).to_contain_text("数据已过期", timeout=15000)
+            expect(page.get_by_role("status").first).to_contain_text("当前状态未知")
             page.set_viewport_size(dict(width=390, height=844))
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "Mobile layout overflow"
             page.get_by_role("button", name="退出登录").click()

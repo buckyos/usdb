@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, Navigate, NavLink, useParams } from 'react-router-dom'
 import useSWR from 'swr'
+import { MintingBackend } from '../components/MintingBackend'
 import { fetchUsdbChainAddressStatus, fetchUsdbOwnerActivePass } from '../lib/api'
 import type { OverviewResponse } from '../lib/types'
 import {
@@ -94,6 +95,7 @@ function IdentityPanel({ kind, data, locale }: { kind: IdentityKind; data?: Over
   }
 
   return <div className="grid gap-5">
+    {kind === 'btc' && <MintingBackend snapshot={data?.node_monitor} />}
     <section className="console-card grid gap-4">
       <h1 className="text-2xl font-semibold">{text('钱包与身份', 'Wallets & identity')}</h1>
       <p className="text-sm text-[color:var(--cp-muted)]">{text('连接浏览器钱包或查询只读地址。连接仅授权读取账户，不构成所有权证明；本页不签名或发送交易。', 'Connect a browser wallet or look up a watch-only address. Connection exposes an account, not proof of ownership. This page does not sign or send transactions.')}</p>

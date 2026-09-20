@@ -110,6 +110,80 @@ BTC 查询还要求 indexer 的查询能力就绪、网络匹配。数据约每 
 开发 WIF 仅在页面会话内存中保留，离开开发页、退出登录或刷新后需重新导入；旧版 localStorage
 中的开发 WIF 记录会在加载控制台时移除。正式节点保持开发能力关闭。
 
+## 可选的本机铸造后端
+
+此选项属于 r30 之后的源码改进，需要同时更新 node kit 和 `usdb-services` 镜像。
+新节点在 `usdb-node setup` 中回答 `Enable local minting backend (txindex + private Ord)`，默认 `n`。
+非交互配置使用 `usdb-node configure --minting on`，并提供该节点所需的其他参数。
+
+开启后从首次 Bitcoin 启动起配置 `BTC_TXINDEX=1`。一个轻量监督进程先等待依赖；
+只有 Bitcoin 前台追平、历史链已完整校验、txindex 覆盖观测到的前台高度后，才启动 Ord 索引进程。
+前台追平时不会为了启用 txindex 自动再重启 Bitcoin。**BH、Indexer、Chain 的启动条件不依赖 Ord**，
+AssumeUTXO 的前台启动仍可早于历史校验完成。关闭本机铸造后端也不影响已有矿工证查询和正常挖矿。
+
+已有节点需由运维人员安排一次正常停机来改变配置：
+
+```bash
+usdb-node down
+usdb-node set-minting --enabled on
+usdb-node up
+usdb-node minting-status
+usdb-node status --watch
+```
+
+`set-minting` 拒绝修改正在运行的节点，自动重算各阶段内存预算；不会删除 Bitcoin、txindex 或 Ord 数据。
+已有未剪枝 Bitcoin 数据可用于补建 txindex，无需重新导入 UTXO 快照或执行全量 `-reindex`。
+关闭时执行同样的 `down → set-minting --enabled off → up`，在 AssumeUTXO 部署中将 txindex 设为 0、停止运行 Ord，但保留索引文件供以后复用。
+旧式非 AssumeUTXO 部署仍保留其原有的 `txindex=1` 就绪要求，关闭 Ord 不会移除这一历史依赖。
+`setup` 不覆盖已有配置，后续调整请使用 `set-minting`。
+
+本阶段完成的是索引后端和能力检查。**正式钱包签名、PSBT 交易构建、广播和铸造仍未开放**。
+`backend_ready=true` 只表示本机依赖满足；`transactions_enabled` 保持 `false`。未来交易流程还需重新校验
+钱包网络、地址权限、UTXO 资产和费用。无需导入私钥，也不为此选项开启 Bitcoin Core 钱包。
+
+### 资源与网络
+
+- Ord 默认容器上限 **4 GiB 内存、2 个 CPU 核当量**，索引缓存 **1 GiB**，不借用额外 swap。
+  自动资源策略在 Bitcoin、overlap、steady 三阶段都预留这笔内存，避免索引就绪后突然超配。
+  即使 Ord 正在等待，也保留预算；txindex 位于 Bitcoin 进程内，会增加磁盘与 I/O 开销，不是独立容器。
+- 数据存放在 `USDB_DATA_ROOT/datasets/ord/btc-mainnet/ord-0.23.3`，包含版本与索引配置标识。
+  不接管已有未标识的非空目录。页面显示数据库文件大小和文件系统可用空间，不通过遍历全盘计算容量。
+- 默认保留 **50 GiB 可用磁盘**。不足时暂停 Ord，保留数据；恢复容量后自动继续。
+  这只是运行保护阈值，**不是整个 Ord 或 txindex 索引的容量估计**，也无法保证 Bitcoin 等其他服务停止写盘。
+  初次完整索引需要额外磁盘和时间，应按实际增长扩容；尚未提供主网全量索引的容量或耗时保证。
+- 本版本索引铭文和地址，不额外保存整套交易副本、不启用全量 sat 或 Rune 索引。
+  Ord 仅在 Docker 私网监听，**不发布主机端口或公网入口**；控制台只消费经过筛选的只读状态。
+
+确需调优时，在 `down` 后修改私有 `node.env` 中的 `ORD_MEMORY_LIMIT`、`ORD_INDEX_CACHE_BYTES`
+和 `ORD_MIN_FREE_BYTES`。内存使用 Docker 整数字节或 `g/m` 单位，后两个参数使用正整数字节；
+内存至少 2 GiB，缓存不得超过容器内存一半。自动模式随后执行
+`usdb-node set-resource-policy --mode auto`，用 `usdb-node resources` 检查所有阶段，再 `up`。
+增大 Ord 预算会压缩其他服务预算；工具拒绝总量超出主机容量的配置。
+
+### 进度与处理方式
+
+首页、“钱包与身份 → BTC 矿工证身份”和 Ord 服务页分别展示可选后端状态。
+CLI 可使用 `usdb-node minting-status --json`，`usdb-node status --progress-json` 的 `minting` 字段使用同一份观测。
+Bitcoin 前台、历史校验、txindex、Ord 高度分别显示；Ord 还显示落后区块、磁盘余量与数据库文件大小。
+
+| 状态 | 含义与操作 |
+| --- | --- |
+| `DISABLED` | 未选择本机 Ord；属于正常配置 |
+| `WAITING_CORE` | Bitcoin 尚未追平、链尖过旧或连接不足；看 Bitcoin 同步及连接状态 |
+| `WAITING_HISTORY` | 等待历史链完整校验；不要重启或重复导入快照来“加速” |
+| `WAITING_TXINDEX` | 等待交易索引覆盖前台高度；不能只看 `getindexinfo.synced=true`。索引始终不存在时核对 Core 是否采用 `BTC_TXINDEX=1` |
+| `STARTING` / `INDEXING` | Ord 正在启动、补建索引或处理重组；查看高度与差距 |
+| `READY` | txindex 已覆盖采样高度，Ord 包含对应区块且哈希与 Core 规范链一致；不是正式交易功能已开放 |
+| `BLOCKED_DISK` | 增加容量或清理无关文件，保留节点及索引数据 |
+| `BLOCKED_CONFIG` | 需要未剪枝的 Bitcoin mainnet 节点；检查配置 |
+| `UNAVAILABLE` / `FAILED` | 观测失败、过期或 Ord 退出；执行 `usdb-node logs ord-server`，同时检查 Bitcoin 日志、内存和磁盘 |
+| `STOPPED` | 监督进程已停止；需要运行已配置服务时执行 `up` |
+
+监督进程每轮完成后间隔约 10 秒检查。Ord 观测超过 60 秒即失效，网页不会借用新鲜的控制台心跳
+维持旧的 READY。RPC 超时期间能力关闭；依赖再次满足后可恢复。Ord 故障单独展示，不改变节点的整体共识就绪状态。
+Ord 启动后遇到短暂 RPC 故障或 txindex 落后时会继续运行，只撤销就绪能力，避免反复中断长时间索引；
+低磁盘或不兼容的 Bitcoin 配置会触发停止，恢复条件后再启动。
+
 ## 排错
 
 | 现象 | 检查与处理 |

@@ -23,6 +23,7 @@ CAP_DEFAULTS = {
 }
 SERVICE_MEMORY_KEYS = {
     "btc-node": "BTC_MEMORY_LIMIT",
+    "ord-server": "ORD_MEMORY_LIMIT",
     "btc-snapshot-bootstrap": "BTC_BOOTSTRAP_MEMORY_LIMIT",
     "balance-history": "BH_MEMORY_LIMIT",
     "snapshot-loader": "BH_MEMORY_LIMIT",
@@ -35,6 +36,7 @@ SERVICE_MEMORY_KEYS = {
 }
 MANUAL_DEFAULTS = {
     "BTC_BOOTSTRAP_MEMORY_LIMIT": "128m",
+    "ORD_MEMORY_LIMIT": "4g",
     "BH_MEMORY_LIMIT": "20g",
     "BH_SYNC_UTXO_MAX_CACHE_BYTES": str(4 * GIB),
     "BH_SYNC_BALANCE_MAX_CACHE_BYTES": str(8 * GIB),
@@ -122,7 +124,7 @@ class ResourcePlan:
         """Budget Bitcoin plus its private monitor during IBD; reserve other services after handoff."""
         return self.reserve_bytes + self.external_services_bytes + sum(
             amount for key, amount in self.limits.items()
-            if self.phase != "bitcoin" or key in {"BTC_MEMORY_LIMIT", "BTC_BOOTSTRAP_MEMORY_LIMIT", "CONTROL_PLANE_MEMORY_LIMIT"}
+            if self.phase != "bitcoin" or key in {"BTC_MEMORY_LIMIT", "BTC_BOOTSTRAP_MEMORY_LIMIT", "CONTROL_PLANE_MEMORY_LIMIT", "ORD_MEMORY_LIMIT"}
         )
 
     def environment(self) -> dict[str, str]:
@@ -157,7 +159,10 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
     reserve = max(4 * GIB, host_memory * 10 // 64)
     if external and host_memory - external < MIN_HOST_MEMORY_BYTES:
         raise ValueError("external services must leave at least 32 GB for the node and system")
-    available = host_memory - reserve - external
+    ord_memory = memory_bytes(env.get("ORD_MEMORY_LIMIT", "4g"), "ORD_MEMORY_LIMIT") if env.get("USDB_MINTING_ENABLED") == "1" else 0
+    available = host_memory - reserve - external - ord_memory
+    if available <= 0:
+        raise ValueError("optional Ord memory budget leaves no memory for node services")
 
     def share(numerator: int, cap: int, denominator: int = 64) -> int:
         # Preserve the physical-host system reserve; reduce service shares only.
@@ -177,6 +182,8 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
         "BH_SCRIPT_REGISTRY_MEMORY_LIMIT": share(2, 2 * GIB),
         "USDB_CHECKPOINT_VERIFY_MEMORY_LIMIT": share(1, GIB),
     }
+    if ord_memory:
+        limits["ORD_MEMORY_LIMIT"] = ord_memory
     if env.get("SNAPSHOT_MODE") == "assumeutxo":
         limits["BTC_BOOTSTRAP_MEMORY_LIMIT"] = 128 * MIB
     # Keep the previous dbcache allowance: the IBD boost is headroom for file
@@ -247,6 +254,8 @@ def validate_resource_environment(env: dict[str, str], host_memory: int | None =
     elif host_memory is not None:
         settings = {**MANUAL_DEFAULTS, **env}
         keys = set(SERVICE_MEMORY_KEYS.values())
+        if env.get("USDB_MINTING_ENABLED") != "1":
+            keys.discard("ORD_MEMORY_LIMIT")
         if env.get("SNAPSHOT_MODE") != "assumeutxo":
             keys.discard("BTC_BOOTSTRAP_MEMORY_LIMIT")
         total = sum(memory_bytes(settings.get(key, "0"), key) for key in keys)

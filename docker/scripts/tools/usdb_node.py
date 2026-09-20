@@ -873,7 +873,7 @@ def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) 
     original = layout.node_env.read_text(encoding="utf-8")
     env = read_env(layout.node_env)
     settings = {key: env.get(key, default) for key, default in CAP_DEFAULTS.items()}
-    updates = _resource_policy_updates(mode, {**settings, **caps, "SNAPSHOT_MODE": env.get("SNAPSHOT_MODE", "none")})
+    updates = _resource_policy_updates(mode, {**settings, **caps, "USDB_MINTING_ENABLED": env.get("USDB_MINTING_ENABLED", "0"), "ORD_MEMORY_LIMIT": env.get("ORD_MEMORY_LIMIT", "4g"), "SNAPSHOT_MODE": env.get("SNAPSHOT_MODE", "none")})
     if mode == "manual" and resource_mode(env) == "auto":
         selected, resources = resolve_bitcoin_resource_profile(DEFAULT_BITCOIN_RESOURCE_PROFILE)
         updates.update({"BTC_RESOURCE_PROFILE": selected,
@@ -1111,6 +1111,7 @@ def configure_node(
     p2p_options: dict[str, Any] | None = None,
     expected_p2p: dict[str, str] | None = None,
     explorer_queries: bool = False,
+    minting: bool = False,
 ) -> Path:
     """Create node configuration, optionally enabling both full Explorer RPC capabilities.
 
@@ -1144,11 +1145,14 @@ def configure_node(
     native = layout.snapshot.get("contract") if layout.snapshot.get("status") == "native" else None
     if native is not None and select_snapshot:
         raise ValueError("Native releases cannot select a legacy database snapshot")
-    resource_updates = _resource_policy_updates(resource_management, {**(resource_caps or {}), **({"SNAPSHOT_MODE": "assumeutxo"} if native else {})})
+    resource_updates = _resource_policy_updates(resource_management, {**(resource_caps or {}), "USDB_MINTING_ENABLED": str(int(minting)), **({"SNAPSHOT_MODE": "assumeutxo"} if native else {})})
     query_updates = {"USDB_CHAIN_GCMODE": "archive" if explorer_queries else "full",
                      "USDB_CHAIN_TRACING": "1" if explorer_queries else "0"}
     _validate_data_root_capacity(data_root)
     root = data_root.expanduser().resolve()
+    import usdb_minting
+    minting_updates = usdb_minting.environment(root, minting, legacy_txindex="0" if native else "1")
+    usdb_minting.prepare({**minting_updates, "USDB_DATA_ROOT": str(root)})
     secure_dir = network_secure_dir(root, layout.bundle_id)
     snapshot_dir = snapshot_artifact_dir(root)
     rpcauth_path = secure_dir / "bitcoin-mainnet-rpcauth"
@@ -1215,7 +1219,7 @@ def configure_node(
                              {key: value for key, value in updates.items() if key not in resource_updates})
         # Persist operator-local policies even when the immutable bundle template
         # does not yet contain these fields, including the resolved P2P family.
-        content = upsert_env(content, {**resource_updates, **query_updates, **native_updates, **p2p_updates})
+        content = upsert_env(content, {**resource_updates, **query_updates, **native_updates, **p2p_updates, **minting_updates})
         _atomic_write_private(layout.node_env, content)
         _validate_node_config(
             layout,
@@ -1424,6 +1428,17 @@ def setup_node(
     if explorer_queries:
         print("Archive retains historical states and uses more disk; it does not restore pruned history.", file=output)
         print("This enables private node RPC capabilities only; deploy usdb-explorer separately.", file=output)
+    minting = _prompt_yes_no(
+        "Enable local minting backend (txindex + private Ord)",
+        default=False, input_fn=input_fn, output=output,
+    )
+    if minting:
+        print("Ord reserves 4 GiB RAM and additional disk. Bitcoin history and txindex must finish before Ord starts.", file=output)
+        print("Node synchronization remains independent; production wallet signing is not enabled by this option.", file=output)
+        if resource_management == "auto":
+            preview = _resource_policy_updates("auto", {**(resource_caps or {}), "USDB_MINTING_ENABLED": "1",
+                "SNAPSHOT_MODE": "assumeutxo" if layout.snapshot.get("status") == "native" else "none"})
+            print(f"Revised Bitcoin startup ceiling: {_human_bytes(int(preview['BTC_MEMORY_LIMIT']))}; Ord: 4 GiB", file=output)
     bitcoin_public = _prompt_yes_no(
         "Accept inbound Bitcoin peers on TCP/8333",
         default=False,
@@ -1484,6 +1499,7 @@ def setup_node(
     print(f"Role: {role}", file=output)
     print("Explorer support: " + ("archive + private HTTP tracing" if explorer_queries
                                  else "disabled (full state mode, tracing off)"), file=output)
+    print("Local minting backend: " + ("enabled; txindex=1, Ord starts when ready" if minting else "disabled"), file=output)
     print(usdb_p2p.selection_report(p2p_updates, p2p_reason, bootnodes=bootnodes), file=output)
     print(f"Bitcoin P2P: {'public' if bitcoin_public else 'private'}", file=output)
     print(f"Host firewall: {firewall_mode}", file=output)
@@ -1515,6 +1531,7 @@ def setup_node(
         resource_management=resource_management,
         resource_caps=resource_caps,
         explorer_queries=explorer_queries,
+        minting=minting,
     )
     return SetupResult(
         node_env=path,
@@ -2237,7 +2254,9 @@ def _check_running_resource_budget(env: dict[str, str], containers: dict[str, di
     for service, container in containers.items():
         if container["state"] not in {"running", "restarting", "paused"}:
             continue
-        if plan.phase == "bitcoin" and service not in {"btc-node", "usdb-control-plane"} and not (env.get("SNAPSHOT_MODE") == "assumeutxo" and service == "btc-snapshot-bootstrap"):
+        if (plan.phase == "bitcoin" and service not in {"btc-node", "usdb-control-plane"}
+                and not (service == "ord-server" and env.get("USDB_MINTING_ENABLED") == "1")
+                and not (env.get("SNAPSHOT_MODE") == "assumeutxo" and service == "btc-snapshot-bootstrap")):
             raise ValueError(f"{service} is active during the exclusive Bitcoin memory phase; "
                              "downstream services require overlap or steady resources")
         limit = container["memory"]
@@ -2480,6 +2499,28 @@ def start_node(
         )
 
 
+def _start_optional_ord(layout: ReleaseLayout, *, output_to_stderr: bool) -> None:
+    """Retry the independent supervisor without restarting a healthy upstream node."""
+    if not layout.node_env.is_file():
+        return
+    env = read_env(layout.node_env)
+    if env.get("USDB_MINTING_ENABLED") != "1":
+        return
+    import usdb_minting
+    try:
+        usdb_minting.prepare(env)
+        validate_resource_environment(env, effective_memory_bytes())
+        if resource_mode(env) == "auto":
+            containers = _resource_containers(layout)
+            _check_running_resource_budget(env, containers)
+            # Include the proposed allocation even if the supervisor was never created.
+            containers["ord-server"] = dict(state="running", memory=int(env["ORD_MEMORY_LIMIT"]))
+            _check_running_resource_budget(env, containers)
+        run_helper(layout, "run_testnet_runtime.sh", ["up-ord"], output_to_stderr=output_to_stderr)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        print("WARNING: optional Ord could not start; check minting-status, resources and ord-server logs. Core node startup continues.", file=sys.stderr)
+
+
 def _start_node(
     layout: ReleaseLayout,
     *,
@@ -2514,6 +2555,7 @@ def _start_node(
                     run_helper(layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=output_to_stderr)
     else:
         run_helper(layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=output_to_stderr)
+    _start_optional_ord(layout, output_to_stderr=output_to_stderr)
     if read_env(layout.node_env).get("SNAPSHOT_MODE") == "assumeutxo":
         from assumeutxo_node import start_native_node
         start_native_node(layout, sync_timeout_secs=sync_timeout_secs, output_to_stderr=output_to_stderr, progress_monitor=progress_monitor)
@@ -4248,6 +4290,8 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
                         "uninstalled" if controller["state"] == "missing" else "unavailable")
     report = add_image_preparation(layout, _collect_node_progress(layout, controller_state=controller_state))
     report["network"] = _status_network_identity(layout)
+    import usdb_minting
+    report["minting"] = usdb_minting.progress(read_env(layout.node_env)) if layout.node_env.is_file() else usdb_minting.progress({})
     try:
         report["node_role"] = read_env(layout.node_env).get("USDB_NODE_ROLE", "unknown")
     except (OSError, ValueError):
@@ -4531,6 +4575,13 @@ def render_node_progress(
         f"controller={report.get('controller', {}).get('display_state', report.get('controller_state', 'unknown'))}"
         + (f" | resources={resource_phase}" if resource_phase else ""),
     ]
+    minting = report.get("minting", {})
+    if minting:
+        lines.append(f"Optional minting backend: {minting['state']} | wallet transactions: unavailable")
+        if minting.get("enabled"):
+            lines.append(f"  Core={minting.get('core_height', '?')} history={minting.get('history_height', '?')} "
+                         f"txindex={minting.get('txindex_height', '?')} Ord={minting.get('ord_height', '?')} gap={minting.get('ord_gap', '?')}")
+            lines.append(f"  {minting['guidance']}")
     controller = report.get("controller", {})
     if controller.get("action_required") or controller.get("runtime_state") == "failed":
         lines.append(f"Controller: {controller['summary']}")
@@ -5339,6 +5390,8 @@ def up_node(
         result["planned_actions"] = [action] if action is not None else []
         return result, 0
     if completed_outcome := _startup_completed_outcome(initial):
+        with node_operation_lock(layout, "up"):
+            _start_optional_ord(layout, output_to_stderr=json_output)
         result["outcome"] = completed_outcome
         return result, 0
     if action is None:
@@ -5495,6 +5548,8 @@ def submit_up_to_controller(
         "status": initial,
     }
     if completed_outcome := _startup_completed_outcome(initial):
+        with node_operation_lock(layout, "up"):
+            _start_optional_ord(layout, output_to_stderr=True)
         result["outcome"] = completed_outcome
         return result, 0
 
@@ -5642,6 +5697,7 @@ def build_parser() -> argparse.ArgumentParser:
     usdb_p2p.add_options(setup, setup=True)
 
     configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
+    configure.add_argument("--minting", choices=("on", "off"), default="off", help="Enable optional private Ord and early Bitcoin txindex")
     configure.add_argument("--data-root", type=Path, default=Path.home() / ".usdb")
     configure.add_argument("--role", choices=("bootnode", "full"), default="full")
     configure.add_argument("--miner-address", default="")
@@ -5666,6 +5722,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_resource_cap_arguments(resource_policy)
     resource_preview = subparsers.add_parser("resources", help="Preview proportional resource budgets and caps for every phase")
     resource_preview.add_argument("--json", action="store_true")
+    minting_parser = subparsers.add_parser("set-minting", help="Enable or disable local Ord while stopped; retain index data")
+    minting_parser.add_argument("--enabled", choices=("on", "off"), required=True)
+    minting_status = subparsers.add_parser("minting-status", help="Check optional txindex/Ord capabilities independently of node readiness")
+    minting_status.add_argument("--json", action="store_true")
     query_mode = subparsers.add_parser("set-query-mode", help="Change history retention and private HTTP tracing while the node is stopped")
     query_mode.add_argument("--state-mode", choices=("full", "archive"))
     query_mode.add_argument("--tracing", choices=("on", "off"))
@@ -5908,6 +5968,7 @@ def _operation_name(args: argparse.Namespace) -> str | None:
         "set-bitcoin-profile",
         "set-resource-policy",
         "set-query-mode",
+        "set-minting",
         "activate-release",
         "snapshot",
         "firewall",
@@ -5926,7 +5987,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
     if args.command == "mining":
         import usdb_mining
         return usdb_mining.execute(layout, args)
-    if args.command in {"set-role", "set-query-mode", "set-resource-policy", "set-bitcoin-profile", "set-firewall-mode", "activate-release", "snapshot"}:
+    if args.command in {"set-role", "set-query-mode", "set-minting", "set-resource-policy", "set-bitcoin-profile", "set-firewall-mode", "activate-release", "snapshot"}:
         import usdb_mining
         import usdb_peers
         if usdb_peers.pending(layout):
@@ -6009,6 +6070,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             p2p_options=usdb_p2p.options(args),
             nat=args.nat,
             bitcoin_rpc_user=args.bitcoin_rpc_user,
+            minting=args.minting == "on",
             bitcoin_p2p=args.bitcoin_p2p,
             ssh_port=args.ssh_port,
             firewall_mode=args.firewall_mode,
@@ -6031,6 +6093,20 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         set_query_mode(layout, state_mode=args.state_mode, tracing=args.tracing)
         print_query_mode(layout, json_output=False)
         print("Run usdb-node up to apply the configuration. Full history requires genesis replay or a complete archive backup.")
+    elif args.command in {"set-minting", "minting-status"}:
+        import usdb_minting
+        if args.command == "set-minting":
+            usdb_minting.configure(layout, args.enabled == "on", sys.modules[__name__])
+            print("Minting backend configuration saved; run usdb-node up. Index data was preserved.")
+        report = usdb_minting.progress(read_env(layout.node_env))
+        if getattr(args, "json", False):
+            print(json.dumps(report, indent=2))
+        else:
+            print(f"Local minting backend: {report['state']}")
+            print(report['guidance'])
+            for key in ("core_height", "history_height", "txindex_height", "ord_height", "ord_gap", "disk_free_bytes", "index_file_bytes"):
+                if key in report:
+                    print(f"  {key}: {report[key]}")
     elif args.command == "query-mode":
         print_query_mode(layout, json_output=args.json)
     elif args.command == "set-role":

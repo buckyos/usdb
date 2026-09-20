@@ -1,0 +1,30 @@
+# Optional local minting backend. No host ports, signing keys or Core wallet.
+services:
+  ord-server:
+    image: ${USDB_SERVICES_IMAGE:?USDB_SERVICES_IMAGE is required}
+    entrypoint: ["python3", "/opt/usdb/docker/scripts/tools/ord_runtime.py"]
+    restart: unless-stopped
+    user: ${BTC_CONTAINER_UID:-1000}:${BTC_CONTAINER_GID:-1000}
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    environment:
+      BTC_RPC_URL: http://btc-node:8332
+      BTC_RPC_USER: ${BTC_RPC_USER:?BTC_RPC_USER is required}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:?BTC_RPC_PASSWORD is required}
+      BTC_MAX_TIP_AGE_SECS: ${BTC_MAX_TIP_AGE_SECS:-7200}
+      BTC_MIN_CONNECTIONS: ${BTC_MIN_CONNECTIONS:-1}
+      ORD_DATA_DIR: /data/ord
+      ORD_INDEX_CACHE_BYTES: ${ORD_INDEX_CACHE_BYTES:-1073741824}
+      ORD_MIN_FREE_BYTES: ${ORD_MIN_FREE_BYTES:-53687091200}
+    volumes:
+      - ${ORD_DATA_HOST_DIR:?ORD_DATA_HOST_DIR is required}:/data/ord
+    mem_limit: ${ORD_MEMORY_LIMIT:-4g}
+    cpus: 2
+    memswap_limit: ${ORD_MEMORY_LIMIT:-4g}
+    stop_grace_period: 10m
+    logging:
+      driver: json-file
+      options:
+        max-size: ${USDB_LOG_MAX_SIZE:-100m}
+        max-file: ${USDB_LOG_MAX_FILES:-5}
+    networks: [usdb-runtime]

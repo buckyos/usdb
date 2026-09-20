@@ -38,6 +38,8 @@ def project(report: dict, now_ms: int) -> dict:
     result["controller"] = select(report.get("controller"), ("state", "runtime_state", "observation_available", "restart_count", "exit_code"))
     result["resources"] = select(report.get("resources"), ("mode", "phase", "target_phase", "transition_pending", "runtime_adopted", "host_memory_bytes", "external_services_bytes"))
     result["mining"] = select(report.get("mining"), ("state", "enabled", "drift", "observation_unavailable", "role", "configured_role", "runtime_role"))
+    from ord_runtime import FIELDS
+    result["minting"] = select(report.get("minting"), (*FIELDS, "enabled", "backend_ready", "transactions_enabled"))
     result["components"] = []
     for component in report.get("components", [])[:32]:
         item = select(component, COMPONENT_FIELDS)
@@ -110,7 +112,7 @@ def export(layout, node) -> dict:
             if re.fullmatch(r"0x[0-9a-fA-F]{40}", miner_address):
                 report["node_identity"] = {"configured_miner_address": miner_address}
             report["resources"]["configured_limits_bytes"] = {
-                service: memory_bytes(env[key], key) for service, key in SERVICE_MEMORY_KEYS.items() if key in env
+                service: memory_bytes(env[key], key) for service, key in SERVICE_MEMORY_KEYS.items() if key in env and (service != "ord-server" or env.get("USDB_MINTING_ENABLED") == "1")
             }
             host = env.get("USDB_RESOURCE_HOST_MEMORY_BYTES", "")
             if host.isdigit():
