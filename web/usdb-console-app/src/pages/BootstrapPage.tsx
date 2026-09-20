@@ -1,3 +1,4 @@
+import { NodeMonitor } from '../components/NodeMonitor'
 import { useState } from 'react'
 import { ArtifactCard } from '../components/ArtifactCard'
 import { BootstrapSteps } from '../components/BootstrapSteps'
@@ -225,6 +226,8 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
       ),
     ]),
   )
+
+  if (!data?.development_enabled) return <NodeMonitor snapshot={data?.node_monitor} />
 
   return (
     <div className="grid gap-5">

@@ -112,6 +112,9 @@ fn default_bitcoin_auth_mode() -> BitcoinAuthMode {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServerConfig {
+    /// Additional trusted browser origins; loopback hosts are allowed by default.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
     #[serde(default = "default_host")]
     pub host: String,
     #[serde(default = "default_port")]
@@ -121,6 +124,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            allowed_origins: Vec::new(),
             host: default_host(),
             port: default_port(),
         }
@@ -236,6 +240,9 @@ impl Default for WebRoots {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DevelopmentMintConfig {
+    /// Explicitly enable local development wallet endpoints; never enable on a public node.
+    #[serde(default)]
+    pub enabled: bool,
     #[serde(default = "default_ord_bin_path")]
     pub ord_bin: PathBuf,
     #[serde(default = "default_ord_data_dir")]
@@ -247,6 +254,7 @@ pub struct DevelopmentMintConfig {
 impl Default for DevelopmentMintConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             ord_bin: default_ord_bin_path(),
             ord_data_dir: default_ord_data_dir(),
             ord_fee_rate: default_ord_fee_rate(),
@@ -258,6 +266,9 @@ impl Default for DevelopmentMintConfig {
 pub struct ControlPlaneConfig {
     #[serde(default = "default_root_dir")]
     pub root_dir: PathBuf,
+    /// Optional read-only host observer directory, separate from service-owned data.
+    #[serde(default)]
+    pub monitor_dir: Option<PathBuf>,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -276,6 +287,7 @@ impl Default for ControlPlaneConfig {
     fn default() -> Self {
         Self {
             root_dir: default_root_dir(),
+            monitor_dir: None,
             server: ServerConfig::default(),
             rpc: RpcTargets::default(),
             bitcoin: BitcoinRpcConfig::default(),

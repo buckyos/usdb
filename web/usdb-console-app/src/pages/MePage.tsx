@@ -569,11 +569,11 @@ export function MePage({ data, locale, t }: MePageProps) {
     usdbIdentitySource === 'browser_wallet'
       ? evmWalletConnected && !evmWalletNetworkMismatch
       : usdbIdentitySource === 'dev_sim_identity'
-        ? usdbChainRuntimeProfile === 'development' && usdbDevIdentityAvailable
+        ? (data?.development_enabled && usdbChainRuntimeProfile === 'development') && usdbDevIdentityAvailable
         : false
   const btcBrowserSignerReady = btcBrowserWalletConnected && !btcBrowserWalletNetworkMismatch
   const btcWorldSimSignerReady =
-    btcRuntimeProfile === 'development' &&
+    (data?.development_enabled && btcRuntimeProfile === 'development') &&
     Boolean(btcSelectedWorldSimIdentity) &&
     btcWalletMode === 'dev-regtest' &&
     Boolean(btcWallet?.address) &&
@@ -590,7 +590,7 @@ export function MePage({ data, locale, t }: MePageProps) {
   const btcMintIdentityBlocker =
     btcIdentitySource === 'manual_address'
       ? t('me.identity.manualAddressReadOnly')
-      : btcRuntimeProfile === 'development' && btcIdentitySource !== 'world_sim_agent'
+      : (data?.development_enabled && btcRuntimeProfile === 'development') && btcIdentitySource !== 'world_sim_agent'
         ? t('me.btc.mintExecutionRequiresWorldSim')
         : btcRuntimeProfile === 'public' && btcIdentitySource !== 'browser_wallet'
           ? t('me.btc.publicMintBrowserWalletOnly')
@@ -615,7 +615,7 @@ export function MePage({ data, locale, t }: MePageProps) {
     balanceHistoryReady &&
     usdbIndexerReady
   const btcDevSignerAutoManaged =
-    btcRuntimeProfile === 'development' &&
+    (data?.development_enabled && btcRuntimeProfile === 'development') &&
     btcWalletMode === 'dev-regtest' &&
     btcIdentitySource === 'world_sim_agent' &&
     Boolean(btcSelectedWorldSimIdentity)
@@ -699,7 +699,7 @@ export function MePage({ data, locale, t }: MePageProps) {
   const btcMintNextStepText =
     btcMintPrepareResult == null
       ? t('me.btc.mintReviewPending')
-      : btcRuntimeProfile === 'development'
+      : (data?.development_enabled && btcRuntimeProfile === 'development')
         ? t('me.btc.mintNextStepDevelopment')
         : btcRuntimeProfile === 'public'
           ? t('me.btc.mintNextStepPublic')
@@ -1051,7 +1051,7 @@ export function MePage({ data, locale, t }: MePageProps) {
       ]
     : []
   const btcMintExecuteAvailable =
-    btcRuntimeProfile === 'development' &&
+    (data?.development_enabled && btcRuntimeProfile === 'development') &&
     btcIdentitySource === 'world_sim_agent' &&
     Boolean(btcSelectedWorldSimIdentity?.wallet_name)
   const btcMintFlowSteps: Array<{ id: BtcMintFlowStep; label: string }> = [
@@ -1403,7 +1403,7 @@ export function MePage({ data, locale, t }: MePageProps) {
 
   useEffect(() => {
     if (activeIdentity !== 'usdb') return
-    if (usdbChainRuntimeProfile !== 'development') {
+    if ((!data?.development_enabled || usdbChainRuntimeProfile !== 'development')) {
       setUsdbDevIdentity(null)
       setUsdbDevIdentityError(null)
       return
@@ -1435,7 +1435,7 @@ export function MePage({ data, locale, t }: MePageProps) {
   }, [activeIdentity, usdbChainRuntimeProfile])
 
   useEffect(() => {
-    if (activeIdentity !== 'usdb' || usdbChainRuntimeProfile !== 'development') return
+    if (activeIdentity !== 'usdb' || (!data?.development_enabled || usdbChainRuntimeProfile !== 'development')) return
     if (!usdbDevIdentityAvailable || usdbAddress.trim()) return
     setUsdbIdentitySource((current) => (current === 'manual_address' ? 'dev_sim_identity' : current))
   }, [activeIdentity, usdbAddress, usdbDevIdentityAvailable, usdbChainRuntimeProfile])
@@ -1580,7 +1580,7 @@ export function MePage({ data, locale, t }: MePageProps) {
 
   useEffect(() => {
     if (activeIdentity !== 'btc') return
-    if (btcRuntimeProfile !== 'development') {
+    if ((!data?.development_enabled || btcRuntimeProfile !== 'development')) {
       setBtcWorldSim(null)
       setBtcWorldSimError(null)
       setBtcSelectedWorldSimWalletName('')
@@ -1620,7 +1620,7 @@ export function MePage({ data, locale, t }: MePageProps) {
   }, [activeIdentity, btcRuntimeProfile])
 
   useEffect(() => {
-    if (activeIdentity !== 'btc' || btcRuntimeProfile !== 'development') return
+    if (activeIdentity !== 'btc' || (!data?.development_enabled || btcRuntimeProfile !== 'development')) return
     if (!btcWorldSim?.available || btcWorldSim.identities.length !== 1) return
 
     const identity = btcWorldSim.identities[0]
@@ -1632,7 +1632,7 @@ export function MePage({ data, locale, t }: MePageProps) {
   }, [activeIdentity, btcAddress, btcRuntimeProfile, btcWorldSim])
 
   useEffect(() => {
-    if (activeIdentity !== 'btc' || btcRuntimeProfile !== 'development') {
+    if (activeIdentity !== 'btc' || (!data?.development_enabled || btcRuntimeProfile !== 'development')) {
       setBtcAutoDevSignerError(null)
       setBtcAutoDevSignerLoading(false)
       return
@@ -1749,7 +1749,7 @@ export function MePage({ data, locale, t }: MePageProps) {
   ])
 
   useEffect(() => {
-    if (btcRuntimeProfile !== 'development') return
+    if ((!data?.development_enabled || btcRuntimeProfile !== 'development')) return
     if (btcMintStep !== 'signing') return
     if (!btcMintDraftMessage.trim()) return
     setBtcDevWalletMessage((current) => (current.trim() === btcMintDraftMessage.trim() ? current : btcMintDraftMessage))
@@ -2345,10 +2345,10 @@ export function MePage({ data, locale, t }: MePageProps) {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="status-pill" data-tone={btcRuntimeProfile === 'development' ? 'warning' : 'neutral'}>
+            <span className="status-pill" data-tone={(data?.development_enabled && btcRuntimeProfile === 'development') ? 'warning' : 'neutral'}>
               {`${t('me.fields.btcRuntimeProfile')}: ${runtimeProfileLabel(btcRuntimeProfile, t)}`}
             </span>
-            <span className="status-pill" data-tone={usdbChainRuntimeProfile === 'development' ? 'warning' : 'neutral'}>
+            <span className="status-pill" data-tone={(data?.development_enabled && usdbChainRuntimeProfile === 'development') ? 'warning' : 'neutral'}>
               {`${t('me.fields.usdbChainRuntimeProfile')}: ${runtimeProfileLabel(usdbChainRuntimeProfile, t)}`}
             </span>
           </div>
@@ -2514,7 +2514,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                     >
                       {t('me.values.identitySourceUsdbBrowserWallet')}
                     </button>
-                    {usdbChainRuntimeProfile === 'development' ? (
+                    {(data?.development_enabled && usdbChainRuntimeProfile === 'development') ? (
                       <button
                         type="button"
                         className={
@@ -2593,7 +2593,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                     >
                       {t('me.values.identitySourceBrowserWallet')}
                     </button>
-                    {btcRuntimeProfile === 'development' ? (
+                    {(data?.development_enabled && btcRuntimeProfile === 'development') ? (
                       <button
                         type="button"
                         className={
@@ -2799,7 +2799,7 @@ export function MePage({ data, locale, t }: MePageProps) {
             </div>
           </article>
 
-          {usdbChainRuntimeProfile === 'development' ? (
+          {(data?.development_enabled && usdbChainRuntimeProfile === 'development') ? (
             <article className="console-card">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
@@ -2850,7 +2850,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                     {t('me.btc.devWalletWorldSimManaged')}
                   </p>
                 ) : null}
-                {btcRuntimeProfile === 'development' && btcWalletMode === 'dev-regtest' && !btcDevSignerAutoManaged ? (
+                {(data?.development_enabled && btcRuntimeProfile === 'development') && btcWalletMode === 'dev-regtest' && !btcDevSignerAutoManaged ? (
                   <p className="rounded-2xl border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-3 text-sm leading-6 text-[color:var(--cp-muted)]">
                     {t('me.btc.devToolsManualSignerHint')}
                   </p>
@@ -3220,7 +3220,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                         {t('me.btc.mintSigningTitle')}
                       </h4>
                       <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-                        {btcRuntimeProfile === 'development'
+                        {(data?.development_enabled && btcRuntimeProfile === 'development')
                           ? t('me.btc.mintSigningDevelopmentBody')
                           : btcRuntimeProfile === 'public'
                             ? t('me.btc.mintSigningPublicBody')
@@ -3233,7 +3233,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                         {t('me.btc.mintSigningActionTitle')}
                       </h5>
                       <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-                        {btcRuntimeProfile === 'development'
+                        {(data?.development_enabled && btcRuntimeProfile === 'development')
                           ? t('me.btc.mintSigningDevelopmentActionBody')
                           : t('me.btc.mintSigningPublicActionBody')}
                       </p>
@@ -3249,13 +3249,13 @@ export function MePage({ data, locale, t }: MePageProps) {
                     {btcMintSigningError ? (
                       <p className="text-sm text-[color:var(--cp-danger)]">{btcMintSigningError}</p>
                     ) : null}
-                    {!btcMintExecuteAvailable && btcRuntimeProfile === 'development' ? (
+                    {!btcMintExecuteAvailable && (data?.development_enabled && btcRuntimeProfile === 'development') ? (
                       <p className="text-sm text-[color:var(--cp-warning)]">
                         {t('me.btc.mintExecutionRequiresWorldSim')}
                       </p>
                     ) : null}
                     <div className="flex flex-wrap items-center gap-3">
-                      {btcRuntimeProfile === 'development' ? (
+                      {(data?.development_enabled && btcRuntimeProfile === 'development') ? (
                         <button
                           type="button"
                           className="console-action-button"
@@ -3272,7 +3272,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                             : t('me.btc.mintConfirmWithDevSigner')}
                         </button>
                       ) : null}
-                      {btcRuntimeProfile === 'development' ? (
+                      {(data?.development_enabled && btcRuntimeProfile === 'development') ? (
                         <button
                           type="button"
                           className="console-secondary-button"
@@ -3352,7 +3352,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                       {btcMintExecutionPolling ? t('me.btc.mintWaitingPolling') : t('me.btc.mintWaitingRetry')}
                     </p>
                     <div className="flex flex-wrap items-center gap-3">
-                      {btcRuntimeProfile === 'development' ? (
+                      {(data?.development_enabled && btcRuntimeProfile === 'development') ? (
                         <button
                           type="button"
                           className="console-secondary-button"
@@ -3379,7 +3379,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                         {t('me.btc.mintSuccessTitle')}
                       </h4>
                       <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-                        {btcRuntimeProfile === 'development'
+                        {(data?.development_enabled && btcRuntimeProfile === 'development')
                           ? t('me.btc.mintSuccessDevelopmentBody')
                           : t('me.btc.mintSuccessPublicBody')}
                       </p>
@@ -3413,7 +3413,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                       >
                         {t('me.btc.mintBackToReview')}
                       </button>
-                      {btcRuntimeProfile === 'development' ? (
+                      {(data?.development_enabled && btcRuntimeProfile === 'development') ? (
                         <button
                           type="button"
                           className="console-secondary-button"
@@ -3531,7 +3531,7 @@ export function MePage({ data, locale, t }: MePageProps) {
             </section>
           ) : null}
 
-          {btcRuntimeProfile === 'development' ? (
+          {(data?.development_enabled && btcRuntimeProfile === 'development') ? (
             <section id="btc-dev-tools" className="console-card">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>

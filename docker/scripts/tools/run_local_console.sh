@@ -8,7 +8,7 @@ tool_cmd="docker/scripts/tools/run_local_console.sh"
 usage() {
   cat <<EOF
 Usage:
-  ${tool_cmd} [up|down|logs|ps]
+  ${tool_cmd} [up|down|logs|ps|token]
 
 This helper keeps the standard dev-sim environment file but only starts the
 minimum service subset needed for the local control console:
@@ -77,6 +77,9 @@ case "${action}" in
     ;;
   logs)
     compose logs -f "${services[@]}"
+    ;;
+  token)
+    compose exec -T usdb-control-plane sh -c 'cat "${CONTROL_PLANE_ROOT_DIR:-/data/usdb-control-plane}/access-token"'
     ;;
   ps)
     compose ps "${services[@]}"

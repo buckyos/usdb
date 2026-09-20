@@ -27,6 +27,7 @@ Actions:
                  Start one managed stage without waiting for a snapshot import.
   native-start-data
                  Start native BH/indexer after Core baseline and UTXO preparation.
+  up-console     Start only the private console, without upstream readiness gates.
   quiesce-data   Gracefully stop dependent services for a managed resource transition.
   container-ids  Print this project's container IDs for resource inspection.
   data-status    Print the current balance-history readiness response.
@@ -109,6 +110,7 @@ check_readiness() {
 }
 
 compose() {
+  export USDB_CONSOLE_STATE_DIR="$(dirname "$(realpath "${node_env}")")/console"
   export USDB_NETWORK_ARTIFACTS_DIR="${bundle_dir}/artifacts"
   export BH_SNAPSHOT_TRUST_HOST_DIR="${bundle_dir}/trust"
   local family
@@ -188,6 +190,12 @@ quiesce_runtime_services() {
 }
 
 case "${action}" in
+  up-console)
+    require_node_env
+    USDB_TESTNET_BUNDLE_DIR="${bundle_dir}" USDB_TESTNET_NODE_ENV="${node_env}" "${bitcoin_runner}" ensure-network
+    compose up -d --no-deps usdb-control-plane
+    restore_runtime_restart_policy usdb-control-plane
+    ;;
   native-start-data)
     require_node_env
     [[ "$(node_env_value SNAPSHOT_MODE)" == "assumeutxo" ]] || exit 1
@@ -269,7 +277,7 @@ case "${action}" in
     ;;
   quiesce-data)
     require_node_env
-    quiesce_runtime_services usdb-control-plane usdb-chain usdb-indexer balance-history
+    quiesce_runtime_services usdb-chain usdb-indexer balance-history
     ;;
   data-status)
     require_node_env
@@ -366,7 +374,7 @@ case "${action}" in
     if [[ "$(node_env_value USDB_RESOURCE_MODE)" == "auto" || "$(node_env_value SNAPSHOT_MODE)" == "assumeutxo" ]]; then
       # A retry may find only one chain service running. Release the chain's
       # allocation and database before chain-init reuses the same budget slot.
-      quiesce_runtime_services usdb-control-plane usdb-chain
+      quiesce_runtime_services usdb-chain
       # Run only the release's initialization jobs after releasing chain memory.
       jobs=(usdb-chain-init)
       if [[ "$(node_env_value SNAPSHOT_MODE)" != "assumeutxo" ]]; then

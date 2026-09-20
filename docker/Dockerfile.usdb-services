@@ -57,10 +57,13 @@ RUN cd usdb-console-app \
 
 COPY web /workspace/web
 RUN cd usdb-console-app \
+    && npm run check \
     && npm run build \
     && cd ../balance-history-browser \
+    && npm run check \
     && npm run build \
     && cd ../usdb-indexer-browser \
+    && npm run check \
     && npm run build
 
 FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171

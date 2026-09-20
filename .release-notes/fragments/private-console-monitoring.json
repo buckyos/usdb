@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "private-console-monitoring",
+  "type": "added",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Add authenticated private node monitoring during bootstrap and steady operation",
+  "details": [
+    "Start the private control plane after its runtime image is available, without waiting for upstream consensus readiness; reserve its memory during Bitcoin synchronization and preserve it across resource transitions.",
+    "Export sanitized host progress through an independent systemd observer and a read-only mount. Display snapshot completion, foreground synchronization, background validation, resources, mining, and freshness independently; stale observations never certify current readiness.",
+    "Require private-console token authentication, enforce browser Host/Origin checks, and disable development wallet endpoints by default. Service probes run concurrently with a short shared cache."
+  ],
+  "operator_actions": [
+    "Upgrade the node kit and services image together using the normal node upgrade procedure. Existing installations should run usdb-node controller install and usdb-node console start to install the observer and update the console.",
+    "Use an SSH tunnel to the loopback console and obtain the login token with usdb-node console token. Foreground installations without systemd must run usdb-node console monitor separately for continuous host observations."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": []
+}

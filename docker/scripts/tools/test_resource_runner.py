@@ -96,9 +96,10 @@ class ResourceRunnerTests(unittest.TestCase):
         result, states, calls = self.run_quiesce({name: {"state": "running"} for name in names})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([call[-1] for call in calls if call[0] == "kill"],
-                         ["usdb-control-plane", "usdb-chain", "usdb-indexer", "balance-history"])
+                         ["usdb-chain", "usdb-indexer", "balance-history"])
         self.assertEqual(states["snapshot-loader"], {"state": "running"})
-        for name in names[:-1]:
+        self.assertEqual(states["usdb-control-plane"], {"state": "running"})
+        for name in names[:3]:
             self.assertEqual(states[name]["state"], "exited")
             self.assertEqual(states[name]["restart"], "no")
         self.assertFalse(any("SIGKILL" in " ".join(call) for call in calls))

@@ -60,11 +60,13 @@ jobs:
           python3 tests/test_node_query_mode_compose.py
           python3 docker/scripts/tools/test_node_progress_timing.py
           python3 tests/test_node_progress_display.py
+          python3 tests/test_control_plane_monitor.py
           python3 tests/test_node_image_progress.py
           python3 tests/test_node_controller_status.py
           python3 tests/test_node_rebuild.py
           python3 docker/scripts/tools/test_resource_policy.py
           python3 docker/scripts/tools/test_resource_controller.py
+          python3 docker/scripts/tools/test_resource_runner.py
           python3 docker/scripts/tools/test_prepare_release_node_kit.py
           python3 tests/test_node_peers.py
           python3 tests/test_node_p2p.py

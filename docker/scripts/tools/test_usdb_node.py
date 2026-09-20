@@ -612,8 +612,9 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("run_testnet_bitcoin.sh", ("pull",)),
                 ("run_testnet_runtime.sh", ("pull",)),
+                ("run_testnet_runtime.sh", ("up-console",)),
+                ("run_testnet_bitcoin.sh", ("pull",)),
                 ("run_testnet_bitcoin.sh", ("start",)),
                 ("run_testnet_runtime.sh", ("up-data", "963810")),
                 (
@@ -2305,11 +2306,14 @@ class UsdbNodeTests(unittest.TestCase):
             path = NODE.install_controller_unit(layout, launcher=launcher)
 
         self.assertTrue(path.is_file())
+        self.assertIn("usdb-console-monitor-usdb-testnet-v0.service", path.read_text())
         self.assertEqual(
             commands,
             [
                 ["install", "-m", "0644", mock.ANY, str(path)],
+                ["install", "-m", "0644", mock.ANY, str(path.with_name("usdb-console-monitor-usdb-testnet-v0.service"))],
                 ["systemctl", "daemon-reload"],
+                ["systemctl", "enable", "usdb-console-monitor-usdb-testnet-v0.service"],
                 ["systemctl", "enable", path.name],
             ],
         )

@@ -28,6 +28,7 @@ export async function fetchOverview(): Promise<OverviewResponse> {
     cache: 'no-store',
   })
 
+  if (response.status === 401) window.dispatchEvent(new Event('usdb-session-expired'))
   if (!response.ok) {
     throw new Error(`Failed to load overview: HTTP ${response.status}`)
   }

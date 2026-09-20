@@ -256,7 +256,7 @@ def render_controller_unit(
     command = " ".join(command_parts)
     return f"""[Unit]
 Description=USDB bootstrap controller for {layout.bundle_id}
-Wants=network-online.target docker.service
+Wants=network-online.target docker.service usdb-console-monitor-{layout.bundle_id}.service
 After=network-online.target docker.service
 StartLimitIntervalSec={CONTROLLER_START_LIMIT_INTERVAL_SECS}s
 StartLimitBurst={CONTROLLER_START_LIMIT_BURST}
@@ -366,7 +366,10 @@ def install_controller_unit(
             target.flush()
             os.fsync(target.fileno())
         _privileged_command(["install", "-m", "0644", str(temporary), str(destination)])
+        import control_plane_monitor
+        control_plane_monitor.install(layout, sys.modules[__name__], context)
         _privileged_command(["systemctl", "daemon-reload"])
+        _privileged_command(["systemctl", "enable", control_plane_monitor.unit_name(layout)])
         _privileged_command(["systemctl", "enable", destination.name])
     finally:
         temporary.unlink(missing_ok=True)
@@ -385,6 +388,8 @@ def _require_controller_unit(layout: ReleaseLayout) -> Path:
 def start_controller_unit(layout: ReleaseLayout) -> str:
     """Submit the controller to systemd and return its stable unit name."""
     unit = _require_controller_unit(layout).name
+    import control_plane_monitor
+    control_plane_monitor.start(layout, sys.modules[__name__])
     # An explicit operator start is allowed to clear a previous bounded retry stop.
     _privileged_command(["systemctl", "reset-failed", unit], check=False)
     _privileged_command(["systemctl", "start", "--no-block", unit])
@@ -409,6 +414,8 @@ def down_node(layout: ReleaseLayout, *, keep_bitcoin: bool) -> None:
     usdb_sourcedao.require_idle(layout)
     if controller_unit_path(layout).is_file():
         stop_controller_unit(layout)
+    import control_plane_monitor
+    control_plane_monitor.stop(layout, sys.modules[__name__])
     with node_operation_lock(layout, "down"):
         run_helper(layout, "run_testnet_runtime.sh", ["down"])
         if not keep_bitcoin:
@@ -2230,7 +2237,7 @@ def _check_running_resource_budget(env: dict[str, str], containers: dict[str, di
     for service, container in containers.items():
         if container["state"] not in {"running", "restarting", "paused"}:
             continue
-        if plan.phase == "bitcoin" and service != "btc-node" and not (env.get("SNAPSHOT_MODE") == "assumeutxo" and service == "btc-snapshot-bootstrap"):
+        if plan.phase == "bitcoin" and service not in {"btc-node", "usdb-control-plane"} and not (env.get("SNAPSHOT_MODE") == "assumeutxo" and service == "btc-snapshot-bootstrap"):
             raise ValueError(f"{service} is active during the exclusive Bitcoin memory phase; "
                              "downstream services require overlap or steady resources")
         limit = container["memory"]
@@ -2274,7 +2281,7 @@ def _transition_resources(layout: ReleaseLayout, target: str, *, output_to_stder
         state = {"schema_version": "usdb-resource-state:v1", "bundle_id": layout.bundle_id,
                  "phase": target, "plan_id": plan_id, "pending": True,
                  "recover_services": sorted(set(state.get("recover_services", [])) | {
-                     service for service in ("balance-history", "usdb-indexer", "usdb-chain", "usdb-control-plane")
+                     service for service in ("balance-history", "usdb-indexer", "usdb-chain")
                      if observed.get(service, {}).get("state") in {"running", "restarting"}
                  })}
         # This intent must survive interruption before the first stop request.
@@ -2411,13 +2418,13 @@ def _start_managed_node(layout: ReleaseLayout, *, sync_timeout_secs: int,
             indexer_ready, _ = _read_service_readiness(layout, "run_testnet_runtime.sh", ["indexer-status"], "usdb-indexer")
             if (bh_ready and bh_ready["consensus_ready"] and indexer_ready and indexer_ready["consensus_ready"]):
                 if any(containers.get(service, {}).get("state") != "running"
-                       for service in ("usdb-chain", "usdb-control-plane")):
+                       for service in ("usdb-chain",)):
                     if "usdb-chain" in started:
-                        raise ValueError("USDB chain or control-plane exited after managed startup")
-                    _resource_prepare_restart(layout, "usdb-chain", "usdb-control-plane")
+                        raise ValueError("USDB chain exited after managed startup")
+                    _resource_prepare_restart(layout, "usdb-chain")
                     run_helper(layout, "run_testnet_runtime.sh", ["up-chain"], sync_timeout_secs=0,
                                output_to_stderr=output_to_stderr)
-                    _resource_service_started(layout, "usdb-chain", "usdb-control-plane")
+                    _resource_service_started(layout, "usdb-chain")
                     started.add("usdb-chain")
                 _check_running_resource_budget(env, _resource_containers(layout))
                 if _runtime_lifecycle_status(layout)["state"] == "ready":
@@ -2488,6 +2495,8 @@ def _start_node(
         output_to_stderr=output_to_stderr,
     )
     doctor(layout, output_to_stderr=output_to_stderr)
+    import control_plane_monitor
+    control_plane_monitor.prepare(layout, sys.modules[__name__])
     if pull:
         progress_monitor.set_phase("images")
         _print_startup_phase(
@@ -2497,10 +2506,14 @@ def _start_node(
         )
         from node_image_progress import ImagePreparation
         with ImagePreparation(layout) as preparation:
-            for group, helper in (("bitcoin", "run_testnet_bitcoin.sh"), ("runtime", "run_testnet_runtime.sh")):
+            for group, helper in (("runtime", "run_testnet_runtime.sh"), ("bitcoin", "run_testnet_bitcoin.sh")):
                 preparation.set_group(group)
                 run_helper(layout, helper, ["pull"], output_to_stderr=output_to_stderr,
                            quiet_progress=progress_monitor.enabled)
+                if group == "runtime":
+                    run_helper(layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=output_to_stderr)
+    else:
+        run_helper(layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=output_to_stderr)
     if read_env(layout.node_env).get("SNAPSHOT_MODE") == "assumeutxo":
         from assumeutxo_node import start_native_node
         start_native_node(layout, sync_timeout_secs=sync_timeout_secs, output_to_stderr=output_to_stderr, progress_monitor=progress_monitor)
@@ -3843,12 +3856,26 @@ def _container_start_failed(service: dict[str, Any] | None) -> bool:
     ))
 
 
+def _control_plane_progress(services, *, observation_available=True):
+    """Report the private monitor independently from chain consensus readiness."""
+    if not observation_available:
+        return dict(id="control_plane", state="UNAVAILABLE", observation_unavailable=True)
+    service = services.get("usdb-control-plane", {})
+    if _container_start_failed(service) or service.get("state") in {"exited", "dead", "paused", "restarting"}:
+        state = "FAILED"
+    elif service.get("state") == "running":
+        state = "READY" if service.get("health") == "healthy" else "FAILED" if service.get("health") == "unhealthy" else "STARTING"
+    else:
+        state = "WAITING"
+    return dict(id="control_plane", state=state)
+
+
 def _chain_startup_gate_component(services: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     """Expose one-shot gate failures before interpreting a missing chain as waiting."""
     if services.get("usdb-chain", {}).get("state") == "running":
-        jobs = ("usdb-control-plane",)
+        jobs = ()
     else:
-        jobs = ("usdb-chain-init", "paired-checkpoint-recovery", "usdb-control-plane")
+        jobs = ("usdb-chain-init", "paired-checkpoint-recovery")
     for name in jobs:
         service = services.get(name)
         if _container_start_failed(service):
@@ -4272,6 +4299,7 @@ def _collect_node_progress(layout: ReleaseLayout, *, controller_state: str | Non
             "overall_state": "WAITING",
             "auxiliary_state": "PARTIAL",
             "components": components,
+            "control_plane": _control_plane_progress({}, observation_available=False),
         }
     try:
         env = read_env(layout.node_env)
@@ -4306,6 +4334,7 @@ def _collect_node_progress(layout: ReleaseLayout, *, controller_state: str | Non
                 else "PARTIAL"
             ),
             "components": components,
+            "control_plane": _control_plane_progress({}, observation_available=False),
         }
 
     snapshot_component = _snapshot_component(
@@ -4473,6 +4502,7 @@ def _collect_node_progress(layout: ReleaseLayout, *, controller_state: str | Non
             else "PARTIAL"
         ),
         "components": components,
+        "control_plane": _control_plane_progress(services),
     }
 
 
@@ -5743,6 +5773,9 @@ workflow:
         help="Start or retry the release-approved optional script-registry installer",
     )
 
+    import control_plane_monitor
+    control_plane_monitor.add_parser(subparsers)
+
     firewall = subparsers.add_parser("firewall", help="Check or apply the host UFW profile")
     firewall_actions = firewall.add_subparsers(dest="firewall_action", required=True)
     firewall_check = firewall_actions.add_parser("check")
@@ -6036,6 +6069,9 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
     elif args.command == "activate-release":
         activate_release(layout)
         print(f"Activated release images in private node config: {layout.release_id}")
+    elif args.command == "console":
+        import control_plane_monitor
+        control_plane_monitor.dispatch(args, layout, sys.modules[__name__])
     elif args.command == "doctor":
         doctor(layout, allow_pending_snapshot=True)
         print(f"USDB node preflight passed: {layout.release_id}")

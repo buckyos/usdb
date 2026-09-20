@@ -103,6 +103,10 @@ pub struct BtcMintExecuteResponse {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OverviewResponse {
+    /// Sanitized host observations, with explicit stale/unavailable state.
+    pub node_monitor: crate::monitor::MonitorSnapshot,
+    /// Development wallet routes require an explicit operator opt-in.
+    pub development_enabled: bool,
     pub service: String,
     pub generated_at_ms: u64,
     pub services: ServicesSummary,
@@ -114,6 +118,8 @@ pub struct OverviewResponse {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ServicesSummary {
+    /// Completion timestamp of this cached probe batch.
+    pub observed_at_ms: u64,
     pub btc_node: ServiceProbe<BtcNodeServiceSummary>,
     pub balance_history: ServiceProbe<BalanceHistoryServiceSummary>,
     pub usdb_indexer: ServiceProbe<UsdbIndexerServiceSummary>,

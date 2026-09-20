@@ -57,7 +57,7 @@ class ResourcePolicyTests(unittest.TestCase):
         plan = POLICY.build_resource_plan(memory, "bitcoin", {})
         self.assertEqual(plan.limits["BTC_MEMORY_LIMIT"], 26_293_043_200)
         self.assertEqual(plan.dbcache_mib, 9795)
-        self.assertEqual(plan.total_bytes, plan.reserve_bytes + plan.limits["BTC_MEMORY_LIMIT"])
+        self.assertEqual(plan.total_bytes, plan.reserve_bytes + plan.limits["BTC_MEMORY_LIMIT"] + plan.limits["CONTROL_PLANE_MEMORY_LIMIT"])
         self.assertLessEqual(plan.total_bytes, memory)
         self.assertGreater(plan.limits["BTC_MEMORY_LIMIT"] - plan.dbcache_mib * POLICY.MIB,
                            14 * POLICY.GIB)

@@ -43,6 +43,8 @@ usdb-node status
 
 SourceDAO 的 `check/status` 不发送交易，但可能拉取工具镜像、启动短时检查容器。初始化期间使用[专用进度与恢复指南](../network-admin/sourcedao.md)，不能仅凭主节点的后台 controller 状态判断初始化任务。
 
+也可通过 [私有节点控制台](../services/control-plane.md)查看这些观测；令牌登录与独立监控进程需使用包含该功能的新版本。
+
 ## 连续观察同步
 
 ```bash

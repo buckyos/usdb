@@ -119,10 +119,10 @@ class ResourcePlan:
 
     @property
     def total_bytes(self) -> int:
-        """Budget Bitcoin alone during IBD; reserve downstream services after handoff."""
+        """Budget Bitcoin plus its private monitor during IBD; reserve other services after handoff."""
         return self.reserve_bytes + self.external_services_bytes + sum(
             amount for key, amount in self.limits.items()
-            if self.phase != "bitcoin" or key in {"BTC_MEMORY_LIMIT", "BTC_BOOTSTRAP_MEMORY_LIMIT"}
+            if self.phase != "bitcoin" or key in {"BTC_MEMORY_LIMIT", "BTC_BOOTSTRAP_MEMORY_LIMIT", "CONTROL_PLANE_MEMORY_LIMIT"}
         )
 
     def environment(self) -> dict[str, str]:

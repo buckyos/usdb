@@ -1,3 +1,24 @@
+export interface MonitorSnapshot {
+  status: 'available' | 'missing' | 'stale' | 'unavailable' | 'invalid'
+  age_ms?: number | null
+  report?: {
+    observed_at_ms: number
+    overall_state: string
+    release_id?: string
+    node_role?: string
+    network?: { name?: string; chain_id?: string | number; genesis_hash?: string }
+    controller?: { state?: string }
+    resources?: { mode?: string; phase?: string; transition_pending?: boolean; configured_limits_bytes?: Record<string, number>; host_memory_bytes?: number }
+    mining?: { state?: string }
+    components: Array<{
+      id: string; label?: string; state: string; display_state?: string; progress_phase?: string
+      current?: number; total?: number; progress_percent?: number; unit?: string
+      file_preparation?: { state?: string }
+      background_validation?: { height?: number; target?: number; validated?: boolean; available?: boolean }
+    }>
+  } | null
+}
+
 export interface ServiceProbe<T> {
   name: string
   rpc_url: string
@@ -126,6 +147,7 @@ export interface OrdSummary {
 }
 
 export interface ServicesSummary {
+  observed_at_ms?: number
   btc_node: ServiceProbe<BtcNodeSummary>
   balance_history: ServiceProbe<BalanceHistorySummary>
   usdb_indexer: ServiceProbe<UsdbIndexerSummary>
@@ -221,6 +243,8 @@ export interface AppEntry {
 }
 
 export interface OverviewResponse {
+  node_monitor?: MonitorSnapshot
+  development_enabled?: boolean
   service: string
   generated_at_ms: number
   services: ServicesSummary

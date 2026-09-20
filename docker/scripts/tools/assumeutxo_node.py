@@ -101,14 +101,14 @@ def start_native_node(layout, *, sync_timeout_secs: int, output_to_stderr: bool,
                 node._transition_resources(layout, "steady", output_to_stderr=output_to_stderr)
                 started.clear()
                 continue
-            if any(containers.get(service, {}).get("state") != "running" for service in ("usdb-chain", "usdb-control-plane")):
+            if any(containers.get(service, {}).get("state") != "running" for service in ("usdb-chain",)):
                 if "usdb-chain" in started:
-                    raise ValueError("USDB chain or control-plane exited after native startup")
+                    raise ValueError("USDB chain exited after native startup")
                 if managed:
-                    node._resource_prepare_restart(layout, "usdb-chain", "usdb-control-plane")
+                    node._resource_prepare_restart(layout, "usdb-chain")
                 node.run_helper(layout, "run_testnet_runtime.sh", ["up-chain"], sync_timeout_secs=0, output_to_stderr=output_to_stderr)
                 if managed:
-                    node._resource_service_started(layout, "usdb-chain", "usdb-control-plane")
+                    node._resource_service_started(layout, "usdb-chain")
                 started.add("usdb-chain")
             if node._runtime_lifecycle_status(layout)["state"] == "ready":
                 if managed:
@@ -433,12 +433,6 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
         chain.update(gate)
     components.append(chain)
     resources, resource_waiting = node._resource_progress(layout, env, services, components)
-    control = services.get("usdb-control-plane", {})
-    planned = "usdb-control-plane" in resources.get("recover_services", [])
-    if node._container_start_failed(control) or (control.get("state") == "exited" and not planned):
-        chain.update(state="FAILED", detail="control-plane is not running; inspect its service log")
-    elif chain["state"] == "READY" and (control.get("state") != "running" or control.get("health") != "healthy"):
-        chain.update(state="STARTING", detail="waiting for control-plane health")
     overall = node._overall_progress_state(components)
     if resources.get("error"):
         overall = "BLOCKED"
@@ -454,4 +448,5 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
     return dict(schema_version=node.NODE_PROGRESS_SCHEMA_VERSION, release_id=layout.release_id, network_bundle_id=layout.bundle_id,
                 observed_at=observed_at, controller_state=(controller_state if controller_state is not None else node.controller_observed_state(layout)),
                 overall_state=overall, auxiliary_state="READY", components=components, resources=resources, mining=mining,
+                control_plane=node._control_plane_progress(services, observation_available=services_available),
                 native_bootstrap=dict(core=core, download=download, activation=activation, import_progress=imported, balance_history=bootstrap))

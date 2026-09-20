@@ -10,14 +10,27 @@ Start the control-plane first, for example:
 
 ```bash
 cd /home/bucky/work/usdb
-docker/scripts/run_console_preview.sh up
+docker/scripts/tools/run_local_console.sh up
 ```
+
+Retrieve the login token in another terminal:
+
+```bash
+docker/scripts/tools/run_local_console.sh token
+```
+
+Authentication also applies to the Vite proxy. The development servers bind to
+loopback and preserve Host so same-origin checks work through the proxy.
+The host observer is supplied by installed node kits; a dev-sim without it shows
+an explicit missing-observer state. For isolated development wallet tooling, set
+`CONTROL_PLANE_DEVELOPMENT_ENABLED=true` before starting the dev-sim container;
+regtest/development-chain gates still apply. Never enable it on a shared node.
 
 Then run the React app:
 
 ```bash
 cd /home/bucky/work/usdb/web/usdb-console-app
-npm install
+npm ci
 npm run dev
 ```
 
@@ -65,3 +78,17 @@ SourceDAO bootstrap completes:
 ```bash
 docker/scripts/tools/run_local_sourcedao_web.sh up
 ```
+
+Operator installation, SSH access, freshness semantics and troubleshooting are
+covered in [the private-console handbook](../../doc/handbook/services/control-plane.md).
+
+The optional end-to-end regression uses an isolated Rust process and Chromium:
+
+```bash
+cargo build --locked --manifest-path src/btc/Cargo.toml -p usdb-control-plane
+# Build all three web apps, then use a Python environment with Playwright/Chromium.
+python3 tests/test_control_plane_browser.py
+```
+
+Run these commands from the repository root. Test RPC endpoints are deliberately
+unavailable, and no existing node or wallet is used.

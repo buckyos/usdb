@@ -6,21 +6,21 @@ const controlPlaneTarget = process.env.USDB_CONTROL_PLANE_TARGET ?? 'http://127.
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: '0.0.0.0',
+    host: '127.0.0.1',
     port: 5174,
     proxy: {
       '/api': {
         target: controlPlaneTarget,
-        changeOrigin: true,
+        changeOrigin: false,
       },
       '/explorers': {
         target: controlPlaneTarget,
-        changeOrigin: true,
+        changeOrigin: false,
       },
     },
   },
   preview: {
-    host: '0.0.0.0',
+    host: '127.0.0.1',
     port: 4174,
   },
 })

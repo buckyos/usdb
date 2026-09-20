@@ -1,3 +1,4 @@
+import { NodeMonitor } from '../components/NodeMonitor'
 import { BootstrapSteps } from '../components/BootstrapSteps'
 import { MetricCard } from '../components/MetricCard'
 import { QuickLinkCard } from '../components/QuickLinkCard'
@@ -55,6 +56,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
 
   return (
     <div className="grid gap-5">
+      <NodeMonitor snapshot={data?.node_monitor} />
       <section className="console-page-intro">
         <h2 className="text-2xl font-semibold tracking-[-0.03em] text-[color:var(--cp-text)]">
           {t('pages.overview.title')}
@@ -67,7 +69,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label={t('metrics.updatedAt')}
-          value={data ? formatDate(locale, data.generated_at_ms) : t('common.notYetAvailable')}
+          value={data ? formatDate(locale, data.services.observed_at_ms ?? data.generated_at_ms) : t('common.notYetAvailable')}
           helpText={t('help.metrics.updatedAt', '')}
         />
         <MetricCard
@@ -334,6 +336,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
         />
       </section>
 
+      {data?.development_enabled && (
       <section className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
         <div className="console-card">
           <div className="mb-4">
@@ -372,6 +375,8 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
           t={t}
         />
       </section>
+
+      )}
 
       <section className="console-card">
         <div className="mb-4">

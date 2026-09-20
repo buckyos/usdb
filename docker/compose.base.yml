@@ -173,6 +173,8 @@ services:
       CONTROL_PLANE_ROOT_DIR: ${CONTROL_PLANE_ROOT_DIR:-/data/usdb-control-plane}
       CONTROL_PLANE_HOST: ${CONTROL_PLANE_HOST:-0.0.0.0}
       CONTROL_PLANE_PORT: ${CONTROL_PLANE_PORT:-28040}
+      CONTROL_PLANE_ALLOWED_ORIGINS: ${CONTROL_PLANE_ALLOWED_ORIGINS:-[]}
+      CONTROL_PLANE_DEVELOPMENT_ENABLED: ${CONTROL_PLANE_DEVELOPMENT_ENABLED:-false}
       BALANCE_HISTORY_RPC_URL: ${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}
       USDB_INDEXER_RPC_URL: ${USDB_INDEXER_RPC_URL:-http://usdb-indexer:28020}
       USDB_CHAIN_RPC_URL: ${USDB_CHAIN_RPC_URL:-http://ethw-node:8545}
@@ -197,7 +199,7 @@ services:
       - control-plane-data:${CONTROL_PLANE_ROOT_DIR:-/data/usdb-control-plane}
       - bootstrap-artifacts:${BOOTSTRAP_DIR:-/bootstrap}:ro
     ports:
-      - "${CONTROL_PLANE_BIND_PORT:-28040}:${CONTROL_PLANE_PORT:-28040}"
+      - "${CONTROL_PLANE_BIND_ADDRESS:-127.0.0.1}:${CONTROL_PLANE_BIND_PORT:-28040}:${CONTROL_PLANE_PORT:-28040}"
     networks:
       - usdb-net
 

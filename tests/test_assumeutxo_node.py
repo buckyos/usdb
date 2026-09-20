@@ -605,6 +605,12 @@ class NativeBundleTests(unittest.TestCase):
                 self.assertTrue(volumes["/data/bitcoin"]["read_only"])
                 self.assertTrue(volumes["/data/assumeutxo"]["read_only"])
                 self.assertEqual(set(services["usdb-chain"]["depends_on"]), {"usdb-chain-init", "usdb-indexer"})
+                console = services["usdb-control-plane"]
+                self.assertFalse(console.get("depends_on"))
+                console_mounts = {item["target"]: item for item in console["volumes"]}
+                self.assertTrue(console_mounts["/run/usdb-console"]["read_only"])
+                self.assertNotIn("/var/run/docker.sock", console_mounts)
+                self.assertEqual(console["ports"][0]["host_ip"], "127.0.0.1")
             else:
                 self.assertEqual(services["btc-node"]["environment"]["BTC_TXINDEX"], "0")
                 self.assertEqual(int(services["btc-snapshot-bootstrap"]["mem_limit"]), 128 * policy.MIB)

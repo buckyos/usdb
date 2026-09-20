@@ -66,6 +66,7 @@ struct UsdbChainDevIdentityMarker {
 pub struct AppState {
     pub config: Arc<ControlPlaneConfig>,
     pub rpc_client: RpcClient,
+    services_cache: Arc<tokio::sync::Mutex<Option<(Instant, ServicesSummary)>>>,
 }
 
 struct PreparedBtcMintContext {
@@ -191,9 +192,15 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
     })?;
     let console_root_label = config.web.console_root.display().to_string();
 
+    let access = Arc::new(crate::access::Access::new(
+        crate::access::load_token(config.monitor_dir.as_deref().unwrap_or(&config.root_dir))?,
+        config.server.allowed_origins.clone(),
+        config.development_mint.enabled,
+    )?);
     let state = AppState {
         config: Arc::new(config),
         rpc_client,
+        services_cache: Arc::new(tokio::sync::Mutex::new(None)),
     };
 
     let app = Router::new()
@@ -239,6 +246,10 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
         )
         .fallback_service(get_service(
             ServeDir::new(console_root).append_index_html_on_directories(true),
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            access,
+            crate::access::guard,
         ))
         .with_state(state);
 
@@ -968,6 +979,16 @@ async fn build_overview(state: &AppState) -> OverviewResponse {
     OverviewResponse {
         service: USDB_CONTROL_PLANE_SERVICE_NAME.to_string(),
         generated_at_ms: current_unix_ms(),
+        node_monitor: crate::monitor::read_snapshot(
+            state
+                .config
+                .monitor_dir
+                .as_deref()
+                .unwrap_or(&state.config.root_dir),
+            current_unix_ms(),
+        )
+        .await,
+        development_enabled: state.config.development_mint.enabled,
         capabilities,
         services,
         bootstrap,
@@ -1950,18 +1971,30 @@ async fn fetch_owner_active_pass_summary(
 }
 
 async fn build_services_summary(state: &AppState) -> ServicesSummary {
-    let btc_node = probe_btc_node(state).await;
-    let balance_history = probe_balance_history(state).await;
-    let usdb_indexer = probe_usdb_indexer(state).await;
-    let usdb_chain = probe_usdb_chain(state).await;
-    let ord = probe_ord(state).await;
-    ServicesSummary {
+    // Coalesce concurrent UI polls and keep one slow dependency from serializing all probes.
+    let mut cache = state.services_cache.lock().await;
+    if let Some((observed, summary)) = cache.as_ref()
+        && observed.elapsed() < std::time::Duration::from_secs(5)
+    {
+        return summary.clone();
+    }
+    let (btc_node, balance_history, usdb_indexer, usdb_chain, ord) = tokio::join!(
+        probe_btc_node(state),
+        probe_balance_history(state),
+        probe_usdb_indexer(state),
+        probe_usdb_chain(state),
+        probe_ord(state),
+    );
+    let summary = ServicesSummary {
+        observed_at_ms: current_unix_ms(),
         btc_node,
         balance_history,
         usdb_indexer,
         usdb_chain,
         ord,
-    }
+    };
+    *cache = Some((Instant::now(), summary.clone()));
+    summary
 }
 
 fn build_capabilities_summary(services: &ServicesSummary) -> CapabilitiesSummary {
@@ -2357,7 +2390,8 @@ async fn probe_ord(state: &AppState) -> ServiceProbe<OrdServiceSummary> {
     let http_status = probe.ok();
     let ord_height_value = ord_height
         .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok());
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .and_then(|count| count.checked_sub(1));
     let btc_tip_height_value = btc_tip_height.ok().map(|info| info.blocks);
     let sync_gap = match (ord_height_value, btc_tip_height_value) {
         (Some(ord_height), Some(btc_tip_height)) => Some(btc_tip_height.saturating_sub(ord_height)),
@@ -2365,7 +2399,7 @@ async fn probe_ord(state: &AppState) -> ServiceProbe<OrdServiceSummary> {
     };
     let backend_ready = http_status.map(|status| (200..500).contains(&status));
     let query_ready = match (backend_ready, sync_gap) {
-        (Some(true), Some(0)) => Some(true),
+        (Some(true), Some(0)) => Some(ord_height_value == btc_tip_height_value),
         (Some(true), Some(_)) => Some(false),
         (Some(false), _) => Some(false),
         _ => None,

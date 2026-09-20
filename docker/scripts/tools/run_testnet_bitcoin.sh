@@ -328,6 +328,9 @@ native_status() {
 }
 
 case "${action}" in
+  ensure-network)
+    ensure_network
+    ;;
   bootstrap-start)
     require_node_env
     [[ "$(env_value SNAPSHOT_MODE "${node_env}")" == "assumeutxo" ]] || exit 1

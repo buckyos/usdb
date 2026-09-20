@@ -149,7 +149,7 @@ class ResourceControllerTests(unittest.TestCase):
     def test_bitcoin_boost_rejects_active_downstream_before_any_mutation(self):
         original = self.layout.node_env.read_bytes()
         for service in POLICY.SERVICE_MEMORY_KEYS:
-            if service == "btc-node":
+            if service in {"btc-node", "usdb-control-plane"}:
                 continue
             for state in ("running", "restarting", "paused"):
                 with self.subTest(service=service, state=state):

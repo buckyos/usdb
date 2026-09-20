@@ -4,6 +4,8 @@ set -euo pipefail
 output_path="${1:-${CONTROL_PLANE_ROOT_DIR:-/data/usdb-control-plane}/config.toml}"
 root_dir="${CONTROL_PLANE_ROOT_DIR:-/data/usdb-control-plane}"
 
+umask 077
+
 mkdir -p "${root_dir}" "$(dirname "${output_path}")"
 
 bitcoin_auth_block=""
@@ -41,10 +43,13 @@ esac
 
 cat >"${output_path}" <<EOF
 root_dir = "${root_dir}"
+monitor_dir = "${CONTROL_PLANE_MONITOR_DIR:-${root_dir}}"
 
 [server]
 host = "${CONTROL_PLANE_HOST:-0.0.0.0}"
 port = ${CONTROL_PLANE_PORT:-28040}
+
+allowed_origins = ${CONTROL_PLANE_ALLOWED_ORIGINS:-[]}
 
 [rpc]
 balance_history_url = "${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}"
@@ -74,6 +79,7 @@ usdb_indexer_explorer_root = "${CONTROL_PLANE_INDEXER_EXPLORER_ROOT:-/opt/usdb/w
 sourcedao_web_url = "${CONTROL_PLANE_SOURCEDAO_WEB_URL:-http://127.0.0.1:3050}"
 
 [development_mint]
+enabled = ${CONTROL_PLANE_DEVELOPMENT_ENABLED:-false}
 ord_bin = "${CONTROL_PLANE_ORD_BIN:-/opt/ord/bin/ord}"
 ord_data_dir = "${CONTROL_PLANE_ORD_DATA_DIR:-/data/ord}"
 ord_fee_rate = ${CONTROL_PLANE_ORD_FEE_RATE:-1.0}

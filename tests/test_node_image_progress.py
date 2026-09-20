@@ -98,6 +98,8 @@ class ImageProgressTests(unittest.TestCase):
         groups = []
 
         def pull(_layout, helper, args, **kwargs):
+            if args == ["up-console"]:
+                return
             self.assertEqual(args, ["pull"])
             groups.append((helper, images.read_image_preparation(self.layout)["group"]))
 
@@ -107,7 +109,7 @@ class ImageProgressTests(unittest.TestCase):
             monitor = mock.Mock(enabled=False)
             node._start_node(self.layout, sync_timeout_secs=10, pull=True,
                              output_to_stderr=True, progress_monitor=monitor)
-            self.assertEqual(groups, [("run_testnet_bitcoin.sh", "bitcoin"), ("run_testnet_runtime.sh", "runtime")])
+            self.assertEqual(groups, [("run_testnet_runtime.sh", "runtime"), ("run_testnet_bitcoin.sh", "bitcoin")])
             self.assertIsNone(images.read_image_preparation(self.layout))
             start.assert_called_once()
             groups.clear()
@@ -122,7 +124,7 @@ class ImageProgressTests(unittest.TestCase):
              mock.patch.object(native, "start_native_node") as start, redirect_stderr(io.StringIO()) as output:
             node._start_node(self.layout, sync_timeout_secs=10, pull=True,
                              output_to_stderr=True, progress_monitor=mock.Mock(enabled=False))
-            self.assertEqual(pull.call_count, 2)
+            self.assertEqual(pull.call_count, 3)
             start.assert_called_once()
             self.assertIn("WARNING Image preparation progress", output.getvalue())
 
