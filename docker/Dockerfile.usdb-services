@@ -56,8 +56,10 @@ RUN cd usdb-console-app \
     && npm ci
 
 COPY web /workspace/web
+COPY tests/test_control_plane_wallet.mjs /workspace/tests/test_control_plane_wallet.mjs
 RUN cd usdb-console-app \
     && npm run check \
+    && npm run test:wallet \
     && npm run build \
     && cd ../balance-history-browser \
     && npm run check \

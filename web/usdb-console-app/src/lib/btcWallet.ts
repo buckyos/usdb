@@ -131,9 +131,12 @@ function getGlobalWindow(): InjectedWindowLike | null {
   return window
 }
 
-function getStorage(): Storage | null {
-  if (typeof window === 'undefined') return null
-  return window.localStorage
+// Development keys are session-only. Never restore legacy persisted WIF material.
+let devRegtestWallet: DevRegtestWalletRecord | null = null
+
+export function discardLegacyDevWalletStorage() {
+  if (typeof window === 'undefined') return
+  try { window.localStorage.removeItem(DEV_REGTEST_STORAGE_KEY) } catch { /* Storage may be disabled. */ }
 }
 
 function bytesToHex(bytes: Uint8Array) {
@@ -200,37 +203,13 @@ function decodePsbtText(value: string): { bytes: Uint8Array; format: BtcPsbtText
 }
 
 function readDevRegtestWalletRecord(): DevRegtestWalletRecord | null {
-  const storage = getStorage()
-  if (!storage) return null
-
-  const raw = storage.getItem(DEV_REGTEST_STORAGE_KEY)
-  if (!raw) return null
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<DevRegtestWalletRecord>
-    if (
-      typeof parsed.wif !== 'string' ||
-      typeof parsed.address !== 'string' ||
-      typeof parsed.publicKey !== 'string'
-    ) {
-      return null
-    }
-
-    return {
-      wif: parsed.wif,
-      address: parsed.address,
-      publicKey: parsed.publicKey,
-      importedAt: typeof parsed.importedAt === 'string' ? parsed.importedAt : new Date().toISOString(),
-    }
-  } catch {
-    return null
-  }
+  discardLegacyDevWalletStorage()
+  return devRegtestWallet
 }
 
 function writeDevRegtestWalletRecord(record: DevRegtestWalletRecord) {
-  const storage = getStorage()
-  if (!storage) return
-  storage.setItem(DEV_REGTEST_STORAGE_KEY, JSON.stringify(record))
+  discardLegacyDevWalletStorage()
+  devRegtestWallet = record
 }
 
 function deriveRegtestAddress(privateKey: Uint8Array, addressType: DevRegtestAddressType) {
@@ -426,9 +405,8 @@ export async function readDevRegtestWalletSnapshot(): Promise<BtcWalletSnapshot 
 }
 
 export function clearDevRegtestWallet() {
-  const storage = getStorage()
-  if (!storage) return
-  storage.removeItem(DEV_REGTEST_STORAGE_KEY)
+  devRegtestWallet = null
+  discardLegacyDevWalletStorage()
 }
 
 export async function signDevRegtestWalletMessage(message: string): Promise<string> {

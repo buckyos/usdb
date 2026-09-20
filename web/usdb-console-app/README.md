@@ -43,6 +43,30 @@ The console also exposes an `Apps` page at `/#/apps`. It reads app entries from
 `/api/system/overview` and links to the runtime-specific Balance History
 Explorer, USDB Indexer Browser, and SourceDAO Web target.
 
+## Wallet identity boundary
+
+`/#/me/usdb` and `/#/me/btc` use `WalletIdentityPage` for read-only wallet and
+watch-address lookup. `walletIdentity.ts` owns provider discovery, bounded reads,
+account/network event invalidation and session disposal. No account permission
+request is sent before the operator clicks Connect. EVM reads compare chain ID
+and genesis with the fresh host identity and the backend RPC observation. BTC
+queries compare the actual Bitcoin network, independently of the USDB network.
+The node's configured miner address is a public observation, never wallet authority.
+
+Provider contracts: [EIP-1193](https://eips.ethereum.org/EIPS/eip-1193),
+[EIP-6963](https://eips.ethereum.org/EIPS/eip-6963),
+[EIP-3326](https://eips.ethereum.org/EIPS/eip-3326),
+[UniSat](https://docs.unisat.io/developer-support/open-api-documentation/unisat-wallet),
+[OKX Bitcoin](https://web3.okx.com/zh-hans/onchainos/dev-docs/wallet/dapp-connect/chains/bitcoin/provider).
+Unknown BTC chains (including Fractal) must not fall back to Bitcoin mainnet.
+Missing genesis/network observations remain unverified. New adapters should add
+provider-event and late-response tests before enabling transaction operations.
+
+The legacy `MePage` is only reachable under `/#/development/usdb` or
+`/#/development/btc` with the backend development flag enabled. Its development
+WIF stays in memory and is cleared on leaving the page or ending the session;
+legacy localStorage WIF records are discarded, never restored.
+
 When the two static explorers are opened through the control plane, their app
 links use the same-origin RPC proxies:
 
@@ -88,7 +112,12 @@ The optional end-to-end regression uses an isolated Rust process and Chromium:
 cargo build --locked --manifest-path src/btc/Cargo.toml -p usdb-control-plane
 # Build all three web apps, then use a Python environment with Playwright/Chromium.
 python3 tests/test_control_plane_browser.py
+python3 tests/test_control_plane_wallet_browser.py
+node tests/test_control_plane_wallet.mjs
 ```
 
 Run these commands from the repository root. Test RPC endpoints are deliberately
-unavailable, and no existing node or wallet is used.
+unavailable, and no existing node or wallet is used. The wallet browser test
+provides fake extensions and controlled query responses; it does not qualify a
+real extension release. `npm run test:wallet` runs the provider/session regression
+from this app directory and is also part of the services image build.

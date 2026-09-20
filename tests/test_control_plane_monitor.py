@@ -63,6 +63,18 @@ class PrivateMonitorTests(unittest.TestCase):
             monitor.prepare(self.layout, node)
         self.assertEqual(target.read_text(), "preserved")
 
+    def test_exports_only_valid_public_configured_miner_identity(self):
+        self.layout.node_env.parent.mkdir(parents=True)
+        for address in ("0x" + "a" * 40, "http://user:SECRET@rpc", "not-an-address"):
+            self.layout.node_env.write_text(f"USDB_MINER_ADDRESS={address}\nUSDB_MINER_PRIVATE_KEY=SECRET\n")
+            with mock.patch.object(node, "collect_node_progress", return_value=dict(overall_state="READY", components=[])):
+                exported = monitor.export(self.layout, node)
+            self.assertNotIn("SECRET", json.dumps(exported))
+            if address.startswith("0x"):
+                self.assertEqual(exported["node_identity"], dict(configured_miner_address=address))
+            else:
+                self.assertNotIn("node_identity", exported)
+
     def test_private_console_fits_all_automatic_phases_and_stale_limits_are_rejected(self):
         for memory in (32_000_000_000, 32 * policy.GIB, 64 * policy.GIB, 128 * policy.GIB):
             for phase in policy.PHASES:

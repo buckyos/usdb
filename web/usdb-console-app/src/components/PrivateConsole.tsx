@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type PropsWithChildren } from 'react'
 import useSWR, { SWRConfig } from 'swr'
 import { useI18n } from '../i18n/provider'
+import { clearDevRegtestWallet, discardLegacyDevWalletStorage } from '../lib/btcWallet'
 
 async function session() {
   const response = await fetch('/api/auth/session', { cache: 'no-store' })
@@ -16,6 +17,13 @@ export function PrivateConsole({ children }: PropsWithChildren) {
   const [token, setToken] = useState('')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    discardLegacyDevWalletStorage()
+    return clearDevRegtestWallet
+  }, [])
+  useEffect(() => {
+    if (!data?.authenticated || error) clearDevRegtestWallet()
+  }, [data?.authenticated, error])
   useEffect(() => {
     const refresh = () => { void mutate() }
     window.addEventListener('usdb-session-expired', refresh)

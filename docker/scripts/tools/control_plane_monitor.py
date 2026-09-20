@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import signal
@@ -15,7 +16,7 @@ import time
 
 SCHEMA = "usdb-console-monitor:v1"
 # Deliberate projection: never export node.env, credentials, raw RPC errors,
-# artifacts, wallet identities, filesystem paths, or Docker inspect output.
+# artifacts, wallet secrets, filesystem paths, or Docker inspect output.
 COMPONENT_FIELDS = ("id", "label", "state", "display_state", "progress_phase", "current", "total",
                     "progress_percent", "unit", "observation_unavailable", "verification_progress",
                     "query_ready", "consensus_ready", "stage_elapsed_secs")
@@ -104,6 +105,10 @@ def export(layout, node) -> dict:
         if layout.node_env.is_file():
             from resource_policy import SERVICE_MEMORY_KEYS, memory_bytes
             env = node.read_env(layout.node_env)
+            # Public configuration only; this does not attest to a wallet owner or runtime coinbase.
+            miner_address = env.get("USDB_MINER_ADDRESS", "").strip()
+            if re.fullmatch(r"0x[0-9a-fA-F]{40}", miner_address):
+                report["node_identity"] = {"configured_miner_address": miner_address}
             report["resources"]["configured_limits_bytes"] = {
                 service: memory_bytes(env[key], key) for service, key in SERVICE_MEMORY_KEYS.items() if key in env
             }

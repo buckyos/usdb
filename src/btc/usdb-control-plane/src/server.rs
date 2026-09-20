@@ -628,6 +628,11 @@ async fn get_usdb_chain_address_status(
 
     Json(UsdbChainAddressStatusResponse {
         usdb_chain_id,
+        usdb_genesis_hash: services
+            .usdb_chain
+            .data
+            .as_ref()
+            .and_then(|summary| summary.genesis_hash.clone()),
         usdb_network_id,
         usdb_chain_runtime_profile: runtime_profile,
         address,
@@ -2292,13 +2297,14 @@ async fn probe_usdb_indexer(state: &AppState) -> ServiceProbe<UsdbIndexerService
 async fn probe_usdb_chain(state: &AppState) -> ServiceProbe<UsdbChainServiceSummary> {
     let rpc_url = state.config.rpc.usdb_chain_url.clone();
     let started = Instant::now();
-    let (client_version, chain_id, network_id, block_number, latest_block, syncing) = tokio::join!(
+    let (client_version, chain_id, network_id, block_number, latest_block, syncing, genesis) = tokio::join!(
         state.rpc_client.usdb_client_version(&rpc_url),
         state.rpc_client.usdb_chain_id(&rpc_url),
         state.rpc_client.usdb_network_id(&rpc_url),
         state.rpc_client.usdb_block_number(&rpc_url),
         state.rpc_client.usdb_latest_block(&rpc_url),
-        state.rpc_client.usdb_syncing(&rpc_url)
+        state.rpc_client.usdb_syncing(&rpc_url),
+        state.rpc_client.usdb_genesis_block(&rpc_url)
     );
     let latency_ms = started.elapsed().as_millis() as u64;
     let client_version_error = client_version.as_ref().err().cloned();
@@ -2307,6 +2313,7 @@ async fn probe_usdb_chain(state: &AppState) -> ServiceProbe<UsdbChainServiceSumm
     let block_number_error = block_number.as_ref().err().cloned();
     let latest_block_error = latest_block.as_ref().err().cloned();
     let syncing_error = syncing.as_ref().err().cloned();
+    let genesis_error = genesis.as_ref().err().cloned();
     let reachable = client_version.is_ok()
         || chain_id.is_ok()
         || network_id.is_ok()
@@ -2342,6 +2349,7 @@ async fn probe_usdb_chain(state: &AppState) -> ServiceProbe<UsdbChainServiceSumm
         Some(UsdbChainServiceSummary {
             client_version: client_version.ok(),
             chain_id: chain_id.ok(),
+            genesis_hash: genesis.ok().flatten().and_then(|block| block.hash),
             network_id: network_id.ok(),
             block_number: block_number_value,
             latest_block_hash,
@@ -2366,6 +2374,7 @@ async fn probe_usdb_chain(state: &AppState) -> ServiceProbe<UsdbChainServiceSumm
             block_number_error,
             latest_block_error,
             syncing_error,
+            genesis_error,
         ]),
         data,
     }

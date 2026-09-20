@@ -6,7 +6,8 @@ export interface MonitorSnapshot {
     overall_state: string
     release_id?: string
     node_role?: string
-    network?: { name?: string; chain_id?: string | number; genesis_hash?: string }
+    network?: { name?: string; chain_id?: string | number; genesis_hash?: string; bitcoin_network?: string }
+    node_identity?: { configured_miner_address?: string }
     controller?: { state?: string }
     resources?: { mode?: string; phase?: string; transition_pending?: boolean; configured_limits_bytes?: Record<string, number>; host_memory_bytes?: number }
     mining?: { state?: string }
@@ -128,6 +129,7 @@ export interface UsdbIndexerSummary {
 export interface UsdbChainSummary {
   client_version?: string | null
   chain_id?: string | null
+  genesis_hash?: string | null
   network_id?: string | null
   block_number?: number | null
   latest_block_hash?: string | null
@@ -525,6 +527,7 @@ export interface UsdbChainDevIdentityResponse {
 
 export interface UsdbChainAddressStatusResponse {
   usdb_chain_id?: string | null
+  usdb_genesis_hash?: string | null
   usdb_network_id?: string | null
   usdb_chain_runtime_profile: string
   address: string

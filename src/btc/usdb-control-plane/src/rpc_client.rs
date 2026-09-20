@@ -183,6 +183,15 @@ impl RpcClient {
             .await
     }
 
+    /// Observe the RPC network identity without requiring mining or recent blocks.
+    pub async fn usdb_genesis_block(
+        &self,
+        url: &str,
+    ) -> Result<Option<UsdbChainBlockHeader>, String> {
+        self.json_rpc_call(url, "eth_getBlockByNumber", json!(["0x0", false]))
+            .await
+    }
+
     /// Performs a lightweight HTTP GET and returns the response status code.
     ///
     /// This is used for health probes where the caller only cares whether the

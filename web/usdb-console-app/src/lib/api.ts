@@ -53,6 +53,7 @@ async function callServiceRpc<T>(
     }),
   })
 
+  if (response.status === 401) window.dispatchEvent(new Event('usdb-session-expired'))
   if (!response.ok) {
     const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null
     throw new Error(errorPayload?.error ?? `Failed ${service} RPC call: HTTP ${response.status}`)
@@ -234,6 +235,7 @@ export async function prepareBtcMintDraft(
     body: JSON.stringify(request),
   })
 
+  if (response.status === 401) window.dispatchEvent(new Event('usdb-session-expired'))
   if (!response.ok) {
     const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null
     throw new Error(errorPayload?.error ?? `Failed BTC mint prepare: HTTP ${response.status}`)
@@ -254,6 +256,7 @@ export async function executeBtcMint(
     body: JSON.stringify(request),
   })
 
+  if (response.status === 401) window.dispatchEvent(new Event('usdb-session-expired'))
   if (!response.ok) {
     const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null
     throw new Error(errorPayload?.error ?? `Failed BTC mint execute: HTTP ${response.status}`)
@@ -267,6 +270,7 @@ export async function fetchBtcWorldSimIdentities(): Promise<BtcWorldSimIdentitie
     cache: 'no-store',
   })
 
+  if (response.status === 401) window.dispatchEvent(new Event('usdb-session-expired'))
   if (!response.ok) {
     throw new Error(`Failed to load BTC world-sim identities: HTTP ${response.status}`)
   }
@@ -282,6 +286,7 @@ export async function fetchBtcWorldSimDevSigner(
     cache: 'no-store',
   })
 
+  if (response.status === 401) window.dispatchEvent(new Event('usdb-session-expired'))
   if (!response.ok) {
     throw new Error(`Failed to load BTC world-sim dev signer: HTTP ${response.status}`)
   }
@@ -294,6 +299,7 @@ export async function fetchUsdbChainDevIdentity(): Promise<UsdbChainDevIdentityR
     cache: 'no-store',
   })
 
+  if (response.status === 401) window.dispatchEvent(new Event('usdb-session-expired'))
   if (!response.ok) {
     throw new Error(`Failed to load USDB dev identity: HTTP ${response.status}`)
   }
@@ -309,6 +315,7 @@ export async function fetchUsdbChainAddressStatus(
     cache: 'no-store',
   })
 
+  if (response.status === 401) window.dispatchEvent(new Event('usdb-session-expired'))
   if (!response.ok) {
     const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null
     throw new Error(errorPayload?.error ?? `Failed to load USDB-chain address status: HTTP ${response.status}`)

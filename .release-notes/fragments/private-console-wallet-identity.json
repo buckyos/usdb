@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "private-console-wallet-identity",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Separate private-console wallet identity and read-only queries from development signing tools",
+  "details": [
+    "Provide explicit EVM and UniSat/OKX Bitcoin wallet selection, connection, refresh and local disconnect, with a separate watch-only address mode and public configured node miner address.",
+    "Check EVM chain ID and genesis against the configured node identity and observed RPC network; validate BTC addresses and wallet network independently of the USDB network name. Unknown, mismatched or stale identity observations pause queries.",
+    "Invalidate old identity results after account or network changes and discard late wallet responses after disconnect or logout. Distinguish unavailable queries from zero balances or absent miner passes; preserve full native balance precision.",
+    "Move legacy signing tools behind the explicit development route and server flag. Keep development WIF material only in memory and remove the old localStorage record without restoring it. The formal identity page does not sign or broadcast transactions."
+  ],
+  "operator_actions": [
+    "Upgrade the node kit and services image together, then refresh the browser. Reconnect the wallet in the identity page; the testnet-v0 BTC identity uses Bitcoin mainnet.",
+    "Development users must reimport their test signer after refreshing or leaving the development page; previously persisted development WIF records are no longer restored."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

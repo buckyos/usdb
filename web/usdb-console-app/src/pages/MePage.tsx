@@ -376,6 +376,7 @@ function formatUsdbAtoms(value: string | null | undefined, t: MePageProps['t']) 
 }
 
 export function MePage({ data, locale, t }: MePageProps) {
+  useEffect(() => clearDevRegtestWallet, [])
   const { identityKind } = useParams()
   const activeIdentity = normalizeIdentityKind(identityKind)
   const [usdbSessionBoot] = useState<PersistedUsdbSessionState>(() => loadPersistedUsdbSessionState())
@@ -486,7 +487,7 @@ export function MePage({ data, locale, t }: MePageProps) {
   const btcMintInputResetReady = useRef(false)
 
   if (!activeIdentity) {
-    return <Navigate to="/me/usdb" replace />
+    return <Navigate to="/development/usdb" replace />
   }
 
   const usdbReachable = Boolean(data?.services.usdb_chain.reachable)
@@ -2379,7 +2380,7 @@ export function MePage({ data, locale, t }: MePageProps) {
           </div>
           <div className="mt-4 grid gap-3">
             <NavLink
-              to="/me/usdb"
+              to="/development/usdb"
               className={({ isActive }) =>
                 isActive ? 'console-service-selector active' : 'console-service-selector'
               }
@@ -2392,7 +2393,7 @@ export function MePage({ data, locale, t }: MePageProps) {
               </p>
             </NavLink>
             <NavLink
-              to="/me/btc"
+              to="/development/btc"
               className={({ isActive }) =>
                 isActive ? 'console-service-selector active' : 'console-service-selector'
               }

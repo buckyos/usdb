@@ -1,5 +1,8 @@
 # USDB Control Console Plan
 
+> 本文保留早期设计背景。当前私有监控、钱包只读连接、身份与网络校验的实际使用方式见
+> [私有节点控制台手册](handbook/services/control-plane.md)；开发模拟签名和正式网络交易能力分别管理。
+
 ## 1. 目标
 
 这份文档用于定义一个统一的本地控制台（`USDB Control Console`）设计。

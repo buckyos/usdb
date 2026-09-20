@@ -202,6 +202,8 @@ pub struct UsdbChainDevIdentityResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct UsdbChainAddressStatusResponse {
     pub usdb_chain_id: Option<String>,
+    /// Observed RPC genesis, independent of the configured deployment identity.
+    pub usdb_genesis_hash: Option<String>,
     pub usdb_network_id: Option<String>,
     pub usdb_chain_runtime_profile: String,
     pub address: String,
@@ -350,6 +352,8 @@ pub struct BtcNodeServiceSummary {
 pub struct UsdbChainServiceSummary {
     pub client_version: Option<String>,
     pub chain_id: Option<String>,
+    /// Block zero identifies networks that reuse the same chain ID.
+    pub genesis_hash: Option<String>,
     pub network_id: Option<String>,
     pub block_number: Option<u64>,
     pub latest_block_hash: Option<String>,

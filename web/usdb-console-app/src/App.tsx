@@ -6,6 +6,7 @@ import { fetchOverview } from './lib/api'
 import { AppsPage } from './pages/AppsPage'
 import { BootstrapPage } from './pages/BootstrapPage'
 import { MePage } from './pages/MePage'
+import { WalletIdentityPage } from './pages/WalletIdentityPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { ProtocolPage } from './pages/ProtocolPage'
 import { ServicesPage } from './pages/ServicesPage'
@@ -50,7 +51,12 @@ function ConsoleApp() {
         <Route path="/bootstrap" element={<BootstrapPage data={error ? undefined : data} t={t} />} />
         <Route path="/protocol" element={<ProtocolPage data={error ? undefined : data} locale={locale} t={t} />} />
         <Route path="/me" element={<Navigate to="/me/usdb" replace />} />
-        <Route path="/me/:identityKind" element={<MePage data={error ? undefined : data} locale={locale} t={t} />} />
+        <Route path="/me/:identityKind" element={<WalletIdentityPage data={error ? undefined : data} locale={locale} />} />
+        <Route path="/development/:identityKind" element={isLoading && !error
+          ? <p role="status">{locale === 'zh-CN' ? '正在读取开发能力…' : 'Loading development capabilities…'}</p>
+          : data?.development_enabled && !error
+          ? <MePage data={data} locale={locale} t={t} />
+          : <Navigate to="/me/usdb" replace />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />
       </Routes>
     </ConsoleShell>
