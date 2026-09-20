@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 usdb-util = { path = "../usdb-util" }
-rust-rocksdb = "0.45"
+rust-rocksdb = "0.52"
 tokio = { version = "1.49", features = ["full"] }
 bitcoincore-rpc = "0.19"
 ord = "0.24"
