@@ -2368,7 +2368,7 @@ class UsdbNodeTests(unittest.TestCase):
         start.assert_not_called()
         activate.assert_not_called()
 
-    def test_controller_submission_is_a_noop_when_node_is_already_ready(self) -> None:
+    def test_ready_controller_submission_checks_monitoring_without_restarting_core(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         report = {"overall_state": "READY"}
         with (
@@ -2376,6 +2376,8 @@ class UsdbNodeTests(unittest.TestCase):
             mock.patch.object(NODE, "_require_controller_unit") as require_unit,
             mock.patch.object(NODE, "start_controller_unit") as start,
             mock.patch.object(NODE, "activate_release") as activate,
+            mock.patch.object(NODE, "ensure_background_services", return_value={"state": "ready"}) as ensure,
+            mock.patch.object(NODE, "run_helper") as helper,
         ):
             result, return_code = NODE.submit_up_to_controller(
                 layout,
@@ -2385,6 +2387,8 @@ class UsdbNodeTests(unittest.TestCase):
 
         self.assertEqual(return_code, 0)
         self.assertEqual(result["outcome"], "ready")
+        ensure.assert_called_once_with(layout)
+        helper.assert_called_once_with(layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=True)
         require_unit.assert_not_called()
         start.assert_not_called()
         activate.assert_not_called()
@@ -2424,11 +2428,13 @@ class UsdbNodeTests(unittest.TestCase):
             {"overall_state": "ACTIVATION_REQUIRED"},
             {"overall_state": "ACTIVATION_REQUIRED"},
             {"overall_state": "READY_TO_START"},
+            {"overall_state": "STARTING"},
         ]
         with (
             mock.patch.object(NODE, "collect_node_status", side_effect=reports),
             mock.patch.object(NODE, "_require_controller_unit"),
             mock.patch.object(NODE, "activate_release") as activate,
+            mock.patch.object(NODE, "ensure_background_services", return_value={"state": "ready"}),
             mock.patch.object(
                 NODE,
                 "start_controller_unit",
@@ -2744,7 +2750,9 @@ class UsdbNodeTests(unittest.TestCase):
         report = {"overall_state": "AWAITING_PEERS", "checks": {
             "runtime": {"state": "ready"}, "network_membership": {"reason": "SYNCING"}}}
         with mock.patch.object(NODE, "collect_node_status", return_value=report), \
-             mock.patch.object(NODE, "start_controller_unit") as start:
+             mock.patch.object(NODE, "start_controller_unit") as start, \
+             mock.patch.object(NODE, "ensure_background_services", return_value={"state": "ready"}), \
+             mock.patch.object(NODE, "run_helper"):
             result, code = NODE.submit_up_to_controller(layout, dry_run=False, allow_activation=False)
         self.assertEqual((result["outcome"], code), ("awaiting_peers", 0))
         self.assertEqual(result["status"]["overall_state"], "AWAITING_PEERS")

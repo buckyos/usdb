@@ -19,10 +19,15 @@ Control-plane 随 USDB 节点发布，供节点运维人员查看本机同步、
 已有节点完成[正常升级](../node/maintenance.md)后，使用同一运维账号执行：
 
 ```bash
-usdb-node controller install
-usdb-node console start
+usdb-node up --no-watch
 usdb-node console token
 ```
+
+包含后台服务自动检查改进的 node kit 会补齐缺失的标准 monitor，并在升级后重启旧版采集进程。
+核心节点已经 `READY` 时也会执行这些检查，无需额外记住一次 `controller install`。
+如果工具提示 controller 从未安装，执行 `usdb-node controller install` 后再 `up`；
+有意使用前台模式的节点仍保持前台方式。自定义 unit、覆盖配置或 mask 按提示核对，不自动覆盖。
+尚未包含此改进的旧工具，仍使用 `controller install` 后 `console start` 的方式补齐监控。
 
 `controller install` 安装或更新两个 systemd unit，不会启动或重启链；
 `console start` 只启动／更新控制台容器及已安装的监控进程，不等待 BTC、BH、Indexer 或 Chain 就绪。
@@ -94,15 +99,17 @@ txindex 全部满足条件后，才启动 Ord 本体与 HTTP 服务。容器显�
 监控缺失、采集失败、文件格式无效会分别显示，不会以旧的 READY 代替当前状态。
 控制器完成启动后，独立监控进程仍继续运行；`usdb-node down` 会停止两个宿主机进程和节点服务。
 如果页面能打开而这里一直未知，先检查采集进程；浏览器刷新只能重读快照，不能启动缺失的 monitor。
-旧节点升级后漏做 `controller install` 时，可能只有启动控制器，没有持续采集服务。
+旧工具升级后可能只有启动控制器，没有持续采集服务；新版后台 `up` 会检查并修复可识别的标准部署。
 
 ## 主机资源与数据磁盘
 
 总览的“节点监控”展示主机 CPU、内存、Swap，当前节点容器的 CPU / 内存占用，以及关键服务数据目录和文件系统余量。
 这些是带采集时间的采样值；浏览器刷新读取最新观测，不会直接执行宿主机命令。
-使用新功能需要一起升级 node kit 和控制台镜像。若只更新工具而监控进程一直运行，使用
-`sudo systemctl restart usdb-console-monitor-usdb-testnet-v0.service` 使采集进程加载新版工具。
-其他网络替换对应 bundle 名；未安装该服务时，先执行 `usdb-node controller install` 和 `usdb-node console start`。
+使用新功能需要一起升级 node kit 和控制台镜像。按正常升级流程执行后台 `up`，使控制台和采集进程使用新版代码。
+新版工具通过 monitor 的版本标记识别升级；同版本且健康的进程不会因重复 `up` 被重启。
+使用旧工具时，如只更新工具而采集进程一直运行，可执行
+`sudo systemctl restart usdb-console-monitor-usdb-testnet-v0.service`；其他网络替换对应 bundle 名。
+旧工具尚未安装该服务时，先执行 `usdb-node controller install` 和 `usdb-node console start`。
 
 | 指标 | 口径 |
 | --- | --- |

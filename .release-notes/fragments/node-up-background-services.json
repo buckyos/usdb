@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-up-background-services",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Check and repair managed background services during node up, including already-ready nodes",
+  "details": [
+    "Background up validates both generated systemd units, migrates the recognized pre-console controller template, installs a missing console observer and verifies its running state before reporting success. A ready core also starts the independent private console without restarting Bitcoin, balance-history, the indexer or the chain.",
+    "Observer units carry a release identity so an upgraded node kit reloads long-running monitor code. Repeated up calls leave a current healthy observer running. Installed controller timeout and image-pull settings are preserved; existing disabled autostart remains disabled, and a newly installed observer inherits the controller boot policy.",
+    "Custom units, unsupported template changes, drop-ins, masks and unreliable systemd observations require explicit operator review. Permission or startup failure returns a nonzero result instead of treating core READY as complete background startup.",
+    "Foreground mode and dry runs do not install systemd services. A node without a bootstrap controller still requires explicit controller install or foreground operation. Release activation remains explicit."
+  ],
+  "operator_actions": [
+    "Follow the normal release upgrade procedure and run usdb-node up. Use the node operator account and provide sudo credentials when service installation or startup requires them. Review any reported custom systemd configuration before replacing it."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

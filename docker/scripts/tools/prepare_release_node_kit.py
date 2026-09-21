@@ -50,6 +50,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/node_progress_render.py",
     "docker/scripts/tools/node_image_progress.py",
     "docker/scripts/tools/node_controller_status.py",
+    "docker/scripts/tools/node_background_services.py",
     "docker/scripts/tools/node_rebuild.py",
     "docker/scripts/tools/run_testnet_bitcoin.sh",
     "docker/scripts/tools/run_testnet_runtime.sh",

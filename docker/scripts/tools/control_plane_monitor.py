@@ -153,16 +153,11 @@ def unit_path(layout, node) -> Path:
     return node.controller_unit_path(layout).with_name(unit_name(layout))
 
 
-def install(layout, node, context) -> None:
-    """Install a separate observer so completed bootstrap does not freeze the dashboard."""
-    destination = unit_path(layout, node)
-    if destination.is_symlink():
-        raise ValueError("Refusing symlinked console monitor unit")
-    if destination.exists() and f"User={context.service_user}\n" not in destination.read_text():
-        raise ValueError("Refusing to change console monitor service user")
+def render_unit(layout, node, context) -> str:
+    """Include the release identity so upgrades reload long-running observer code."""
     quote = node._systemd_quote
     command = " ".join(quote(str(value)) for value in (context.launcher, "--node-env", layout.node_env, "console", "monitor"))
-    content = f"""[Unit]
+    return f"""[Unit]
 Description=USDB private console observer ({layout.bundle_id})
 After=docker.service
 Requires=docker.service
@@ -172,6 +167,7 @@ Type=simple
 User={context.service_user}
 Environment={quote(f'HOME={context.home}')}
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment={quote(f'USDB_CONSOLE_MONITOR_RELEASE={layout.release_id}')}
 ExecStart={command}
 Restart=on-failure
 RestartSec=10s
@@ -181,13 +177,10 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 """
-    descriptor, temporary_name = tempfile.mkstemp(prefix="usdb-console-monitor-")
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(content)
-        node._privileged_command(["install", "-m", "0644", temporary_name, str(destination)])
-    finally:
-        Path(temporary_name).unlink(missing_ok=True)
+
+def install(layout, node, context) -> None:
+    """Install a separate observer so completed bootstrap does not freeze the dashboard."""
+    node._install_service_unit(unit_path(layout, node), render_unit(layout, node, context), context.service_user)
 
 
 def start(layout, node) -> bool:

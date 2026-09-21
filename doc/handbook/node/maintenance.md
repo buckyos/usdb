@@ -187,7 +187,9 @@ usdb-node activate-release
 usdb-node status
 ```
 
-正常 `setup` 已安装并启用 controller，普通换版不必重复安装。包含[controller 诊断](status.md#后台任务状态)的工具会在缺失或配置需要刷新时给出具体命令；按提示处理后再执行下面的检查。若目标版本未提供该诊断，按该版本升级说明判断是否需要刷新 unit。自定义 unit 或 systemd 覆盖配置先核对，不直接覆盖。
+正常 `setup` 已安装并启用 controller，普通换版不必重复安装。包含后台服务自动检查改进的工具会在下一步 `up` 中补齐缺失的 console monitor，并刷新可识别的旧版标准 unit。超时、镜像拉取选项及已有的开机启动开关会保留；新补装的 monitor 沿用 controller 的开机启动设置。
+
+如果 controller 本身从未安装，先执行 `usdb-node controller install`，或继续有意选择的 `up --foreground`。自定义 unit、systemd 覆盖配置、mask 或无法可靠观察的状态会给出明确错误，不会被自动覆盖。旧工具仍按 [controller 诊断](status.md#后台任务状态)或该版本升级说明处理。
 
 ```bash
 usdb-node doctor
@@ -198,6 +200,10 @@ usdb-node doctor
 ```bash
 usdb-node up
 ```
+
+即使核心节点已经 `READY`，后台 `up` 仍会检查 monitor 并启动私有控制台。升级后长期运行的旧 monitor 会单独重启以加载新版工具，Bitcoin、BH、Indexer 和 Chain 不会因这项监控修复被重启。
+修复需要权限时会请求 sudo；安装或启动失败会使本次 `up` 返回非零，并提示处理方法。核心服务原有的 `READY` 状态不等于本次后台服务检查成功。
+`up --no-watch` 完成检查后直接返回；`--dry-run` 和 `--foreground` 不执行这项 systemd 修复。
 
 6. 用 `status` 和 `peers status` 确认恢复到 `READY`，实际连接和同步正常。
 

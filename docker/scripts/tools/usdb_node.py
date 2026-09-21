@@ -329,6 +329,36 @@ def _controller_install_context(launcher: Path | None = None) -> ControllerInsta
     )
 
 
+def _install_service_unit(destination: Path, content: str, service_user: str) -> None:
+    """Write a generated unit without changing its enablement or runtime state."""
+    if destination.is_symlink():
+        raise ValueError(f"refusing to replace symlinked controller unit: {destination}")
+    if destination.is_file():
+        existing_user = next(
+            (
+                line.removeprefix("User=")
+                for line in destination.read_text(encoding="utf-8").splitlines()
+                if line.startswith("User=")
+            ),
+            "",
+        )
+        if existing_user != service_user:
+            raise ValueError(
+                f"refusing to change {destination.name} service user from "
+                f"{existing_user or 'unknown'} to {service_user}"
+            )
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.")
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+            target.write(content)
+            target.flush()
+            os.fsync(target.fileno())
+        _privileged_command(["install", "-m", "0644", str(temporary), str(destination)])
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def install_controller_unit(
     layout: ReleaseLayout,
     *,
@@ -341,47 +371,23 @@ def install_controller_unit(
         raise ValueError("configure the node before installing its bootstrap controller")
     context = _controller_install_context(launcher)
     content = render_controller_unit(
-        layout,
-        launcher=context.launcher,
-        service_user=context.service_user,
-        home=context.home,
-        docker_launcher=context.docker_launcher,
-        sync_timeout_secs=sync_timeout_secs,
-        pull=pull,
+        layout, launcher=context.launcher, service_user=context.service_user, home=context.home,
+        docker_launcher=context.docker_launcher, sync_timeout_secs=sync_timeout_secs, pull=pull,
     )
     destination = controller_unit_path(layout)
-    if destination.is_symlink():
-        raise ValueError(f"refusing to replace symlinked controller unit: {destination}")
-    if destination.is_file():
-        existing_user = next(
-            (
-                line.removeprefix("User=")
-                for line in destination.read_text(encoding="utf-8").splitlines()
-                if line.startswith("User=")
-            ),
-            "",
-        )
-        if existing_user != context.service_user:
-            raise ValueError(
-                "refusing to change the bootstrap controller service user from "
-                f"{existing_user or 'unknown'} to {context.service_user}"
-            )
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.")
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
-            target.write(content)
-            target.flush()
-            os.fsync(target.fileno())
-        _privileged_command(["install", "-m", "0644", str(temporary), str(destination)])
-        import control_plane_monitor
-        control_plane_monitor.install(layout, sys.modules[__name__], context)
-        _privileged_command(["systemctl", "daemon-reload"])
-        _privileged_command(["systemctl", "enable", control_plane_monitor.unit_name(layout)])
-        _privileged_command(["systemctl", "enable", destination.name])
-    finally:
-        temporary.unlink(missing_ok=True)
+    _install_service_unit(destination, content, context.service_user)
+    import control_plane_monitor
+    control_plane_monitor.install(layout, sys.modules[__name__], context)
+    _privileged_command(["systemctl", "daemon-reload"])
+    _privileged_command(["systemctl", "enable", control_plane_monitor.unit_name(layout)])
+    _privileged_command(["systemctl", "enable", destination.name])
     return destination
+
+
+def ensure_background_services(layout: ReleaseLayout) -> dict[str, Any]:
+    """Reconcile managed systemd services before background up can report success."""
+    from node_background_services import ensure
+    return ensure(layout, node=sys.modules[__name__])
 
 
 def _require_controller_unit(layout: ReleaseLayout) -> Path:
@@ -5450,11 +5456,13 @@ def submit_up_to_controller(
     if usdb_peers.pending(layout):
         usdb_peers.request_bootstrap(layout)
     if usdb_mining.pending(layout) or usdb_peers.pending(layout):
+        background = ensure_background_services(layout)
         unit = start_controller_unit(layout)
         return {"schema_version": NODE_UP_SCHEMA_VERSION, "release_id": layout.release_id,
                 "network_bundle_id": layout.bundle_id, "initial_state": "STARTING",
                 "outcome": "controller_started", "completed_actions": [],
-                "controller_unit": unit, "status": collect_node_status(layout)}, 0
+                "controller_unit": unit, "background_services": background,
+                "status": collect_node_status(layout)}, 0
 
     initial = collect_node_status(layout)
     result: dict[str, Any] = {
@@ -5465,12 +5473,6 @@ def submit_up_to_controller(
         "completed_actions": [],
         "status": initial,
     }
-    if completed_outcome := _startup_completed_outcome(initial):
-        with node_operation_lock(layout, "up"):
-            _start_optional_ord(layout, output_to_stderr=True)
-        result["outcome"] = completed_outcome
-        return result, 0
-
     report = initial
     if report["overall_state"] == "ACTIVATION_REQUIRED":
         if not allow_activation:
@@ -5484,20 +5486,29 @@ def submit_up_to_controller(
                 result["completed_actions"].append("activate-release")
             report = collect_node_status(layout)
 
-    if completed_outcome := _startup_completed_outcome(report):
-        result["outcome"] = completed_outcome
-        result["status"] = report
-        return result, 0
-    if _up_action(report, False) is None:
+    completed_outcome = _startup_completed_outcome(report)
+    if not completed_outcome and _up_action(report, False) is None:
         result["outcome"] = "manual_action_required"
         result["status"] = report
         return result, 1
+
+    background = ensure_background_services(layout)
+    result["background_services"] = background
+    if completed_outcome:
+        # Core readiness does not imply that the independent console/observer is
+        # running. Compose up for the console is idempotent and has no dependencies.
+        with node_operation_lock(layout, "up"):
+            run_helper(layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=True)
+            _start_optional_ord(layout, output_to_stderr=True)
+        result["outcome"] = completed_outcome
+        result["status"] = collect_node_status(layout)
+        return result, 0
 
     _require_controller_unit(layout)
     unit = start_controller_unit(layout)
     result["outcome"] = "controller_started"
     result["controller_unit"] = unit
-    result["status"] = report
+    result["status"] = collect_node_status(layout)
     result["operator_guidance"] = [
         "Bootstrap continues under systemd if this terminal disconnects.",
         "Ctrl+C detaches only this progress view; use usdb-node status --watch to reattach.",
@@ -5528,6 +5539,10 @@ def print_up_result(result: dict[str, Any], *, json_output: bool) -> None:
         return
     print(f"USDB node up outcome: {result['outcome']}")
     print(f"Initial state: {result['initial_state']}")
+    if background := result.get("background_services"):
+        print(f"Background services: {background['state']}; console monitor: {background['monitor']}")
+        for action in background.get("actions", []):
+            print(f"  {action}")
     completed = result.get("completed_actions", [])
     if completed:
         print(f"Completed actions: {', '.join(completed)}")
@@ -5771,6 +5786,10 @@ workflow:
     up = subparsers.add_parser(
         "up",
         help="Idempotently bring a configured node to READY and attach progress",
+        description=("Start or observe the node. Background mode checks managed controller and console "
+                     "services, repairs recognized older units and starts the observer even when the node "
+                     "is READY. Custom units require review; disabled autostart remains disabled. "
+                     "Foreground mode and dry runs do not install systemd services."),
     )
     up.add_argument(
         "--dry-run",

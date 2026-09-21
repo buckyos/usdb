@@ -36,7 +36,7 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
       <p className="text-sm">{zh ? '采集时间' : 'Observed'}: {report?.observed_at_ms ? new Date(report.observed_at_ms).toLocaleString(locale) : '—'}</p>
       {!fresh && <div role="alert" className="grid gap-2 text-sm">
         <p>{zh ? '当前状态未知表示宿主机观测缺失或已过期，不代表所有服务离线。以下数值仅为最后一次观测，刷新网页不会启动采集进程。' : 'Unknown means host observations are missing or stale, not that every service is offline. Values below are the last observation; refreshing this page does not start the observer.'}</p>
-        <p>{zh ? '已有节点升级后，请在节点终端依次执行 usdb-node controller install 和 usdb-node console start（可能需要 sudo 密码）。' : 'After upgrading an existing node, run usdb-node controller install and usdb-node console start in its terminal (sudo may be required).'}</p>
+        <p>{zh ? '已有节点升级后，先在节点终端执行 usdb-node up --no-watch，检查并补齐标准后台服务（可能需要 sudo 密码）。自定义服务按命令提示检查，不直接覆盖。' : 'After upgrading, run usdb-node up --no-watch to check and repair managed background services (sudo may be required). Follow its guidance for custom units without overwriting them.'}</p>
         <p>{zh ? '检查采集进程：systemctl status usdb-console-monitor-<bundle-id>.service；前台模式可持续运行 usdb-node console monitor。' : 'Inspect systemctl status usdb-console-monitor-<bundle-id>.service; foreground mode can keep usdb-node console monitor running.'}</p>
       </div>}
       {report && <>

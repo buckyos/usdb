@@ -245,6 +245,10 @@ r25 中可能出现缺少详细进度、RPC 暂不可用时状态变化、等待
 
 **普通 rN 升级不要求每次重装 controller。** 稳定命令入口、配置路径和 unit 模板仍匹配时可以复用；支持的自定义超时和 `--skip-pull` 不会被误判为版本过旧。需要刷新时，提示命令保留这些选项。手工编辑或 systemd 覆盖配置需要自行核对。
 
+包含后台服务自动检查改进的版本中，`up` 会检查 controller 和独立 console monitor，补装缺失的 monitor、更新已识别的旧版标准模板，并确认 monitor 进程正在运行。monitor 随工具版本升级单独重启；重复 `up` 不重启版本匹配且健康的 monitor。手动禁用的开机启动保持禁用；首次补装 monitor 时沿用 controller 的开机启动设置。自定义、mask、未知模板或权限失败会明确报错，不能仅凭核心节点 `READY` 判定本次 `up` 成功。状态查询本身仍只读。
+
+`up --json` 的 `background_services` 包含本次修复动作、monitor 运行状态及两个服务的开机启动状态。它表示启动时的进程检查结果，不保证后续采集持续正常；网页仍按快照采集时间判断过期。
+
 `Controller` 是独立的运维检查，不改变核心服务的 `Overall` 或状态命令退出码。因此节点可能同时显示 `Overall READY` 和 controller 需要维护；监控应同时检查 `checks.controller.action_required`。JSON 中还包含 `configuration_state`、`runtime_state`、`autostart`、退出结果及建议操作。
 
 `controller stop` 只停止编排；停止节点用 `usdb-node down`，具体区别见[日常维护](maintenance.md#停止与重新启动)。
