@@ -12,7 +12,7 @@ usdb-node status
 
 先读 `Overall`，再读失败检查项及 `Next actions`。命令只有在 `READY` 时返回退出码 0；正在同步或等待入网时的非零退出码，不单独代表服务崩溃。
 
-包含网络身份展示改进的工具，会在 `status` 和 `status --watch` 顶部显示网络名称、`Chain ID`、节点角色、完整 genesis 哈希、P2P network ID 和 Bitcoin 数据来源。例如 `Network: usdb-testnet-v0 | Chain ID: 202608250 | Role: full`。这些信息来自当前 release 的网络配置，链 RPC 尚未启动时也能核对；它们不替代实际运行与入网检查。
+包含网络身份展示改进的工具，会在 `status` 中显示网络名称、`Chain ID`、节点角色、完整 genesis 哈希、P2P network ID 和 Bitcoin 数据来源。例如 `Network: usdb-testnet-v0 | Chain ID: 202608250 | Role: full`。新版分组面板默认保留网络名称、Chain ID 和角色，完整身份使用 `status --details` 或 `status --watch --details` 查看。这些信息来自当前 release 的网络配置，链 RPC 尚未启动时也能核对；它们不替代实际运行与入网检查。
 
 `Bitcoin source: btc-mainnet` 表示本网络使用 Bitcoin 主网数据，不表示 USDB 本身是主网。`Role: full` 是普通同步验证节点；是否实际挖矿仍看 `Mining` 状态。连接其他节点前，应确认双方 USDB 网络名称、Chain ID 和 genesis 一致。
 
@@ -51,7 +51,38 @@ SourceDAO 的 `check/status` 不发送交易，但可能拉取工具镜像、启
 usdb-node status --watch
 ```
 
-这是观察命令，不会启动或停止节点。Ctrl+C 退出面板。原生启动主要经历以下工作，部分工作会重叠进行：
+这是观察命令，不会启动或停止节点。Ctrl+C 退出面板。
+
+### 分组面板与详细视图
+
+包含分组展示改进的工具按以下顺序显示；没有条目的分组会省略。r33 及此前版本仍使用旧布局。
+
+| 分组 | 内容 |
+| --- | --- |
+| `◆ Attention` | 需要处理的失败、资源配置问题、失联或过期观测，以及 controller 的处理命令 |
+| `◆ Work in progress` | 正在下载、校验、导入、同步或等待依赖的工作；启用 Ord 时单列 Bitcoin txindex 和 Ord |
+| `◆ Node services` | 已就绪服务的高度与运行时间，以及独立的挖矿状态 |
+| `◆ Preparation` | 已完成的快照文件准备、Bitcoin 历史验证等工作 |
+
+主条目前的 `✓` 表示就绪或完成，`↻` 表示正在进行，`…` 表示等待，`!` 表示需要关注，`✗` 表示失败；缩进的树形行属于上一条目的说明。重定向输出或终端不支持这些符号时，使用 `[OK]`、`[RUN]`、`[WAIT]`、`[!]`、`[FAIL]` 等纯文本标记。
+
+正常服务不再反复显示 100% 进度条；只有正在处理、且已有可信百分比的任务显示进度条。txindex 和 Ord 的百分比是**高度覆盖率**，不是剩余耗时比例；txindex 到达目标高度后仍需 Core 报告索引就绪，Ord 也需通过其依赖及规范链检查，不能仅凭 100% 判断可铸造。钱包交易能力另看底部提示。
+
+例如 `Node READY`、`Mining ACTIVE` 与 `Ord (optional) WAITING_TXINDEX` 可以同时出现：核心节点已经工作，额外的本地铸造后端仍在准备。controller 需要更新也单独列出，不据此推断正在运行的服务已停止。
+
+默认收起正常服务的重复说明、完整区块哈希和已跳过的辅助项；错误、等待原因、过期观测和处理命令仍保留。需要完整诊断时使用：
+
+```bash
+usdb-node status --watch --details  # 持续观察，展开正常服务的说明
+usdb-node status --details          # 输出一次详细进度并退出
+usdb-node status --progress-json    # 保留完整的机器可读观测字段
+```
+
+`--details` 是文本选项，不能与 `--json` 或 `--progress-json` 混用。普通 `status` 继续输出总体检查和下一步操作。`uptime` 来自进程启动时间；只有观察时间可用时标为 `observed`，不将其当作进程存活时长。
+
+### 各同步阶段
+
+原生启动主要经历以下工作，部分工作会重叠进行：
 
 | 面板组件或阶段 | 正在做什么 | 怎样观察 |
 | --- | --- | --- |
@@ -60,7 +91,7 @@ usdb-node status --watch
 | `UTXO snapshot`：`WAITING` / 等待基线区块头 | 文件已准备后，等待 Core 识别快照对应的区块头 | 看文件完成提示和目标基线高度；不会因此重新下载，也无需先同步完此前所有完整区块 |
 | `UTXO snapshot`：导入 | Bitcoin 导入启动数据 | 看导入状态与 Bitcoin 日志；r25 不一定有详细导入百分比 |
 | `Bitcoin` | Bitcoin 前台同步 | 看当前高度、目标高度及连接情况 |
-| `Core background history` | Bitcoin 后台验证较早历史 | 单独观察其高度和 `VALIDATED` 状态 |
+| `Bitcoin history`（旧版为 `Core background history`） | Bitcoin 后台验证较早历史 | 单独观察其高度和 `VALIDATED` 状态 |
 | `balance-history` | 导入、重放、校验后提供数据服务 | 看阶段和已处理数量；重放完成后仍可能处于校验或等待服务启动 |
 | `usdb-indexer` | 等待可查询的上游数据，然后继续索引 | 上游尚未可查询时等待是正常依赖关系 |
 | `USDB chain` | 等待上游就绪，再连接并同步 USDB 网络 | 上游完成后看链高度与 peers 状态 |
@@ -69,13 +100,13 @@ usdb-node status --watch
 
 Bitcoin 前台可以先就绪，后台历史验证继续进行。**总体可用和后台验证完成分别观察**；不要为了消除后台进度而停止验证。
 
-重启时，包含快照复用优化的版本会查询 Bitcoin 当前基线。如果基线已可用、原始快照文件仍存在且大小匹配，`UTXO snapshot` 会显示 `READY` 和 `Existing snapshot baseline reused; no file rescan needed`，不再重复扫描整个文件。后台历史验证尚未完成不影响这条复用路径。
+重启时，包含快照复用优化的版本会查询 Bitcoin 当前基线。如果基线已可用、原始快照文件仍存在且大小匹配，`UTXO snapshot` 会显示 `READY`，详细说明为 `Existing snapshot baseline reused; no file rescan needed`，不再重复扫描整个文件；分组面板用 `--details` 查看这条说明。后台历史验证尚未完成不影响这条复用路径。
 
 首次导入 Bitcoin 前仍需完整校验；原文件缺失时仍会下载并校验，以供尚未完成导入的 balance-history 使用。balance-history 在需要导入时独立核对文件 SHA-256 和 UTXO 状态哈希，已完成导入的数据库则验证持久化状态后继续运行。
 
 r27 等旧版会在 `down → up` 后重新校验本地文件，因此短暂出现 `UTXO snapshot VERIFYING`、下游服务 `WAITING`；这本身不表示重新下载、重新导入或丢失同步进度。复用优化需要更新配套节点工具与 Bitcoin 镜像后生效。
 
-旧 BH snapshot 的 loader/registry 不是原生流程的手工补装步骤。原生面板中相应辅助项显示跳过，并不表示安装缺少组件。
+旧 BH snapshot 的 loader/registry 不是原生流程的手工补装步骤。原生面板中相应辅助项显示跳过，分组面板默认收起跳过项，并不表示安装缺少组件。
 
 ### 快照下载完成后，为什么进度条变了
 
@@ -84,13 +115,15 @@ r27 等旧版会在 `down → up` 后重新校验本地文件，因此短暂出�
 包含文件完成提示改进的工具，会在主行下面保留已完成的文件阶段。下载并校验完成、等待基线区块头时，显示类似：
 
 ```text
-UTXO snapshot     WAITING    [        waiting         ]     --  Waiting for baseline block header before Core import
-  File: download complete (8.7GiB)
-  File SHA-256: verified
-  Next: Core import after baseline block header 935000 is available
+◆ Work in progress
+  … UTXO snapshot     WAITING
+      ├─ Waiting for baseline block header before Core import
+      ├─ File: download complete (8.7GiB)
+      ├─ File SHA-256: verified
+      └─ Next: Core import after baseline block header 935000 is available
 ```
 
-`waiting` 和 `--` 表示此刻在等待依赖，不表示下载归零。文件完成提示来自对应快照的持久化进度记录，重新打开观察窗口也能看到；记录缺失、基线不匹配或文件缺失时，不会推断为完成。查询这些提示只读取记录和文件大小，不重新扫描整个快照。
+`WAITING` 表示此刻在等待依赖，不表示下载归零；旧版在进度条内显示 `waiting` 和 `--`，新版省略没有百分比的进度条。文件完成提示来自对应快照的持久化进度记录，重新打开观察窗口也能看到；记录缺失、基线不匹配或文件缺失时，不会推断为完成。查询这些提示只读取记录和文件大小，不重新扫描整个快照。
 
 文件仍在校验时，会保留 `File: download complete`，并显示 `File SHA-256: verification in progress`。进入导入后，文件完成提示继续保留，`Progress above: Core import stage; file download is complete` 说明主行计数属于 Core 导入阶段。仅当快照准备流程完成后，组件才显示 `READY`；导入失败或结果不确定时仍显示 `FAILED` / `BLOCKED`。
 

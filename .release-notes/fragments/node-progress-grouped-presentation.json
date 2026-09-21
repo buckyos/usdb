@@ -1,0 +1,21 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-progress-grouped-presentation",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Group node progress by actions, active work, ready services and completed preparation",
+  "details": [
+    "The startup and status --watch panels use distinct headings, state symbols and indented diagnostics. Healthy services show height and uptime without completed or empty progress bars; failures, stale observations, waiting reasons and recovery commands remain visible.",
+    "Optional minting displays Bitcoin txindex height coverage and Ord separately from core node readiness. Height coverage does not certify index readiness or estimate remaining time.",
+    "Use status --watch --details or status --details for full identity, block hashes and healthy component diagnostics. Redirected output and terminals without Unicode support use plain text markers; narrow output wraps diagnostics instead of truncating them.",
+    "Text rendering is isolated from observation and startup control, included in the release node kit, and leaves progress JSON, readiness gates and resource policy unchanged."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

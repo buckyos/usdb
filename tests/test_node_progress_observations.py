@@ -31,7 +31,7 @@ class NodeProgressObservationTests(unittest.TestCase):
         history.apply(report, observed_monotonic=0)
         observed = history.apply(pending, observed_monotonic=5)
         rendered = NODE.render_node_progress(observed, width=80)
-        self.assertIn("Blocks from 935000 | Genesis 963800: last observed available; RPC unavailable", rendered)
+        self.assertIn("Blocks from 935000 | Genesis 963800: last observed available; RPC unavailable", " ".join(rendered.split()))
         self.assertIn("Target: Bitcoin tip minus 10 confirmation blocks", rendered)
         self.assertIn("Configured maximum target: 966992", rendered)
         self.assertEqual(observed["components"][0]["state"], "STARTING")
@@ -41,7 +41,7 @@ class NodeProgressObservationTests(unittest.TestCase):
         self.assertNotIn("Genesis", NODE.render_node_progress(expired))
         self.assertIsNone(expired["components"][0]["current"])
         recovered = history.apply(report, observed_monotonic=62)
-        self.assertIn("Genesis 963800: available", NODE.render_node_progress(recovered))
+        self.assertIn("Genesis 963800: available", NODE.render_node_progress(recovered, details=True))
         self.assertNotIn("STALE", NODE.render_node_progress(recovered))
 
     def test_indexer_waits_for_upstream_without_claiming_zero_block_sync(self):
@@ -55,7 +55,8 @@ class NodeProgressObservationTests(unittest.TestCase):
         report = dict(release_id="test", observed_at="now", overall_state="WAITING", components=[component])
         rendered = NODE.render_node_progress(report)
         self.assertNotIn("0/0", rendered)
-        self.assertNotIn("in progress", rendered)
+        self.assertIn("[WAIT] USDB indexer", rendered)
+        self.assertNotIn("[RUN]", rendered)
         # Real block processing or durable progress must not be hidden by this classification.
         for fields in (dict(block_processing_pending_height=963800), dict(current=963810, total=963900, synced_block_height=963809)):
             with self.subTest(fields=fields):

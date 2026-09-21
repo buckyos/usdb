@@ -291,11 +291,11 @@ class NativeBundleTests(unittest.TestCase):
             self.assertEqual(report["components"][0]["state"], "WAITING")
             self.assertIsNone(report["components"][0]["progress_percent"])
             rendered = node.render_node_progress(report, width=80)
-            self.assertIn("[        waiting         ]", rendered)
+            self.assertIn("[WAIT] UTXO snapshot", rendered)
             self.assertIn("File: download complete", rendered)
             self.assertIn("File SHA-256: verified", rendered)
             self.assertIn("Next: Core import after baseline block header 935000 is available", rendered)
-            self.assertNotIn("0.00%", next(line for line in rendered.splitlines() if line.startswith("UTXO snapshot")))
+            self.assertNotIn("0.00%", next(line for line in rendered.splitlines() if "UTXO snapshot" in line))
             self.assertNotEqual(report["overall_state"], "READY")
             for failed_phase, failed_state in (("load_failed", "FAILED"), ("load_uncertain", "BLOCKED")):
                 activation_path.write_text(json.dumps(dict(phase=failed_phase, updated_at=3)))
@@ -308,7 +308,7 @@ class NativeBundleTests(unittest.TestCase):
             self.assertEqual(report["components"][0]["state"], "IMPORTING")
             self.assertIsNone(report["components"][0]["current"])
             self.assertIsNone(report["components"][0]["progress_percent"])
-            self.assertIn("[      in progress       ]", node.render_node_progress(report, width=80))
+            self.assertIn("[RUN] UTXO snapshot", " ".join(node.render_node_progress(report, width=80).split()))
             self.assertEqual(report["components"][2]["label"], "Bitcoin (IBD)")
             self.assertNotIn("foreground=", report["components"][2]["detail"])
             core["rpc_available"] = False
@@ -368,7 +368,7 @@ class NativeBundleTests(unittest.TestCase):
                     rendered = node.render_node_progress(report, width=80)
                     self.assertIn("Core background history: SYNCING 105439/935000", rendered)
                     if phase == "importing":
-                        self.assertIn("123456 UTXOs", rendered)
+                        self.assertIn("123,456 UTXOs", rendered)
                         self.assertIsNone(components["balance_history"]["progress_percent"])
                     elif phase in {"replaying", "waiting_for_blocks"}:
                         lag = node.btc_registry_stable_lag_blocks(layout.network_identity["btc_activation_registry_id"])
@@ -381,7 +381,7 @@ class NativeBundleTests(unittest.TestCase):
                     else:
                         self.assertLess(components["balance_history"]["progress_percent"], 100)
             core.update(history_validated=True, background_height=None)
-            self.assertIn("VALIDATED through baseline 935000", node.render_node_progress(node.collect_node_progress(layout), width=80))
+            self.assertIn("VALIDATED through baseline 935000", node.render_node_progress(node.collect_node_progress(layout), width=80, details=True))
 
     def test_file_milestone_requires_matching_completion_record_and_file(self):
         artifact = self.root / "snapshot.dat"

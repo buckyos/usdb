@@ -78,6 +78,12 @@ from resource_policy import (  # noqa: E402
     validate_resource_environment,
 )
 from node_progress_timing import ProgressTiming, service_elapsed  # noqa: E402
+from node_progress_render import (  # noqa: E402
+    duration_text as _duration_text,
+    human_size as _human_size,
+    network_status_lines as _network_status_lines,
+    render_node_progress,
+)
 
 
 RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
@@ -3726,13 +3732,6 @@ def _read_snapshot_import_progress(env: dict[str, str]) -> dict[str, Any]:
     return progress
 
 
-def _duration_text(seconds: int | float) -> str:
-    elapsed = max(0, int(seconds))
-    hours, remainder = divmod(elapsed, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-
 def _snapshot_progress_metrics(
     progress: dict[str, Any],
     *,
@@ -4354,16 +4353,6 @@ def _status_network_identity(layout: ReleaseLayout) -> dict[str, Any]:
             "bitcoin_network": identity.get("btc_network_id")}
 
 
-def _network_status_lines(report: dict[str, Any]) -> list[str]:
-    """Render configured chain identity without inferring it from the Bitcoin source."""
-    network = report.get("network")
-    if not network:
-        return []
-    return [f"Network: {network['name']} | Chain ID: {network.get('chain_id')} | Role: {report.get('node_role', 'unknown')}",
-            f"Genesis: {network.get('genesis_hash') or 'unknown'}",
-            f"P2P network ID: {network.get('network_id')} | Bitcoin source: {network.get('bitcoin_network') or 'unknown'}"]
-
-
 def _collect_node_progress(layout: ReleaseLayout, *, controller_state: str | None = None) -> dict[str, Any]:
     if layout.node_env.is_file() and read_env(layout.node_env).get("SNAPSHOT_MODE") == "assumeutxo":
         from assumeutxo_node import collect_native_progress
@@ -4592,168 +4581,6 @@ def _collect_node_progress(layout: ReleaseLayout, *, controller_state: str | Non
     }
 
 
-def _human_size(value: int) -> str:
-    size = float(max(0, value))
-    for unit in ("B", "KiB", "MiB", "GiB"):
-        if size < 1024:
-            return f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}TiB"
-
-
-def render_node_progress(
-    report: dict[str, Any],
-    *,
-    phase: str = "observe",
-    width: int = 120,
-) -> str:
-    resource_phase = report.get("resources", {}).get("phase")
-    if report.get("image_preparation"):
-        phase = "images"
-    lines = [
-        f"USDB node progress | {report['release_id']} | phase={phase}",
-        *_network_status_lines(report),
-        f"Observed {report['observed_at']} | overall={report['overall_state']} | "
-        f"controller={report.get('controller', {}).get('display_state', report.get('controller_state', 'unknown'))}"
-        + (f" | resources={resource_phase}" if resource_phase else ""),
-    ]
-    minting = report.get("minting", {})
-    if minting:
-        lines.append(f"Optional minting backend: {minting['state']} | wallet transactions: unavailable")
-        if minting.get("enabled"):
-            lines.append(f"  Core={minting.get('core_height', '?')} history={minting.get('history_height', '?')} "
-                         f"txindex={minting.get('txindex_height', '?')} Ord={minting.get('ord_height', '?')} gap={minting.get('ord_gap', '?')}")
-            lines.append(f"  {minting['guidance']}")
-    controller = report.get("controller", {})
-    if controller.get("action_required") or controller.get("runtime_state") == "failed":
-        lines.append(f"Controller: {controller['summary']}")
-        if controller.get("observation_available"):
-            lines.append(f"  systemd={controller['runtime_state']} | last exit={controller.get('exit_status', 'unknown')}")
-        lines.extend(f"  Action: {action}" for action in controller.get("actions", []))
-    if "observation_elapsed_secs" in report:
-        lines.append(f"Watching: {_duration_text(report['observation_elapsed_secs'])} | ETA~ is an estimate for each current stage")
-    bar_width = 24
-    for component in report["components"]:
-        percent = component.get("progress_percent")
-        if isinstance(percent, (int, float)) and not isinstance(percent, bool):
-            bounded = min(100.0, max(0.0, float(percent)))
-            filled = min(bar_width, int(bounded * bar_width / 100))
-            bar = "#" * filled + "-" * (bar_width - filled)
-            percent_text = f"{bounded:6.2f}%"
-        else:
-            if component.get("observation_unavailable"):
-                bar = "unavailable".center(bar_width)
-            elif component["id"] == "snapshot" and component["state"] == "WAITING" and (
-                component.get("file_preparation") or component.get("progress_phase") == "waiting_for_headers"
-            ):
-                bar = "waiting".center(bar_width)
-            elif component["state"] in {"IMPORTING", "VERIFYING", "INSTALLING", "SYNCING", "STARTING"}:
-                bar = "in progress".center(bar_width)
-            else:
-                bar = "-" * bar_width
-            percent_text = "    -- "
-        current = component.get("current")
-        total = component.get("total")
-        progress_text = ""
-        if isinstance(current, int) and isinstance(total, int):
-            if component.get("unit") == "bytes":
-                progress_text = f" {_human_size(current)}/{_human_size(total)}"
-            else:
-                progress_text = f" {current}/{total}"
-        elif isinstance(current, int):
-            progress_text = f" {current}"
-            if component.get("unit") == "utxos":
-                progress_text += " UTXOs"
-        prefix = (
-            f"{component['label']:<17} {component.get('display_state', component['state']):<10} "
-            f"[{bar}] {percent_text}{progress_text} "
-        )
-        available = max(20, width - len(prefix))
-        detail = component["detail"]
-        if len(detail) > available:
-            detail = detail[: max(0, available - 3)] + "..."
-        lines.append(prefix + detail)
-        file_preparation = component.get("file_preparation")
-        if isinstance(file_preparation, dict):
-            lines.append(f"  File: download complete ({_human_size(file_preparation['size_bytes'])})")
-            verification = ("verified" if file_preparation["state"] == "VERIFIED" else
-                            "verification in progress" if component["state"] == "VERIFYING" else "not confirmed")
-            lines.append(f"  File SHA-256: {verification}")
-        baseline_height = component.get("baseline_header_height")
-        if type(baseline_height) is int and component["state"] == "WAITING":
-            lines.append(f"  Next: Core import after baseline block header {baseline_height} is available")
-        if file_preparation and str(component.get("progress_phase")).startswith("core_"):
-            lines.append("  Progress above: Core import stage; file download is complete")
-        if component.get("last_observed_at"):
-            lines.append(f"  Last observed: {component['last_observed_at']} "
-                         f"({component['stale_age_secs']}s ago, state={component['last_observed_state']})")
-            lines.append(f"  Latest probe: {component['latest_probe_detail']}")
-        milestone = component.get("genesis_milestone")
-        if isinstance(milestone, dict):
-            # Partial observations may retain a milestone without its range metadata.
-            start_height = component.get("sync_start_height")
-            range_prefix = f"Blocks from {start_height} | " if type(start_height) is int else ""
-            lines.append(f"  {range_prefix}Genesis {milestone['height']}: {milestone['state']}")
-            stable_lag = component.get("stable_lag_blocks")
-            if type(stable_lag) is int:
-                lines.append(f"  Target: Bitcoin tip minus {stable_lag} confirmation blocks")
-            if component.get("sync_max_height") is not None:
-                lines.append(f"  Configured maximum target: {component['sync_max_height']}")
-            if milestone.get("remaining_blocks"):
-                lines.append(f"  To genesis: {milestone['remaining_blocks']} blocks")
-            if component.get("sync_target_source") == "last_observed_bitcoin_headers":
-                lines.append("  Using last observed Bitcoin headers; current Core RPC unavailable")
-        progress_phase = component.get("progress_phase")
-        if component["id"] == "images":
-            lines.append(f"  Stage elapsed={_duration_text(component['stage_elapsed_secs'])} | ETA=-- (not estimated)")
-            lines.append("  Layer progress: usdb-node controller logs --follow")
-        if isinstance(progress_phase, str) and progress_phase.startswith("core_") and "stage_elapsed_secs" in component:
-            lines.append(f"  Stage elapsed={_duration_text(component['stage_elapsed_secs'])} | ETA=-- (not reported by Core)")
-        background = component.get("background_validation")
-        if isinstance(background, dict):
-            if background.get("stale"):
-                if background["validated"]:
-                    history = f"STALE: last validated through baseline {background['target']}"
-                elif type(background.get("height")) is int:
-                    history = f"STALE {background['height']}/{background['target']} (last observed syncing)"
-                else:
-                    history = "STALE: last waiting for snapshot activation"
-            elif background.get("waiting_for_start"):
-                history = "WAITING for Core startup"
-            elif not background["available"]:
-                history = "UNAVAILABLE"
-            elif background["validated"]:
-                history = f"VALIDATED through baseline {background['target']}"
-            elif type(background.get("height")) is int:
-                history = f"SYNCING {background['height']}/{background['target']}"
-            else:
-                history = "WAITING for snapshot activation"
-            lines.append(f"  Core background history: {history}")
-        timing = component.get("timing")
-        if timing:
-            elapsed_label = "Process elapsed" if timing["elapsed_source"] == "process" else "Observed elapsed"
-            eta = (f"~{_duration_text(timing['eta_secs'])}" if timing["eta_secs"] is not None
-                   else f"-- ({timing['eta_state']})")
-            lines.append(f"  {elapsed_label}={_duration_text(timing['elapsed_secs'])} | ETA={eta}")
-        elif "service_elapsed_secs" in component:
-            lines.append(f"  Process elapsed={_duration_text(component['service_elapsed_secs'])}")
-        head = component.get("head")
-        if component["id"] == "usdb_chain" and isinstance(head, dict):
-            head_prefix = f"  Latest block    #{head['number']} hash="
-            block_hash = head["hash"]
-            room = max(20, width - len(head_prefix))
-            if len(block_hash) > room:
-                block_hash = block_hash[:room - 11] + "..." + block_hash[-8:]
-            lines.append(head_prefix + block_hash)
-    mining = report.get("mining")
-    if isinstance(mining, dict):
-        configured = mining.get("configured", {})
-        lines.append(f"Mining            {mining['state']:<10} role={configured.get('USDB_NODE_ROLE', 'unknown')} "
-                     f"workers={configured.get('USDB_MINER_THREADS', 'unknown')} "
-                     f"{mining.get('detail', '')}")
-    return "\n".join(lines)
-
-
 def _terminal_refresh_supported(output: Any) -> bool:
     try:
         is_tty = output.isatty()
@@ -4761,6 +4588,17 @@ def _terminal_refresh_supported(output: Any) -> bool:
         return False
     terminal = os.environ.get("TERM", "").strip().lower()
     return bool(is_tty and terminal not in {"", "dumb", "unknown"})
+
+
+def _progress_unicode_supported(output: Any) -> bool:
+    """Choose symbols at the terminal boundary, never in the pure renderer."""
+    if not _terminal_refresh_supported(output):
+        return False
+    try:
+        "◆✓↻…✗└─├".encode(output.encoding or "ascii")
+    except (AttributeError, LookupError, UnicodeEncodeError):
+        return False
+    return True
 
 
 class TerminalProgressDisplay:
@@ -4929,7 +4767,8 @@ class NodeProgressMonitor:
         with self._lock:
             phase = self._phase
         width = shutil.get_terminal_size(fallback=(120, 24)).columns
-        self._display.render(render_node_progress(report, phase=phase, width=width))
+        self._display.render(render_node_progress(report, phase=phase, width=width,
+                                                 unicode=_progress_unicode_supported(self.output)))
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -4965,6 +4804,7 @@ def print_progress_status(
     json_output: bool,
     watch: bool,
     refresh_secs: float,
+    details: bool = False,
 ) -> int:
     if refresh_secs <= 0:
         raise ValueError("progress refresh interval must be positive")
@@ -4975,7 +4815,8 @@ def print_progress_status(
         if json_output:
             print(json.dumps(report, indent=2, sort_keys=True))
         else:
-            print(render_node_progress(report, width=shutil.get_terminal_size().columns))
+            print(render_node_progress(report, width=shutil.get_terminal_size().columns, details=details,
+                                       unicode=_progress_unicode_supported(sys.stdout)))
         return 0 if report["overall_state"] == "READY" else 1
 
     output = sys.stderr
@@ -4989,6 +4830,8 @@ def print_progress_status(
                 report,
                 phase="observe",
                 width=shutil.get_terminal_size(fallback=(120, 24)).columns,
+                details=details,
+                unicode=_progress_unicode_supported(output),
             )
             if display.live:
                 display.render(rendered)
@@ -5937,6 +5780,11 @@ workflow:
         help="continuously render image preparation, snapshot and service progress",
     )
     status.add_argument(
+        "--details",
+        action="store_true",
+        help="expand progress diagnostics and full network identity; use alone or with --watch",
+    )
+    status.add_argument(
         "--refresh-secs",
         type=float,
         default=DEFAULT_PROGRESS_REFRESH_SECS,
@@ -6266,12 +6114,15 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         print_up_result(result, json_output=args.json)
         return return_code
     elif args.command == "status":
-        if args.progress_json or args.watch:
+        if args.details and (args.json or args.progress_json):
+            raise ValueError("--details is a text display option; cannot combine with JSON output")
+        if args.progress_json or args.watch or args.details:
             return print_progress_status(
                 layout,
                 json_output=args.progress_json,
                 watch=args.watch,
                 refresh_secs=args.refresh_secs,
+                details=args.details,
             )
         return print_status(layout, json_output=args.json)
     elif args.command == "controller":

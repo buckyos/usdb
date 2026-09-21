@@ -88,6 +88,11 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertTrue((output / "docker/compose.p2p-ipv6.yml").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_p2p.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_node.py").is_file())
+        self.assertTrue((output / "docker/scripts/tools/node_progress_render.py").is_file())
+        command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
+                                  "status", "--help"], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(command.returncode, 0, command.stderr)
+        self.assertIn("--details", command.stdout)
         self.assertTrue((output / "docker/scripts/tools/control_plane_monitor.py").is_file())
         command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
                                   "console", "--help"], cwd=self.root, capture_output=True, text=True)

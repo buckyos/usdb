@@ -9,6 +9,33 @@ from unittest import mock
 import usdb_node as NODE
 
 
+def ready_miner_progress():
+    """Core services are ready while the optional minting index is building."""
+    snapshot = NODE._component_progress("snapshot", "READY", "Existing snapshot baseline reused; no file rescan needed", progress_percent=100)
+    snapshot.update(label="UTXO snapshot", file_preparation=dict(state="VERIFIED", size_bytes=9_375_000_000))
+    bitcoin = NODE._component_progress("bitcoin", "READY", "foreground=967943; background=None; history_validated=True", current=967943, total=967943)
+    bitcoin.update(service_elapsed_secs=184, background_validation=dict(available=True, validated=True, height=None, target=935000))
+    bh = NODE._component_progress("balance_history", "READY", "Synced up to block height 967933", current=967933, total=967933)
+    bh.update(service_elapsed_secs=176, genesis_milestone=dict(height=963800, state="available"))
+    indexer = NODE._component_progress("usdb_indexer", "READY", "Waiting for new blocks...", current=967933, total=967933)
+    indexer.update(service_elapsed_secs=176)
+    chain = NODE._component_progress("usdb_chain", "READY", "peers=0; FIRST_NODE: acknowledged first node", current=6287)
+    chain.update(service_elapsed_secs=141, head=dict(number=6287, hash="0x" + "ab" * 32))
+    return dict(release_id="usdb-testnet-v0-r33", node_role="miner", observed_at="2026-09-21T05:07:39+00:00",
+                overall_state="READY", observation_elapsed_secs=198, resources=dict(phase="steady"),
+                network=dict(name="usdb-testnet-v0", chain_id=202608250, network_id=202608250,
+                             genesis_hash="0x" + "12" * 32, bitcoin_network="btc-mainnet"),
+                controller=dict(display_state="update_required", runtime_state="inactive", exit_status="0",
+                                observation_available=True, action_required=True,
+                                summary="Refresh controller configuration before the next background startup.",
+                                actions=["usdb-node controller install"]),
+                minting=dict(enabled=True, state="WAITING_TXINDEX", core_height=967943, history_height=967943,
+                             txindex_height=184401, txindex_synced=False, transactions_enabled=False,
+                             guidance="Waiting for txindex to cover the foreground tip. If absent, check that Core adopted BTC_TXINDEX=1."),
+                mining=dict(state="ACTIVE", configured={"USDB_NODE_ROLE": "miner", "USDB_MINER_THREADS": "1"}),
+                components=[snapshot, NODE._component_progress("script_registry", "SKIPPED", "Native observed-script registry"), bitcoin, bh, indexer, chain])
+
+
 @contextmanager
 def progress_fixture(services, *, pending=False):
     """Exercise the real progress aggregation with ready upstream observations."""

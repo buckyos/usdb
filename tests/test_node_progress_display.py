@@ -1,5 +1,6 @@
 """Exercise Docker timing observations, stale RPCs and the terminal dashboard."""
 
+import copy
 import json
 import io
 from contextlib import redirect_stdout
@@ -12,9 +13,119 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/tools"))
 import usdb_node as NODE
+from node_progress_render import render_node_progress
+from common.node_progress import ready_miner_progress
 
 
 class ProgressDisplayTests(unittest.TestCase):
+    def test_ready_miner_with_optional_indexing_has_separate_action_and_work_groups(self):
+        report = ready_miner_progress()
+        original = copy.deepcopy(report)
+        rendered = render_node_progress(report, unicode=True)
+        self.assertIn("Node READY | Mining ACTIVE | Resources steady", rendered)
+        attention, work, services, preparation = (rendered.index("◆ " + title) for title in
+                                                  ("Attention", "Work in progress", "Node services", "Preparation"))
+        self.assertTrue(attention < work < services < preparation)
+        self.assertIn("Action: usdb-node controller install", rendered[attention:work])
+        self.assertIn("Bitcoin txindex", rendered[work:services])
+        self.assertIn("19.05%", rendered[work:services])
+        self.assertIn("184,401 / 967,943", rendered[work:services])
+        self.assertIn("WAITING_TXINDEX", rendered[work:services])
+        self.assertNotIn("100.00%", rendered[services:])
+        self.assertIn("uptime 00:03:04", rendered[services:preparation])
+        self.assertIn("FIRST_NODE: acknowledged first node", rendered[services:preparation])
+        self.assertIn("File: download complete", rendered[preparation:])
+        self.assertIn("SHA-256: verified", rendered[preparation:])
+        self.assertIn("Bitcoin history", rendered[preparation:])
+        self.assertIn("Wallet transactions: unavailable", rendered)
+        self.assertNotIn("Script registry", rendered)
+        self.assertNotIn("Genesis:", rendered)
+        self.assertNotIn("Latest block", rendered)
+        expanded = render_node_progress(report, details=True)
+        self.assertIn("Script registry", expanded)
+        self.assertIn("Genesis: " + report["network"]["genesis_hash"], expanded)
+        self.assertIn(report["components"][-1]["head"]["hash"], expanded)
+        self.assertIn("Existing snapshot baseline reused; no file rescan needed", expanded)
+        self.assertEqual(report, original)
+
+    def test_rendering_imports_without_node_runtime_and_performs_no_io(self):
+        result = subprocess.run([sys.executable, "-c",
+            "import sys; from node_progress_render import render_node_progress; "
+            "assert 'usdb_node' not in sys.modules; "
+            "sys.addaudithook(lambda event, args: (_ for _ in ()).throw(AssertionError(event)) "
+            "if event.startswith(('open', 'socket.', 'subprocess.')) else None); "
+            "print(render_node_progress(dict(components=[], overall_state='READY')))"],
+            cwd=Path(NODE.__file__).parent, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Node READY", result.stdout)
+
+    def test_narrow_display_keeps_actions_and_never_claims_index_readiness_from_height(self):
+        report = ready_miner_progress()
+        report["minting"].update(txindex_height=967943, txindex_synced=False)
+        action = "usdb-node controller install --sync-timeout-secs 604800 --skip-pull"
+        report["controller"]["actions"] = [action]
+        for width in (40, 80, 120):
+            for unicode in (False, True):
+                with self.subTest(width=width, unicode=unicode):
+                    rendered = render_node_progress(report, width=width, unicode=unicode)
+                    self.assertTrue(all(len(line) <= width for line in rendered.splitlines()))
+                    compact = " ".join(rendered.split())
+                    self.assertIn(action, compact)
+                    self.assertIn("Bitcoin txindex INDEXING", compact)
+                    self.assertIn("Waiting for Core to report txindex synced=true", compact)
+                    self.assertIn("ETA=-- (unavailable)", compact)
+                    if not unicode:
+                        self.assertTrue(rendered.isascii())
+                        self.assertNotIn("\x1b", rendered)
+        report["minting"].update(state="UNAVAILABLE", txindex_height=None, core_height=None)
+        rendered = render_node_progress(report)
+        self.assertNotIn("100.00%", rendered)
+        self.assertIn("[!] Bitcoin txindex", " ".join(rendered.split()))
+
+    def test_optional_failure_and_resource_errors_are_visible_without_changing_core_state(self):
+        report = ready_miner_progress()
+        report["resources"]["error"] = "Runtime memory exceeds the configured budget"
+        report["minting"].update(state="BLOCKED_DISK", disk_free_bytes=10 * 1024**3,
+                                disk_required_bytes=50 * 1024**3, guidance="Add capacity; retain existing indexes")
+        rendered = render_node_progress(report)
+        attention = rendered.split("== Attention")[1].split("== Work in progress")[0]
+        self.assertIn("Runtime memory exceeds the configured budget", attention)
+        self.assertIn("Add capacity; retain existing indexes", attention)
+        self.assertIn("free 10.0GiB | reserve 50.0GiB", attention)
+        self.assertIn("Node READY", rendered)
+        self.assertEqual(report["overall_state"], "READY")
+
+    def test_terminal_symbols_require_both_tty_and_unicode_encoding(self):
+        with mock.patch.dict(NODE.os.environ, {"TERM": "xterm"}):
+            for tty, encoding, supported in ((True, "utf-8", True), (True, "ascii", False),
+                                              (False, "utf-8", False), (True, None, False)):
+                stream = mock.Mock(encoding=encoding, isatty=mock.Mock(return_value=tty))
+                self.assertEqual(NODE._progress_unicode_supported(stream), supported)
+
+    def test_details_cli_and_json_keep_observations_unchanged(self):
+        report = ready_miner_progress()
+        for flags in (("--details",), ("--watch", "--details")):
+            args = NODE.build_parser().parse_args(["status", *flags])
+            with mock.patch.object(NODE, "print_progress_status", return_value=0) as progress:
+                NODE._execute_command(object(), args)
+            self.assertTrue(progress.call_args.kwargs["details"])
+        for flag in ("--json", "--progress-json"):
+            args = NODE.build_parser().parse_args(["status", flag, "--details"])
+            with self.assertRaisesRegex(ValueError, "text display option"):
+                NODE._execute_command(object(), args)
+        output = io.StringIO()
+        with mock.patch.object(NODE, "collect_node_progress", return_value=report), redirect_stdout(output):
+            self.assertEqual(NODE.print_progress_status(object(), json_output=True, watch=False, refresh_secs=5), 0)
+        self.assertEqual(json.loads(output.getvalue()), report)
+        self.assertNotIn("\x1b", output.getvalue())
+
+    def test_watch_closes_terminal_on_unexpected_observation_failure(self):
+        with mock.patch.object(NODE, "collect_node_progress", side_effect=ValueError("test failure")), \
+             mock.patch.object(NODE, "TerminalProgressDisplay") as display:
+            with self.assertRaisesRegex(ValueError, "test failure"):
+                NODE.print_progress_status(object(), json_output=False, watch=True, refresh_secs=5)
+        display.return_value.close.assert_called_once()
+
     def test_network_identity_is_visible_without_chain_rpc(self):
         layout = SimpleNamespace(bundle_id="usdb-testnet-v0", network_identity={
             "chain_id": 202608250, "network_id": 202608250,
@@ -26,7 +137,7 @@ class ProgressDisplayTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             NODE._print_node_status_report(report)
-        for rendered in (output.getvalue(), NODE.render_node_progress(report, width=80)):
+        for rendered in (output.getvalue(), NODE.render_node_progress(report, width=80, details=True)):
             self.assertIn("Network: usdb-testnet-v0 | Chain ID: 202608250 | Role: full", rendered)
             self.assertIn("Genesis: 0x" + "ab" * 32, rendered)
             self.assertIn("P2P network ID: 202608250 | Bitcoin source: btc-mainnet", rendered)
@@ -56,7 +167,7 @@ class ProgressDisplayTests(unittest.TestCase):
         for fields in ({}, {"sync_start_height": 935000}, {"stable_lag_blocks": 10}):
             with self.subTest(fields=fields):
                 rendered = NODE.render_node_progress({**report, "components": [{**component, **fields}]}, width=80)
-                self.assertIn("Genesis 963800: last observed available; RPC unavailable", rendered)
+                self.assertIn("Genesis 963800: last observed available; RPC unavailable", " ".join(rendered.split()))
                 self.assertEqual("Blocks from" in rendered, "sync_start_height" in fields)
                 self.assertEqual("confirmation blocks" in rendered, "stable_lag_blocks" in fields)
 
@@ -65,7 +176,8 @@ class ProgressDisplayTests(unittest.TestCase):
         component["progress_phase"] = None
         report = dict(release_id="test", observed_at="now", overall_state="IMPORTING", components=[component])
         rendered = NODE.render_node_progress(report, width=80)
-        self.assertIn("[      in progress       ]", rendered)
+        self.assertIn("[RUN] Balance history IMPORTING", " ".join(rendered.split()))
+        self.assertNotIn("[---", rendered)
         self.assertNotIn("0.00%", rendered)
         self.assertNotIn("Stage elapsed=", rendered)
 

@@ -765,9 +765,8 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIn("phase=bitcoin", rendered)
         positions = [rendered.index(label) for _component_id, label in NODE.PROGRESS_COMPONENTS]
         self.assertEqual(positions, sorted(positions))
-        self.assertEqual(
-            rendered.count("[------------------------]"), len(NODE.PROGRESS_COMPONENTS)
-        )
+        self.assertEqual(rendered.count("[WAIT]"), len(NODE.PROGRESS_COMPONENTS))
+        self.assertNotIn("[------------------------]", rendered)
 
     def test_optional_registry_failure_does_not_block_core_progress(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -1461,12 +1460,12 @@ class UsdbNodeTests(unittest.TestCase):
             self.assertEqual(component["head"], {"number": 67, "hash": block_hash})
             self.assertEqual(rpc.call_args_list[-1].args[1], (("eth_getBlockByNumber", ["latest", False]),))
             report = {"release_id": "test", "observed_at": "now", "overall_state": "READY", "components": [component]}
-            rendered = NODE.render_node_progress(report, width=120)
+            rendered = NODE.render_node_progress(report, width=120, details=True)
             self.assertIn(block_hash, rendered)
-            narrow = NODE.render_node_progress(report, width=80)
-            head_line = next(line for line in narrow.splitlines() if "Latest block" in line)
-            self.assertIn(block_hash[-8:], head_line)
-            self.assertLessEqual(len(head_line), 80)
+            narrow = NODE.render_node_progress(report, width=80, details=True)
+            self.assertIn("Latest block #67", narrow)
+            self.assertIn(block_hash, narrow)
+            self.assertTrue(all(len(line) <= 80 for line in narrow.splitlines()))
         for latest in (None, {"number": "0x43", "hash": "invalid"}, {"hash": "0x" + "cc" * 32}):
             with mock.patch.object(NODE, "_json_rpc_batch", side_effect=[identity, {"eth_getBlockByNumber": latest}]):
                 component = NODE._chain_component(layout, {}, running)
