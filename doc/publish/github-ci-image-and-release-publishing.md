@@ -298,6 +298,18 @@ release sequence 排列。正文、tag 和 manifest 保留完整身份：
 `Pre-release` 仍只表达 testnet 发布属性，不能复用为 Fast/Nightly/Weekly 标志。publish resolver 会从
 manifest qualification 派生 canonical title，并拒绝 title 与资格不一致的已有 Release。
 
+### 3.8 构建缓存与镜像层复用
+
+USDB services 与 Bitcoin Core 的 BuildKit GHA 缓存分别使用
+`usdb-services-linux-amd64` 和 `usdb-bitcoin-core-linux-amd64` scope，避免两个构建覆盖同一个默认缓存。
+缓存仅用于加速构建；每个 release 仍从锁定的 commit 构建候选，继续生成当前 revision 的 provenance、
+SBOM 和扫描证据，不直接把旧 release 的镜像 digest 当作新候选。
+
+GHA 缓存仍受 GitHub ref 的访问边界约束，独立 scope 不代表不同 release tag 一定能读取彼此的缓存，
+也不能保证两个版本产生相同的镜像层。当前不增加跨 tag 的 registry cache、历史镜像选择器或证明转移机制；
+后续如需扩大复用范围，应单独验证缓存来源、依赖更新和 release 身份绑定。
+参见 [Docker GHA cache scope 与访问限制](https://docs.docker.com/build/cache/backends/gha/#scope)。
+
 ## 4. 一次性 GitHub 配置
 
 在第一次发布前完成：

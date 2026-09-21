@@ -116,8 +116,8 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.prepare.outputs.revision }}
             org.opencontainers.image.version=bitcoin-core-31.1
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=usdb-bitcoin-core-linux-amd64
+          cache-to: type=gha,scope=usdb-bitcoin-core-linux-amd64,mode=max
           provenance: mode=max
           sbom: true
 

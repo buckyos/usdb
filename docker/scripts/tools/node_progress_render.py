@@ -142,6 +142,19 @@ def _component_row(component: dict[str, Any], *, details: bool) -> _Row:
     elif component["id"] == "usdb_indexer" and target_source == "balance_history_stable_height":
         row.info.append(f"{target_label}: balance-history available stable height{target_value}")
     if component["id"] == "images":
+        download = component.get("image_download", {})
+        if download.get("image"):
+            row.info.append(f"Image {download.get('image_index', '?')}/{download.get('image_count', '?')}: {download['image']}")
+        if _height(download.get("downloaded_bytes")):
+            total = download.get("download_total_bytes")
+            amount = human_size(download["downloaded_bytes"]) + (f" / {human_size(total)}" if _height(total) and total > 0 else " (total not reported)")
+            row.info.append("Download observed for current image: " + amount)
+        if download.get("layer_count"):
+            row.info.append(f"Layers observed: {download.get('completed_layers', 0)}/{download['layer_count']} complete; {download.get('reused_layers', 0)} cached")
+        if download.get("image_attempt"):
+            row.info.append(f"Image pull attempt: {download['image_attempt']} | Pull retries: {download.get('retry_count', 0)}")
+        if download.get("last_error"):
+            row.info.append(f"Last pull error ({download.get('last_error_at', 'unknown')}): {download['last_error']}")
         row.info += [f"Stage elapsed={duration_text(component['stage_elapsed_secs'])} | ETA=-- (not estimated)",
                      "Layer progress: usdb-node controller logs --follow"]
     elif str(progress_phase).startswith("core_") and "stage_elapsed_secs" in component:

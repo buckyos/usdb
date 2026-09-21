@@ -96,8 +96,8 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.prepare.outputs.revision }}
             org.opencontainers.image.version=git-${{ steps.prepare.outputs.revision }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=usdb-services-linux-amd64
+          cache-to: type=gha,scope=usdb-services-linux-amd64,mode=max
           provenance: mode=max
           sbom: true
 

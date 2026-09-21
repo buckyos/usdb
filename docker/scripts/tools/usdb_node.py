@@ -2023,6 +2023,7 @@ def run_helper(
     output_to_stderr: bool = False,
     quiet_progress: bool = False,
     command_timeout_secs: float | None = None,
+    on_output: Any = None,
 ) -> subprocess.CompletedProcess[str]:
     path = layout.kit_root / "docker/scripts/tools" / helper
     if not path.is_file():
@@ -2044,6 +2045,30 @@ def run_helper(
         options["stdout"] = sys.stderr
     if command_timeout_secs is not None:
         options["timeout"] = command_timeout_secs
+    if on_output is not None:
+        if capture_output or command_timeout_secs is not None:
+            raise ValueError("streamed helper output cannot use capture_output or a command timeout")
+        # Compose 2.33.1+ emits layer byte counters without parsing terminal bars.
+        options["env"]["USDB_IMAGE_PULL_PROGRESS"] = "json"
+        command = [str(path), *arguments]
+        with subprocess.Popen(command, cwd=options["cwd"], env=options["env"],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              errors="replace") as process:
+            try:
+                for line in process.stdout:
+                    on_output(line)
+                result = subprocess.CompletedProcess(command, process.wait())
+            except BaseException:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                raise
+        if check:
+            result.check_returncode()
+        return result
     return subprocess.run([str(path), *arguments], **options)
 
 
@@ -2590,18 +2615,19 @@ def _start_node(
         progress_monitor.set_phase("images")
         _print_startup_phase(
             "images",
-            "pulling digest-pinned Bitcoin and USDB runtime images",
+            "checking local release images and pulling missing images",
             output_to_stderr=output_to_stderr,
         )
-        from node_image_progress import ImagePreparation
+        from node_image_progress import ImagePreparation, prepare_image_group
         with ImagePreparation(layout) as preparation:
-            for group, helper in (("runtime", "run_testnet_runtime.sh"), ("bitcoin", "run_testnet_bitcoin.sh")):
-                preparation.set_group(group)
-                run_helper(layout, helper, ["pull"], output_to_stderr=output_to_stderr,
-                           quiet_progress=progress_monitor.enabled)
+            for group in ("runtime", "bitcoin"):
+                prepare_image_group(layout, group, preparation, output_to_stderr=output_to_stderr,
+                                    quiet_progress=progress_monitor.enabled)
                 if group == "runtime":
                     run_helper(layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=output_to_stderr)
     else:
+        from node_image_progress import clear_failed_preparation
+        clear_failed_preparation(layout)
         run_helper(layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=output_to_stderr)
     _start_optional_ord(layout, output_to_stderr=output_to_stderr)
     if read_env(layout.node_env).get("SNAPSHOT_MODE") == "assumeutxo":

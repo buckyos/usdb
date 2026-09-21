@@ -154,11 +154,21 @@ r27 等旧版会在 `down → up` 后重新校验本地文件，因此短暂出�
 
 ### 镜像下载慢、快照还没开始时
 
-首次 `up` 会先准备 **Bitcoin Core 镜像，再准备 USDB chain / services 镜像**，之后启动 Core 和快照准备任务。Core RPC 可用后才开始下载 UTXO 快照；不需要先追完 Bitcoin 历史区块。国内环境拉取镜像较慢时，快照在这段时间没有字节进度是正常的。
+首次 `up` 会先准备 **USDB chain / services 镜像，再准备 Bitcoin Core 镜像**，之后启动 Core 和快照准备任务。Core RPC 可用后才开始下载 UTXO 快照；不需要先追完 Bitcoin 历史区块。国内环境拉取镜像较慢时，快照在这段时间没有字节进度是正常的。
 
-包含镜像进度展示改进的工具会显示 `phase=images`，并增加 `Container images INSTALLING` 一行，说明当前拉取的是哪组镜像。`Stage elapsed` 是整个镜像准备阶段的累计耗时；重新打开 `status --watch` 仍可看到。此时尚未启动的 Bitcoin 和快照显示 `WAITING`，分别等待镜像准备、Core 启动，不再因为容器尚不存在而报 `invalid JSON`。镜像准备结束后，这一行消失，面板继续展示实际启动和同步进度。
+包含镜像缓存改进的工具会先检查 release 指定的精确镜像摘要（digest）。本机已有完整目标镜像时，日志显示 `Using cached image ...; no registry pull needed`，跳过该镜像的联网拉取；有旧版本镜像、只下载了部分层或无法确认缓存完整时，仍会拉取目标镜像，由 Docker 复用已有层。仅版本号相近不能作为跳过依据。Ord 未启用时不会额外拉取 Ord 专用镜像；它使用同一 services 镜像。
 
-没有可靠总量时，镜像行不显示百分比或 ETA。累计耗时增加只说明准备任务仍在运行，不能证明下载量在增长；查看具体镜像层的下载、解压、重试或失败信息：
+镜像准备期间显示 `phase=images` 和 `Container images INSTALLING`。展开信息包括：
+
+- `Image`：当前镜像与组内序号。
+- `Download observed for current image`：本次拉取已观测到的层下载字节数；Docker 没有报告所有层大小时显示 `total not reported`。切换镜像或重新尝试拉取后重新计数，不是整次升级的累计网络流量，也不包含解压后的大小。
+- `Layers observed`：已观测到的层及其中已完成下载、已缓存的数量。下载完成后仍可能需要解压和登记镜像。
+- `Image pull attempt`：当前镜像的拉取尝试次数；`Pull retries`：这次镜像准备中重复发起拉取的总次数，包括 controller 重启后的尝试。Docker 在单次拉取内部进行的层级重试不计入这个数字。
+- `Last pull error`：最近一次错误及时间；下一次尝试开始后仍保留，便于识别反复发生的网络错误。下载链接会脱敏。准备失败时显示 `FAILED` 并保留观测记录；完成准备后清除。
+
+`Stage elapsed` 是整个镜像准备阶段的累计耗时，同一主机本次开机内、同一 release 和配置下的重试会累计；失败后停止计时。重新打开 `status --watch` 仍可看到。此时尚未启动的 Bitcoin 和快照显示 `WAITING`，分别等待镜像准备、Core 启动，不再因为容器尚不存在而报 `invalid JSON`。镜像准备成功结束后，这一行消失，面板继续展示实际启动和同步进度。
+
+镜像行不估算百分比或 ETA，因为下载之外还需要解压等步骤。累计耗时增加只说明准备任务仍在运行，不能证明下载量在增长；查看进一步的下载或失败信息：
 
 ```bash
 usdb-node controller logs --follow

@@ -34,6 +34,26 @@ from common.p2p import HOST, V6
 
 
 class NativeBundleTests(unittest.TestCase):
+    def test_image_preparation_pulls_selected_services_with_structured_progress(self):
+        import node_image_progress as images
+        layout = native_kit(self.root)
+        self.configure(layout)
+        binary_dir = install_docker_recorder(self.root / "bin")
+        calls = self.root / "docker-calls.jsonl"
+        with mock.patch.dict(os.environ, PATH=str(binary_dir) + os.pathsep + os.environ["PATH"],
+                             NATIVE_DOCKER_CALLS=str(calls)), \
+             mock.patch.object(images, "image_cached", return_value=False), redirect_stdout(io.StringIO()):
+            with images.ImagePreparation(layout) as preparation:
+                for group in ("runtime", "bitcoin"):
+                    images.prepare_image_group(layout, group, preparation, output_to_stderr=False, quiet_progress=True)
+        commands = [json.loads(line) for line in calls.read_text().splitlines()]
+        self.assertEqual(len(commands), 3)
+        self.assertEqual([command[-2:] for command in commands],
+                         [["pull", "balance-history"], ["pull", "usdb-chain"], ["pull", "btc-node"]])
+        for command in commands:
+            self.assertEqual(command[:3], ["compose", "--progress", "json"])
+        self.assertIsNone(images.read_image_preparation(layout))
+
     def test_reused_snapshot_is_ready_without_displaying_another_hash_scan(self):
         latest = dict(phase="snapshot_active", details=dict(report=dict(snapshot_file_reused=True)))
         item = native._snapshot_component("snapshot_active", latest, {}, failed=False, complete=True, activated=True)

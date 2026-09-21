@@ -136,6 +136,7 @@ compose() {
     *) echo "Invalid USDB_P2P_IP_FAMILY=${family}" >&2; return 1 ;;
   esac
   docker compose \
+    --progress "${USDB_IMAGE_PULL_PROGRESS:-auto}" \
     --project-name "${project_name}" \
     --env-file "${bundle_dir}/network.env" \
     --env-file "${node_env}" \

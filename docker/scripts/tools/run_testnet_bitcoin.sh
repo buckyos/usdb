@@ -118,6 +118,7 @@ compose() {
     export BTC_BOOTSTRAP_TRUST_DIR="${bundle_dir}/trust"
   fi
   docker compose \
+    --progress "${USDB_IMAGE_PULL_PROGRESS:-auto}" \
     --project-name "${project_name}" \
     --env-file "${bundle_dir}/network.env" \
     --env-file "${node_env}" \

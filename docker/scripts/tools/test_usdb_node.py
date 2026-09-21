@@ -605,6 +605,7 @@ class UsdbNodeTests(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch.object(NODE, "doctor"),
+            mock.patch("node_image_progress.image_cached", return_value=False),
             mock.patch.object(NODE, "run_helper", side_effect=record),
             mock.patch("sys.stdout", new=output),
         ):
@@ -612,7 +613,8 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("run_testnet_runtime.sh", ("pull",)),
+                ("run_testnet_runtime.sh", ("pull", "balance-history")),
+                ("run_testnet_runtime.sh", ("pull", "usdb-chain")),
                 ("run_testnet_runtime.sh", ("up-console",)),
                 ("run_testnet_bitcoin.sh", ("pull",)),
                 ("run_testnet_bitcoin.sh", ("start",)),

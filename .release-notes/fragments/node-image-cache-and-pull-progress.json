@@ -1,0 +1,21 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-image-cache-and-pull-progress",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Reuse complete local release images and expose pull progress and failures",
+  "details": [
+    "Startup checks the exact digest-pinned linux/amd64 release images in Docker and skips explicit registry pulls for complete local images. Missing or uncertain images are pulled individually without weakening release validation or changing readiness gates.",
+    "Node status reports observed layer download bytes, cached layers, pull attempts and retries across controller restarts for the same release and configuration within one host boot. These counters describe the current image pull, not total network traffic or extraction progress; Docker-internal layer retries are not counted as new pull attempts.",
+    "Failed image preparation retains its last error with download URLs redacted. Successful preparation or explicit startup with --skip-pull clears the failure record; progress persistence failures do not prevent startup.",
+    "Bitcoin Core and services builds use separate GHA cache scopes while retaining per-release builds, provenance and security checks. Cache access restrictions still apply across release tags; this does not guarantee cross-release layer reuse."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}
