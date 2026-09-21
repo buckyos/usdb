@@ -18,6 +18,7 @@ import resource_policy as policy
 import usdb_minting as minting
 import usdb_node as node
 from common.native_node import native_kit
+from common.minting import disk_space
 
 
 class OrdReleaseTests(unittest.TestCase):
@@ -26,6 +27,9 @@ class OrdReleaseTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.layout = native_kit(self.root)
+        disk_patch = mock.patch.object(minting, "disk_usage", return_value=disk_space())
+        disk_patch.start()
+        self.addCleanup(disk_patch.stop)
         for name, value in (("effective_memory_bytes", 64 * policy.GIB), ("_collect_compose_services", {})):
             patch = mock.patch.object(node, name, return_value=value)
             patch.start()
@@ -85,6 +89,14 @@ class OrdReleaseTests(unittest.TestCase):
         self.assertEqual(report["state"], "BLOCKED_CONFIG")
         self.assertFalse(report["backend_ready"])
         self.assertIn("activate-release", report["guidance"])
+
+    def test_low_disk_blocks_new_version_without_replacing_config_or_old_index(self):
+        with mock.patch.object(minting, "disk_usage", return_value=disk_space(299 * policy.GIB)):
+            with self.assertRaisesRegex(ValueError, "300.0 GiB required"):
+                self.activate()
+        self.assertEqual(self.layout.node_env.read_bytes(), self.original)
+        self.assertEqual((self.old_path / "index.redb").read_bytes(), b"valuable older index")
+        self.assertFalse((self.root / "node.env.ord-upgrade-backup").exists())
 
     def test_running_or_unknown_services_prevent_dataset_switch(self):
         for state in ("running", "paused", "restarting", "unknown"):

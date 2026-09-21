@@ -5,11 +5,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from shutil import disk_usage
 import time
 
 from ord_runtime import FIELDS, SCHEMA, STATES
 from ord_release import IDENTITY, LEGACY_IDENTITY, LEGACY_VERSION, VERSION
 from resource_policy import GIB, memory_bytes
+
+# Admission budget for a new index; the runtime free-space floor is separate.
+MIN_NEW_INDEX_FREE_BYTES = 300 * GIB
+
+
+class OrdCapacityError(ValueError):
+    """New-index admission failed with an operator-safe disk diagnostic."""
+
 
 GUIDANCE = {
     "DISABLED": "Run usdb-node down, then set-minting --enabled on and up to enable the local backend.",
@@ -70,22 +79,53 @@ def validate(env, *, require_current=False):
     memory_bytes(env.get("ORD_MIN_FREE_BYTES", str(50 * GIB)), "ORD_MIN_FREE_BYTES")
 
 
-def prepare(env):
-    """Claim only a new or matching dataset; never replace an existing index."""
+def check_disk_capacity(env):
+    """Check new-index headroom without creating files or opening a database."""
     validate(env, require_current=True)
     if not enabled(env):
-        return
+        return None
     root = data_path(env["USDB_DATA_ROOT"])
     if any(path.is_symlink() for path in (root, *root.parents)):
         raise ValueError("Refusing symlinked Ord data directory")
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
     marker = root / "identity.json"
     if marker.exists():
         if marker.is_symlink() or json.loads(marker.read_text()) != IDENTITY:
             raise ValueError("Ord dataset identity differs; existing data was preserved")
-    else:
-        if any(root.iterdir()):
-            raise ValueError("Refusing nonempty unmarked Ord dataset; existing data was preserved")
+    elif root.exists() and any(root.iterdir()):
+        raise ValueError("Refusing nonempty unmarked Ord dataset; existing data was preserved")
+    index = root / "index.redb"
+    if index.is_symlink() or (index.exists() and not index.is_file()):
+        raise ValueError("Ord index must be a regular file; existing data was preserved")
+    new_index = not index.exists() or index.stat().st_size == 0
+    parent = root
+    while not parent.exists():
+        parent = parent.parent
+    free = disk_usage(parent).free
+    required = max(MIN_NEW_INDEX_FREE_BYTES, int(env.get("ORD_MIN_FREE_BYTES", 50 * GIB))) if new_index else 0
+    if free < required:
+        shortage = required - free
+        missing = f"{shortage} bytes"
+        for unit, size in (("GiB", GIB), ("MiB", 1024**2), ("KiB", 1024)):
+            if shortage >= size:
+                missing = f"{shortage / size:.1f} {unit}"
+                break
+        raise OrdCapacityError(
+            f"Insufficient space for a new Ord index at {root}: {free / GIB:.1f} GiB available; "
+            f"at least {required / GIB:.1f} GiB required ({missing} short). "
+            "Add free capacity or leave local minting disabled. This admission budget is separate from "
+            "the runtime free-space floor; Bitcoin txindex and other services need additional capacity."
+        )
+    return dict(new_index=new_index, free_bytes=free, required_bytes=required)
+
+
+def prepare(env):
+    """Admit new indexes before writing; retain existing indexes and their data."""
+    if check_disk_capacity(env) is None:
+        return
+    root = data_path(env["USDB_DATA_ROOT"])
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    marker = root / "identity.json"
+    if not marker.exists():
         with marker.open("x", encoding="utf-8") as output:
             json.dump(IDENTITY, output)
 

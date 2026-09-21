@@ -114,6 +114,8 @@ BTC 查询还要求 indexer 的查询能力就绪、网络匹配。数据约每 
 
 此选项属于 r30 之后的源码改进，需要同时更新 node kit 和 `usdb-services` 镜像。
 新节点在 `usdb-node setup` 中回答 `Enable local minting backend (txindex + private Ord)`，默认 `n`。
+选择 `y` 后直接使用下文的推荐内存、缓存和磁盘保护余量，不再逐项询问 Ord 数字参数；编辑已有配置时保留先前的自定义值。
+新建 Ord 索引前要求额外 **300 GiB 可用空间**；全新节点首次同时启用时，叠加基础部署容量，门槛为 **1.5 TiB + 300 GiB**。
 非交互配置使用 `usdb-node configure --minting on`，并提供该节点所需的其他参数。
 
 开启后从首次 Bitcoin 启动起配置 `BTC_TXINDEX=1`。一个轻量监督进程先等待依赖；
@@ -131,7 +133,8 @@ usdb-node minting-status
 usdb-node status --watch
 ```
 
-`set-minting` 拒绝修改正在运行的节点，自动重算各阶段内存预算；不会删除 Bitcoin、txindex 或 Ord 数据。
+`set-minting` 拒绝修改正在运行的节点，自动重算各阶段内存预算；已有自动模式保留当前资源阶段，不会因补建 txindex 回退到 Bitcoin 独占预算。
+不会删除 Bitcoin、txindex 或 Ord 数据。
 已有未剪枝 Bitcoin 数据可用于补建 txindex，无需重新导入 UTXO 快照或执行全量 `-reindex`。
 关闭时执行同样的 `down → set-minting --enabled off → up`，在 AssumeUTXO 部署中将 txindex 设为 0、停止运行 Ord，但保留索引文件供以后复用。
 旧式非 AssumeUTXO 部署仍保留其原有的 `txindex=1` 就绪要求，关闭 Ord 不会移除这一历史依赖。
@@ -150,9 +153,13 @@ usdb-node status --watch
   即使 Ord 正在等待，也保留预算；txindex 位于 Bitcoin 进程内，会增加磁盘与 I/O 开销，不是独立容器。
 - 新版 Ord 0.29.0 数据存放在 `USDB_DATA_ROOT/datasets/ord/btc-mainnet/ord-0.29.0`，包含版本、数据库格式与索引配置标识。
   不接管已有未标识的非空目录。页面显示数据库文件大小和文件系统可用空间，不通过遍历全盘计算容量。
+- 新建索引的容量门槛为 **300 GiB 空闲**。`setup`、`configure --minting on`、`set-minting --enabled on`
+  和需要新索引的版本激活都会检查；容量不足时保留原配置和数据，先扩容或保持 Ord 关闭。
+  仅有目录、身份标识或空索引文件仍视为新建；复用已存在且有匹配身份标识的索引时不重复要求另一份完整预算。
 - 默认保留 **50 GiB 可用磁盘**。不足时暂停 Ord，保留数据；恢复容量后自动继续。
   这只是运行保护阈值，**不是整个 Ord 或 txindex 索引的容量估计**，也无法保证 Bitcoin 等其他服务停止写盘。
-  初次完整索引需要额外磁盘和时间，应按实际增长扩容；尚未提供主网全量索引的容量或耗时保证。
+  300 GiB 的启用预算已包含保护和增长余量，不再叠加 50 GiB；Bitcoin `txindex` 和其他服务占用需另外计算。
+  容量检查不会实际锁定或分配磁盘。初次完整索引需要额外磁盘和时间，应按实际增长扩容；尚未提供主网全量索引的容量或耗时保证。
 - 本版本索引铭文和地址，不额外保存整套交易副本、不启用全量 sat 或 Rune 索引。
   Ord 仅在 Docker 私网监听，**不发布主机端口或公网入口**；控制台只消费经过筛选的只读状态。
 
@@ -170,6 +177,8 @@ Ord 随 `usdb-services` 镜像发布，从官方固定 tag/commit 编译，使�
 本次从 0.23.3 升级到 0.29.0，Ord 数据库格式从 30 变为 34，**已有 Ord 索引需要单独重建**。
 正常停机并安装新版 node kit 后，执行 `usdb-node activate-release`，工具会备份原配置为
 `node.env.ord-upgrade-backup`，将 Ord 配置切换到新的版本目录；旧目录及其索引保留。
+已开启 Ord 时，激活新索引前检查目标磁盘至少还有 **300 GiB 空闲**；旧索引的占用不计入这笔可用空间。
+检查失败保留原配置、旧索引和已有备份。
 然后执行 `doctor → up → minting-status`。新版从已有 Bitcoin 数据补建自己的索引，Bitcoin、
 BH 和 USDB 数据无需因此重建；尚未开启 Ord 的节点不会创建索引或启动后台索引任务。
 

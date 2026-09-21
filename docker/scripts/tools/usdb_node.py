@@ -73,6 +73,7 @@ from resource_policy import (  # noqa: E402
     SERVICE_MEMORY_KEYS,
     build_resource_plan,
     effective_memory_bytes,
+    memory_bytes,
     resource_mode,
     validate_resource_environment,
 )
@@ -799,14 +800,16 @@ def configured_firewall_mode(layout: ReleaseLayout) -> str:
 
 
 def _resource_policy_updates(mode: str, caps: dict[str, str]) -> dict[str, str]:
-    """Resolve a new policy before creating credentials or touching service state."""
+    """Rebudget an existing automatic phase; only new policies start Bitcoin-only."""
     resource_mode({"USDB_RESOURCE_MODE": mode})
     settings = {**CAP_DEFAULTS, **caps, "USDB_RESOURCE_MODE": mode}
     if mode == "auto":
+        # Enabling txindex/Ord is not a rollback of completed synchronization.
+        current_phase = caps.get("USDB_RESOURCE_PHASE", "bitcoin") if resource_mode(caps) == "auto" else "bitcoin"
         memory = effective_memory_bytes()
         for phase in RESOURCE_PHASES:
             build_resource_plan(memory, phase, settings)
-        settings.update(build_resource_plan(memory, "bitcoin", settings).environment())
+        settings.update(build_resource_plan(memory, current_phase, settings).environment())
     return settings
 
 
@@ -874,7 +877,10 @@ def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) 
     original = layout.node_env.read_text(encoding="utf-8")
     env = read_env(layout.node_env)
     settings = {key: env.get(key, default) for key, default in CAP_DEFAULTS.items()}
-    updates = _resource_policy_updates(mode, {**settings, **caps, "USDB_MINTING_ENABLED": env.get("USDB_MINTING_ENABLED", "0"), "ORD_MEMORY_LIMIT": env.get("ORD_MEMORY_LIMIT", "4g"), "SNAPSHOT_MODE": env.get("SNAPSHOT_MODE", "none")})
+    updates = _resource_policy_updates(mode, {**settings, **caps,
+        **{key: env[key] for key in ("USDB_RESOURCE_MODE", "USDB_RESOURCE_PHASE") if key in env},
+        "USDB_MINTING_ENABLED": env.get("USDB_MINTING_ENABLED", "0"), "ORD_MEMORY_LIMIT": env.get("ORD_MEMORY_LIMIT", "4g"),
+        "SNAPSHOT_MODE": env.get("SNAPSHOT_MODE", "none")})
     if mode == "manual" and resource_mode(env) == "auto":
         selected, resources = resolve_bitcoin_resource_profile(DEFAULT_BITCOIN_RESOURCE_PROFILE)
         updates.update({"BTC_RESOURCE_PROFILE": selected,
@@ -1149,9 +1155,12 @@ def configure_node(
     resource_updates = _resource_policy_updates(resource_management, {**(resource_caps or {}), "USDB_MINTING_ENABLED": str(int(minting)), **({"SNAPSHOT_MODE": "assumeutxo"} if native else {})})
     query_updates = {"USDB_CHAIN_GCMODE": "archive" if explorer_queries else "full",
                      "USDB_CHAIN_TRACING": "1" if explorer_queries else "0"}
-    _validate_data_root_capacity(data_root)
-    root = data_root.expanduser().resolve()
     import usdb_minting
+    if minting:
+        _validate_data_root_capacity(data_root, extra_bytes=usdb_minting.MIN_NEW_INDEX_FREE_BYTES)
+    else:
+        _validate_data_root_capacity(data_root)
+    root = data_root.expanduser().resolve()
     minting_updates = usdb_minting.environment(root, minting, legacy_txindex="0" if native else "1")
     usdb_minting.prepare({**minting_updates, "USDB_DATA_ROOT": str(root)})
     secure_dir = network_secure_dir(root, layout.bundle_id)
@@ -1301,19 +1310,22 @@ def _data_root_capacity(path: Path) -> DataRootCapacity:
     )
 
 
-def _validate_data_root_capacity(path: Path) -> DataRootCapacity:
+def _validate_data_root_capacity(path: Path, *, extra_bytes: int = 0) -> DataRootCapacity:
+    """Keep optional index admission capacity additional to the base node budget."""
     capacity = _data_root_capacity(path)
-    if capacity.total_bytes < MIN_DATA_ROOT_BYTES:
+    required = MIN_DATA_ROOT_BYTES + extra_bytes
+    detail = f" ({_human_bytes(MIN_DATA_ROOT_BYTES)} base node + {_human_bytes(extra_bytes)} for Ord)" if extra_bytes else ""
+    if capacity.total_bytes < required:
         raise ValueError(
             f"data root filesystem is too small: {capacity.filesystem_path} has "
             f"{_human_bytes(capacity.total_bytes)} total; at least "
-            f"{_human_bytes(MIN_DATA_ROOT_BYTES)} is required"
+            f"{_human_bytes(required)}{detail} is required"
         )
-    if capacity.free_bytes < MIN_DATA_ROOT_BYTES:
+    if capacity.free_bytes < required:
         raise ValueError(
             f"data root filesystem has insufficient available space: "
             f"{capacity.filesystem_path} has {_human_bytes(capacity.free_bytes)} free; "
-            f"at least {_human_bytes(MIN_DATA_ROOT_BYTES)} is required before setup"
+            f"at least {_human_bytes(required)}{detail} is required before setup"
         )
     return capacity
 
@@ -1384,13 +1396,13 @@ def setup_node(
     print("Bitcoin resource profile:", file=output)
     print(f"  Selected: {bitcoin_profile}", file=output)
     print(f"  Host memory: {_human_bytes(host_memory_bytes)}", file=output)
-    print(f"  Container limit: {bitcoin_resources['memory_limit']}", file=output)
+    print(f"  Container limit: {_human_bytes(memory_bytes(bitcoin_resources['memory_limit'], 'BTC_MEMORY_LIMIT'))}", file=output)
     print(
         "  Memory + swap limit: "
-        f"{bitcoin_resources['memory_swap_limit']}",
+        f"{_human_bytes(memory_bytes(bitcoin_resources['memory_swap_limit'], 'BTC_MEMORY_SWAP_LIMIT'))}",
         file=output,
     )
-    print(f"  Bitcoin dbcache: {bitcoin_resources['dbcache_mb']} MiB", file=output)
+    print(f"  Bitcoin dbcache: {_human_bytes(int(bitcoin_resources['dbcache_mb']) * 1024**2)}", file=output)
     if bitcoin_profile == IBD_BITCOIN_RESOURCE_PROFILE:
         print(
             "  Temporary profile: switch to performance-64g after IBD and txindex complete.",
@@ -1438,7 +1450,13 @@ def setup_node(
         default=False, input_fn=input_fn, output=output,
     )
     if minting:
-        print("Ord reserves 4 GiB RAM and additional disk. Bitcoin history and txindex must finish before Ord starts.", file=output)
+        import usdb_minting
+        print("Ord uses the recommended 4 GiB RAM budget and requires 300 GiB additional free disk for a new index.", file=output)
+        print("The 300 GiB admission budget includes headroom; the separate runtime free-space floor is 50 GiB. "
+              "Bitcoin txindex and other service growth need additional capacity.", file=output)
+        capacity = _validate_data_root_capacity(data_root, extra_bytes=usdb_minting.MIN_NEW_INDEX_FREE_BYTES)
+        print(f"Data-disk capacity check passed: {_human_bytes(capacity.free_bytes)} free; "
+              "required: 1.5 TiB base node + 300 GiB Ord. Bitcoin history and txindex must finish before Ord starts.", file=output)
         print("Node synchronization remains independent; production wallet signing is not enabled by this option.", file=output)
         if resource_management == "auto":
             preview = _resource_policy_updates("auto", {**(resource_caps or {}), "USDB_MINTING_ENABLED": "1",
@@ -2539,6 +2557,8 @@ def _start_optional_ord(layout: ReleaseLayout, *, output_to_stderr: bool) -> Non
             containers["ord-server"] = dict(state="running", memory=int(env["ORD_MEMORY_LIMIT"]))
             _check_running_resource_budget(env, containers)
         run_helper(layout, "run_testnet_runtime.sh", ["up-ord"], output_to_stderr=output_to_stderr)
+    except usdb_minting.OrdCapacityError as error:
+        print(f"WARNING: optional Ord could not start: {error} Core node startup continues.", file=sys.stderr)
     except (OSError, ValueError, subprocess.SubprocessError):
         print("WARNING: optional Ord could not start; check minting-status, resources and ord-server logs. Core node startup continues.", file=sys.stderr)
 

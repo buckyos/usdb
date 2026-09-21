@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
+from contextlib import redirect_stderr
 import unittest
 from unittest import mock
 
@@ -23,7 +24,7 @@ import usdb_minting as minting
 import usdb_node as node
 import usdb_p2p as p2p
 import assumeutxo_node as native
-from common.minting import Child, Loop, core_observation
+from common.minting import Child, Loop, core_observation, disk_space
 from common.native_node import native_kit
 from common.p2p import HOST, V4
 
@@ -34,6 +35,95 @@ class MintingTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.env = dict(USDB_DATA_ROOT=str(self.root), **minting.environment(self.root, True))
+        disk_patch = mock.patch.object(minting, "disk_usage", return_value=disk_space())
+        disk_patch.start()
+        self.addCleanup(disk_patch.stop)
+
+    def test_new_index_requires_300_gib_before_creating_any_files(self):
+        for free in (50 * policy.GIB, minting.MIN_NEW_INDEX_FREE_BYTES - 1):
+            with self.subTest(free=free), mock.patch.object(minting, "disk_usage", return_value=disk_space(free)):
+                with self.assertRaisesRegex(ValueError, "300.0 GiB required"):
+                    minting.prepare(self.env)
+            self.assertFalse(minting.data_path(self.root).exists())
+        with mock.patch.object(minting, "disk_usage", return_value=disk_space(minting.MIN_NEW_INDEX_FREE_BYTES)):
+            minting.prepare(self.env)
+        self.assertTrue((minting.data_path(self.root) / "identity.json").is_file())
+
+    def test_capacity_checks_target_filesystem_and_does_not_count_old_index(self):
+        old = minting.data_path(self.root, minting.LEGACY_VERSION)
+        old.mkdir(parents=True)
+        (old / "index.redb").write_bytes(b"keep old index")
+        with mock.patch.object(minting, "disk_usage", return_value=disk_space(299 * policy.GIB)) as usage:
+            with self.assertRaisesRegex(ValueError, "1.0 GiB short"):
+                minting.prepare(self.env)
+        usage.assert_called_once_with(old.parent)
+        self.assertEqual((old / "index.redb").read_bytes(), b"keep old index")
+        self.assertFalse(minting.data_path(self.root).exists())
+
+    def test_existing_index_reuses_storage_while_empty_marker_still_needs_capacity(self):
+        minting.prepare(self.env)
+        root = minting.data_path(self.root)
+        with mock.patch.object(minting, "disk_usage", return_value=disk_space(100 * policy.GIB)):
+            for empty_index in (False, True):
+                if empty_index:
+                    (root / "index.redb").touch()
+                with self.assertRaisesRegex(ValueError, "300.0 GiB required"):
+                    minting.prepare(self.env)
+            (root / "index.redb").write_bytes(b"existing index")
+            minting.prepare(self.env)
+            self.assertFalse(minting.check_disk_capacity(self.env)["new_index"])
+            self.assertEqual((root / "index.redb").read_bytes(), b"existing index")
+        self.assertEqual(self.env["ORD_MIN_FREE_BYTES"], str(50 * policy.GIB))
+
+    def test_disabled_ord_does_not_inspect_or_reserve_disk(self):
+        with mock.patch.object(minting, "disk_usage", side_effect=AssertionError("disabled capacity check")):
+            minting.prepare({**self.env, "USDB_MINTING_ENABLED": "0"})
+        self.assertFalse(minting.data_path(self.root).exists())
+
+    def test_startup_reports_disk_failure_without_starting_ord_or_blocking_core(self):
+        layout = SimpleNamespace(node_env=self.root / "node.env")
+        layout.node_env.write_text(node.upsert_env("", self.env))
+        output = io.StringIO()
+        with mock.patch.object(minting, "disk_usage", return_value=disk_space(299 * policy.GIB)), \
+                mock.patch.object(node, "run_helper") as run, redirect_stderr(output):
+            node._start_optional_ord(layout, output_to_stderr=False)
+        run.assert_not_called()
+        self.assertIn("300.0 GiB required", output.getvalue())
+        self.assertIn("Core node startup continues", output.getvalue())
+        self.assertFalse(minting.data_path(self.root).exists())
+
+    def test_set_minting_rejects_insufficient_disk_without_saving_configuration(self):
+        layout = SimpleNamespace(node_env=self.root / "node.env")
+        env = dict(self.env, USDB_MINTING_ENABLED="0", BTC_TXINDEX="0", SNAPSHOT_MODE="assumeutxo")
+        env.update(policy.build_resource_plan(64 * policy.GIB, "steady", env).environment())
+        original = node.upsert_env("", env)
+        layout.node_env.write_text(original)
+        with mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB), \
+                mock.patch.object(node, "_collect_compose_services", return_value={}), \
+                mock.patch.object(minting, "disk_usage", return_value=disk_space(299 * policy.GIB)):
+            with self.assertRaisesRegex(ValueError, "300.0 GiB required"):
+                minting.configure(layout, True, node)
+        self.assertEqual(layout.node_env.read_text(), original)
+        self.assertFalse(minting.data_path(self.root).exists())
+
+    def test_fresh_configuration_adds_ord_capacity_to_the_base_node_requirement(self):
+        layout = native_kit(self.root)
+        data = self.root / "data"
+        required = node.MIN_DATA_ROOT_BYTES + minting.MIN_NEW_INDEX_FREE_BYTES
+        arguments = dict(data_root=data, role="full", miner_address="", miner_threads=1,
+                         bootnodes="", nat="", bitcoin_rpc_user=None, bitcoin_p2p="private",
+                         resource_management="auto", minting=True)
+        with mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB):
+            for total, free in ((3 * 1024**4, required - 1), (required - 1, required - 1)):
+                with self.subTest(total=total, free=free), \
+                        mock.patch.object(node, "_data_root_capacity", return_value=node.DataRootCapacity(self.root, total, free)):
+                    with self.assertRaisesRegex(ValueError, "300.0 GiB for Ord"):
+                        node.configure_node(layout, **arguments)
+                self.assertFalse(layout.node_env.exists())
+                self.assertFalse(data.exists())
+            with mock.patch.object(node, "_data_root_capacity", return_value=node.DataRootCapacity(self.root, required, required)):
+                node.configure_node(layout, **arguments)
+        self.assertEqual(node.read_env(layout.node_env)["USDB_MINTING_ENABLED"], "1")
 
     def test_history_and_index_are_independent_readiness_gates(self):
         for complete, indexed, synced, expected in [
@@ -251,10 +341,11 @@ class MintingTests(unittest.TestCase):
         capacity = node.DataRootCapacity(self.root, 3 * 1024**4, 3 * 1024**4)
         with mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB), \
                 mock.patch.object(node, "_host_memory_bytes", return_value=64 * policy.GIB), \
-                mock.patch.object(node, "_validate_data_root_capacity", return_value=capacity), \
+                mock.patch.object(node, "_validate_data_root_capacity", return_value=capacity) as check_capacity, \
                 mock.patch.object(p2p, "host_capabilities", return_value=HOST):
             node.setup_node(layout, input_fn=answer, output=io.StringIO(), resource_management="auto", p2p_options=p2p.options(args))
         self.assertTrue(any("Enable local minting backend (txindex + private Ord) [y/N]" in item for item in prompts))
+        check_capacity.assert_any_call(self.root / "data", extra_bytes=minting.MIN_NEW_INDEX_FREE_BYTES)
         env = node.read_env(layout.node_env)
         self.assertEqual(env["BTC_TXINDEX"], "1")
         self.assertEqual(env["USDB_MINTING_ENABLED"], "1")

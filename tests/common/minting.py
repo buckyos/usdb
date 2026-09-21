@@ -1,5 +1,12 @@
 """Deterministic Core and Ord observations; no live Bitcoin node or wallet."""
 
+from types import SimpleNamespace
+
+
+def disk_space(free_bytes=400 * 1024**3):
+    """Give Ord admission tests deterministic capacity independent of the runner."""
+    return SimpleNamespace(free=free_bytes)
+
 
 def core_observation(*, complete=True, indexed=100, synced=True):
     info = dict(chain="main", pruned=False, blocks=100, headers=100,

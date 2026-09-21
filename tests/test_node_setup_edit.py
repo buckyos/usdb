@@ -17,6 +17,7 @@ import usdb_minting as minting
 import usdb_node as node
 import usdb_peers as peers
 from common.native_node import native_kit
+from common.minting import disk_space
 
 
 class SetupEditTests(unittest.TestCase):
@@ -25,6 +26,9 @@ class SetupEditTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.layout = native_kit(self.root)
+        disk_patch = mock.patch.object(minting, "disk_usage", return_value=disk_space())
+        disk_patch.start()
+        self.addCleanup(disk_patch.stop)
         for name, value in (("effective_memory_bytes", 64 * policy.GIB),
                             ("_host_memory_bytes", 64 * policy.GIB),
                             ("_collect_compose_services", {})):
@@ -110,6 +114,22 @@ class SetupEditTests(unittest.TestCase):
         self.assertTrue(any("Explorer support (keep" in prompt for prompt in self.prompts))
         self.assertTrue(any("[keep]" in prompt for prompt in self.prompts))
 
+    def test_minting_keeps_manual_allocations_and_existing_ord_customization(self):
+        bitcoin = node.BITCOIN_RESOURCE_PROFILES[node.DEFAULT_BITCOIN_RESOURCE_PROFILE]
+        custom = {"USDB_RESOURCE_MODE": "manual", "BTC_RESOURCE_PROFILE": node.DEFAULT_BITCOIN_RESOURCE_PROFILE,
+                  "BTC_MEMORY_LIMIT": bitcoin["memory_limit"], "BTC_MEMORY_SWAP_LIMIT": bitcoin["memory_swap_limit"],
+                  "BTC_DBCACHE_MB": bitcoin["dbcache_mb"], "BH_MEMORY_LIMIT": "20g", "BH_MEMORY_SWAP_LIMIT": "22g",
+                  "BH_SYNC_UTXO_MAX_CACHE_BYTES": str(4 * policy.GIB),
+                  "BH_SYNC_BALANCE_MAX_CACHE_BYTES": str(8 * policy.GIB),
+                  "ORD_MEMORY_LIMIT": "6g", "ORD_INDEX_CACHE_BYTES": str(2 * policy.GIB),
+                  "ORD_MIN_FREE_BYTES": str(75 * policy.GIB)}
+        self.update(custom)
+        self.edit({"Enable local minting": "y"})
+        env = node.read_env(self.layout.node_env)
+        for key, value in custom.items():
+            self.assertEqual(env[key], value)
+        self.assertIn("memory 6.0 GiB, index cache 2.0 GiB, free-disk reserve 75.0 GiB", self.output.getvalue())
+
     def test_query_edit_migrates_legacy_flags_without_losing_unrelated_arguments(self):
         self.update({"USDB_CHAIN_GCMODE": "archive", "USDB_CHAIN_EXTRA_ARGS": "--gcmode=archive --cache=777"})
         self.edit({"Explorer support (keep": "full"})
@@ -141,10 +161,33 @@ class SetupEditTests(unittest.TestCase):
             self.assertFalse(self.backup.exists())
             self.assertFalse(minting.data_path(self.root / "data").exists())
 
-    def test_invalid_candidate_never_replaces_live_configuration(self):
-        with self.assertRaisesRegex(ValueError, "Ord requires at least"):
-            self.edit({"Enable local minting": "y", "Adjust Ord memory": "y", "ORD_MEMORY_LIMIT": "1g"})
+    def test_ord_capacity_failure_preserves_config_backup_and_resource_journal(self):
+        self.backup.write_bytes(b"existing backup")
+        journal = node._resource_state_path(self.layout)
+        journal.write_bytes(b"existing resource journal")
+        with mock.patch.object(minting, "disk_usage", return_value=disk_space(299 * policy.GIB)):
+            with self.assertRaisesRegex(ValueError, "300.0 GiB required"):
+                self.edit({"Enable local minting": "y"})
         self.assertEqual(self.layout.node_env.read_bytes(), self.original)
+        self.assertEqual(self.backup.read_bytes(), b"existing backup")
+        self.assertEqual(journal.read_bytes(), b"existing resource journal")
+        self.assertFalse(minting.data_path(self.root / "data").exists())
+        self.assertFalse(any(prompt.startswith("Save these changes") for prompt in self.prompts))
+
+    def test_ord_capacity_is_checked_again_after_save_confirmation(self):
+        with mock.patch.object(minting, "disk_usage", side_effect=[disk_space(), disk_space(299 * policy.GIB)]):
+            with self.assertRaisesRegex(ValueError, "Insufficient space"):
+                self.edit({"Enable local minting": "y"})
+        self.assertEqual(self.layout.node_env.read_bytes(), self.original)
+        self.assertFalse(self.backup.exists())
+        self.assertFalse(minting.data_path(self.root / "data").exists())
+
+    def test_invalid_candidate_never_replaces_live_configuration(self):
+        self.update({"ORD_MEMORY_LIMIT": "1g"})
+        before = self.layout.node_env.read_bytes()
+        with self.assertRaisesRegex(ValueError, "Ord requires at least"):
+            self.edit({"Enable local minting": "y"})
+        self.assertEqual(self.layout.node_env.read_bytes(), before)
         self.assertFalse(self.backup.exists())
         self.assertFalse(minting.data_path(self.root / "data").exists())
         self.assertFalse(list(self.root.glob(".setup-*")))
@@ -203,7 +246,69 @@ class SetupEditTests(unittest.TestCase):
         self.assertTrue(self.backup.exists())
         self.assertIn("Resource transition journal", self.output.getvalue())
 
+    def test_minting_changes_rebudget_each_current_phase_without_rolling_back(self):
+        for entrypoint in ("setup", "set-minting"):
+            for phase in policy.PHASES:
+                with self.subTest(entrypoint=entrypoint, phase=phase):
+                    env = node.read_env(self.layout.node_env)
+                    before = policy.build_resource_plan(64 * policy.GIB, phase, env).environment()
+                    self.update(before)
+                    for active in (True, False):
+                        if entrypoint == "setup":
+                            self.edit({"Enable local minting": "y" if active else "n"})
+                        else:
+                            minting.configure(self.layout, active, node)
+                        current = node.read_env(self.layout.node_env)
+                        self.assertEqual(current["BTC_TXINDEX"], "1" if active else "0")
+                        self.assertEqual(current["USDB_RESOURCE_PHASE"], phase)
+                        self.assertEqual(current["BTC_RESOURCE_PROFILE"], "managed-" + phase)
+                        policy.validate_resource_environment(current, 64 * policy.GIB)
+                        if active:
+                            self.assertEqual(int(current["ORD_MEMORY_LIMIT"]), 4 * policy.GIB)
+                            self.assertLessEqual(int(current["BTC_MEMORY_LIMIT"]), int(before["BTC_MEMORY_LIMIT"]))
+                            self.assertLess(int(current["BH_MEMORY_LIMIT"]), int(before["BH_MEMORY_LIMIT"]))
+                        else:
+                            self.assertEqual(current["BTC_MEMORY_LIMIT"], before["BTC_MEMORY_LIMIT"])
+                            self.assertEqual(current["BH_MEMORY_LIMIT"], before["BH_MEMORY_LIMIT"])
+
+    def test_setup_shows_readable_policy_budgets_without_ord_tuning_prompts(self):
+        env = node.read_env(self.layout.node_env)
+        self.update(policy.build_resource_plan(64 * policy.GIB, "steady", env).environment())
+        self.edit({"Enable local minting": "y"})
+        text = self.output.getvalue()
+        self.assertIn("memory 4.0 GiB, index cache 1.0 GiB, free-disk reserve 50.0 GiB", text)
+        self.assertIn("phase=steady", text)
+        self.assertIn("calculated budgets, not manual overrides", text)
+        self.assertIn("BH_MEMORY_LIMIT: 32.0 GiB -> 29.6 GiB", text)
+        self.assertIn("BTC_DBCACHE_MB: 4.0 GiB -> 3.7 GiB", text)
+        self.assertNotIn(str(4 * policy.GIB), text)
+        self.assertFalse(any(prompt.startswith(("Adjust Ord", "ORD_")) for prompt in self.prompts))
+
+    def test_readable_memory_prompts_keep_exact_custom_budgets_on_enter(self):
+        env = {**node.read_env(self.layout.node_env), "USDB_EXTERNAL_MEMORY_BUDGET": str(policy.GIB + 123),
+               "USDB_BH_MEMORY_CAP": "1024g"}
+        self.update({**env, **policy.build_resource_plan(64 * policy.GIB, "steady", env).environment()})
+        before = self.layout.node_env.read_bytes()
+        self.edit({"Adjust memory budgets": "y"})
+        self.assertEqual(self.layout.node_env.read_bytes(), before)
+        self.assertIn("USDB_EXTERNAL_MEMORY_BUDGET [1.0 GiB]: ", self.prompts)
+        self.assertIn("USDB_BH_MEMORY_CAP [1.0 TiB]: ", self.prompts)
+
+    def test_explicit_resource_recalculation_retains_existing_automatic_phase(self):
+        for phase in policy.PHASES:
+            with self.subTest(phase=phase):
+                env = node.read_env(self.layout.node_env)
+                self.update(policy.build_resource_plan(64 * policy.GIB, phase, env).environment())
+                self.edit({"Recalculate automatic": "y"})
+                self.assertEqual(node.read_env(self.layout.node_env)["USDB_RESOURCE_PHASE"], phase)
+                node.set_resource_policy(self.layout, "auto", {"USDB_BTC_STEADY_MEMORY_CAP": "6g"})
+                env = node.read_env(self.layout.node_env)
+                self.assertEqual(env["USDB_RESOURCE_PHASE"], phase)
+                policy.validate_resource_environment(env, 64 * policy.GIB)
+
     def test_cli_resource_overrides_and_manual_mode_defaults(self):
+        env = node.read_env(self.layout.node_env)
+        self.update(policy.build_resource_plan(64 * policy.GIB, "steady", env).environment())
         self.edit(resource_management="manual", bitcoin_resource_profile=node.DEFAULT_BITCOIN_RESOURCE_PROFILE)
         env = node.read_env(self.layout.node_env)
         self.assertEqual(env["USDB_RESOURCE_MODE"], "manual")
@@ -213,6 +318,7 @@ class SetupEditTests(unittest.TestCase):
         self.edit(resource_management="auto", resource_caps={"USDB_BTC_IBD_MEMORY_CAP": "20g"})
         env = node.read_env(self.layout.node_env)
         self.assertEqual(env["USDB_BTC_IBD_MEMORY_CAP"], "20g")
+        self.assertEqual(env["USDB_RESOURCE_PHASE"], "bitcoin")
         self.assertLessEqual(int(env["BTC_MEMORY_LIMIT"]), 20 * policy.GIB)
 
     def test_cli_edit_does_not_install_controller_apply_firewall_or_select_release(self):

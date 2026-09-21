@@ -67,7 +67,7 @@ usdb-node setup
 | `Seed enode(s)` | 填写同网 Seed 完整地址；多条以逗号分隔。暂缺时可留空，但之后必须补充才能入网 |
 | `USDB P2P address family`（包含向导改进的版本） | 默认 `auto`；明确需要 IPv6 时选 `dual`（双栈）或 `ipv6`。所选模式不满足主机条件时，按提示修复 |
 | `Provide full Explorer support` | 普通节点选 `n`；专用查询节点应在首次同步前另行规划 |
-| `Enable local minting backend`（包含此改进的版本） | 默认 `n`；需要本机 Ord 索引时选 `y`，提前开启 Bitcoin txindex。参见[可选铸造后端](../services/control-plane.md#可选的本机铸造后端)的资源要求和能力边界 |
+| `Enable local minting backend`（包含此改进的版本） | 默认 `n`；选 `y` 使用 Ord 推荐配置并提前开启 Bitcoin txindex，检查基础节点之外至少 **300 GiB** 的额外空间。首次总容量和可用空间均需 **1.5 TiB + 300 GiB**；参见[机器要求](requirements.md#启用-ord-时的额外资源) |
 | `Accept inbound Bitcoin peers` | 默认 `n`，不影响 Bitcoin 出站同步 |
 | `Manage this host firewall ... UFW` | 已有云或主机规则选 `n`；需要工具管理 UFW 时选 `y`，并确认实际 SSH 服务端口 |
 | 原生启动提示 | 显示 `Native AssumeUTXO bootstrap`，无需选择旧 BH 快照或填写下载地址 |

@@ -10,6 +10,17 @@ import usdb_minting as minting
 from resource_policy import memory_bytes
 
 
+def _display_value(key, value, node):
+    """Format capacities for review while retaining exact values in node.env."""
+    if value == "(unset)":
+        return value
+    if key == "BTC_DBCACHE_MB":
+        return node._human_bytes(int(value) * 1024**2)
+    if key in node.CAP_DEFAULTS or key.endswith(("_BYTES", "_MEMORY_LIMIT", "_MEMORY_SWAP_LIMIT")):
+        return node._human_bytes(0 if value == "0" else memory_bytes(value, key))
+    return value
+
+
 def _require_stopped(layout, node):
     """Do not let the wizard race a recovery operation or a running container."""
     import usdb_mining
@@ -62,6 +73,10 @@ def _collect(env, node, *, input_fn, output, resource_mode, bitcoin_profile, cap
     def prompt(label, default):
         return node._prompt(label, default=default, input_fn=input_fn)
 
+    def memory_prompt(label, default):
+        # Enter must retain the exact budget, not the rounded display value.
+        return input_fn(f"{label} [{_display_value(label, default, node)}]: ").strip() or default
+
     def choice(label, choices, default):
         return node._prompt_choice(label, choices, default=default, input_fn=input_fn, output=output)
 
@@ -92,13 +107,23 @@ def _collect(env, node, *, input_fn, output, resource_mode, bitcoin_profile, cap
                 updates[key] = env[key]
     if active:
         print("Ord waits for Bitcoin historical validation and txindex; existing data is retained. Wallet signing remains disabled.", file=output)
-        if yes_no("Adjust Ord memory, cache and free-disk reserve", False):
-            defaults = minting.environment(env["USDB_DATA_ROOT"], True)
-            for key in ("ORD_MEMORY_LIMIT", "ORD_INDEX_CACHE_BYTES", "ORD_MIN_FREE_BYTES"):
-                updates[key] = prompt(key, env.get(key, defaults[key]))
-    # Only effective changes should trigger a resource phase reset.
+        settings = {**minting.environment(env["USDB_DATA_ROOT"], True), **env, **updates}
+        print("Ord resources (recommended defaults unless previously customized): "
+              f"memory {_display_value('ORD_MEMORY_LIMIT', settings['ORD_MEMORY_LIMIT'], node)}, "
+              f"index cache {_display_value('ORD_INDEX_CACHE_BYTES', settings['ORD_INDEX_CACHE_BYTES'], node)}, "
+              f"free-disk reserve {_display_value('ORD_MIN_FREE_BYTES', settings['ORD_MIN_FREE_BYTES'], node)}.", file=output)
+        print("The free-disk reserve is a safety threshold, not the total index size.", file=output)
+        capacity = minting.check_disk_capacity(settings)
+        if capacity["new_index"]:
+            print(f"Ord new-index capacity check passed: {node._human_bytes(capacity['free_bytes'])} free; "
+                  f"at least {node._human_bytes(capacity['required_bytes'])} required in addition to node storage. "
+                  "Bitcoin txindex and other service growth need additional capacity.", file=output)
+        else:
+            print("Existing Ord index will be reused; a second 300 GiB index budget is not required. "
+                  "Runtime free-space protection remains active.", file=output)
+    # Only effective changes should trigger resource recalculation.
     updates = {key: value for key, value in updates.items() if env.get(key) != value}
-    recalculate = _resources(env, updates, node, choice=choice, yes_no=yes_no, prompt=prompt,
+    recalculate = _resources(env, updates, node, choice=choice, yes_no=yes_no, prompt=memory_prompt,
                              resource_mode=resource_mode, bitcoin_profile=bitcoin_profile, caps=caps)
     public = yes_no("Accept inbound Bitcoin peers on TCP/" + env.get("BTC_P2P_BIND_PORT", "8333"),
                     env.get("BTC_P2P_BIND_ADDRESS") == "0.0.0.0")
@@ -171,10 +196,17 @@ def edit(layout, node, *, input_fn, output, resource_mode=None, bitcoin_profile=
         # Resource planning receives the full environment, but only changed keys
         # are rendered or displayed. Never display preserved credentials.
         print("Configuration changes:", file=output)
+        if recalculate and node.resource_mode(candidate) == "auto":
+            print(f"  Automatic resource policy: phase={candidate['USDB_RESOURCE_PHASE']}. "
+                  "Service limits and caches below are calculated budgets, not manual overrides.", file=output)
+            if minting.enabled(candidate):
+                print("  Ord memory is reserved in every phase; txindex shares Bitcoin's budget. "
+                      "Enabling txindex does not restart the Bitcoin-only resource phase.", file=output)
         for key, value in sorted(updates.items()):
-            print(f"  {key}: {env.get(key, '(unset)')} -> {value}", file=output)
+            print(f"  {key}: {_display_value(key, env.get(key, '(unset)'), node)} -> "
+                  f"{_display_value(key, value, node)}", file=output)
         if recalculate:
-            print("  Resource transition journal will be reset; automatic startup reassesses synchronization progress.", file=output)
+            print("  Resource transition journal will be reset; startup rechecks readiness using the saved resource policy.", file=output)
         content = node.upsert_env(original, updates)
         _validate_candidate(layout, node, content)
         if not node._prompt_yes_no("Save these changes", default=True, input_fn=input_fn, output=output):

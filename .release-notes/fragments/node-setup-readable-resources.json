@@ -1,0 +1,21 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-setup-readable-resources",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Simplify Ord setup and preserve the current automatic resource phase when rebudgeting",
+  "details": [
+    "Setup displays memory, cache and disk quantities in readable binary units while preserving exact configuration values when Enter is pressed.",
+    "The local minting option uses recommended Ord resources without advanced numeric prompts, preserving existing custom limits and explaining that free-disk reserve is not total index capacity.",
+    "Setup, set-minting and set-resource-policy retain the existing automatic resource phase when recalculating budgets. Enabling Ord reserves its memory without resetting a steady node to the Bitcoin-only bootstrap phase; startup still checks readiness and advances through the existing resource strategy.",
+    "New configurations and transitions from manual to automatic resource management still begin in the Bitcoin phase. Existing node data, credentials and manual service allocations are retained."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

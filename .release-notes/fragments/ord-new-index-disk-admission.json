@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "ord-new-index-disk-admission",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Require 300 GiB of additional free disk before creating an optional Ord index",
+  "details": [
+    "Fresh setup and configure with minting enabled require the base 1.5 TiB node capacity plus 300 GiB for Ord. Existing-node setup, set-minting and activation of a new Ord dataset require 300 GiB free on the target filesystem before changing configuration or creating the dataset.",
+    "A matching existing nonempty index is reused without requiring a second full index budget. Empty indexes and directories still need the new-index capacity check; older-version indexes are preserved and do not count as free capacity.",
+    "The runtime free-space floor remains 50 GiB by default, independent of the admission check. The 300 GiB budget includes index headroom but does not reserve filesystem space or cover Bitcoin txindex, other services or retained older indexes.",
+    "Setup reports readable capacity requirements and rechecks before saving. Hardware and operator guides distinguish admission capacity, growth planning and runtime disk protection."
+  ],
+  "operator_actions": [
+    "Before enabling a new Ord index or activating an Ord version that needs a separate index, provide at least 300 GiB free on its data filesystem; new node installations also need the base node capacity."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}
