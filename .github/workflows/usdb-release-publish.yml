@@ -474,10 +474,12 @@ jobs:
 
           Release-bound installer:
 
-          \`bash <(curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_ID}/install-${RELEASE_ID}.sh)\`
+          \`curl -fL --connect-timeout 20 --speed-limit 1 --speed-time 60 --retry 3 --retry-delay 2 --retry-connrefused -o install-${RELEASE_ID}.sh https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_ID}/install-${RELEASE_ID}.sh && bash install-${RELEASE_ID}.sh\`
 
-          For mainnet, download the script and its SHA-256 asset, verify and review it
-          before execution instead of using process substitution.
+          Download progress and installation stages are displayed in the terminal.
+          The installer runs only after the script download succeeds.
+          For mainnet, download the script and its SHA-256 asset separately, verify
+          and review it before executing bash.
           EOF
           } >dist/release-notes.md
 

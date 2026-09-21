@@ -71,6 +71,10 @@ jobs:
           python3 docker/scripts/tools/test_resource_controller.py
           python3 docker/scripts/tools/test_resource_runner.py
           python3 docker/scripts/tools/test_prepare_release_node_kit.py
+          bash -n docker/scripts/tools/install_usdb_node.sh
+          python3 docker/scripts/tools/test_install_usdb_node.py
+          python3 docker/scripts/tools/test_prepare_release_installer.py
+          python3 tests/test_installer_progress.py
           python3 tests/test_node_peers.py
           python3 tests/test_node_p2p.py
           python3 tests/test_node_p2p_setup.py

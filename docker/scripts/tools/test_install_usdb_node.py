@@ -99,6 +99,10 @@ class InstallUsdbNodeTests(unittest.TestCase):
         self.assertIn("usdb-node up", first.stdout)
         self.assertIn("usdb-node status", first.stdout)
         self.assertIn("does not run these commands automatically", first.stdout)
+        for stage in range(1, 6):
+            self.assertIn(f"[{stage}/5]", first.stderr)
+        self.assertIn("Downloading " + f"{RELEASE_ID}-node-kit.tar.gz", first.stderr)
+        self.assertNotIn("[usdb-install]", first.stdout)
 
         second = self.install()
         self.assertEqual(second.returncode, 0, second.stderr)

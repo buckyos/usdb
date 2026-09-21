@@ -62,6 +62,15 @@ class PrepareReleaseInstallerTests(unittest.TestCase):
         self.assertIn(f"--release-id {RELEASE_ID}", completed.stdout)
         self.assertIn("--expected-manifest-sha256", completed.stdout)
         self.assertIn("--expected-node-kit-sha256", completed.stdout)
+        self.assertIn("Preparing " + RELEASE_ID, completed.stderr)
+        self.assertIn("Installer verified", completed.stderr)
+
+        # A transfer may finish, but changed installer bytes must never execute.
+        self.installer.write_text("#!/usr/bin/env bash\necho UNVERIFIED-INSTALLER-RAN\n", encoding="utf-8")
+        rejected = subprocess.run([str(output)], capture_output=True, text=True, check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("Installer SHA-256 mismatch", rejected.stderr)
+        self.assertNotIn("UNVERIFIED-INSTALLER-RAN", rejected.stdout)
 
     def test_rejects_wrong_node_kit_name_and_existing_output(self) -> None:
         with self.assertRaisesRegex(ValueError, "node kit must be named"):

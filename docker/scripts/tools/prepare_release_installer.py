@@ -85,9 +85,23 @@ cleanup() {{
 trap cleanup EXIT
 
 installer="$temporary/install_usdb_node.sh"
-curl --fail --silent --show-error --location \
-  "$release_base_url/install_usdb_node.sh" --output "$installer"
-printf '%s  %s\n' "$installer_sha256" "$installer" | sha256sum -c - >/dev/null
+printf '[usdb-install] Preparing %s: downloading installer (connecting or waiting for response until bytes arrive)\\n' "$release_id" >&2
+started="$SECONDS"
+if curl --fail --show-error --location \
+  --connect-timeout 20 --speed-limit 1 --speed-time 60 \
+  --retry 3 --retry-delay 2 --retry-connrefused \
+  "$release_base_url/install_usdb_node.sh" --output "$installer"; then
+  printf '[usdb-install] Installer downloaded in %ss; verifying release-bound SHA-256\\n' "$((SECONDS - started))" >&2
+else
+  code="$?"
+  printf '[usdb-install] Download failed: install_usdb_node.sh (curl exit %s, elapsed %ss). Check the error above and retry after connectivity recovers.\\n' "$code" "$((SECONDS - started))" >&2
+  exit "$code"
+fi
+if ! printf '%s  %s\\n' "$installer_sha256" "$installer" | sha256sum -c - >/dev/null; then
+  echo '[usdb-install] Installer SHA-256 mismatch; refusing to execute it.' >&2
+  exit 1
+fi
+echo '[usdb-install] Installer verified; starting node kit installation.' >&2
 
 bash "$installer" "$@" \
   --release-id "$release_id" \

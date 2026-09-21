@@ -17,7 +17,14 @@ Options:
 
 The installer downloads one immutable release manifest and node kit, verifies
 their canonical SHA-256 files, and installs no secrets or node data.
+Stages and curl transfer progress are written to stderr. Downloads use a
+20-second connection timeout, a 60-second stall timeout, and up to 3 retries
+for transient HTTP/timeout/connection-refused failures.
 EOF
+}
+
+log() {
+  printf '[usdb-install] %s\n' "$*" >&2
 }
 
 release_id=""
@@ -98,6 +105,7 @@ base_url="${release_base_url:-https://github.com/${repository}/releases/download
 base_url="${base_url%/}"
 archive="${release_id}-node-kit.tar.gz"
 
+log "Installing ${release_id}; download progress shows bytes, speed and elapsed/remaining time."
 mkdir -p "$install_root" "$bin_dir"
 temporary="$(mktemp -d "${install_root}/.${release_id}.install.XXXXXX")"
 cleanup() {
@@ -107,14 +115,19 @@ trap cleanup EXIT
 
 download() {
   local name="$1"
-  curl --fail --silent --show-error --location \
-    "${base_url}/${name}" --output "${temporary}/${name}"
+  local started="$SECONDS" code
+  log "Downloading ${name} (connecting or waiting for response until bytes arrive)"
+  if curl --fail --show-error --location \
+    --connect-timeout 20 --speed-limit 1 --speed-time 60 \
+    --retry 3 --retry-delay 2 --retry-connrefused \
+    "${base_url}/${name}" --output "${temporary}/${name}"; then
+    log "Downloaded ${name} in $((SECONDS - started))s"
+  else
+    code="$?"
+    log "Download failed: ${name} (curl exit ${code}, elapsed $((SECONDS - started))s). Check the error above and retry the installer after connectivity recovers."
+    return "$code"
+  fi
 }
-
-download usdb-release-manifest.json
-download usdb-release-manifest.json.sha256
-download "$archive"
-download "${archive}.sha256"
 
 verify_checksum() {
   local name="$1"
@@ -126,9 +139,6 @@ verify_checksum() {
     exit 1
   }
 }
-
-verify_checksum usdb-release-manifest.json
-verify_checksum "$archive"
 
 verify_release_bound_checksum() {
   local name="$1"
@@ -142,8 +152,12 @@ verify_release_bound_checksum() {
   }
 }
 
+log "[1/5] Downloading release manifest and checksum"
+download usdb-release-manifest.json
+download usdb-release-manifest.json.sha256
+log "[2/5] Verifying release manifest SHA-256 and version"
+verify_checksum usdb-release-manifest.json
 verify_release_bound_checksum usdb-release-manifest.json "$expected_manifest_sha256"
-verify_release_bound_checksum "$archive" "$expected_node_kit_sha256"
 python3 - "$temporary/usdb-release-manifest.json" "$release_id" <<'PY'
 import json
 import re
@@ -165,6 +179,12 @@ if actual != expected or re.fullmatch(r"usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][
     raise SystemExit("release manifest ID mismatch")
 PY
 
+log "[3/5] Downloading node kit and checksum"
+download "$archive"
+download "${archive}.sha256"
+log "[4/5] Verifying node kit SHA-256, checking archive paths and unpacking"
+verify_checksum "$archive"
+verify_release_bound_checksum "$archive" "$expected_node_kit_sha256"
 mkdir "${temporary}/unpacked"
 python3 - "${temporary}/${archive}" "${temporary}/unpacked" <<'PY'
 import pathlib
@@ -200,6 +220,7 @@ cmp "$temporary/usdb-release-manifest.json" \
   exit 1
 }
 
+log "[5/5] Installing verified node kit and launcher"
 if [[ -e "$release_dir" ]]; then
   if [[ ! -f "$release_dir/release/usdb-release-manifest.json" ]] || \
     ! cmp "$temporary/usdb-release-manifest.json" \

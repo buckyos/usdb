@@ -16,13 +16,23 @@
 
 打开第 1 步选定的 Release 页面，找到 **Release-bound installer**，复制其中的完整命令，在节点的普通运维账号下执行即可。
 
-例如，[r28 Release 页面](https://github.com/buckyos/usdb/releases/tag/usdb-testnet-v0-r28)提供的命令为：
+例如，使用 [r33 Release](https://github.com/buckyos/usdb/releases/tag/usdb-testnet-v0-r33) 的入口，可以先显示下载进度，下载成功后再执行：
 
 ```bash
-bash <(curl -fsSL https://github.com/buckyos/usdb/releases/download/usdb-testnet-v0-r28/install-usdb-testnet-v0-r28.sh)
+curl -fL --connect-timeout 20 --speed-limit 1 --speed-time 60 \
+  --retry 3 --retry-delay 2 --retry-connrefused \
+  --output install-usdb-testnet-v0-r33.sh \
+  https://github.com/buckyos/usdb/releases/download/usdb-testnet-v0-r33/install-usdb-testnet-v0-r33.sh &&
+bash install-usdb-testnet-v0-r33.sh
 ```
 
 每个 Release 的命令都已绑定对应版本，安装器自动完成下载和校验。安装其他版本时，直接复制该版本页面中的命令。下载失败或校验不通过时，按[下载故障](../troubleshooting/README.md#下载失败或校验不通过)处理。
+
+包含安装进度改进的版本，会先显示当前 release 和安装器下载，再显示五个阶段：下载 manifest、校验 manifest、下载工具包、校验并解压、安装工具与命令入口。每次下载都显示文件名；curl 表格中的 `Received` 是已下载量、`Speed` 是速度，时间列用于观察耗时和预计剩余时间。没有取得文件总量时，百分比和剩余时间可能不可用；字节数为零时仍可能在连接、重定向或等待服务器响应。进度写入 stderr，保存安装日志时应同时记录 stdout 和 stderr。
+
+下载连接超时为 20 秒；持续 60 秒传输速度不足 1 字节/秒时会中止本次传输。临时 HTTP 错误、超时和连接拒绝最多重试 3 次，重试期间会显示提示；最终失败会指出文件、错误码和累计耗时。校验失败不会继续解压或安装。
+
+**r33 及此前的安装器内部仍是静默下载。** 上面的命令能显示第一层安装脚本下载，但后续完整阶段提示需使用包含改进的新 release；仅将旧命令中的 `-fsSL` 换成 `-fL` 不会改变旧安装器内部行为。
 
 安装器提示安装成功后，在当前终端执行：
 
