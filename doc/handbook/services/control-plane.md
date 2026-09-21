@@ -26,8 +26,12 @@ usdb-node console token
 
 `controller install` 安装或更新两个 systemd unit，不会启动或重启链；
 `console start` 只启动／更新控制台容器及已安装的监控进程，不等待 BTC、BH、Indexer 或 Chain 就绪。
+如果旧节点只有启动控制器而没有 console monitor，单独启动控制台容器不会自动安装采集服务；
+命令会提示监控未安装，先补做 `controller install`，再执行 `console start`。安装时可能需要输入 sudo 密码。
 它不会启动挖矿，也不清理数据。端口被占用、Docker 不可用或镜像尚不可获取时，需要先处理对应错误。
-`console token` 会在当前终端显示私有令牌，只复制到登录表单，不放入 URL、工单或截图。
+`console token` 会输出 `Console access token: <令牌>`，只复制冒号后的令牌到登录表单，
+不要复制前一行的 `manifest_sha256`（它是安装包校验摘要）。不要将令牌放入 URL、工单或截图。
+脚本需要无标签输出时，使用 `usdb-node console token --raw`；stdout 只有令牌，校验提示仍写入 stderr。
 
 在自己的电脑上打开 SSH 隧道（将 `NODE_IP` 换成节点地址）：
 
@@ -48,6 +52,23 @@ usdb-node console monitor
 
 这个命令只持续采集状态，不控制节点启动。结束该进程后网页会显示数据过期；
 也可用 `usdb-node console export` 生成一次观测。需要断开终端后继续监控时，安装 systemd 控制器。
+一次性导出只适合诊断：没有持续采集时，网页会在观测过期后再次显示状态未知。
+
+### Ord 容器运行，但尚未启动 HTTP 服务
+
+启用可选铸造后端后，`ord-server` 容器先运行监督进程。它等待 Bitcoin 前台同步、历史校验和
+txindex 全部满足条件后，才启动 Ord 本体与 HTTP 服务。容器显示 `Up` 不能证明 Ord 已开始索引。
+在控制台的“本机铸造后端（可选）”中查看具体状态：
+
+| 显示 | 含义与处理 |
+| --- | --- |
+| 等待交易索引追平 | 对比交易索引高度与 Bitcoin 前台高度；等待完成后自动启动 Ord，无需反复重启 |
+| Ord 索引／规范链校验中 | Ord 已启动，继续等待它自己的索引；txindex 完成不代表 Ord 索引也完成 |
+| 监控未启用／当前状态未知 | 无法判定 Ord 当前是否正常；先恢复 console monitor，不能当作 Ord 离线 |
+| Ord 运行失败／磁盘余量不足 | 执行 `usdb-node minting-status --json` 并查看 `usdb-node logs ord-server`，按具体原因处理 |
+
+正式节点的首页和 Ord 服务页使用相同的宿主机观测；等待依赖不会影响 USDB 节点同步、挖矿或已有矿工证查询。
+后端就绪也不表示正式钱包签名与广播已经开放。
 
 ## 怎样阅读状态
 

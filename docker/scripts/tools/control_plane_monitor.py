@@ -179,11 +179,13 @@ WantedBy=multi-user.target
         Path(temporary_name).unlink(missing_ok=True)
 
 
-def start(layout, node) -> None:
-    """Start the installed observer without delaying node orchestration on probes."""
+def start(layout, node) -> bool:
+    """Request observer startup; return False when its systemd unit is missing."""
     prepare(layout, node)
     if unit_path(layout, node).is_file():
         node._privileged_command(["systemctl", "start", "--no-block", unit_name(layout)])
+        return True
+    return False
 
 
 def stop(layout, node) -> None:
@@ -194,7 +196,8 @@ def stop(layout, node) -> None:
 def add_parser(subparsers) -> None:
     parser = subparsers.add_parser("console", help="Private monitoring console and host observer")
     actions = parser.add_subparsers(dest="console_action", required=True)
-    actions.add_parser("token", help="Print the private login token (keep it secret)")
+    token = actions.add_parser("token", help="Print the private login token (keep it secret)")
+    token.add_argument("--raw", action="store_true", help="Print only the token on stdout for scripts")
     actions.add_parser("start", help="Start only the private console and installed observer")
     actions.add_parser("export", help="Export one sanitized node progress snapshot")
     actions.add_parser("monitor", help="Continuously export progress; normally managed by systemd")
@@ -205,12 +208,18 @@ def dispatch(args, layout, node) -> None:
         token = data_root(layout, node) / "access-token"
         if not token.is_file():
             raise ValueError("Console has not started; run usdb-node console start first")
-        print(read_token(token))
+        value = read_token(token)
+        print(value if args.raw else f"Console access token: {value}")
     elif args.console_action == "export":
         print(json.dumps(export(layout, node), indent=2))
     elif args.console_action == "monitor":
         run(layout, node)
     elif args.console_action == "start":
-        start(layout, node)
+        monitoring = start(layout, node)
         node.run_helper(layout, "run_testnet_runtime.sh", ["up-console"])
         print("Private console started. Use an SSH tunnel to localhost:28040 and usdb-node console token to sign in.")
+        if not monitoring:
+            print("WARNING: host monitoring is not installed; without a separate console monitor process, "
+                  "node and Ord observations will be missing or become stale. "
+                  "Run usdb-node controller install, then usdb-node console start; "
+                  "or keep usdb-node console monitor running in a separate terminal.")

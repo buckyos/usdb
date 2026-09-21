@@ -272,7 +272,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
               },
             ]}
           />
-          <ServiceSummaryCard
+          {data?.development_enabled && <ServiceSummaryCard
             title="ord"
             status={data ? serviceLabel(data.services.ord, t) : '-'}
             tone={data ? serviceTone(data.services.ord) : 'neutral'}
@@ -315,7 +315,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
                 helpText: t('help.fields.rpcUrl', ''),
               },
             ]}
-          />
+          />}
         </div>
       </section>
 

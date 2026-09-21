@@ -1,5 +1,7 @@
 """Private observer projection, credentials, and resource boundaries."""
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import sys
@@ -20,6 +22,38 @@ class PrivateMonitorTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.layout = SimpleNamespace(node_env=self.root / "private/node.env", bundle_id="test")
+
+    def test_token_label_and_explicit_raw_output_preserve_the_existing_secret(self):
+        root = monitor.prepare(self.layout, node)
+        token = monitor.read_token(root / "access-token")
+        for raw in (False, True):
+            args = node.build_parser().parse_args(["console", "token", *(["--raw"] if raw else [])])
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                monitor.dispatch(args, self.layout, node)
+            self.assertEqual(stdout.getvalue(), (token if raw else f"Console access token: {token}") + "\n")
+            self.assertEqual(monitor.read_token(root / "access-token"), token)
+
+    def test_console_start_reports_missing_observer_and_starts_an_installed_one(self):
+        for installed in (False, True):
+            unit = self.root / "observer.service"
+            if installed:
+                unit.write_text("fixture")
+            stdout = io.StringIO()
+            with mock.patch.object(monitor, "unit_path", return_value=unit), \
+                    mock.patch.object(node, "_privileged_command") as privileged, \
+                    mock.patch.object(node, "run_helper") as helper, \
+                    contextlib.redirect_stdout(stdout):
+                monitor.dispatch(SimpleNamespace(console_action="start"), self.layout, node)
+            helper.assert_called_once_with(self.layout, "run_testnet_runtime.sh", ["up-console"])
+            if installed:
+                privileged.assert_called_once_with(["systemctl", "start", "--no-block", monitor.unit_name(self.layout)])
+                self.assertNotIn("WARNING", stdout.getvalue())
+            else:
+                privileged.assert_not_called()
+                self.assertIn("host monitoring is not installed", stdout.getvalue())
+                self.assertIn("usdb-node controller install", stdout.getvalue())
+                self.assertIn("usdb-node console monitor", stdout.getvalue())
 
     def test_projection_preserves_independent_milestones_without_exporting_secrets(self):
         report = dict(overall_state="SYNCING", release_id="r-test", node_role="full",

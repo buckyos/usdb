@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "private-console-token-label",
+  "type": "fixed",
+  "scopes": [
+    "deployment",
+    "node-runtime"
+  ],
+  "summary": "Label private console login tokens and provide explicit raw output",
+  "details": [
+    "console token labels the existing credential as Console access token so operators do not confuse it with the artifact manifest checksum printed during release verification.",
+    "console token --raw keeps stdout suitable for scripts. Token contents, private file permissions and login behavior are unchanged."
+  ],
+  "operator_actions": [
+    "Scripts that consume console token output should use usdb-node console token --raw."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

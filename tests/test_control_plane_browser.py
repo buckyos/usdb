@@ -1,5 +1,6 @@
 """Opt-in browser regression; requires built web apps, Rust binary and Playwright."""
 import json
+import re
 import time
 from common.control_plane_web import console_server
 
@@ -28,17 +29,37 @@ def main():
             assert token not in page.evaluate("JSON.stringify(localStorage) + JSON.stringify(sessionStorage) + document.cookie")
             assert all(cookie["httpOnly"] and cookie["sameSite"] == "Strict" for cookie in context.cookies())
             panel = page.get_by_role("region", name="本机铸造后端", exact=True)
-            for stage, label in [("DISABLED", "未启用"), ("WAITING_HISTORY", "等待 Bitcoin 历史校验"), ("READY", "索引后端已就绪")]:
+            snapshot.unlink()
+            page.reload()
+            expect(page.get_by_role("status").first).to_contain_text("监控进程未启用", timeout=15000)
+            expect(panel.get_by_role("alert")).to_contain_text("不能据此判断 Ord 离线")
+            # Release mode has one authoritative Ord panel, not a contradictory HTTP-only card.
+            expect(page.get_by_role("heading", name="ord", exact=True)).to_have_count(0)
+            for stage, label in [("DISABLED", "未启用"), ("WAITING_HISTORY", "等待 Bitcoin 历史校验"),
+                                 ("WAITING_TXINDEX", "等待交易索引追平"), ("INDEXING", "Ord 索引／规范链校验中"),
+                                 ("FAILED", "Ord 运行失败"), ("READY", "索引后端已就绪")]:
                 report["observed_at_ms"] = int(time.time() * 1000)
                 report["minting"] = dict(enabled=stage != "DISABLED", state=stage,
                     observed_at_ms=report["observed_at_ms"], core_height=100, history_height=100,
                     txindex_height=100, ord_height=100, ord_gap=0, canonical=stage == "READY",
                     txindex_synced=True, history_validated=True, backend_ready=stage == "READY",
                     transactions_enabled=False, disk_free_bytes=100 * 1024**3)
+                if stage == "WAITING_TXINDEX":
+                    report["minting"].update(txindex_height=84, txindex_synced=False, ord_height=None, ord_gap=None)
                 snapshot.write_text(json.dumps(report))
                 page.reload()
                 expect(panel.get_by_role("status")).to_have_text(label, timeout=15000)
                 expect(panel).to_contain_text("正式钱包签名和广播尚未开放")
+                if stage == "WAITING_TXINDEX":
+                    expect(panel).to_contain_text("Ord 本体及 HTTP 服务尚未启动")
+                    page.goto(origin + "/?lang=zh-CN#/services/ord")
+                    expect(panel.get_by_role("status")).to_have_text(label, timeout=15000)
+                    expect(page.get_by_role("link", name=re.compile(r"^ord")).get_by_text(label, exact=True)).to_be_visible()
+                    page.set_viewport_size(dict(width=390, height=844))
+                    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "Ord service layout overflow"
+                    page.screenshot(path="/tmp/usdb-console-ord-waiting-mobile.png", full_page=True)
+                    page.set_viewport_size(dict(width=1365, height=1000))
+                    page.goto(origin + "/?lang=zh-CN#/overview")
             page.wait_for_function("async () => (await (await fetch('/api/system/overview')).json()).services.ord.data.query_ready === true")
             data = page.evaluate("fetch('/api/system/overview').then(r => r.json())")
             assert data["capabilities"]["btc_console_mode"] == "read_only"
@@ -59,7 +80,7 @@ def main():
             assert page.evaluate("fetch('/api/system/overview').then(r => r.status)") == 401
             assert not errors, errors
             browser.close()
-        print("Private console browser regression passed: login, unavailable RPC, independent progress, stale snapshot, mobile, logout")
+        print("Private console browser regression passed: login, missing observer, Ord dependency states, service labels, unavailable RPC, independent progress, stale snapshot, mobile, logout")
 
 
 if __name__ == "__main__":

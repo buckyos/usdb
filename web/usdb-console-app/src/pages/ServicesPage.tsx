@@ -1,3 +1,4 @@
+import { mintingLabel, mintingTone, useMintingObservation } from '../lib/minting'
 import { MintingBackend } from '../components/MintingBackend'
 import { NavLink, useParams } from 'react-router-dom'
 import { InlineHelpTooltip } from '../components/InlineHelpTooltip'
@@ -620,6 +621,8 @@ export function ServicesPage({ data, locale, t }: ServicesPageProps) {
   const selectedService = getSelectedService(params.serviceId)
   const meta = getServiceMeta(selectedService, t)
   const selectedProbe = getProbe(selectedService, data)
+  const minting = useMintingObservation(data?.node_monitor)
+  const localOrd = selectedService === 'ord' && !data?.development_enabled
 
   return (
     <div className="grid gap-5">
@@ -648,7 +651,7 @@ export function ServicesPage({ data, locale, t }: ServicesPageProps) {
               const probe = getProbe(serviceId, data)
               const serviceMeta = getServiceMeta(serviceId, t)
               const optional = serviceId === 'ord' && !data?.development_enabled
-              const tone = optional ? 'neutral' : probe ? serviceTone(probe) : 'neutral'
+              const tone = optional ? mintingTone(minting.state) : probe ? serviceTone(probe) : 'neutral'
               return (
                 <NavLink
                   key={serviceId}
@@ -665,11 +668,11 @@ export function ServicesPage({ data, locale, t }: ServicesPageProps) {
                         {serviceMeta.title}
                       </strong>
                       <p className="mt-2 break-words text-sm leading-6 text-[color:var(--cp-muted)]">
-                        {getServiceSummaryLine(serviceId, data, locale, t)}
+                        {optional ? (locale === 'zh-CN' ? '本机可选铸造后端，不影响节点同步和挖矿' : 'Optional local backend; independent of node sync and mining') : getServiceSummaryLine(serviceId, data, locale, t)}
                       </p>
                     </div>
                     <span className="status-pill shrink-0" data-tone={tone}>
-                      {optional ? (locale === 'zh-CN' ? '可选服务' : 'Optional') : probe ? serviceLabel(probe, t) : t('common.notYetAvailable')}
+                      {optional ? mintingLabel(minting.state, locale) : probe ? serviceLabel(probe, t) : t('common.notYetAvailable')}
                     </span>
                   </div>
                 </NavLink>
@@ -691,8 +694,8 @@ export function ServicesPage({ data, locale, t }: ServicesPageProps) {
                 </p>
               </div>
               {selectedProbe ? (
-                <span className="status-pill" data-tone={serviceTone(selectedProbe)}>
-                  {serviceLabel(selectedProbe, t)}
+                <span className="status-pill" data-tone={localOrd ? mintingTone(minting.state) : serviceTone(selectedProbe)}>
+                  {localOrd ? mintingLabel(minting.state, locale) : serviceLabel(selectedProbe, t)}
                 </span>
               ) : null}
             </div>

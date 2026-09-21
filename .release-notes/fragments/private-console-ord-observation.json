@@ -1,0 +1,25 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "private-console-ord-observation",
+  "type": "fixed",
+  "scopes": [
+    "deployment",
+    "node-runtime"
+  ],
+  "summary": "Distinguish optional Ord dependency waits from unavailable console observations",
+  "details": [
+    "Release console views use the same expiring host observation for the optional Ord backend. The overview removes its contradictory HTTP-only Ord card; service selectors and headings show dependency waits, indexing, failures or unknown state instead of labeling every unopened HTTP endpoint offline.",
+    "Missing host observations remain visible even before the first snapshot. Guidance distinguishes a running supervisor waiting for txindex from an active Ord indexer, and preserves the boundary between optional backend readiness and ordinary node readiness.",
+    "console start warns when the independent host observer is not installed. It still starts only the private console and installed observer; it does not automatically install system services or restart Bitcoin."
+  ],
+  "operator_actions": [
+    "Upgrade the node kit and services image together. On older nodes lacking the observer, run usdb-node controller install followed by usdb-node console start as the node operator; installation may require sudo. Foreground deployments can keep usdb-node console monitor running instead."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}
