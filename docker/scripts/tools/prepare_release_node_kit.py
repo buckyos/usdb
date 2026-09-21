@@ -41,6 +41,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/assumeutxo_deployment.py",
     "docker/scripts/tools/assumeutxo_node.py",
     "docker/scripts/tools/control_plane_monitor.py",
+    "docker/scripts/tools/control_plane_resources.py",
     "docker/scripts/tools/bitcoin_import_progress.py",
     "docker/scripts/tools/artifact_signing.py",
     "docker/scripts/tools/bitcoin_release.py",

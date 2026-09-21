@@ -23,6 +23,11 @@ DIRECTORIES = {
 }
 SERVICES = {"btc-node", "btc-snapshot-bootstrap", "balance-history", "usdb-indexer",
             "usdb-chain", "ord-server", "usdb-control-plane", "usdb-checkpoint-verify"}
+CONTAINER_DATA = {
+    "bitcoin": ("btc-node", "/data/bitcoin"), "balance-history": ("balance-history", "/data/balance-history"),
+    "usdb-indexer": ("usdb-indexer", "/data/usdb-indexer"), "usdb-chain": ("usdb-chain", "/data/usdb-chain"),
+    "ord": ("ord-server", "/data/ord"), "control-plane": ("usdb-control-plane", "/data/usdb-control-plane"),
+}
 
 
 def now_ms():
@@ -80,7 +85,8 @@ def host_memory(proc=Path("/proc")):
 
 def command(args, timeout):
     """Commands never contain credentials; raw failures are not sent to the UI."""
-    return subprocess.run(args, check=True, capture_output=True, text=True, timeout=timeout).stdout
+    return subprocess.run(args, check=True, capture_output=True, text=True, timeout=timeout,
+                          env=dict(os.environ, LC_ALL="C")).stdout
 
 
 def container_stats(bundle_id):
@@ -176,8 +182,40 @@ def directory_size(path):
         return dict(status="available", used_bytes=size, observed_at_ms=now_ms(), checked_at_ms=now_ms())
     except subprocess.TimeoutExpired:
         return dict(status="timeout", checked_at_ms=now_ms())
+    except subprocess.CalledProcessError as error:
+        return dict(status="permission_denied" if "Permission denied" in (error.stderr or "") else "unavailable",
+                    checked_at_ms=now_ms())
     except (OSError, ValueError, subprocess.SubprocessError):
         return dict(status="unavailable", checked_at_ms=now_ms())
+
+
+def container_directory_size(path, service, bundle_id):
+    """Read a protected data mount as its running service user, after verifying its exact mapping."""
+    if service not in CONTAINER_DATA:
+        return dict(status="permission_denied", checked_at_ms=now_ms())
+    name, destination = CONTAINER_DATA[service]
+    project = bundle_id + "-bitcoin" if service == "bitcoin" else bundle_id
+    try:
+        identifiers = command(["docker", "ps", "--filter", "label=com.docker.compose.project=" + project,
+                               "--filter", "label=com.docker.compose.service=" + name, "--format", "{{.ID}}"], 1).split()
+        if len(identifiers) != 1 or not re.fullmatch(r"[0-9a-f]{12,64}", identifiers[0]):
+            raise ValueError("no unique running data owner")
+        mounts = json.loads(command(["docker", "inspect", "--format", "{{json .Mounts}}", identifiers[0]], 1))
+        if not any(item.get("Type") == "bind" and item.get("Destination") == destination
+                   and str(Path(item.get("Source", "")).resolve()) == path for item in mounts):
+            raise ValueError("data mount mismatch")
+        # Use the container's configured user, never override it or add a mount.
+        output = command(["docker", "exec", identifiers[0], "timeout", "4", "du", "-s", "-k", "-x", "--", destination], 5)
+        size = int(output.split("\t", 1)[0]) * 1024
+        if size < 0:
+            raise ValueError("invalid directory size")
+        return dict(status="available", used_bytes=size, observed_at_ms=now_ms(), checked_at_ms=now_ms())
+    except subprocess.TimeoutExpired:
+        return dict(status="timeout", checked_at_ms=now_ms())
+    except subprocess.CalledProcessError as error:
+        return dict(status="timeout" if error.returncode in {124, 137, 143} else "permission_denied", checked_at_ms=now_ms())
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+        return dict(status="permission_denied", checked_at_ms=now_ms())
 
 
 class ResourceCollector:
@@ -192,9 +230,11 @@ class ResourceCollector:
         self.worker = None
         self.lock = threading.Lock()
 
-    def _scan(self, paths):
+    def _scan(self, paths, bundle_id=None, services=None):
         for path in paths:
             result = directory_size(path)
+            if result["status"] == "permission_denied" and bundle_id and services:
+                result = container_directory_size(path, services.get(path), bundle_id)
             with self.lock:
                 previous = self.disk_cache.get(path, {})
                 if result["status"] != "available" and "used_bytes" in previous:
@@ -226,10 +266,10 @@ class ResourceCollector:
         if self.worker is None or not self.worker.is_alive():
             if paths != self.disk_identity or self.disk_last_started is None or time.monotonic() - self.disk_last_started >= DISK_SCAN_INTERVAL:
                 self.disk_identity, self.disk_last_started = paths, time.monotonic()
-                self.worker = threading.Thread(target=self._scan, args=(paths,), daemon=True)
+                self.worker = threading.Thread(target=self._scan, args=(paths, bundle_id, {item["path"]: item["service"] for item in directories if "path" in item}), daemon=True)
                 self.worker.start()
         if wait_for_disk and self.worker:
-            self.worker.join(timeout=len(paths) * 4 + 2)
+            self.worker.join(timeout=len(paths) * 11 + 2)
         filesystems = {}
         with self.lock:
             sizes = copy.deepcopy(self.disk_cache)

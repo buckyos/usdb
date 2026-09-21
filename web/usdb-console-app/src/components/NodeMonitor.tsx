@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { MintingBackend } from './MintingBackend'
+import { HostResources } from './HostResources'
 import { useI18n } from '../i18n/provider'
 import type { MonitorSnapshot } from '../lib/types'
 
@@ -18,6 +19,7 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
   const [age, setAge] = useState(snapshot?.age_ms ?? 0)
   useEffect(() => {
     const received = performance.now()
+    setAge(snapshot?.age_ms ?? 0)
     const timer = window.setInterval(() => setAge((snapshot?.age_ms ?? 0) + performance.now() - received), 1000)
     return () => window.clearInterval(timer)
   }, [snapshot])
@@ -32,7 +34,11 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
         <strong role="status">{statusNames[freshness] ?? freshness} · {fresh ? show(report?.overall_state) : (zh ? '当前状态未知' : 'Current state unknown')}</strong>
       </div>
       <p className="text-sm">{zh ? '采集时间' : 'Observed'}: {report?.observed_at_ms ? new Date(report.observed_at_ms).toLocaleString(locale) : '—'}</p>
-      {!fresh && <p role="alert">{zh ? '以下仅为最后一次观测。请在节点执行 usdb-node status --progress-json，并检查 console monitor 服务。' : 'Any values below are the last observation only. Run usdb-node status --progress-json and check the console monitor service.'}</p>}
+      {!fresh && <div role="alert" className="grid gap-2 text-sm">
+        <p>{zh ? '当前状态未知表示宿主机观测缺失或已过期，不代表所有服务离线。以下数值仅为最后一次观测，刷新网页不会启动采集进程。' : 'Unknown means host observations are missing or stale, not that every service is offline. Values below are the last observation; refreshing this page does not start the observer.'}</p>
+        <p>{zh ? '已有节点升级后，请在节点终端依次执行 usdb-node controller install 和 usdb-node console start（可能需要 sudo 密码）。' : 'After upgrading an existing node, run usdb-node controller install and usdb-node console start in its terminal (sudo may be required).'}</p>
+        <p>{zh ? '检查采集进程：systemctl status usdb-console-monitor-<bundle-id>.service；前台模式可持续运行 usdb-node console monitor。' : 'Inspect systemctl status usdb-console-monitor-<bundle-id>.service; foreground mode can keep usdb-node console monitor running.'}</p>
+      </div>}
       {report && <>
         <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
           {[
@@ -41,7 +47,7 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
             [zh ? '版本' : 'Release', show(report.release_id)],
             [zh ? '启动控制器' : 'Bootstrap controller', show(report.controller?.state)],
             [zh ? '资源阶段' : 'Resource phase', `${show(report.resources?.mode)} / ${show(report.resources?.phase)}`],
-            [zh ? '资源切换' : 'Resource transition', report.resources?.transition_pending ? (zh ? '进行中' : 'Pending') : '—'],
+            [zh ? '资源切换' : 'Resource transition', report.resources?.transition_pending == null ? '—' : report.resources.transition_pending ? (zh ? '进行中' : 'Pending') : (zh ? '无待切换' : 'No pending transition')],
             [zh ? '挖矿状态' : 'Mining', show(report.mining?.state)],
           ].map(([label, value]) => <div key={label}><dt className="text-[color:var(--cp-muted)]">{label}</dt><dd className="mt-1 break-all">{value}</dd></div>)}
         </dl>
@@ -65,6 +71,7 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
           </article>)}
         </div>
       </>}
+      <HostResources data={report?.host_resources} fresh={fresh} ageMs={age} observedAt={report?.observed_at_ms} />
       <MintingBackend snapshot={snapshot} />
     </section>
   )

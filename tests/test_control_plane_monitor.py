@@ -22,6 +22,8 @@ class PrivateMonitorTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.layout = SimpleNamespace(node_env=self.root / "private/node.env", bundle_id="test")
+        self.resources = mock.patch.object(monitor.ResourceCollector, "sample", return_value={"status": "unavailable"}).start()
+        self.addCleanup(mock.patch.stopall)
 
     def test_token_label_and_explicit_raw_output_preserve_the_existing_secret(self):
         root = monitor.prepare(self.layout, node)
@@ -135,6 +137,15 @@ class PrivateMonitorTests(unittest.TestCase):
         report = node._collect_node_progress(self.layout, controller_state="uninstalled")
         self.assertEqual(report["control_plane"]["state"], "UNAVAILABLE")
         self.assertEqual(report["overall_state"], "WAITING")
+
+    def test_resource_failure_does_not_erase_node_readiness(self):
+        self.resources.side_effect = ValueError("SECRET")
+        with mock.patch.object(node, "collect_node_progress", return_value=dict(overall_state="READY", components=[])):
+            report = monitor.export(self.layout, node)
+        self.assertEqual(report["overall_state"], "READY")
+        self.assertTrue(report["observation_available"])
+        self.assertEqual(report["host_resources"]["status"], "unavailable")
+        self.assertNotIn("SECRET", json.dumps(report))
 
 
 if __name__ == "__main__":

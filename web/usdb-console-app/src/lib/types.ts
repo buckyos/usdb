@@ -1,3 +1,20 @@
+export interface HostResources {
+  schema_version: 'usdb-console-resources:v1'
+  status?: string
+  observed_at_ms?: number
+  host?: { status: string; observed_at_ms?: number; cpu_percent?: number | null; cpu_count?: number; cpu_interval_ms?: number
+    memory_total_bytes?: number; memory_available_bytes?: number; memory_used_bytes?: number; memory_used_percent?: number
+    swap_total_bytes?: number | null; swap_used_bytes?: number | null }
+  containers?: { status: string; observed_at_ms?: number; items: Array<{ service: string; state: string; status: string
+    cpu_percent?: number; memory_used_bytes?: number; memory_limit_bytes?: number }> }
+  directories?: Array<{ service: string; path?: string; status: string; used_bytes?: number; observed_at_ms?: number
+    checked_at_ms?: number; filesystem_id?: string; filesystem_status?: string }>
+  filesystems?: Array<{ id: string; mount_path: string; status: string; observed_at_ms: number
+    total_bytes: number; used_bytes: number; available_bytes: number; warning: string }>
+  disk_scan_in_progress?: boolean
+  disk_scan_interval_secs?: number
+}
+
 export interface MonitorSnapshot {
   status: 'available' | 'missing' | 'stale' | 'unavailable' | 'invalid'
   age_ms?: number | null
@@ -8,6 +25,7 @@ export interface MonitorSnapshot {
     node_role?: string
     network?: { name?: string; chain_id?: string | number; genesis_hash?: string; bitcoin_network?: string }
     node_identity?: { configured_miner_address?: string }
+    host_resources?: HostResources
     controller?: { state?: string }
     resources?: { mode?: string; phase?: string; transition_pending?: boolean; configured_limits_bytes?: Record<string, number>; host_memory_bytes?: number }
     mining?: { state?: string }

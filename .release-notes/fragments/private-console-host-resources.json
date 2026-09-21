@@ -1,0 +1,27 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "private-console-host-resources",
+  "type": "added",
+  "scopes": [
+    "deployment",
+    "node-runtime"
+  ],
+  "summary": "Show sampled host and container utilization, data directory sizes and filesystem capacity in the private console",
+  "details": [
+    "The host observer exports independent CPU, memory, swap and scoped Docker working-set samples alongside node progress. Configured resource ceilings remain separate from measured utilization; unavailable or stopped services are not shown as zero usage.",
+    "Allowlisted service data paths show allocated disk usage with timestamps. One background worker scans directories every five minutes using bounded, low-priority host commands; protected directories can use a time-limited read-only scan in their running service container after its exact project, service and bind mount are verified. Partial or failed scans preserve the last successful value and timestamp.",
+    "Filesystem capacity is deduplicated for shared storage. Advisory warnings trigger below ten percent or 100 GiB available, and critical indicators below five percent or 50 GiB. These observations do not alter resource policy, service lifecycle or consensus readiness.",
+    "The console explains missing and stale host observations, provides observer recovery commands, and labels historical samples. Page refresh reads the latest snapshot and does not execute host operations. Resource sampling adds no Docker socket or host-control API to the web server."
+  ],
+  "operator_actions": [
+    "Upgrade the node kit and services image together using the normal upgrade procedure. Install missing observation units with usdb-node controller install, then start the private console with usdb-node console start.",
+    "If the observer kept running while node tools were upgraded, restart usdb-console-monitor-<bundle-id>.service so it loads the new sampler. Directory size values appear after the first background scan."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

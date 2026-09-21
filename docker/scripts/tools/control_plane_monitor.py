@@ -14,9 +14,12 @@ import tempfile
 import threading
 import time
 
+from control_plane_resources import ResourceCollector
+
 SCHEMA = "usdb-console-monitor:v1"
 # Deliberate projection: never export node.env, credentials, raw RPC errors,
-# artifacts, wallet secrets, filesystem paths, or Docker inspect output.
+# artifacts, wallet secrets, or Docker inspect output. The separate resource
+# collector exposes only allowlisted service data paths requested by operators.
 COMPONENT_FIELDS = ("id", "label", "state", "display_state", "progress_phase", "current", "total",
                     "progress_percent", "unit", "observation_unavailable", "verification_progress",
                     "query_ready", "consensus_ready", "stage_elapsed_secs")
@@ -97,10 +100,11 @@ def read_token(path: Path) -> str:
     return value
 
 
-def export(layout, node) -> dict:
+def export(layout, node, collector=None) -> dict:
     """Publish one complete snapshot atomically, including failed observation attempts."""
     root = prepare(layout, node)
     observed = int(time.time() * 1000)
+    env = {}
     try:
         report = project(node.collect_node_progress(layout), observed)
         # Expose configured ceilings, never the rest of the private environment.
@@ -120,6 +124,12 @@ def export(layout, node) -> dict:
     except (OSError, ValueError, subprocess.SubprocessError):
         report = dict(schema_version=SCHEMA, observed_at_ms=observed, observation_available=False,
                       overall_state="UNAVAILABLE", components=[])
+    # Resource observation failures do not erase node readiness or minting progress.
+    try:
+        report["host_resources"] = (collector or ResourceCollector()).sample(
+            env, layout.bundle_id, wait_for_disk=collector is None)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        report["host_resources"] = dict(schema_version="usdb-console-resources:v1", status="unavailable")
     node._atomic_write_private(root / "node-progress.json", json.dumps(report, allow_nan=False) + "\n")
     return report
 
@@ -129,8 +139,9 @@ def run(layout, node) -> None:
     stopped = threading.Event()
     for event in (signal.SIGTERM, signal.SIGINT):
         signal.signal(event, lambda *_: stopped.set())
+    collector = ResourceCollector()
     while not stopped.is_set():
-        export(layout, node)
+        export(layout, node, collector)
         stopped.wait(10)
 
 
