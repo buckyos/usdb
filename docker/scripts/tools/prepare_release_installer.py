@@ -10,6 +10,7 @@ import re
 import shlex
 import tempfile
 from pathlib import Path
+from textwrap import indent
 
 
 RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
@@ -62,10 +63,7 @@ def build_release_installer(
     archive_name = f"{release_id}-node-kit.tar.gz"
     if node_kit.name != archive_name:
         raise ValueError(f"node kit must be named {archive_name}")
-    script = f"""#!/usr/bin/env bash
-set -euo pipefail
-
-release_id={shlex.quote(release_id)}
+    body = f"""release_id={shlex.quote(release_id)}
 release_base_url={shlex.quote(base_url)}
 installer_sha256={shlex.quote(_sha256(installer))}
 manifest_sha256={shlex.quote(_sha256(manifest))}
@@ -109,6 +107,14 @@ bash "$installer" "$@" \
   --expected-manifest-sha256 "$manifest_sha256" \
   --expected-node-kit-sha256 "$node_kit_sha256"
 """
+    # Bash parses the whole function before running it, including when the
+    # release entrypoint is read from curl through process substitution.
+    script = (
+        "#!/usr/bin/env bash\nset -euo pipefail\n\n"
+        "# Read the complete entrypoint before starting downloads or installation.\n"
+        "install_release() {\n" + indent(body, "  ")
+        + '}\n\ninstall_release "$@"\n'
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent)
     temporary = Path(temporary_name)

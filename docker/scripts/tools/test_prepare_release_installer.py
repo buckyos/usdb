@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
@@ -35,9 +36,9 @@ class PrepareReleaseInstallerTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_builds_executable_release_bound_installer(self) -> None:
+    def build(self) -> Path:
         output = self.root / f"install-{RELEASE_ID}.sh"
-        result = BUILDER.build_release_installer(
+        return BUILDER.build_release_installer(
             release_id=RELEASE_ID,
             repository="buckyos/usdb",
             installer_path=self.installer,
@@ -46,6 +47,10 @@ class PrepareReleaseInstallerTests(unittest.TestCase):
             output_path=output,
             release_base_url=self.root.as_uri(),
         )
+
+    def test_builds_executable_release_bound_installer(self) -> None:
+        output = self.root / f"install-{RELEASE_ID}.sh"
+        result = self.build()
         self.assertEqual(result, output.resolve())
         content = output.read_text(encoding="utf-8")
         self.assertIn(f"release_id={RELEASE_ID}", content)
@@ -71,6 +76,30 @@ class PrepareReleaseInstallerTests(unittest.TestCase):
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("Installer SHA-256 mismatch", rejected.stderr)
         self.assertNotIn("UNVERIFIED-INSTALLER-RAN", rejected.stdout)
+
+    def test_compact_curl_entrypoint_preserves_arguments_and_progress(self) -> None:
+        output = self.build()
+        completed = subprocess.run(
+            ["bash", "-c", 'bash <(curl -fL "$1") --install-root "$2"',
+             "installer-test", output.as_uri(), str(self.root / "install path")],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--install-root " + str(self.root / "install path"), completed.stdout)
+        self.assertIn("--release-id " + RELEASE_ID, completed.stdout)
+        self.assertIn("Installer verified", completed.stderr)
+
+    def test_truncated_entrypoint_does_not_begin_internal_downloads(self) -> None:
+        content = self.build().read_text()
+        truncated = content.rsplit('\n}\n\ninstall_release "$@"', 1)[0]
+        result = subprocess.run(
+            ["bash"], input=truncated, capture_output=True, text=True, check=False,
+            env={**os.environ, "TMPDIR": str(self.root)}, timeout=10,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("Preparing " + RELEASE_ID, result.stderr)
+        self.assertNotIn("installer:", result.stdout)
+        self.assertEqual(list(self.root.glob(".usdb-release-installer.*")), [])
 
     def test_rejects_wrong_node_kit_name_and_existing_output(self) -> None:
         with self.assertRaisesRegex(ValueError, "node kit must be named"):

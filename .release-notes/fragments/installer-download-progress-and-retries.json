@@ -6,9 +6,9 @@
   "summary": "Show installer download progress and installation stages with bounded transient retries",
   "details": [
     "Release-bound and generic installers announce each download and show curl transfer bytes, speed and timing on stderr, including while waiting for a response. Failures identify the asset, curl exit code and elapsed time.",
-    "Downloads use a 20-second connection timeout, a 60-second low-speed timeout below one byte per second, and at most three retries for curl-classified transient failures and refused connections.",
+    "Downloads performed inside the installers use a 20-second connection timeout, a 60-second low-speed timeout below one byte per second, and at most three retries for curl-classified transient failures and refused connections.",
     "The generic installer verifies the manifest before downloading the node kit, then reports checksum verification, safe archive extraction and installation as explicit stages. Release-bound hashes and immutable installation checks remain required.",
-    "New release instructions download the bootstrap script to a file and execute it only after curl succeeds. Existing published release assets remain unchanged, so changing only the outer command does not enable internal progress for older installers."
+    "Release instructions keep a compact bash process-substitution command with visible outer curl progress. The release-bound entrypoint encapsulates internal download options and parses its complete installation function before invoking it. Existing published release assets remain unchanged, so changing only the outer command does not enable internal progress for older installers."
   ],
   "operator_actions": [],
   "compatibility": {
