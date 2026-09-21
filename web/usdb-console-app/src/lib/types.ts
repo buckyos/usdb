@@ -26,7 +26,7 @@ export interface MonitorSnapshot {
     network?: { name?: string; chain_id?: string | number; genesis_hash?: string; bitcoin_network?: string }
     node_identity?: { configured_miner_address?: string }
     host_resources?: HostResources
-    controller?: { state?: string }
+    controller?: { state?: string; runtime_state?: string }
     resources?: { mode?: string; phase?: string; transition_pending?: boolean; configured_limits_bytes?: Record<string, number>; host_memory_bytes?: number }
     mining?: { state?: string }
     minting?: {
@@ -37,6 +37,7 @@ export interface MonitorSnapshot {
     }
     components: Array<{
       id: string; label?: string; state: string; display_state?: string; progress_phase?: string
+      observation_unavailable?: boolean
       current?: number; total?: number; progress_percent?: number; unit?: string
       file_preparation?: { state?: string }
       background_validation?: { height?: number; target?: number; validated?: boolean; available?: boolean }

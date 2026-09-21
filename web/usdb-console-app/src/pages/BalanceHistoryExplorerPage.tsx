@@ -1,3 +1,4 @@
+import { monitorValue } from '../lib/monitoring'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   fetchBalanceHistoryBatchBalances,
@@ -269,7 +270,7 @@ export function BalanceHistoryExplorerPage({
               },
               {
                 label: t('fields.phase'),
-                value: displayText(syncStatus?.phase ?? summary?.phase, t),
+                value: monitorValue('phases', syncStatus?.phase ?? summary?.phase, t),
                 helpText: t('help.fields.phase'),
               },
               {

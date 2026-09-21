@@ -3,17 +3,11 @@ import { MintingBackend } from './MintingBackend'
 import { HostResources } from './HostResources'
 import { useI18n } from '../i18n/provider'
 import type { MonitorSnapshot } from '../lib/types'
-
-const labels: Record<string, [string, string]> = {
-  snapshot: ['UTXO snapshot preparation', 'UTXO 快照准备'], bitcoin: ['Bitcoin foreground', 'Bitcoin 前台同步'],
-  balance_history: ['Balance history', '余额历史'], usdb_indexer: ['USDB indexer', 'USDB 索引'],
-  usdb_chain: ['USDB chain', 'USDB 链'], control_plane: ['Private console', '私有控制台'],
-  script_registry: ['Script registry', '脚本注册表'], images: ['Runtime images', '运行镜像'],
-}
+import { componentTitle, monitorValue, progressCounter, serviceTitle } from '../lib/monitoring'
 
 /** The host's readiness model is authoritative; RPC connectivity is shown separately. */
 export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
-  const { locale } = useI18n()
+  const { locale, t } = useI18n()
   const zh = locale === 'zh-CN'
   const report = snapshot?.report
   const [age, setAge] = useState(snapshot?.age_ms ?? 0)
@@ -26,12 +20,14 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
   const fresh = snapshot?.status === 'available' && age <= 120000
   const show = (value: unknown) => value === undefined || value === null ? '—' : String(value)
   const freshness = snapshot?.status === 'available' && !fresh ? 'stale' : snapshot?.status ?? 'loading'
-  const statusNames: Record<string, string> = zh ? { available: '采集正常', missing: '监控进程未启用', stale: '数据已过期', unavailable: '采集不可用', invalid: '状态文件无效', loading: '正在读取' } : {}
+  const statusNames: Record<string, string> = zh
+    ? { available: '采集正常', missing: '暂无监控数据', stale: '观测已过期', unavailable: '无法获取观测', invalid: '观测文件无效', loading: '正在读取' }
+    : { available: 'Observation available', missing: 'No monitoring data', stale: 'Observation expired', unavailable: 'Observation unavailable', invalid: 'Invalid observation file', loading: 'Loading' }
   return (
     <section className="console-card grid gap-5" aria-label={zh ? '节点监控' : 'Node monitoring'}>
       <div className="flex flex-wrap justify-between gap-3">
         <h2 className="text-xl font-semibold">{zh ? '节点监控' : 'Node monitoring'}</h2>
-        <strong role="status">{statusNames[freshness] ?? freshness} · {fresh ? show(report?.overall_state) : (zh ? '当前状态未知' : 'Current state unknown')}</strong>
+        <strong role="status">{statusNames[freshness] ?? freshness} · {fresh ? monitorValue('states', report?.overall_state, t) : (zh ? '当前状态未知' : 'Current state unknown')}</strong>
       </div>
       <p className="text-sm">{zh ? '采集时间' : 'Observed'}: {report?.observed_at_ms ? new Date(report.observed_at_ms).toLocaleString(locale) : '—'}</p>
       {!fresh && <div role="alert" className="grid gap-2 text-sm">
@@ -42,33 +38,45 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
       {report && <>
         <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
           {[
-            [zh ? '网络 / 角色' : 'Network / role', `${show(report.network?.name)} / ${show(report.node_role)}`],
-            ['Chain ID', show(report.network?.chain_id)],
+            [zh ? '网络 / 节点角色' : 'Network / node role', `${show(report.network?.name)} / ${monitorValue('roles', report.node_role, t)}`],
+            [t('fields.chainId'), show(report.network?.chain_id)],
             [zh ? '版本' : 'Release', show(report.release_id)],
-            [zh ? '启动控制器' : 'Bootstrap controller', show(report.controller?.state)],
-            [zh ? '资源阶段' : 'Resource phase', `${show(report.resources?.mode)} / ${show(report.resources?.phase)}`],
+            [zh ? '后台启动任务' : 'Bootstrap controller', monitorValue('controllers', report.controller?.runtime_state ?? report.controller?.state, t)],
+            [zh ? '资源分配' : 'Resource allocation', `${monitorValue('resourceModes', report.resources?.mode, t)} / ${monitorValue('resourcePhases', report.resources?.phase, t)}`],
             [zh ? '资源切换' : 'Resource transition', report.resources?.transition_pending == null ? '—' : report.resources.transition_pending ? (zh ? '进行中' : 'Pending') : (zh ? '无待切换' : 'No pending transition')],
-            [zh ? '挖矿状态' : 'Mining', show(report.mining?.state)],
+            [zh ? '挖矿状态' : 'Mining', monitorValue('states', report.mining?.state, t)],
           ].map(([label, value]) => <div key={label}><dt className="text-[color:var(--cp-muted)]">{label}</dt><dd className="mt-1 break-all">{value}</dd></div>)}
         </dl>
-        <p className="break-all text-xs">Genesis: {show(report.network?.genesis_hash)}</p>
+        <p className="break-all text-xs">{zh ? '创世区块哈希' : 'Genesis block hash'}: {show(report.network?.genesis_hash)}</p>
         {report.resources?.configured_limits_bytes && <details className="text-sm">
           <summary>{zh ? '容器内存上限（配置值，并非实时占用）' : 'Container memory ceilings (configured, not live usage)'}</summary>
-          <dl className="mt-3 grid gap-2 sm:grid-cols-2">{Object.entries(report.resources.configured_limits_bytes).map(([name, bytes]) => <div key={name}><dt>{name}</dt><dd>{(bytes / 1024 ** 3).toFixed(2)} GiB</dd></div>)}</dl>
+          <dl className="mt-3 grid gap-2 sm:grid-cols-2">{Object.entries(report.resources.configured_limits_bytes).map(([name, bytes]) => <div key={name}><dt title={name}>{serviceTitle(name, t)}</dt><dd>{(bytes / 1024 ** 3).toFixed(2)} GiB</dd></div>)}</dl>
         </details>}
         <div className="grid gap-4 lg:grid-cols-2">
-          {report.components?.map(component => <article key={component.id} className="rounded border border-[color:var(--cp-border)] p-4">
-            <div className="flex justify-between gap-2"><h3>{labels[component.id]?.[zh ? 1 : 0] ?? component.label ?? component.id}</h3><strong>{fresh ? (component.display_state ?? component.state) : 'STALE'}</strong></div>
-            <p className="mt-2 text-sm">{show(component.progress_phase)}</p>
-            {component.current != null && <p className="mt-2">{component.current.toLocaleString(locale)} / {component.total?.toLocaleString(locale) ?? '—'} {component.unit}</p>}
-            {component.progress_percent != null && <progress className="mt-2 w-full" aria-label={component.id} value={component.progress_percent} max={100} />}
-            {component.file_preparation?.state && <p className="mt-2 text-sm">{zh ? '快照文件' : 'Snapshot file'}: {component.file_preparation.state === 'VERIFIED' ? (zh ? '下载及 SHA-256 校验完成' : 'Download and SHA-256 verification complete') : (zh ? '下载完成，正在校验' : 'Downloaded; verification in progress')}</p>}
+          {report.components?.map(component => {
+            const title = componentTitle(component.id, t, component.label)
+            const state = component.display_state ?? component.state
+            const current = fresh && !component.observation_unavailable && !['STALE', 'UNAVAILABLE'].includes(state)
+            const displayedState = !fresh ? 'STALE' : component.observation_unavailable && state !== 'STALE' ? 'UNAVAILABLE' : state
+            return <article key={component.id} className="min-w-0 rounded border border-[color:var(--cp-border)] p-4" aria-label={title}>
+            <div className="flex flex-wrap justify-between gap-2"><h3 className="font-medium">{title}</h3><strong title={displayedState} className="status-pill" data-tone={!current ? 'neutral' : ['FAILED', 'BLOCKED'].includes(state) ? 'danger' : state === 'READY' ? 'success' : 'neutral'}>{monitorValue('states', displayedState, t)}</strong></div>
+            {!current && <p className="mt-2 text-xs text-[color:var(--cp-muted)]">{t('monitor.historical')}</p>}
+            {component.progress_phase && <p className="mt-2 text-sm">{t(current ? 'monitor.phase' : 'monitor.lastPhase')}{zh ? '：' : ': '}{monitorValue('phases', component.progress_phase, t)}</p>}
+            {component.current != null && <p className="mt-2 break-words">{progressCounter(component.current, component.total, component.unit, locale, t)}</p>}
+            {component.progress_percent != null && <progress className="monitor-progress mt-2 w-full" data-current={current} aria-label={`${title} ${t('monitor.progress')}`} value={component.progress_percent} max={100} />}
+            {component.state === 'SKIPPED' && <p className="mt-2 text-sm">{t('monitor.skipped')}</p>}
+            {component.file_preparation?.state && <p className="mt-2 text-sm">{zh ? '快照文件' : 'Snapshot file'}: {monitorValue('snapshotFile', component.file_preparation.state, t)}</p>}
             {component.background_validation?.target != null && <div className="mt-3 border-t border-[color:var(--cp-border)] pt-3 text-sm">
-              <p>{zh ? 'Bitcoin 后台历史校验（不阻塞前台就绪）' : 'Bitcoin background validation (independent of foreground readiness)'}</p>
-              <p>{component.background_validation.available ? `${show(component.background_validation.height)} / ${show(component.background_validation.target)}` : (zh ? '暂无观测' : 'Unavailable')} · {component.background_validation.validated ? (zh ? '已校验' : 'Validated') : (zh ? '尚未确认完成' : 'Completion not confirmed')}</p>
+              <p>{t('monitor.history')}</p>
+              <p>{component.background_validation.available && component.background_validation.validated
+                ? t('monitor.historyDone', '', { height: component.background_validation.target.toLocaleString(locale) })
+                : component.background_validation.available
+                  ? `${t('monitor.historyHeight')}：${component.background_validation.height?.toLocaleString(locale) ?? '—'} / ${component.background_validation.target.toLocaleString(locale)} · ${t('monitor.historyPending')}`
+                  : (zh ? '暂无观测' : 'No observation')}</p>
+              <p className="mt-1 text-xs text-[color:var(--cp-muted)]">{t('monitor.historyHint')}</p>
             </div>}
             {['FAILED', 'BLOCKED'].includes(component.state) && <p className="mt-2 text-sm">{zh ? '请在节点查看 status、doctor 和对应服务日志。' : 'Inspect node status, doctor, and the corresponding service logs.'}</p>}
-          </article>)}
+          </article>})}
         </div>
       </>}
       <HostResources data={report?.host_resources} fresh={fresh} ageMs={age} observedAt={report?.observed_at_ms} />

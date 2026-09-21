@@ -3,11 +3,11 @@ import type { MonitorSnapshot } from './types'
 import type { Tone } from './console'
 
 const states: Record<string, [string, string]> = {
-  DISABLED: ['未启用', 'Disabled'], WAITING_CORE: ['等待 Bitcoin 前台追平', 'Waiting for Bitcoin foreground'],
-  WAITING_HISTORY: ['等待 Bitcoin 历史校验', 'Waiting for historical validation'],
+  DISABLED: ['未启用', 'Disabled'], WAITING_CORE: ['等待 Bitcoin 最新区块同步', 'Waiting for latest Bitcoin blocks'],
+  WAITING_HISTORY: ['等待 Bitcoin 历史区块验证', 'Waiting for historical validation'],
   WAITING_TXINDEX: ['等待交易索引追平', 'Waiting for txindex'], BLOCKED_DISK: ['磁盘余量不足，Ord 已暂停', 'Ord paused: low disk space'],
   BLOCKED_CONFIG: ['Bitcoin 配置不兼容', 'Incompatible Bitcoin configuration'],
-  STARTING: ['Ord 启动中', 'Ord starting'], INDEXING: ['Ord 索引／规范链校验中', 'Ord indexing / checking canonical chain'],
+  STARTING: ['Ord 启动中', 'Ord starting'], INDEXING: ['Ord 索引及主链一致性校验中', 'Ord indexing / checking canonical chain'],
   READY: ['索引后端已就绪', 'Index backend ready'], UNAVAILABLE: ['当前状态未知', 'Current state unknown'],
   FAILED: ['Ord 运行失败', 'Ord failed'], STOPPED: ['Ord 已停止', 'Ord stopped'],
 }

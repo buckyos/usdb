@@ -276,3 +276,14 @@ body {
   line-height: 1.7;
   color: var(--cp-text);
 }
+
+/* Expired progress is a historical observation, not a live success indicator. */
+.monitor-progress[data-current='false'] {
+  accent-color: var(--cp-muted);
+}
+.monitor-progress[data-current='false']::-webkit-progress-value {
+  background-color: var(--cp-muted);
+}
+.monitor-progress[data-current='false']::-moz-progress-bar {
+  background-color: var(--cp-muted);
+}

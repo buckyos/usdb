@@ -1,3 +1,4 @@
+import { monitorValue, serviceTitle } from '../lib/monitoring'
 import { NodeMonitor } from '../components/NodeMonitor'
 import { BootstrapSteps } from '../components/BootstrapSteps'
 import { MetricCard } from '../components/MetricCard'
@@ -111,7 +112,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
 
         <div className="grid gap-4 lg:grid-cols-2">
           <ServiceSummaryCard
-            title="btc-node"
+            title={serviceTitle('btc-node', t)}
             status={data ? serviceLabel(data.services.btc_node, t) : '-'}
             tone={data ? serviceTone(data.services.btc_node) : 'neutral'}
             items={[
@@ -148,7 +149,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
             ]}
           />
           <ServiceSummaryCard
-            title="balance-history"
+            title={serviceTitle('balance-history', t)}
             status={data ? serviceLabel(data.services.balance_history, t) : '-'}
             tone={data ? serviceTone(data.services.balance_history) : 'neutral'}
             items={[
@@ -159,7 +160,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
               },
               {
                 label: t('fields.phase'),
-                value: displayText(data?.services.balance_history.data?.phase, t),
+                value: monitorValue('phases', data?.services.balance_history.data?.phase, t),
                 helpText: t('help.fields.phase', ''),
               },
               {
@@ -185,7 +186,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
             ]}
           />
           <ServiceSummaryCard
-            title="usdb-indexer"
+            title={serviceTitle('usdb-indexer', t)}
             status={data ? serviceLabel(data.services.usdb_indexer, t) : '-'}
             tone={data ? serviceTone(data.services.usdb_indexer) : 'neutral'}
             items={[
@@ -224,7 +225,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
             ]}
           />
           <ServiceSummaryCard
-            title="USDB Chain / Geth"
+            title={serviceTitle('usdb-chain', t)}
             status={data ? serviceLabel(data.services.usdb_chain, t) : '-'}
             tone={data ? serviceTone(data.services.usdb_chain) : 'neutral'}
             items={[
@@ -273,7 +274,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
             ]}
           />
           {data?.development_enabled && <ServiceSummaryCard
-            title="ord"
+            title={serviceTitle('ord', t)}
             status={data ? serviceLabel(data.services.ord, t) : '-'}
             tone={data ? serviceTone(data.services.ord) : 'neutral'}
             items={[

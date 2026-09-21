@@ -25,18 +25,18 @@ def main():
             expect(page.get_by_role("heading", name="节点监控")).to_be_visible(timeout=15000)
             expect(page.get_by_role("status").first).to_contain_text("采集正常")
             expect(page.get_by_text("下载及 SHA-256 校验完成", exact=False)).to_be_visible()
-            expect(page.get_by_text("Bitcoin 后台历史校验（不阻塞前台就绪）")).to_be_visible()
+            expect(page.get_by_text("Bitcoin 历史区块验证")).to_be_visible()
             assert token not in page.evaluate("JSON.stringify(localStorage) + JSON.stringify(sessionStorage) + document.cookie")
             assert all(cookie["httpOnly"] and cookie["sameSite"] == "Strict" for cookie in context.cookies())
-            panel = page.get_by_role("region", name="本机铸造后端", exact=True)
+            panel = page.get_by_role("region", name="矿工证铸造依赖", exact=True)
             snapshot.unlink()
             page.reload()
-            expect(page.get_by_role("status").first).to_contain_text("监控进程未启用", timeout=15000)
+            expect(page.get_by_role("status").first).to_contain_text("暂无监控数据", timeout=15000)
             expect(panel.get_by_role("alert")).to_contain_text("不能据此判断 Ord 离线")
             # Release mode has one authoritative Ord panel, not a contradictory HTTP-only card.
             expect(page.get_by_role("heading", name="ord", exact=True)).to_have_count(0)
-            for stage, label in [("DISABLED", "未启用"), ("WAITING_HISTORY", "等待 Bitcoin 历史校验"),
-                                 ("WAITING_TXINDEX", "等待交易索引追平"), ("INDEXING", "Ord 索引／规范链校验中"),
+            for stage, label in [("DISABLED", "未启用"), ("WAITING_HISTORY", "等待 Bitcoin 历史区块验证"),
+                                 ("WAITING_TXINDEX", "等待交易索引追平"), ("INDEXING", "Ord 索引及主链一致性校验中"),
                                  ("FAILED", "Ord 运行失败"), ("READY", "索引后端已就绪")]:
                 report["observed_at_ms"] = int(time.time() * 1000)
                 report["minting"] = dict(enabled=stage != "DISABLED", state=stage,
@@ -54,7 +54,7 @@ def main():
                     expect(panel).to_contain_text("Ord 本体及 HTTP 服务尚未启动")
                     page.goto(origin + "/?lang=zh-CN#/services/ord")
                     expect(panel.get_by_role("status")).to_have_text(label, timeout=15000)
-                    expect(page.get_by_role("link", name=re.compile(r"^ord")).get_by_text(label, exact=True)).to_be_visible()
+                    expect(page.get_by_role("link", name=re.compile(r"^Ord 铭文索引")).get_by_text(label, exact=True)).to_be_visible()
                     page.set_viewport_size(dict(width=390, height=844))
                     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "Ord service layout overflow"
                     page.screenshot(path="/tmp/usdb-console-ord-waiting-mobile.png", full_page=True)
@@ -71,7 +71,7 @@ def main():
             report["observed_at_ms"] -= 130000
             snapshot.write_text(json.dumps(report))
             page.reload()
-            expect(page.get_by_role("status").first).to_contain_text("数据已过期", timeout=15000)
+            expect(page.get_by_role("status").first).to_contain_text("观测已过期", timeout=15000)
             expect(page.get_by_role("status").first).to_contain_text("当前状态未知")
             page.set_viewport_size(dict(width=390, height=844))
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "Mobile layout overflow"

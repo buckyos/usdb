@@ -1,5 +1,6 @@
 import { useI18n } from '../i18n/provider'
 import type { HostResources as ResourceSnapshot } from '../lib/types'
+import { serviceTitle } from '../lib/monitoring'
 
 /** Binary units match host tools; missing observations never become zero usage. */
 function bytes(value?: number | null) {
@@ -13,7 +14,7 @@ function bytes(value?: number | null) {
 export function HostResources({ data, fresh, ageMs, observedAt }: {
   data?: ResourceSnapshot; fresh: boolean; ageMs: number; observedAt?: number
 }) {
-  const { locale } = useI18n()
+  const { locale, t } = useI18n()
   const zh = locale === 'zh-CN'
   const text = (cn: string, en: string) => zh ? cn : en
   const time = (value?: number) => value == null ? '—' : new Date(value).toLocaleString(locale)
@@ -47,7 +48,7 @@ export function HostResources({ data, fresh, ageMs, observedAt }: {
         {data.containers?.status !== 'available' ? <p>{text('容器采样失败，请检查 Docker 及节点账号权限。', 'Container sampling failed; check Docker and the node account permissions.')}</p> : <div className="overflow-x-auto">
           <table className="w-full text-left"><thead><tr>{[text('服务', 'Service'), text('状态', 'Status'), 'CPU', text('内存使用 / 运行上限', 'Memory / runtime limit')].map(label => <th className="p-2" key={label}>{label}</th>)}</tr></thead>
             <tbody>{data.containers.items.map((item, index) => <tr className="border-t" key={`${item.service}-${index}`}>
-              <td className="p-2">{item.service}</td><td className="p-2">{status(item.status)}</td><td className="p-2">{percentage(item.cpu_percent)}</td>
+              <td className="p-2">{serviceTitle(item.service, t)}<span className="block text-xs text-[color:var(--cp-muted)]">{item.service}</span></td><td className="p-2">{status(item.status)}</td><td className="p-2">{percentage(item.cpu_percent)}</td>
               <td className="p-2 whitespace-nowrap">{bytes(item.memory_used_bytes)} / {bytes(item.memory_limit_bytes)}</td>
             </tr>)}</tbody></table>
           {!data.containers.items.length && <p>{text('没有发现本节点的容器。', 'No containers found for this node.')}</p>}
@@ -67,7 +68,7 @@ export function HostResources({ data, fresh, ageMs, observedAt }: {
       <p className="text-xs text-[color:var(--cp-muted)]">{text('同一文件系统只展示一次，包含同盘其他应用占用。低于 10% 或 100 GiB 提醒；低于 5% 或 50 GiB 标红，仅作容量提示。', 'Each filesystem appears once, including space used by other applications. Warn below 10% or 100 GiB; critical below 5% or 50 GiB. Advisory only.')}</p>
       <div className="grid gap-3"><h4 className="font-semibold">{text('关键数据目录', 'Service data directories')}</h4>
         {data.directories?.map(item => <article key={item.service} className="rounded border border-[color:var(--cp-border)] p-3 text-sm">
-          <div className="flex flex-wrap justify-between gap-2"><strong>{item.service}</strong><span>{bytes(item.used_bytes)} · {status(item.status)}{item.used_bytes != null && (!recent(item.observed_at_ms, 600000) || item.status !== 'available') ? text('（上次成功统计）', ' (last successful scan)') : ''}</span></div>
+          <div className="flex flex-wrap justify-between gap-2"><strong title={item.service}>{serviceTitle(item.service, t)}</strong><span>{bytes(item.used_bytes)} · {status(item.status)}{item.used_bytes != null && (!recent(item.observed_at_ms, 600000) || item.status !== 'available') ? text('（上次成功统计）', ' (last successful scan)') : ''}</span></div>
           <p className="mt-2 break-all font-mono text-xs">{item.path ?? '—'}</p>
           <p className="mt-2 text-xs">{text('大小统计时间', 'Size observed')}: {time(item.observed_at_ms)}{item.filesystem_status === 'unavailable' && ` · ${text('磁盘容量无法读取', 'Filesystem capacity unavailable')}`}</p>
         </article>)}

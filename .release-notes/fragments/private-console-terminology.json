@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "private-console-terminology",
+  "type": "changed",
+  "scopes": ["node-runtime"],
+  "summary": "Use consistent service names and localized monitoring terms in the private console",
+  "details": [
+    "Overview, service details and resource panels share service names that describe their role, including the Bitcoin historical balance index, USDB protocol index and Ord inscription index. Technical service identifiers remain available for troubleshooting.",
+    "Chinese monitoring views translate readiness, processing phases, node roles and resource phases. Block counters distinguish the observed height from a synchronization target, and snapshot byte counters use binary size units. Unknown state codes remain visible without being classified as ready.",
+    "Stale component observations retain their last known phase and counters with explicit historical labels and neutral progress bars. A completed Bitcoin background validation no longer appears as an unexplained missing current height. These presentation changes do not alter RPC fields, service readiness or synchronization policy."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

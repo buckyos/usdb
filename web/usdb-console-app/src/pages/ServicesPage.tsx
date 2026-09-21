@@ -1,3 +1,4 @@
+import { monitorValue, serviceTitle } from '../lib/monitoring'
 import { mintingLabel, mintingTone, useMintingObservation } from '../lib/minting'
 import { MintingBackend } from '../components/MintingBackend'
 import { NavLink, useParams } from 'react-router-dom'
@@ -139,7 +140,7 @@ function renderBalanceHistoryDetails(
         },
         {
           label: t('fields.phase'),
-          value: displayText(data?.phase, t),
+          value: monitorValue('phases', data?.phase, t),
           helpText: t('help.fields.phase'),
         },
         {
@@ -442,7 +443,7 @@ function getServiceSummaryLine(
     case 'balance-history':
       return t('services.workspace.balanceHistorySummary', undefined, {
         height: displayNumber(locale, data.services.balance_history.data?.stable_height ?? null, t),
-        phase: displayText(data.services.balance_history.data?.phase, t),
+        phase: monitorValue('phases', data.services.balance_history.data?.phase, t),
       })
     case 'usdb-indexer':
       return t('services.workspace.usdbIndexerSummary', undefined, {
@@ -478,31 +479,31 @@ function getServiceMeta(serviceId: ServiceId, t: Translate) {
   switch (serviceId) {
     case 'btc-node':
       return {
-        title: 'btc-node',
+        title: serviceTitle(serviceId, t),
         headline: t('services.workspace.btcTitle'),
         body: t('services.workspace.btcBody'),
       }
     case 'balance-history':
       return {
-        title: 'balance-history',
+        title: serviceTitle(serviceId, t),
         headline: t('services.balanceHistory.title'),
         body: t('services.balanceHistory.subtitle'),
       }
     case 'usdb-indexer':
       return {
-        title: 'usdb-indexer',
+        title: serviceTitle(serviceId, t),
         headline: t('services.usdbIndexer.title'),
         body: t('services.usdbIndexer.subtitle'),
       }
     case 'usdb-chain':
       return {
-        title: 'USDB Chain / Geth',
+        title: serviceTitle(serviceId, t),
         headline: t('services.workspace.usdbTitle'),
         body: t('services.workspace.usdbBody'),
       }
     case 'ord':
       return {
-        title: 'ord',
+        title: serviceTitle(serviceId, t),
         headline: t('services.workspace.ordTitle'),
         body: t('services.workspace.ordBody'),
       }
@@ -667,8 +668,9 @@ export function ServicesPage({ data, locale, t }: ServicesPageProps) {
                       <strong className="block text-sm font-semibold text-[color:var(--cp-text)]">
                         {serviceMeta.title}
                       </strong>
+                      <span className="block text-xs text-[color:var(--cp-muted)]">{serviceId}</span>
                       <p className="mt-2 break-words text-sm leading-6 text-[color:var(--cp-muted)]">
-                        {optional ? (locale === 'zh-CN' ? '本机可选铸造后端，不影响节点同步和挖矿' : 'Optional local backend; independent of node sync and mining') : getServiceSummaryLine(serviceId, data, locale, t)}
+                        {optional ? (locale === 'zh-CN' ? '矿工证铸造的可选依赖，不影响节点同步和挖矿' : 'Optional minting dependency; independent of node sync and mining') : getServiceSummaryLine(serviceId, data, locale, t)}
                       </p>
                     </div>
                     <span className="status-pill shrink-0" data-tone={tone}>
