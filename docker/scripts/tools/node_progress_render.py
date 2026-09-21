@@ -119,15 +119,28 @@ def _component_row(component: dict[str, Any], *, details: bool) -> _Row:
         start = component.get("sync_start_height")
         prefix = f"Blocks from {start} | " if type(start) is int else ""
         row.info.append(f"{prefix}Genesis {milestone['height']}: {milestone['state']}")
-        lag = component.get("stable_lag_blocks")
-        if type(lag) is int:
-            row.info.append(f"Target: Bitcoin tip minus {lag} confirmation blocks")
         if component.get("sync_max_height") is not None:
             row.info.append(f"Configured maximum target: {component['sync_max_height']}")
         if milestone.get("remaining_blocks"):
             row.info.append(f"To genesis: {milestone['remaining_blocks']} blocks")
         if component.get("sync_target_source") == "last_observed_bitcoin_headers":
             row.info.append("Using last observed Bitcoin headers; current Core RPC unavailable")
+    target_source = component.get("sync_target_source")
+    target_label = "Target (last observed)" if stale else "Target"
+    target_value = f" = {total}" if _height(total) else ""
+    if component["id"] == "balance_history" and type(component.get("stable_lag_blocks")) is int:
+        source_label = {
+            "balance_history_rpc": "balance-history reported sync target",
+            "unavailable": "unavailable",
+        }.get(target_source)
+        if source_label is None:
+            headers = "last observed Bitcoin headers" if target_source == "last_observed_bitcoin_headers" else "Bitcoin headers"
+            source_label = f"{headers} minus {component['stable_lag_blocks']} confirmation blocks"
+        if component.get("sync_max_height") is not None:
+            source_label += f", capped at {component['sync_max_height']}"
+        row.info.append(f"{target_label}: {source_label}{target_value}")
+    elif component["id"] == "usdb_indexer" and target_source == "balance_history_stable_height":
+        row.info.append(f"{target_label}: balance-history available stable height{target_value}")
     if component["id"] == "images":
         row.info += [f"Stage elapsed={duration_text(component['stage_elapsed_secs'])} | ETA=-- (not estimated)",
                      "Layer progress: usdb-node controller logs --follow"]
@@ -306,7 +319,9 @@ def render_node_progress(report: dict[str, Any], *, phase: str = "observe", widt
             if row.percent is not None:
                 bar_width = 20
                 filled = int(row.percent * bar_width / 100)
-                bar = f"[{'#' * filled}{'-' * (bar_width - filled)}] {row.percent:.2f}%"
+                # Rounding must not turn an unfinished height or byte range into 100%.
+                displayed_percent = min(row.percent, 99.99) if row.percent < 100 else row.percent
+                bar = f"[{'#' * filled}{'-' * (bar_width - filled)}] {displayed_percent:.2f}%"
                 if len(body) + len(prefix) + len(bar) + 1 <= width:
                     body += " " + bar
                 else:

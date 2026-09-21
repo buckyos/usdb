@@ -18,6 +18,25 @@ from common.node_progress import ready_miner_progress
 
 
 class ProgressDisplayTests(unittest.TestCase):
+    def test_unfinished_progress_never_rounds_up_to_one_hundred_percent(self):
+        for component_id, current, total in (("bitcoin", 967960, 967961),
+                                             ("balance_history", 967950, 967951),
+                                             ("usdb_indexer", 967950, 967951),
+                                             ("snapshot", 99999999, 100000000)):
+            component = NODE._component_progress(component_id, "SYNCING", "catching up", current=current, total=total)
+            report = dict(components=[component], overall_state="SYNCING")
+            original = copy.deepcopy(report)
+            for details in (False, True):
+                for width in (40, 120):
+                    with self.subTest(component=component_id, details=details, width=width):
+                        rendered = render_node_progress(report, details=details, width=width)
+                        self.assertIn("99.99%", rendered)
+                        self.assertNotIn("100.00%", rendered)
+            self.assertEqual(report, original)
+        # Completed counters may still await a separate verification/readiness check.
+        component = NODE._component_progress("snapshot", "VERIFYING", "finishing checks", current=100, total=100)
+        self.assertIn("100.00%", render_node_progress(dict(components=[component])))
+
     def test_ready_miner_with_optional_indexing_has_separate_action_and_work_groups(self):
         report = ready_miner_progress()
         original = copy.deepcopy(report)

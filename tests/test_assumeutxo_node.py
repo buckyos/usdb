@@ -193,6 +193,72 @@ class NativeBundleTests(unittest.TestCase):
                     self.assertNotIn("display_state", bitcoin)
                     self.assertEqual(report["overall_state"], "FAILED")
 
+    def test_chain_wait_explains_foreground_gap_even_when_both_data_services_are_ready(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        services = {name: dict(state="running") for name in ("btc-node", "balance-history", "usdb-indexer")}
+        services["btc-snapshot-bootstrap"] = dict(state="exited", exit_code=0)
+        core = dict(bootstrap_ready=True, tip_ready=False, active_height=967953, headers=967961,
+                    history_validated=False, background_height=716203)
+        bh = dict(consensus_ready=True, query_ready=True, phase="Indexing", stable_height=967943, current=967943, total=967943)
+        indexer = dict(consensus_ready=True, synced_block_height=967943, balance_history_stable_height=967943)
+        with mock.patch.object(node, "_collect_compose_services", return_value=services), \
+             mock.patch.object(native, "core_progress", return_value=core), \
+             mock.patch.object(node, "_read_service_readiness", side_effect=lambda *args: (bh if args[-1] == "balance-history" else indexer, None)) as readiness, \
+             mock.patch("usdb_peers.read_state", return_value=None), \
+             mock.patch.object(node, "_resource_progress", return_value=({}, False)) as resources:
+            report = native.collect_native_progress(layout, controller_state="active")
+            self.assertEqual(readiness.call_count, 2)
+            components = {item["id"]: item for item in report["components"]}
+            self.assertEqual(components["usdb_chain"]["detail"],
+                             "Waiting for Bitcoin foreground: 8 blocks remaining (967953/967961)")
+            self.assertEqual(components["balance_history"]["state"], "WAITING")
+            self.assertEqual(components["usdb_indexer"]["state"], "READY")
+            self.assertEqual(components["balance_history"]["current"], components["usdb_indexer"]["current"])
+            self.assertEqual(components["balance_history"]["total"], 967951)
+            self.assertEqual(components["usdb_indexer"]["total"], 967943)
+            for details in (False, True):
+                rendered = " ".join(node.render_node_progress(report, details=details).split())
+                self.assertIn("Target: Bitcoin headers minus 10 confirmation blocks = 967951", rendered)
+                self.assertIn("Target: balance-history available stable height = 967943", rendered)
+            # Real chain initialization failures must take precedence over upstream waits.
+            services["usdb-chain-init"] = dict(state="exited", exit_code=1)
+            failed = native.collect_native_progress(layout, controller_state="active")
+            chain = next(item for item in failed["components"] if item["id"] == "usdb_chain")
+            self.assertEqual(chain["state"], "FAILED")
+            self.assertIn("usdb-chain-init", chain["detail"])
+            del services["usdb-chain-init"]
+
+            def managed_restart(_layout, _env, _services, components):
+                chain = next(item for item in components if item["id"] == "usdb_chain")
+                chain.update(state="STARTING", detail="waiting for managed service startup")
+                return {}, True
+
+            resources.side_effect = managed_restart
+            report = native.collect_native_progress(layout, controller_state="active")
+            chain = next(item for item in report["components"] if item["id"] == "usdb_chain")
+            self.assertEqual(chain["state"], "STARTING")
+            self.assertIn("managed service startup; Waiting for Bitcoin foreground: 8 blocks remaining", chain["detail"])
+
+    def test_chain_wait_tracks_raw_readiness_without_gating_on_background_validation(self):
+        core = dict(bootstrap_ready=True, tip_ready=True, active_height=967961, headers=967961, history_validated=False)
+        loader = dict(state="exited", exit_code=0)
+        readiness = {name: (dict(consensus_ready=True), None) for name in ("balance-history", "usdb-indexer")}
+        cases = [
+            ({**core, "error": "RPC timeout", "rpc_available": False}, loader, readiness, "Bitcoin readiness: RPC timeout"),
+            ({**core, "bootstrap_ready": False}, loader, readiness, "snapshot baseline activation"),
+            (core, dict(state="running"), readiness, "snapshot preparation"),
+            ({**core, "tip_ready": False, "active_height": 967960}, loader, readiness, "1 block remaining (967960/967961)"),
+            ({**core, "tip_ready": False}, loader, readiness, "tip freshness and peer connections"),
+            (core, loader, {**readiness, "balance-history": (None, "RPC timeout")}, "balance-history readiness: RPC timeout"),
+            (core, loader, {**readiness, "balance-history": (dict(consensus_ready=False, blockers=["Indexing"]), None)}, "balance-history readiness: Indexing"),
+            (core, loader, {**readiness, "usdb-indexer": (dict(consensus_ready=False, message="backfilling history"), None)}, "usdb-indexer readiness: backfilling history"),
+            (core, loader, readiness, "Upstream ready; waiting for controller"),
+        ]
+        for observed_core, observed_loader, observed_readiness, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, native._chain_wait_detail(observed_core, observed_loader, observed_readiness))
+
     def test_installer_setup_and_doctor_accept_native_release_before_download(self):
         layout = native_kit(self.root)
         assets = self.root / "assets"

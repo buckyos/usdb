@@ -4063,6 +4063,11 @@ def _indexed_service_component(
         total=total_value,
     )
     component["progress_phase"] = phase
+    if component_id == "usdb_indexer" and all(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        for value in (readiness.get("synced_block_height"), readiness.get("balance_history_stable_height"))
+    ):
+        component["sync_target_source"] = "balance_history_stable_height"
     return component
 
 
@@ -4176,7 +4181,7 @@ def _chain_component(
     container_state = _failed_container_component(
         "usdb_chain",
         service,
-        "waiting for the USDB indexer readiness gate",
+        "waiting for upstream readiness checks",
     )
     if container_state is not None:
         return container_state
@@ -4686,6 +4691,8 @@ class NodeProgressHistory:
                         for key in ("current", "total", "progress_percent", "unit"):
                             if cached_component.get(key) is not None:
                                 component[key] = cached_component[key]
+                        if component_id in {"balance_history", "usdb_indexer"} and "sync_target_source" in cached_component:
+                            component["sync_target_source"] = cached_component["sync_target_source"]
                         if component_id == "balance_history" and cached_component.get("genesis_milestone", {}).get("state") == "available":
                             component["genesis_milestone"] = {**cached_component["genesis_milestone"], "state": "last observed available; RPC unavailable"}
                             # Container startup observations omit the native range; keep its

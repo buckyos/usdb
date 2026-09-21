@@ -100,6 +100,29 @@ usdb-node status --progress-json    # 保留完整的机器可读观测字段
 
 Bitcoin 前台可以先就绪，后台历史验证继续进行。**总体可用和后台验证完成分别观察**；不要为了消除后台进度而停止验证。
 
+### 高度和等待条件怎么对应
+
+各组件右侧的目标高度来自不同的上游。包含目标来源提示的版本会在默认面板中显示：
+
+| 组件 | 目标来源 | 示例 |
+| --- | --- | --- |
+| Bitcoin | 已知的 Bitcoin 区块头高度 | `967953 / 967961`：前台还差 8 块 |
+| Balance history | `Target: Bitcoin headers minus 10 confirmation blocks`：区块头高度减去网络要求的确认块数 | `967943 / 967951`：已处理完目前可用的稳定区块，余下部分等待 Bitcoin |
+| USDB indexer | `Target: balance-history available stable height`：BH 当前已提供的稳定高度 | `967943 / 967943`：已追平 BH，可显示 `READY` |
+
+这个例子中，BH 和 indexer 实际都处理到 `967943`，差别在于展示的目标。**Indexer READY 不代表 Bitcoin 已追到最新高度，也不单独放行 chain 启动。**如果 Bitcoin 暂不可查询，目标可能标为上次观测值、BH 自报的同步目标或不可用；手工设置的 BH 同步上限也会注明。尚未达到目标的百分比不会因四舍五入显示成 `100.00%`。
+
+chain 尚未启动时，面板会根据本轮观测显示等待条件。例如：
+
+```text
+USDB chain WAITING
+  Waiting for Bitcoin foreground: 8 blocks remaining (967953/967961)
+```
+
+其他等待条件包括快照准备、Bitcoin RPC、前台就绪检查、BH 或 indexer 就绪。全部上游检查通过后，短暂显示 `Upstream ready; waiting for controller to start USDB chain`；链初始化失败等明确错误仍优先显示。
+
+重启已有节点也会重新检查这些启动条件，随后使用已有 chain 数据继续同步；等待本身不表示历史区块丢失，也无需清数据或重新初始化。Bitcoin 后台历史验证不属于这个前台启动门槛。r33 原始工具会笼统显示 `waiting for the USDB indexer readiness gate`，需安装并切换到包含此提示修复的工具版本后生效。
+
 重启时，包含快照复用优化的版本会查询 Bitcoin 当前基线。如果基线已可用、原始快照文件仍存在且大小匹配，`UTXO snapshot` 会显示 `READY`，详细说明为 `Existing snapshot baseline reused; no file rescan needed`，不再重复扫描整个文件；分组面板用 `--details` 查看这条说明。后台历史验证尚未完成不影响这条复用路径。
 
 首次导入 Bitcoin 前仍需完整校验；原文件缺失时仍会下载并校验，以供尚未完成导入的 balance-history 使用。balance-history 在需要导入时独立核对文件 SHA-256 和 UTXO 状态哈希，已完成导入的数据库则验证持久化状态后继续运行。

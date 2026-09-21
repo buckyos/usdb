@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "native-chain-wait-diagnostics",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Explain native chain startup waits and distinguish upstream sync targets",
+  "details": [
+    "Before the native chain container starts, progress explains the first unmet snapshot, Bitcoin foreground, balance-history or indexer readiness gate using the current observations. Bitcoin catch-up waits include the remaining block count; chain initialization failures retain priority.",
+    "The default and detailed panels label balance-history's target source and the indexer's available upstream stable height, including stale observations and configured height caps. Indexer READY does not imply that Bitcoin has caught up.",
+    "Incomplete progress ranges no longer round up to 100.00 percent in text output. Raw progress precision, consensus readiness, startup gates and persisted node data remain unchanged."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

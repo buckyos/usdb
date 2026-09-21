@@ -32,7 +32,7 @@ class NodeProgressObservationTests(unittest.TestCase):
         observed = history.apply(pending, observed_monotonic=5)
         rendered = NODE.render_node_progress(observed, width=80)
         self.assertIn("Blocks from 935000 | Genesis 963800: last observed available; RPC unavailable", " ".join(rendered.split()))
-        self.assertIn("Target: Bitcoin tip minus 10 confirmation blocks", rendered)
+        self.assertIn("Target (last observed): Bitcoin headers minus 10 confirmation blocks", " ".join(rendered.split()))
         self.assertIn("Configured maximum target: 966992", rendered)
         self.assertEqual(observed["components"][0]["state"], "STARTING")
         self.assertEqual(observed["overall_state"], "STARTING")
@@ -43,6 +43,36 @@ class NodeProgressObservationTests(unittest.TestCase):
         recovered = history.apply(report, observed_monotonic=62)
         self.assertIn("Genesis 963800: available", NODE.render_node_progress(recovered, details=True))
         self.assertNotIn("STALE", NODE.render_node_progress(recovered))
+
+    def test_indexer_target_survives_only_as_labeled_stale_evidence_after_rpc_loss(self):
+        ready = NODE._indexed_service_component("usdb_indexer", dict(state="running"),
+            dict(consensus_ready=True, synced_block_height=967943, balance_history_stable_height=967943), None, "waiting")
+        report = dict(release_id="test", observed_at="now", components=[ready])
+        history = NODE.NodeProgressHistory(max_stale_age_secs=60)
+        history.apply(report, observed_monotonic=0)
+        missing = NODE._indexed_service_component("usdb_indexer", dict(state="running"), None, "RPC unavailable", "waiting")
+        pending = {**report, "components": [missing]}
+        observed = history.apply(pending, observed_monotonic=5)
+        rendered = " ".join(NODE.render_node_progress(observed).split())
+        self.assertIn("Target (last observed): balance-history available stable height = 967943", rendered)
+        self.assertEqual(observed["components"][0]["state"], "STARTING")
+        expired = history.apply(pending, observed_monotonic=61)
+        self.assertNotIn("available stable height", NODE.render_node_progress(expired))
+
+    def test_balance_history_fallback_target_is_not_labeled_live_bitcoin_headers(self):
+        for core, activation, fields, expected in (
+            ({}, {}, dict(total=967943), "Target: balance-history reported sync target = 967943"),
+            ({}, dict(details=dict(report=dict(headers=967961))), {},
+             "Target: last observed Bitcoin headers minus 10 confirmation blocks = 967951"),
+            ({}, {}, {}, "Target: unavailable"),
+        ):
+            with self.subTest(expected=expected):
+                item = NATIVE._balance_history_progress(
+                    NODE._component_progress("balance_history", "READY", "ready"),
+                    dict(phase="Indexing", stable_height=967943, query_ready=True, **fields), {}, core, activation,
+                    base=935000, origin=963800, stable_lag=10)
+                rendered = " ".join(NODE.render_node_progress(dict(components=[item])).split())
+                self.assertIn(expected, rendered)
 
     def test_indexer_waits_for_upstream_without_claiming_zero_block_sync(self):
         readiness = dict(consensus_ready=False, current=0, total=0, synced_block_height=None,
