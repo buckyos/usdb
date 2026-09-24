@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """Exercise host installation with isolated package, network and service commands."""
 
+from contextlib import redirect_stderr
+import io
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "docker/scripts/tools/prepare_usdb_host.sh"
 KEY_FIXTURE = Path(__file__).with_name("common") / "docker-signing-key.asc"
+sys.path.insert(0, str(SCRIPT.parent))
+import usdb_node as node
 
 
 class HostPrepareInstallTests(unittest.TestCase):
@@ -140,6 +147,7 @@ class HostPrepareInstallTests(unittest.TestCase):
         engine_version: str = "29.0.0", compose_version: str = "2.40.0",
         security_options: str = "name=seccomp,profile=builtin", docker_os: str = "linux",
         docker_distribution: str = "Debian GNU/Linux 12", action: str = "install",
+        docker_user: str = "",
     ) -> subprocess.CompletedProcess[str]:
         os_release = self.root / "os-release"
         os_release.write_text(
@@ -151,7 +159,8 @@ class HostPrepareInstallTests(unittest.TestCase):
         if existing_docker:
             (self.root / "docker-installed").touch()
         return subprocess.run(
-            [str(self.bin / "bash"), str(SCRIPT), action, "--docker-mirror", mirror],
+            [str(self.bin / "bash"), str(SCRIPT), action, "--docker-mirror", mirror,
+             *(["--docker-user", docker_user] if docker_user else [])],
             env={
                 **os.environ,
                 "PATH": str(self.bin),
@@ -206,6 +215,38 @@ class HostPrepareInstallTests(unittest.TestCase):
                     self.assertIn("Host prerequisite check passed.", result.stdout)
                 for name in ("apt-calls", "curl-calls", "systemctl-calls"):
                     self.assertFalse((self.root / name).exists(), name)
+
+    def test_install_after_group_addition_requires_new_session_even_when_root_can_access_docker(self):
+        (self.bin / "tr").symlink_to(shutil.which("tr"))
+        for name, body in {
+            "getent": '[[ "$*" == "group docker" ]]',
+            "usermod": '[[ "$*" == "-aG docker lyx" ]]; : > "$USDB_TEST_ROOT/group-added"',
+            "id": '''case "$*" in
+                -un) echo lyx ;;
+                -u) echo 1000 ;;
+                '-nG lyx') if [[ -f "$USDB_TEST_ROOT/group-added" ]]; then echo 'lyx docker'; else echo lyx; fi ;;
+                -nG) echo lyx ;;
+                lyx) exit 0 ;;
+                *) exit 2 ;;
+                esac''',
+        }.items():
+            path = self.bin / name
+            path.write_text("#!/usr/bin/env bash\nset -eu\n" + body + "\n")
+            path.chmod(0o755)
+        docker = self.bin / "docker"
+        docker.write_text(docker.read_text().replace("'info --format '*) echo", ''''info --format '*)
+            if [[ ! -f "$USDB_TEST_ROOT/root-probe" ]]; then
+                : > "$USDB_TEST_ROOT/root-probe"
+                exit 1
+            fi
+            echo'''))
+        result = self.run_install(docker_user="lyx")
+        self.assertEqual(result.returncode, 20, result.stdout + result.stderr)
+        self.assertTrue((self.root / "docker-installed").exists())
+        self.assertTrue((self.root / "group-added").exists())
+        self.assertIn("accessible with elevated privileges", result.stdout)
+        self.assertIn("Host preparation paused", result.stderr)
+        self.assertNotIn("Host prerequisite check passed", result.stdout)
 
     def test_install_preserves_old_docker_but_fails_post_install_check(self) -> None:
         result = self.run_install(existing_docker=True, engine_version="20.10.24")
@@ -355,6 +396,64 @@ class HostPrepareInstallTests(unittest.TestCase):
         self.assertIn("Conflicting container packages are installed: docker.io", result.stderr)
         self.assertFalse((self.root / "apt-calls").exists())
         self.assertFalse((self.root / "docker.sources").exists())
+
+
+class HostSessionGuidanceTests(unittest.TestCase):
+    def test_pending_session_never_offers_package_installation(self) -> None:
+        for interactive in (True, False):
+            with self.subTest(interactive=interactive), \
+                    mock.patch.object(sys.stdin, "isatty", return_value=interactive), \
+                    mock.patch.object(sys.stdout, "isatty", return_value=interactive), \
+                    mock.patch.object(node, "_prompt_yes_no") as prompt, \
+                    mock.patch.object(node, "run_helper", return_value=subprocess.CompletedProcess([], 20)) as helper:
+                with self.assertRaisesRegex(node.HostSessionRefreshRequired, "reconnect as lyx"):
+                    node.prepare_host(None, docker_user="lyx", output=io.StringIO())
+                prompt.assert_not_called()
+                helper.assert_called_once_with(
+                    None, "prepare_usdb_host.sh", ["check", "--docker-user", "lyx"],
+                    check=False, output_to_stderr=False,
+                )
+
+    def test_host_check_and_install_have_actionable_cli_errors(self) -> None:
+        for action in ("check", "install"):
+            for exit_code, label, error_key in (
+                (20, "USDB node action required", "DOCKER_SESSION_REFRESH_REQUIRED"),
+                (1, "USDB node operation failed", "HOST_PREREQUISITES_FAILED"),
+            ):
+                with self.subTest(action=action, exit_code=exit_code):
+                    error_output = io.StringIO()
+                    with mock.patch.object(sys, "argv", ["usdb-node", "host", action, "--docker-user", "lyx"]), \
+                            mock.patch.object(node, "load_release_layout", return_value=None), \
+                            mock.patch.object(node, "run_helper", side_effect=subprocess.CalledProcessError(exit_code, ["/private/release/helper"])), \
+                            redirect_stderr(error_output):
+                        self.assertEqual(node.main(), 1)
+                    message = error_output.getvalue()
+                    self.assertIn(f"{label}: {error_key}", message)
+                    self.assertIn("usdb-node host check", message)
+                    self.assertNotIn("/private/release/helper", message)
+                    self.assertNotIn("returned non-zero exit status", message)
+                    if exit_code == 20:
+                        self.assertIn("reconnect as lyx", message)
+                        self.assertIn("newgrp docker", message)
+
+    def test_doctor_stops_with_session_guidance_before_runtime_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            node_env = Path(directory) / "node.env"
+            node_env.touch()
+            layout = SimpleNamespace(node_env=node_env)
+            error_output = io.StringIO()
+            with mock.patch.object(sys, "argv", ["usdb-node", "doctor"]), \
+                    mock.patch.object(node, "load_release_layout", return_value=layout), \
+                    mock.patch.object(node, "default_docker_user", return_value="lyx"), \
+                    mock.patch.object(node, "validate_resource_environment"), \
+                    mock.patch.object(node, "effective_memory_bytes", return_value=32 * 1024**3), \
+                    mock.patch.object(node, "run_helper", side_effect=subprocess.CalledProcessError(20, ["host check"])) as helper, \
+                    mock.patch.object(node, "_validate_node_config") as runtime_check, \
+                    redirect_stderr(error_output):
+                self.assertEqual(node.main(), 1)
+            helper.assert_called_once()
+            runtime_check.assert_not_called()
+            self.assertIn("USDB node action required: DOCKER_SESSION_REFRESH_REQUIRED", error_output.getvalue())
 
 
 if __name__ == "__main__":

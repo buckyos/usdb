@@ -5,6 +5,8 @@ minimum_kernel_major=5
 minimum_kernel_minor=10
 minimum_docker_version="28.0.0"
 minimum_compose_version="2.33.1"
+# Keep this action-required status in sync with usdb_node.HOST_SESSION_PENDING_EXIT_CODE.
+session_pending_exit_code=20
 supported_arch="x86_64"
 os_release_file="${USDB_HOST_OS_RELEASE_FILE:-/etc/os-release}"
 command_dir="${USDB_HOST_COMMAND_DIR:-}"
@@ -61,6 +63,7 @@ Automated install: Ubuntu 22.04/24.04/26.04 and Debian 12/13.
 The installer never removes conflicting container packages or node data.
 Downloads retry twice. curl connects within 10s and allows 30s per attempt;
 APT uses a 30s connection/data timeout. Package installation is not retried.
+Exit status: 0 ready, 20 login-session refresh required, 1 other failed checks.
 EOF
 }
 
@@ -255,6 +258,19 @@ docker_session_pending() {
   ! id -nG | tr ' ' '\n' | grep -Fxq docker
 }
 
+docker_session_guidance() {
+  echo "ACTION REQUIRED [DOCKER_SESSION_REFRESH_REQUIRED]: refresh your login session." >&2
+  echo "  Account ${docker_user} is already authorized for Docker; this terminal still has its old groups." >&2
+  echo "  This is common after first-time host preparation; group changes do not update existing sessions." >&2
+  echo "  Recommended: log out, then reconnect using the same SSH command or log in again as ${docker_user}." >&2
+  echo "  Alternative: run 'newgrp docker' to open a new shell in this connection." >&2
+  echo "  In the new session/shell, run: usdb-node host check" >&2
+  echo "  Not configured yet: continue with usdb-node setup after the check passes." >&2
+  echo "  Already configured: continue with usdb-node doctor && usdb-node up after the check passes." >&2
+  echo "  'exit' leaves the newgrp shell; other existing terminals keep their old groups." >&2
+  echo "  For this session change, no package reinstall, repeat setup, or machine reboot is needed." >&2
+}
+
 check_docker_runtime() {
   local allow_root_fallback="${1:-0}"
   local docker_bin
@@ -263,13 +279,18 @@ check_docker_runtime() {
   local runtime_info=""
   local info_format='{{.ServerVersion}}|{{.CgroupVersion}}|{{.OSType}}|{{join .SecurityOptions ","}}|{{.OperatingSystem}}'
   local access_mode="current user"
+  local session_refresh_required=0
   if runtime_info="$("${docker_bin}" info --format "${info_format}" 2>/dev/null)"; then
     :
   elif [[ "${allow_root_fallback}" == "1" ]] && runtime_info="$(run_root "${docker_bin}" info --format "${info_format}" 2>/dev/null)"; then
     access_mode="elevated privileges"
+    if docker_session_pending; then
+      session_refresh_required=1
+    fi
   else
     if docker_session_pending; then
-      echo "FAIL Docker access: docker group membership is not active in this session" >&2
+      echo "WAIT Docker access: the current terminal has not loaded the docker group" >&2
+      return "${session_pending_exit_code}"
     else
       echo "FAIL Docker daemon: daemon is stopped or the current user cannot access its socket" >&2
     fi
@@ -305,6 +326,10 @@ check_docker_runtime() {
       return 1
     fi
   fi
+  if ((session_refresh_required)); then
+    return "${session_pending_exit_code}"
+  fi
+  return 0
 }
 
 check_docker_user() {
@@ -314,10 +339,7 @@ check_docker_user() {
     return 1
   }
   if id -nG "${docker_user}" | tr ' ' '\n' | grep -Fxq docker; then
-    echo "PASS Docker user: ${docker_user} belongs to the docker group"
-    if docker_session_pending; then
-      echo "WARN Docker session: before doctor/up, log out and back in, or run 'newgrp docker' and continue in the new shell. Use 'exit' to leave it; other existing sessions remain unchanged." >&2
-    fi
+    echo "PASS Docker account: ${docker_user} is registered in the docker group"
   else
     echo "FAIL Docker user: ${docker_user} is not in the docker group" >&2
     return 1
@@ -327,15 +349,28 @@ check_docker_user() {
 check_host() {
   local allow_root_fallback="${1:-0}"
   local failures=0
+  local runtime_status=0
 
   check_platform || failures=$((failures + 1))
   check_required_tools || failures=$((failures + 1))
-  check_docker_runtime "${allow_root_fallback}" || failures=$((failures + 1))
+  check_docker_runtime "${allow_root_fallback}" || runtime_status=$?
+  if ((runtime_status != 0 && runtime_status != session_pending_exit_code)); then
+    failures=$((failures + 1))
+  fi
   check_docker_user || failures=$((failures + 1))
 
   if ((failures > 0)); then
     echo "Host prerequisite check failed (${failures} category/categories)." >&2
+    if ((runtime_status == session_pending_exit_code)); then
+      docker_session_guidance
+      echo "  Other checks also failed; resolve the FAIL items above before continuing." >&2
+    fi
     return 1
+  fi
+  if ((runtime_status == session_pending_exit_code)); then
+    echo "Host preparation paused: a new login session is required before continuing." >&2
+    docker_session_guidance
+    return "${session_pending_exit_code}"
   fi
   echo "Host prerequisite check passed."
 }

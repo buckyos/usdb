@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "docker-session-refresh-guidance",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Guide operators through Docker group activation after host preparation",
+  "details": [
+    "Host checks distinguish an account already registered in the Docker group from a terminal still using its old groups. They explain how to reconnect with the same account or use newgrp docker, recheck access and resume setup or doctor/up without reinstalling software or repeating node configuration.",
+    "The host helper returns status 20 when session refresh is the only observed blocker, including after installation when elevated Docker access works but operator access does not. prepare-host pauses without offering another package installation; simultaneous failed checks remain failures and must also be resolved.",
+    "Node commands report DOCKER_SESSION_REFRESH_REQUIRED as an action-required message instead of a raw subprocess exception. Other host helper failures retain their detailed check output and receive a concise HOST_PREREQUISITES_FAILED summary. Commands remain unsuccessful until their checks pass; no existing shell permissions or node services are changed automatically."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

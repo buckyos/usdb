@@ -49,12 +49,18 @@ usdb-node prepare-host
 
 工具先检查依赖和 Docker 权限；有缺失时才询问是否安装。需要主机权限时按提示使用 sudo。安装有冲突或失败时，先处理报错，再继续。
 
-如果提示已添加 Docker 组、当前终端权限尚未生效，退出 SSH，以同一账号重新登录，重新设置 PATH 后检查：
+首次准备主机时，如果工具刚把账号加入 Docker 组，**当前终端仍保留登录时的旧权限**。这时安装和账号授权可能已经完成，但还不能在这个终端继续启动节点。新版会显示 `DOCKER_SESSION_REFRESH_REQUIRED`，暂停操作；旧版可能同时显示 `FAIL Docker access` 和 `PASS Docker user`，含义相同。
+
+推荐退出 SSH，使用原来的 SSH 命令、以同一账号重新连接，再执行：
 
 ```bash
 export PATH="${HOME}/.local/bin:${PATH}"
 usdb-node host check
 ```
+
+希望保留当前 SSH 连接时，可以执行 `newgrp docker`，然后在它打开的新 shell 中运行 `usdb-node host check`。执行 `exit` 会回到旧 shell；其他已经打开的终端不会因此获得新权限。
+
+检查通过后，尚未配置节点的用户继续第 4 步 `setup`；已经完成 `setup` 的用户直接继续第 5 步 `doctor` 和 `up`。**仅刷新会话不需要重装软件、重复配置或重启机器。** 如果还有其他 `FAIL` 项，按提示一并处理。已有 Docker 权限的会话无需此步骤。
 
 **完成标志**：主机检查通过，当前账号可以访问 Docker。新会话仍提示权限问题时，见[Docker 权限](../troubleshooting/README.md#docker-权限或主机检查失败)。
 

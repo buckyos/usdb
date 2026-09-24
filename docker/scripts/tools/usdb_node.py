@@ -105,6 +105,8 @@ NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v5"
 SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION = "balance-history-core-snapshot-install-progress:v1"
 SNAPSHOT_IMPORT_MARKER_SCHEMA_VERSION = "balance-history-core-install-marker:v1"
 CONTROLLER_MANUAL_EXIT_CODE = 2
+# prepare_usdb_host.sh reserves this status for a pending login-session refresh.
+HOST_SESSION_PENDING_EXIT_CODE = 20
 CONTROLLER_UNIT_PREFIX = "usdb-node-bootstrap"
 CONTROLLER_RESTART_SECS = 30
 CONTROLLER_START_LIMIT_INTERVAL_SECS = 1800
@@ -2078,6 +2080,17 @@ def run_helper(
     return subprocess.run([str(path), *arguments], **options)
 
 
+class HostSessionRefreshRequired(ValueError):
+    """Host preparation needs a new operator session, not another package installation."""
+
+    def __init__(self, docker_user: str) -> None:
+        super().__init__(
+            "DOCKER_SESSION_REFRESH_REQUIRED: reconnect as " + (docker_user or "the node operator")
+            + " or run 'newgrp docker', then rerun 'usdb-node host check'. "
+            "Existing installation and node configuration are preserved."
+        )
+
+
 def run_host_action(
     layout: ReleaseLayout,
     action: str,
@@ -2094,13 +2107,22 @@ def run_host_action(
         arguments.extend(["--docker-user", docker_user])
     if action == "install":
         arguments.extend(["--docker-mirror", docker_mirror])
-    return run_helper(
-        layout,
-        "prepare_usdb_host.sh",
-        arguments,
-        check=check,
-        output_to_stderr=output_to_stderr,
-    )
+    try:
+        return run_helper(
+            layout,
+            "prepare_usdb_host.sh",
+            arguments,
+            check=check,
+            output_to_stderr=output_to_stderr,
+        )
+    except subprocess.CalledProcessError as error:
+        if error.returncode == HOST_SESSION_PENDING_EXIT_CODE:
+            raise HostSessionRefreshRequired(docker_user) from None
+        raise ValueError(
+            f"HOST_PREREQUISITES_FAILED: host {action} did not complete (exit {error.returncode}); "
+            "resolve the failed checks or installation error shown above, "
+            "then rerun 'usdb-node host check'."
+        ) from None
 
 
 def prepare_host(
@@ -2116,6 +2138,8 @@ def prepare_host(
         import usdb_p2p
         print(usdb_p2p.host_preflight_report(), file=output)
         return
+    if result.returncode == HOST_SESSION_PENDING_EXIT_CODE:
+        raise HostSessionRefreshRequired(docker_user)
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise ValueError("host prerequisites failed; run 'usdb-node host install' explicitly")
     if not _prompt_yes_no(
@@ -6248,7 +6272,11 @@ def main() -> int:
                 )
             )
         else:
-            print(f"USDB node operation failed: {error}", file=sys.stderr)
+            label = (
+                "USDB node action required" if isinstance(error, HostSessionRefreshRequired)
+                else "USDB node operation failed"
+            )
+            print(f"{label}: {error}", file=sys.stderr)
         return 1
 
 

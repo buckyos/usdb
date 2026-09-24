@@ -105,15 +105,25 @@ docker compose version
 usdb-node host check
 ```
 
-如果账号已加入 Docker 组但当前终端还未生效，退出并以原账号重新登录。希望保留 SSH 连接时，也可以执行：
+如果同时看到“账号已加入 Docker 组”和“当前会话未生效”，二者并不矛盾：账号授权已写入系统，但这个终端仍使用登录时取得的旧组权限。这常见于首次执行 `prepare-host` 后，不能靠在同一个终端反复运行 `doctor` 解决。
+
+新版会用 `WAIT Docker access`、`Host preparation paused` 和 `DOCKER_SESSION_REFRESH_REQUIRED` 提示刷新会话，最后显示 `USDB node action required`；仅有此项时，再次执行 `prepare-host` 不会询问重新安装软件。旧版末尾的 `Command ... returned non-zero exit status 1` 是主机检查未通过的包装错误，应查看前面的具体原因。
+
+推荐退出并使用原来的 SSH 命令、以同一运维账号重新登录。希望保留 SSH 连接时，也可以执行：
 
 ```bash
 newgrp docker
 ```
 
-在新 shell 中重新运行 `usdb-node host check`；退出这个 shell 后，原终端不会因此获得新权限。
+在新会话或新 shell 中运行：
 
-如果账号尚未授权，重新按 `prepare-host` 的提示完成准备。组权限已生效但 Docker 仍无法访问时，检查 Docker 服务和 socket；版本过低时更新实际 Docker Engine 和 Compose，不能只更新 CLI。
+```bash
+usdb-node host check
+```
+
+通过后，尚未配置的节点继续 `usdb-node setup`；已经配置的节点继续 `usdb-node doctor`，通过后执行 `usdb-node up`。仅刷新会话不需要重装软件、重复 `setup` 或重启机器。`exit` 会退出 `newgrp` 创建的 shell；原终端和其他已有终端不会因此获得新权限。
+
+如果账号尚未授权，重新按 `prepare-host` 的提示完成准备。如果同时还有其他 `FAIL` 项，需要一并解决。组权限已生效但 Docker 仍无法访问时，检查 Docker 服务和 socket；版本过低时更新实际 Docker Engine 和 Compose，不能只更新 CLI。
 
 sudo 验证当前运维账号的权限和密码。若 `setup` 已保存配置、只在安装 controller 时失败，解决 sudo 或 systemd 问题后执行：
 

@@ -78,6 +78,18 @@ class PrepareUsdbHostTests(unittest.TestCase):
             ),
         )
 
+    def write_identity(self, session_groups="bucky", account_groups="bucky docker") -> None:
+        self.write_command("id", f"""
+case "$*" in
+  -un) echo bucky ;;
+  -u) echo 1000 ;;
+  '-nG bucky') echo '{account_groups}' ;;
+  -nG) echo '{session_groups}' ;;
+  bucky) exit 0 ;;
+  *) exit 2 ;;
+esac
+""")
+
     def run_script(
         self, *args: str, extra_env: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
@@ -175,28 +187,52 @@ class PrepareUsdbHostTests(unittest.TestCase):
         self.write_docker(compose_ok=True, daemon_ok=False)
         for effective_groups in ("bucky", "bucky docker"):
             with self.subTest(effective_groups=effective_groups):
-                self.write_command("id", f"""
-case "$*" in
-  -un) echo bucky ;;
-  -u) echo 1000 ;;
-  '-nG bucky') echo 'bucky docker' ;;
-  -nG) echo '{effective_groups}' ;;
-  bucky) exit 0 ;;
-  *) exit 2 ;;
-esac
-""")
+                self.write_identity(session_groups=effective_groups)
                 result = self.run_script(
                     "check", "--docker-user", "bucky",
                     extra_env={"PATH": f"{self.command_dir}:{os.defpath}"},
                 )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("bucky belongs to the docker group", result.stdout)
+                self.assertIn("bucky is registered in the docker group", result.stdout)
                 if effective_groups == "bucky":
-                    self.assertIn("FAIL Docker access", result.stderr)
+                    self.assertEqual(result.returncode, 20)
+                    self.assertIn("DOCKER_SESSION_REFRESH_REQUIRED", result.stderr)
+                    self.assertIn("reconnect using the same SSH command", result.stderr)
                     self.assertIn("newgrp docker", result.stderr)
+                    self.assertIn("usdb-node host check", result.stderr)
+                    self.assertIn("Already configured", result.stderr)
+                    self.assertNotIn("Host prerequisite check failed", result.stderr)
                 else:
+                    self.assertEqual(result.returncode, 1)
                     self.assertIn("FAIL Docker daemon", result.stderr)
                     self.assertNotIn("newgrp docker", result.stderr)
+
+    def test_session_refresh_does_not_hide_other_missing_prerequisites(self) -> None:
+        self.write_docker(compose_ok=True, daemon_ok=False)
+        self.write_identity()
+        (self.command_dir / "jq").unlink()
+        result = self.run_script("check", "--docker-user", "bucky",
+                                 extra_env={"PATH": f"{self.command_dir}:{os.defpath}"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FAIL jq", result.stderr)
+        self.assertIn("Other checks also failed", result.stderr)
+        self.assertIn("DOCKER_SESSION_REFRESH_REQUIRED", result.stderr)
+
+    def test_existing_docker_access_does_not_require_session_refresh(self) -> None:
+        self.write_identity()
+        result = self.run_script("check", "--docker-user", "bucky",
+                                 extra_env={"PATH": f"{self.command_dir}:{os.defpath}"})
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("DOCKER_SESSION_REFRESH_REQUIRED", result.stderr)
+
+    def test_unregistered_account_requires_authorization_not_just_relogin(self) -> None:
+        self.write_docker(compose_ok=True, daemon_ok=False)
+        self.write_identity(account_groups="bucky")
+        result = self.run_script("check", "--docker-user", "bucky",
+                                 extra_env={"PATH": f"{self.command_dir}:{os.defpath}"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("bucky is not in the docker group", result.stderr)
+        self.assertNotIn("DOCKER_SESSION_REFRESH_REQUIRED", result.stderr)
 
     def test_check_rejects_non_amd64_release_host(self) -> None:
         result = self.run_script("check", extra_env={"USDB_HOST_ARCH": "aarch64"})
