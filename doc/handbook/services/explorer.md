@@ -51,6 +51,7 @@ debug namespace 或数据库端口。
 - [使用浏览器](https://github.com/buckyos/usdb-explorer/blob/main/docs/handbook/using-explorer.md)
 - [安装、同机部署与访问地址](https://github.com/buckyos/usdb-explorer/blob/main/docs/handbook/installation.md)
 - [RPC/入口模式、端口映射、域名和 HTTPS](https://github.com/buckyos/usdb-explorer/blob/main/docs/handbook/networking.md)
+- [已有证书启用内置 Nginx HTTPS、入口验证与续期](https://github.com/buckyos/usdb-explorer/blob/main/docs/handbook/https.md)
 - [preflight/check 结果、升级与备份](https://github.com/buckyos/usdb-explorer/blob/main/docs/handbook/operations.md)
 - [超时、旧采样、archive/tracing 和页面排错](https://github.com/buckyos/usdb-explorer/blob/main/docs/handbook/troubleshooting.md)
 
