@@ -78,6 +78,7 @@ from resource_policy import (  # noqa: E402
     validate_resource_environment,
 )
 from node_progress_timing import ProgressTiming, service_elapsed  # noqa: E402
+import node_observation  # noqa: E402
 from node_progress_render import (  # noqa: E402
     duration_text as _duration_text,
     human_size as _human_size,
@@ -3547,9 +3548,10 @@ def _collect_compose_services(
             # Startup diagnostics inspect stopped/starting containers; the progress
             # view can separately request start times without reading environment.
             identifier = item.get("ID")
-            if (include_started_at and status["state"] == "running" and isinstance(identifier, str)
+            if (include_started_at and isinstance(identifier, str)
                     and re.fullmatch(r"[0-9a-f]{12,64}", identifier)):
                 timing_ids[identifier] = service
+                status.update(container_id=identifier, details_available=False)
             if status["state"] in {"created", "exited", "dead", "restarting"} and identifier:
                 if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{12,64}", identifier):
                     raise ValueError("Docker Compose returned an invalid container ID")
@@ -3575,19 +3577,28 @@ def _collect_compose_services(
         except subprocess.CalledProcessError as error:
             raise ValueError("Docker container startup state could not be read") from error
     if timing_ids:
-        # Optional timing metadata must not turn an otherwise valid probe into
-        # a readiness failure. Query only StartedAt, never container credentials.
+        # Bounded runtime evidence survives rapid restart cycles between polls.
+        # Never inspect credentials; missing evidence must not become zero/False.
         try:
             result = subprocess.run(
-                ["docker", "inspect", "--format", "{{json .State.StartedAt}}", *timing_ids],
+                ["docker", "inspect", "--format",
+                 '{"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},'
+                 '"restart_count":{{json .RestartCount}},"oom_killed":{{json .State.OOMKilled}}}', *timing_ids],
                 check=True, capture_output=True, text=True,
                 timeout=command_timeout_secs if command_timeout_secs is not None else 8,
             )
-            starts = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-            if len(starts) == len(timing_ids):
-                for service, started_at in zip(timing_ids.values(), starts):
-                    if isinstance(started_at, str):
-                        services[service]["started_at"] = started_at
+            observations = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+            if len(observations) == len(timing_ids):
+                for service, observation in zip(timing_ids.values(), observations):
+                    if isinstance(observation, dict):
+                        evidence = node_observation.runtime(observation)
+                        services[service].update({key: evidence[key] for key in
+                            ("started_at", "finished_at", "restart_count", "oom_killed")})
+                        if evidence["started_at"] is not None:
+                            services[service]["started_at"] = observation["started_at"]
+                        services[service]["details_available"] = (
+                            type(observation.get("oom_killed")) is bool
+                            and node_observation.quantity(observation.get("restart_count")) is not None)
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
     return services
@@ -4131,6 +4142,20 @@ def _indexed_service_component(
     error: str | None,
     waiting_detail: str,
 ) -> dict[str, Any]:
+    component = _indexed_service_progress(component_id, service, readiness, error, waiting_detail)
+    component["readiness"] = node_observation.readiness(readiness)
+    component["runtime"] = node_observation.runtime(service)
+    return component
+
+
+def _indexed_service_progress(
+    component_id: str,
+    service: dict[str, Any] | None,
+    readiness: dict[str, Any] | None,
+    error: str | None,
+    waiting_detail: str,
+) -> dict[str, Any]:
+    """Keep display phases separate from the structured service evidence."""
     container_state = _failed_container_component(component_id, service, waiting_detail)
     if container_state is not None:
         return container_state
@@ -4335,6 +4360,8 @@ def _chain_component(
             raise ValueError("USDB chain latest block is unavailable or has an invalid hash")
         block_number = _hex_quantity(latest.get("number"), "latest block number")
         head = {"number": block_number, "hash": latest["hash"].lower()}
+        if "timestamp" in latest:
+            head["timestamp"] = _hex_quantity(latest["timestamp"], "latest block timestamp")
         syncing = results["eth_syncing"]
         if syncing is False:
             state, reason, detail = usdb_peers.membership(layout, env, syncing=syncing, peer_count=peer_count)
@@ -4343,7 +4370,7 @@ def _chain_component(
                 state,
                 f"block={block_number}, peers={peer_count}; {reason}: {detail}",
                 current=block_number,
-            ), "head": head, "membership": reason}
+            ), "head": head, "peer_count": peer_count, "membership": reason}
         if not isinstance(syncing, dict):
             raise ValueError("eth_syncing returned an invalid result")
         current = _hex_quantity(syncing.get("currentBlock"), "eth_syncing.currentBlock")
@@ -4354,9 +4381,9 @@ def _chain_component(
             f"peers={peer_count}",
             current=current,
             total=highest,
-        ), "head": head}
+        ), "head": head, "peer_count": peer_count}
     except ValueError as error:
-        return _component_progress("usdb_chain", "STARTING", str(error))
+        return {**_component_progress("usdb_chain", "STARTING", str(error)), "observation_unavailable": True}
 
 
 def _overall_progress_state(components: list[dict[str, Any]]) -> str:
@@ -4463,6 +4490,9 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
                     next_actions=[], operator_guidance=[])
     apply_controller_guidance(guidance)
     report["controller"] = controller
+    node_observation.attach(report, layout, sys.modules[__name__])
+    if report["observations"]["incidents"]["events"]:
+        report["overall_state"] = "BLOCKED"
     return report
 
 
@@ -4515,7 +4545,8 @@ def _collect_node_progress(layout: ReleaseLayout, *, controller_state: str | Non
         registry_component = _script_registry_component(layout, env, None)
         components = [snapshot_component, registry_component]
         components.extend(
-            _component_progress(component_id, "BLOCKED", str(error))
+            {**_component_progress(component_id, "BLOCKED", str(error)),
+             "runtime": node_observation.runtime({"status": "unavailable"})}
             for component_id in ("bitcoin", "balance_history", "usdb_indexer", "usdb_chain")
         )
         return {
@@ -4682,6 +4713,7 @@ def _collect_node_progress(layout: ReleaseLayout, *, controller_state: str | Non
         service = services.get(service_name, {})
         started_at = service.get("started_at")
         elapsed = service_elapsed(started_at, observed_at)
+        component["runtime"] = node_observation.runtime(service)
         if service.get("state") == "running" and elapsed is not None:
             component.update(service_started_at=started_at, service_elapsed_secs=elapsed)
     return {
@@ -5097,6 +5129,16 @@ def _mining_status(layout: ReleaseLayout) -> dict[str, Any]:
 
 
 def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
+    """Keep durable incidents visible even when ordinary lifecycle probes stop early."""
+    report = _collect_node_status(layout)
+    node_observation.attach(report, layout, sys.modules[__name__])
+    if report["observations"]["incidents"]["events"]:
+        _finish_node_status(report, "BLOCKED", additional_guidance=(
+            "A durable deep BTC reorg incident requires operator review; preserve the recovery record.",))
+    return report
+
+
+def _collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
     checks: dict[str, dict[str, Any]] = {
         "release": {
             "state": "ok",
@@ -5291,6 +5333,11 @@ def _print_node_status_report(report: dict[str, Any]) -> None:
     print(f"USDB node lifecycle status: {report['release_id']}")
     for line in _network_status_lines(report):
         print(line)
+    incidents = report.get("observations", {}).get("incidents", {})
+    if incidents.get("status") == "unavailable":
+        print("Incidents: UNKNOWN (durable incident records could not be observed)")
+    for event in incidents.get("events", []):
+        print(f"Incident: {event['code']} | critical | manual intervention | id={event['event_id'] or 'unknown'}")
     labels = {
         "release": "Release kit",
         "configuration": "Node config",

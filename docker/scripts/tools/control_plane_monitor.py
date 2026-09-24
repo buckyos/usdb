@@ -15,6 +15,7 @@ import threading
 import time
 
 from control_plane_resources import ResourceCollector
+import node_observation
 
 SCHEMA = "usdb-console-monitor:v1"
 # Deliberate projection: never export node.env, credentials, raw RPC errors,
@@ -51,6 +52,7 @@ def project(report: dict, now_ms: int) -> dict:
         result["components"].append(item)
     if report.get("control_plane"):
         result["components"].append(select(report["control_plane"], COMPONENT_FIELDS))
+    result["observations"] = node_observation.project(report.get("observations"))
     return result
 
 

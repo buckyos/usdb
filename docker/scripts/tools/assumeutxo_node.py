@@ -453,6 +453,7 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
                 base=int(env["BH_ASSUMEUTXO_BASE_HEIGHT"]), origin=int(env["USDB_GENESIS_BLOCK_HEIGHT"]),
                 stable_lag=node.btc_registry_stable_lag_blocks(layout.network_identity["btc_activation_registry_id"]),
                 max_height=int(env.get("BH_SYNC_MAX_SYNC_BLOCK_HEIGHT", 0xFFFFFFFF)))
+        item["readiness"] = node.node_observation.readiness(readiness)
         components.append(item)
     chain = node._chain_component(layout, env, services.get("usdb-chain"))
     waiting_detail = (_chain_wait_detail(core, loader, readiness_reports)
@@ -475,6 +476,7 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for item in components:
         service = services.get({"bitcoin": "btc-node", "balance_history": "balance-history", "usdb_indexer": "usdb-indexer", "usdb_chain": "usdb-chain"}.get(item["id"]), {})
+        item["runtime"] = node.node_observation.runtime(service if services_available else {"status": "unavailable"})
         elapsed = node.service_elapsed(service.get("started_at"), observed_at)
         if service.get("state") == "running" and elapsed is not None:
             item.update(service_started_at=service["started_at"], service_elapsed_secs=elapsed)

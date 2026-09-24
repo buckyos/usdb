@@ -7,11 +7,73 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import stat
 import sys
+from datetime import datetime
 
 SCHEMA = "usdb-chain-file-inspection:v1"
+INCIDENT_SCHEMA = "usdb-deep-btc-reorg-incident:v1"
+MAX_INCIDENT_BYTES = 256 * 1024
+
+
+def incident_report(root: Path) -> dict:
+    """Observe a durable halt without exporting RPC URLs, errors or arbitrary JSON.
+
+    Marker presence is itself a stop condition in the runtime. Invalid metadata
+    must therefore never hide a latched incident. No observation acknowledges,
+    removes or rewrites the source record, including legacy v1 records.
+    """
+    path = root / "recovery/deep-btc-reorg/halted.json"
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return {"status": "available", "events": []}
+    event = {"event_id": None, "code": "DEEP_REORG_HALTED", "service": "usdb_chain",
+             "severity": "critical", "recovery": "manual_intervention", "latched": True,
+             "source": "deep_btc_reorg_marker", "detected_at": None,
+             "evidence_status": "invalid"}
+    try:
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_INCIDENT_BYTES:
+            raise ValueError("invalid incident file")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise ValueError("invalid incident file")
+            data = source.read(MAX_INCIDENT_BYTES + 1)
+        if len(data) > MAX_INCIDENT_BYTES:
+            raise ValueError("incident file exceeds limit")
+        # Older images have no UUID. A content fingerprint is stable across
+        # observations and restarts; consumers must scope it by node identity.
+        event["event_id"] = "legacy-sha256:" + hashlib.sha256(data).hexdigest()
+        value = json.loads(data, object_pairs_hook=_object)
+        if not isinstance(value, dict) or value.get("schema_version") != INCIDENT_SCHEMA:
+            raise ValueError("invalid incident schema")
+        reason = value.get("reason")
+        if reason not in ("upstream_reorg_epoch_advanced", "upstream_reorg_epoch_regressed"):
+            raise ValueError("invalid incident reason")
+        epochs = {key: value.get(key) for key in ("baseline_epoch", "observed_epoch")}
+        if any(type(v) is not int or not 0 <= v <= 2**64 - 1 for v in epochs.values()):
+            raise ValueError("invalid incident epochs")
+        if ((reason.endswith("advanced") and epochs["observed_epoch"] <= epochs["baseline_epoch"])
+                or (reason.endswith("regressed") and epochs["observed_epoch"] >= epochs["baseline_epoch"])):
+            raise ValueError("inconsistent incident epochs")
+        detected = value.get("detected_at")
+        if not isinstance(detected, str) or len(detected) > 40 or datetime.fromisoformat(detected.replace("Z", "+00:00")).tzinfo is None:
+            raise ValueError("invalid incident timestamp")
+        event.update(epochs, reason=reason, detected_at=detected, evidence_status="available")
+        if re.fullmatch(r"[0-9a-f]{32}", str(value.get("incident_id", ""))):
+            event["event_id"] = value["incident_id"]
+    except PermissionError:
+        # Presence was already established. Losing access to its contents must
+        # not erase the known halt; directory traversal failures above can still
+        # use the caller's read-only container fallback.
+        event["evidence_status"] = "unavailable"
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        pass
+    return {"status": "available", "events": [event]}
 
 
 def _exists(path: Path, *, regular: bool = False) -> bool:
@@ -42,6 +104,8 @@ def _object(pairs):
 
 def inspect_files(root: Path, action: str, marker_name: str) -> dict:
     """Return metadata and digests only; never emit nodekey bytes or write a file."""
+    if action == "incidents":
+        return incident_report(root)
     if action == "binding":
         data, key = root / "geth/chaindata", root / "geth/nodekey"
         if not _exists(data / "CURRENT", regular=True) or not _exists(key, regular=True):

@@ -284,12 +284,18 @@ class ProgressDisplayTests(unittest.TestCase):
         with (
             mock.patch.object(NODE, "run_helper", side_effect=outputs),
             mock.patch.object(NODE.subprocess, "run", return_value=subprocess.CompletedProcess(
-                [], 0, '"2026-09-08T04:00:00.000000000Z"\n')) as inspect,
+                [], 0, json.dumps({"started_at": "2026-09-08T04:00:00.000000000Z",
+                                   "finished_at": "0001-01-01T00:00:00Z", "restart_count": 3,
+                                   "oom_killed": True}) + '\n')) as inspect,
         ):
             services = NODE._collect_compose_services(mock.Mock(), include_started_at=True, command_timeout_secs=3)
         self.assertEqual(services["btc-node"]["started_at"], "2026-09-08T04:00:00.000000000Z")
         self.assertEqual(inspect.call_args.kwargs["timeout"], 3)
-        self.assertIn("{{json .State.StartedAt}}", inspect.call_args.args[0])
+        self.assertIn("{{json .State.StartedAt}}", inspect.call_args.args[0][3])
+        self.assertEqual(services["btc-node"]["state"], "running")
+        self.assertEqual(services["btc-node"]["restart_count"], 3)
+        self.assertTrue(services["btc-node"]["oom_killed"])
+        self.assertTrue(services["btc-node"]["details_available"])
         for failure in (subprocess.TimeoutExpired("docker", 3), OSError("unavailable"),
                         subprocess.CalledProcessError(1, "docker")):
             with (
@@ -300,6 +306,8 @@ class ProgressDisplayTests(unittest.TestCase):
                 services = NODE._collect_compose_services(mock.Mock(), include_started_at=True)
                 self.assertEqual(services["btc-node"]["state"], "running")
                 self.assertNotIn("started_at", services["btc-node"])
+                self.assertFalse(services["btc-node"]["details_available"])
+                self.assertNotIn("oom_killed", services["btc-node"])
 
     def test_rolling_eta_is_visible_on_narrow_terminal_and_stale_rpc_hides_it(self):
         history = NODE.NodeProgressHistory()

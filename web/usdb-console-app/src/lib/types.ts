@@ -15,6 +15,28 @@ export interface HostResources {
   disk_scan_interval_secs?: number
 }
 
+export interface NodeObservation {
+  schema_version: 'usdb-node-observation:v1'
+  status: 'available' | 'not_observed' | 'invalid'
+  observed_at: string | null
+  services: Record<string, {
+    probe_status?: 'available' | 'unavailable' | 'not_observed'
+    readiness?: { status: string; observed_at: string | null; rpc_alive: boolean | null
+      query_ready: boolean | null; consensus_ready: boolean | null; blockers: string[] | null
+      failure: { code: string; severity: string; recovery: string } | null }
+    runtime?: { status: string; details_available: boolean; state: string; health: string | null
+      container_id: string | null; restart_count: number | null; oom_killed: boolean | null
+      exit_code: number | null; started_at: string | null; finished_at: string | null }
+    head?: { number: number; hash: string; timestamp: number | null }
+    peer_count?: number | null
+  }>
+  incidents: { status: 'available' | 'unavailable' | 'not_configured'; events: Array<{
+    event_id: string | null; service: string; code: string; severity: string; recovery: string
+    latched: boolean; source: string; detected_at: string | null; evidence_status: string
+    reason?: string; baseline_epoch?: number | null; observed_epoch?: number | null
+  }> }
+}
+
 export interface MonitorSnapshot {
   status: 'available' | 'missing' | 'stale' | 'unavailable' | 'invalid'
   age_ms?: number | null
@@ -26,6 +48,7 @@ export interface MonitorSnapshot {
     network?: { name?: string; chain_id?: string | number; genesis_hash?: string; bitcoin_network?: string }
     node_identity?: { configured_miner_address?: string }
     host_resources?: HostResources
+    observations?: NodeObservation
     controller?: { state?: string; runtime_state?: string }
     resources?: { mode?: string; phase?: string; transition_pending?: boolean; configured_limits_bytes?: Record<string, number>; host_memory_bytes?: number }
     mining?: { state?: string }

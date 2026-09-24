@@ -47,6 +47,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/bitcoin_release.py",
     "docker/scripts/data/assumeutxo/mainnet-935000.json",
     "docker/scripts/tools/node_progress_timing.py",
+    "docker/scripts/tools/node_observation.py",
     "docker/scripts/tools/node_progress_render.py",
     "docker/scripts/tools/node_doctor.py",
     "docker/scripts/tools/node_image_progress.py",

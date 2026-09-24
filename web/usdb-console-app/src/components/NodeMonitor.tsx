@@ -36,6 +36,15 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
         <p>{zh ? '检查采集进程：systemctl status usdb-console-monitor-<bundle-id>.service；前台模式可持续运行 usdb-node console monitor。' : 'Inspect systemctl status usdb-console-monitor-<bundle-id>.service; foreground mode can keep usdb-node console monitor running.'}</p>
       </div>}
       {report && <>
+        {report.observations?.incidents.status === 'unavailable' && <p role="alert" className="text-sm">
+          {zh ? '无法读取持久事故记录，当前不能确认是否存在停机事故。' : 'Durable incident records are unavailable; the halt state is unknown.'}
+        </p>}
+        {report.observations?.incidents.events.map(event => <div key={event.event_id ?? event.code} role="alert" className="rounded border border-[color:var(--cp-border)] p-4 text-sm">
+          <strong>{!fresh && (zh ? '上次观测：' : 'Last observed: ')}{zh ? '严重事故，需要人工处理' : 'Critical incident; manual intervention required'} · {event.code}</strong>
+          <p className="mt-2">{zh ? '深度 BTC 重组保护已记录持久停机。请保留事故记录并联系网络运维；重启不能解除此状态。' : 'The deep BTC reorg guard recorded a durable halt. Preserve the incident record and contact the network operator; restarting does not clear it.'}</p>
+          <p className="mt-2 break-all">ID: {show(event.event_id)} · {zh ? '发生时间' : 'Detected'}: {show(event.detected_at)}</p>
+          {event.evidence_status !== 'available' && <p>{zh ? '事故文件存在，但详情无效或不可读取；不能据此忽略停机标记。' : 'The marker exists but its details are invalid or unreadable; the halt remains in effect.'}</p>}
+        </div>)}
         <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
           {[
             [zh ? '网络 / 节点角色' : 'Network / node role', `${show(report.network?.name)} / ${monitorValue('roles', report.node_role, t)}`],
@@ -58,9 +67,20 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
             const state = component.display_state ?? component.state
             const current = fresh && !component.observation_unavailable && !['STALE', 'UNAVAILABLE'].includes(state)
             const displayedState = !fresh ? 'STALE' : component.observation_unavailable && state !== 'STALE' ? 'UNAVAILABLE' : state
+            const observation = report.observations?.services[component.id]
+            const readiness = observation?.readiness
+            const runtime = observation?.runtime
             return <article key={component.id} className="min-w-0 rounded border border-[color:var(--cp-border)] p-4" aria-label={title}>
             <div className="flex flex-wrap justify-between gap-2"><h3 className="font-medium">{title}</h3><strong title={displayedState} className="status-pill" data-tone={!current ? 'neutral' : ['FAILED', 'BLOCKED'].includes(state) ? 'danger' : state === 'READY' ? 'success' : 'neutral'}>{monitorValue('states', displayedState, t)}</strong></div>
             {!current && <p className="mt-2 text-xs text-[color:var(--cp-muted)]">{t('monitor.historical')}</p>}
+            {readiness && <div className="mt-2 text-sm">
+              <p>{zh ? '可查询 / 共识就绪' : 'Query / consensus ready'}: {show(readiness.query_ready)} / {show(readiness.consensus_ready)}</p>
+              {!!readiness.blockers?.length && <p className="break-words">{zh ? '未就绪原因' : 'Readiness blockers'}: {readiness.blockers.join(', ')}</p>}
+              {readiness.failure && <p>{zh ? '就绪状态未知' : 'Readiness unknown'}: {readiness.failure.code}</p>}
+            </div>}
+            {runtime?.details_available && <p className="mt-2 text-sm">
+              {zh ? '容器累计重启' : 'Container restarts'}: {show(runtime.restart_count)} · OOM: {show(runtime.oom_killed)}
+            </p>}
             {component.progress_phase && <p className="mt-2 text-sm">{t(current ? 'monitor.phase' : 'monitor.lastPhase')}{zh ? '：' : ': '}{monitorValue('phases', component.progress_phase, t)}</p>}
             {component.current != null && <p className="mt-2 break-words">{progressCounter(component.current, component.total, component.unit, locale, t)}</p>}
             {component.progress_percent != null && <progress className="monitor-progress mt-2 w-full" data-current={current} aria-label={`${title} ${t('monitor.progress')}`} value={component.progress_percent} max={100} />}

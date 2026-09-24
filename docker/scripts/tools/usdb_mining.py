@@ -149,6 +149,12 @@ def _read_chain_files(layout: node.ReleaseLayout, env, action: str) -> dict:
                     raise ValueError("invalid chain identity metadata")
             if set(report) != expected or type(report.get("initialized")) is not bool:
                 raise ValueError("invalid chain initialization metadata")
+        elif action == "incidents":
+            from node_observation import incidents
+            sanitized = incidents(report)
+            if sanitized["status"] != "available":
+                raise ValueError("invalid chain incident metadata")
+            return sanitized
         elif (set(report) != {"halted", "baseline_present", "baseline_epoch"} or
               type(report.get("halted")) is not bool or type(report.get("baseline_present")) is not bool or
               (report["baseline_present"] and (type(report["baseline_epoch"]) is not int or report["baseline_epoch"] < 0))):

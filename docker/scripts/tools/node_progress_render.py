@@ -290,6 +290,15 @@ def _chain_bootstrap_detail(report: dict[str, Any], chain: dict[str, Any]) -> st
 
 def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
     rows = []
+    incidents = report.get("observations", {}).get("incidents", {})
+    if incidents.get("status") == "unavailable":
+        rows.append(_Row("Incident records", "UNAVAILABLE", info=[
+            "Durable halt records could not be observed; this does not establish recovery."]))
+    for event in incidents.get("events", []):
+        rows.append(_Row("Chain incident", "BLOCKED", summary=event["code"], info=[
+            f"critical | manual intervention | id={event.get('event_id') or 'unknown'}",
+            f"Detected: {event.get('detected_at') or 'unknown'} | evidence={event.get('evidence_status', 'unknown')}",
+            "Preserve the deep BTC reorg recovery record; restarting does not clear this incident."]))
     controller = report.get("controller", {})
     if controller and (details or controller.get("action_required") or controller.get("runtime_state") == "failed"):
         row = _Row("Controller", controller.get("display_state", "unknown").upper(),
