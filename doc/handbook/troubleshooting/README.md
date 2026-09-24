@@ -263,6 +263,18 @@ usdb-node controller logs --follow
 
 如果 controller 只是 `inactive (dead)`，先核对节点是否已 `READY` 或正在等待 peers；这可能是本轮编排正常结束。
 
+如果 `up` 提示 `could not verify the observer process release`，失败发生在私有控制台 monitor 的进程版本检查。r35 在首次启动 monitor 后可能检查过早；若 monitor 随后已经正常运行，可稍等几秒再执行一次 `usdb-node up`，不必重新 `setup` 或安装 controller。
+
+包含该修复的工具会自动等待最多 5 秒，每次重新查询当前 PID，再读取进程版本。短暂的权限或进程切换问题恢复后继续启动；持续失败仍会停止，并给出错误类型、可用的 PID 和 errno。若反复失败，检查：
+
+```bash
+systemctl show usdb-console-monitor-usdb-testnet-v0.service \
+  -p ActiveState -p SubState -p MainPID -p User -p Result -p NRestarts
+journalctl -u usdb-console-monitor-usdb-testnet-v0.service -n 50 --no-pager
+```
+
+确认 `User` 是配置节点时使用的运维账号，并结合错误检查该账号的进程访问权限。仅有 `active/running` 不代表进程版本核对通过；持续超时、版本不符或服务退出时，保留错误和上述状态供排查。
+
 如果是 r28 的 `Overall READY`、`controller=failed`，先核对最后一次 controller 日志和退出码。日志若在 `AWAITING_PEERS` 以退出码 2 结束，而现在链已连上并追平，这是旧版将正常入网等待作为人工处理退出后留下的 systemd 记录。包含持续观察改进的工具会显示 `idle` 并保留原始退出结果；新版编排也不再因正常连接或追块而失败。其他退出原因仍需排查，不能仅凭 `Overall READY` 忽略真实错误。旧版因 PATH 缺少 `~/.local/bin` 导致的标准安装 `REVIEW_REQUIRED` 也已修正；无需为这些显示问题反复重装 controller 或重启链。见[后台任务状态](../node/status.md#后台任务状态)。
 
 **恢复标志**：明确失败已消除，服务继续推进并最终恢复整体运行；只提交成功或容器重新出现不算恢复完成。仍失败时按下面的求助清单提供信息。

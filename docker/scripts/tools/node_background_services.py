@@ -5,6 +5,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import time
 
 import control_plane_monitor as monitor
 from node_controller_status import _command_options, _directives, PROBE_TIMEOUT_SECS, UNIT_MAX_BYTES
@@ -12,6 +13,12 @@ from node_controller_status import _command_options, _directives, PROBE_TIMEOUT_
 
 PROPERTIES = ("LoadState", "ActiveState", "SubState", "UnitFileState", "NeedDaemonReload",
               "FragmentPath", "DropInPaths", "MainPID")
+PROCESS_RELEASE_WAIT_SECS = 5.0
+PROCESS_RELEASE_POLL_SECS = 0.2
+
+
+class _ProcessReleasePending(ValueError):
+    """The PID may still be crossing systemd's fork, credential switch and exec."""
 
 
 def _review(unit: Path, reason: str) -> ValueError:
@@ -46,11 +53,11 @@ def _normalized(content: str) -> dict:
     return result
 
 
-def _probe(unit: Path) -> dict:
+def _probe(unit: Path, *, timeout: float = PROBE_TIMEOUT_SECS) -> dict:
     try:
         result = subprocess.run(
             ["systemctl", "show", "--no-pager", "--property=" + ",".join(PROPERTIES), unit.name],
-            capture_output=True, text=True, check=False, timeout=PROBE_TIMEOUT_SECS,
+            capture_output=True, text=True, check=False, timeout=timeout,
         )
         values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
         if any(key not in values for key in PROPERTIES):
@@ -87,10 +94,54 @@ def _running_release(unit: Path, state: dict, proc: Path = Path("/proc")) -> str
         prefix = b"USDB_CONSOLE_MONITOR_RELEASE="
         return next((entry[len(prefix):].decode("utf-8") for entry in data.split(b"\0")
                      if entry.startswith(prefix)), None)
-    except FileNotFoundError:
-        return None
+    except (FileNotFoundError, ProcessLookupError, PermissionError) as error:
+        # Never include environment bytes or arbitrary exception payloads in CLI output.
+        raise _ProcessReleasePending(f"PID {pid}: {type(error).__name__} (errno={error.errno})") from error
     except (OSError, ValueError, KeyError) as error:
-        raise _review(unit, "could not verify the observer process release; check access to its /proc entry") from error
+        detail = f"{type(error).__name__}" + (f" (errno={error.errno})" if isinstance(error, OSError) else "")
+        raise _review(unit, f"could not verify the observer process release ({detail}); check access to its /proc entry") from error
+
+
+def _observe_release(unit: Path, *, after_start: bool = False) -> tuple[dict, str | None]:
+    """Wait briefly for a readable process, re-probing systemd instead of pinning a stale PID.
+
+    Type=simple acknowledges fork before the service has switched user and exec'd.
+    Only transient process observations are retried; unit policy and query errors
+    retain the normal fail-closed path. A readable old release is never accepted
+    as the current one, and an existing legacy unstamped process can still migrate.
+    """
+    deadline = time.monotonic() + PROCESS_RELEASE_WAIT_SECS
+    waited = False
+    pending = "process identity is not yet available"
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _review(unit, f"observer process release verification timed out after {PROCESS_RELEASE_WAIT_SECS:g}s "
+                          f"({pending}); check the service user and access to its /proc entry")
+        state = _probe(unit, timeout=min(PROBE_TIMEOUT_SECS, remaining))
+        # A start failure is not a transient process-permission observation.
+        if state["LoadState"] != "loaded" or state["ActiveState"] in {"inactive", "failed"}:
+            return state, None
+        if not after_start and state["ActiveState"] == "activating":
+            return state, None
+        if state["ActiveState"] == "active" and state["SubState"] == "running":
+            try:
+                release = _running_release(unit, state)
+            except _ProcessReleasePending as error:
+                pending = str(error)
+            else:
+                if release is not None or (not after_start and int(state["MainPID"]) > 0):
+                    if waited:
+                        print(f"Background service {unit.name}: process release observation available", file=sys.stderr, flush=True)
+                    return state, release
+                pending = "running process has no release stamp yet"
+        else:
+            pending = "observer is still starting"
+        if not waited:
+            print(f"Waiting for background service {unit.name}: process release verification "
+                  f"(up to {PROCESS_RELEASE_WAIT_SECS:g}s)", file=sys.stderr, flush=True)
+            waited = True
+        time.sleep(min(PROCESS_RELEASE_POLL_SECS, max(0, deadline - time.monotonic())))
 
 
 def _plan(layout, node, context) -> list[dict]:
@@ -171,9 +222,15 @@ def ensure(layout, *, node) -> dict:
             if observer["content"] is None and plan[0]["state"]["UnitFileState"] == "enabled":
                 node._privileged_command(["systemctl", "enable", observer["unit"].name])
             monitor.prepare(layout, node)
-            active = observer["state"]["ActiveState"] == "active"
-            outdated = active and _running_release(observer["unit"], observer["state"]) != layout.release_id
-            refresh = outdated or observer["changed"] or observer["state"]["NeedDaemonReload"] == "yes"
+            # Reconcile against a fresh, readable process observation; a running
+            # unit may have restarted since the configuration plan was collected.
+            refresh = observer["changed"] or observer["state"]["NeedDaemonReload"] == "yes"
+            if refresh:
+                current = _probe(observer["unit"])
+            else:
+                current, running_release = _observe_release(observer["unit"])
+                refresh = current["ActiveState"] == "active" and running_release != layout.release_id
+            active = current["ActiveState"] == "active"
             if not active or refresh:
                 verb = "restart" if active else "start"
                 node._privileged_command(["systemctl", "reset-failed", observer["unit"].name], check=False)
@@ -181,10 +238,10 @@ def ensure(layout, *, node) -> dict:
                 # accepting an asynchronous request is not evidence of startup.
                 node._privileged_command(["systemctl", verb, observer["unit"].name])
                 actions.append(verb + ":" + observer["unit"].name)
-            final = _probe(observer["unit"])
+            final, running_release = _observe_release(observer["unit"], after_start=True)
             if final["LoadState"] != "loaded" or final["ActiveState"] != "active" or final["SubState"] != "running":
                 raise _review(observer["unit"], "observer did not reach running state; inspect its journal")
-            if _running_release(observer["unit"], final) != layout.release_id:
+            if running_release != layout.release_id:
                 raise _review(observer["unit"], "observer process is not running the selected release; inspect its journal")
         except (OSError, subprocess.SubprocessError) as error:
             raise ValueError("Background service preparation failed; check the preceding systemd/sudo error and "

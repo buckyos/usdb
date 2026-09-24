@@ -1,7 +1,9 @@
 """Upgrade reconciliation must not skip ready nodes or overwrite operator policy."""
 
 from contextlib import redirect_stdout
+import errno
 import io
+from itertools import repeat
 import json
 from pathlib import Path
 import subprocess
@@ -92,6 +94,115 @@ class BackgroundServicesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "check access to its /proc"):
                 NODE.ensure_background_services(f.layout)
             self.assertEqual(f.commands, [])
+
+    def test_first_start_waits_for_process_permissions_without_restarting(self):
+        with BackgroundServicesFixture() as f:
+            f.process_read_errors([PermissionError(errno.EACCES, "SECRET"),
+                                   PermissionError(errno.EPERM, "SECRET")])
+            result = NODE.ensure_background_services(f.layout)
+            self.assertEqual(result["monitor"], "running")
+            self.assertEqual(result["actions"], ["start:" + f.observer.name])
+            self.assertEqual(len(f.waits), 2)
+            self.assertNotIn("SECRET", json.dumps(result))
+
+    def test_existing_observer_with_transient_permission_error_is_not_restarted(self):
+        with BackgroundServicesFixture() as f:
+            f.running_observer()
+            f.process_read_errors([PermissionError(errno.EACCES, "SECRET")])
+            result = NODE.ensure_background_services(f.layout)
+            self.assertEqual(result["actions"], [])
+            self.assertEqual(f.commands, [])
+            self.assertEqual(len(f.waits), 1)
+
+    def test_disappearing_process_is_reprobed_and_replacement_pid_is_verified(self):
+        for error in (FileNotFoundError(errno.ENOENT, "gone"), ProcessLookupError(errno.ESRCH, "gone")):
+            with self.subTest(error=type(error).__name__), BackgroundServicesFixture() as f:
+                f.running_observer()
+                f.process_read_errors([error])
+                f.on_wait = lambda: f.running_observer(pid=322)
+                result = NODE.ensure_background_services(f.layout)
+                self.assertEqual(result["monitor"], "running")
+                self.assertEqual(f.commands, [])
+                self.assertEqual(len(f.waits), 1)
+                self.assertEqual(SERVICES._running_release.call_args.args[1]["MainPID"], "322")
+
+    def test_persistent_permission_failure_is_bounded_and_reports_safe_diagnostics(self):
+        with BackgroundServicesFixture() as f:
+            f.running_observer()
+            f.process_read_errors(repeat(PermissionError(errno.EACCES, "SECRET")))
+            with self.assertRaisesRegex(ValueError, "verification timed out after 5s") as caught:
+                NODE.ensure_background_services(f.layout)
+            self.assertIn("PID 321: PermissionError (errno=13)", str(caught.exception))
+            self.assertNotIn("SECRET", str(caught.exception))
+            self.assertAlmostEqual(f.elapsed, SERVICES.PROCESS_RELEASE_WAIT_SECS)
+            self.assertEqual(f.commands, [])
+            for call in f.run.call_args_list:
+                self.assertGreater(call.kwargs["timeout"], 0)
+                self.assertLessEqual(call.kwargs["timeout"], SERVICES.PROCESS_RELEASE_WAIT_SECS)
+
+    def test_start_waits_for_pid_and_release_stamp_publication(self):
+        for missing in ("pid", "stamp"):
+            with self.subTest(missing=missing), BackgroundServicesFixture() as f:
+                def starting():
+                    if missing == "pid":
+                        f.states[f.observer.name]["MainPID"] = "0"
+                    else:
+                        (f.proc / "321/environ").write_bytes(b"UNRELATED=SECRET\0")
+
+                f.on_start = starting
+                f.on_wait = f.running_observer
+                result = NODE.ensure_background_services(f.layout)
+                self.assertEqual(result["monitor"], "running")
+                self.assertEqual(len(f.waits), 1)
+                self.assertEqual(result["actions"], ["start:" + f.observer.name])
+
+    def test_failed_or_wrong_release_after_start_is_not_accepted(self):
+        for failure in ("failed", "old_release"):
+            with self.subTest(failure=failure), BackgroundServicesFixture() as f:
+                def starting():
+                    if failure == "failed":
+                        f.states[f.observer.name].update(ActiveState="failed", SubState="failed", MainPID="0")
+                    else:
+                        f.running_observer(release="r25")
+
+                f.on_start = starting
+                message = "did not reach running" if failure == "failed" else "not running the selected release"
+                with self.assertRaisesRegex(ValueError, message):
+                    NODE.ensure_background_services(f.layout)
+                self.assertEqual(f.waits, [])
+                self.assertFalse(any(command[-1] == f.unit.name for command in f.commands))
+
+    def test_missing_stamp_after_start_times_out_without_continuing_startup(self):
+        with BackgroundServicesFixture() as f:
+            f.on_start = lambda: (f.proc / "321/environ").write_bytes(b"UNRELATED=SECRET\0")
+            with mock.patch.object(NODE, "collect_node_status", return_value={"overall_state": "READY"}), \
+                    mock.patch.object(NODE, "start_controller_unit") as start:
+                with self.assertRaisesRegex(ValueError, "running process has no release stamp yet"):
+                    NODE.submit_up_to_controller(f.layout, dry_run=False, allow_activation=False)
+            self.assertAlmostEqual(f.elapsed, SERVICES.PROCESS_RELEASE_WAIT_SECS)
+            start.assert_not_called()
+            f.helper.assert_not_called()
+
+    def test_systemd_override_appearing_during_retry_still_requires_review(self):
+        with BackgroundServicesFixture() as f:
+            f.running_observer()
+            f.process_read_errors([PermissionError(errno.EACCES, "SECRET")])
+            f.on_wait = lambda: f.states[f.observer.name].update(DropInPaths="/etc/systemd/system/custom.conf")
+            with self.assertRaisesRegex(ValueError, "override.*manual review"):
+                NODE.ensure_background_services(f.layout)
+            self.assertEqual(len(f.waits), 1)
+            self.assertEqual(f.commands, [])
+
+    def test_invalid_process_environment_is_not_retried_or_exposed(self):
+        for data in (b"USDB_CONSOLE_MONITOR_RELEASE=SECRET\xff\0", b"SECRET" * (128 * 1024)):
+            with self.subTest(size=len(data)), BackgroundServicesFixture() as f:
+                f.running_observer()
+                (f.proc / "321/environ").write_bytes(data)
+                with self.assertRaisesRegex(ValueError, "could not verify") as caught:
+                    NODE.ensure_background_services(f.layout)
+                self.assertNotIn("SECRET", str(caught.exception))
+                self.assertEqual(f.waits, [])
+                self.assertEqual(f.commands, [])
 
     def test_legacy_unstamped_observer_is_recognized(self):
         with BackgroundServicesFixture() as f:

@@ -31,6 +31,12 @@ class BackgroundServicesFixture(ControllerStatusFixture):
             state["MainPID"] = "0"
         self.proc = self.root / "proc"
         self.proc.mkdir()
+        self.elapsed = 0.0
+        self.waits = []
+        self.on_wait = lambda: None
+        self.on_start = lambda: None
+        self.stack.enter_context(mock.patch.object(SERVICES, "time", SimpleNamespace(
+            monotonic=lambda: self.elapsed, sleep=self.advance)))
         live_release = SERVICES._running_release
         self.stack.enter_context(mock.patch.object(SERVICES, "_running_release",
                                                   side_effect=lambda unit, state: live_release(unit, state, self.proc)))
@@ -40,9 +46,30 @@ class BackgroundServicesFixture(ControllerStatusFixture):
         self.ord = self.stack.enter_context(mock.patch.object(NODE, "_start_optional_ord"))
         return self
 
-    def running_observer(self, release=None):
-        self.states[self.observer.name].update(ActiveState="active", SubState="running", MainPID="321")
-        path = self.proc / "321"
+    def advance(self, seconds):
+        """Drive startup races deterministically without real sleeps or host uptime assumptions."""
+        self.elapsed += seconds
+        self.waits.append(seconds)
+        self.on_wait()
+
+    def process_read_errors(self, errors):
+        """Inject kernel-style read failures only for the fixture's process environment."""
+        errors = iter(errors)
+        original = Path.open
+
+        def open_file(path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if path.name == "environ" and path.parent.parent == self.proc and mode == "rb":
+                error = next(errors, None)
+                if error is not None:
+                    raise error
+            return original(path, *args, **kwargs)
+
+        self.stack.enter_context(mock.patch.object(Path, "open", autospec=True, side_effect=open_file))
+
+    def running_observer(self, release=None, *, pid=321):
+        self.states[self.observer.name].update(ActiveState="active", SubState="running", MainPID=str(pid))
+        path = self.proc / str(pid)
         path.mkdir(exist_ok=True)
         path.joinpath("environ").write_bytes(b"UNRELATED=SECRET\0USDB_CONSOLE_MONITOR_RELEASE="
                                             + (release or self.layout.release_id).encode() + b"\0")
@@ -71,6 +98,7 @@ class BackgroundServicesFixture(ControllerStatusFixture):
         elif command[1] in {"start", "restart"}:
             if command[-1] == self.observer.name:
                 self.running_observer()
+                self.on_start()
             else:
                 self.states[command[-1]].update(ActiveState="active", SubState="running")
         elif command[1] == "enable":

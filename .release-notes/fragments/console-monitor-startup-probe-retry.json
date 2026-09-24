@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "console-monitor-startup-probe-retry",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Wait for transient console monitor process observations during background startup",
+  "details": [
+    "Background up retries transient process permission and disappearance errors for up to five seconds while checking the console monitor release. Each attempt refreshes systemd state and MainPID, avoiding a stale PID across process startup or replacement.",
+    "Post-start verification also waits briefly for a PID and release stamp to become visible. Persistent observation errors, missing stamps, failed services and processes running another release still prevent background startup from reporting success.",
+    "Timeout diagnostics include the failure type, PID and errno when available without exporting process environment contents. Existing custom-unit protections and generated-unit migration remain in effect; a healthy current observer is not restarted merely because one observation was temporarily unreadable."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}
