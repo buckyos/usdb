@@ -14,7 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/tools"))
 import usdb_node as NODE
 from node_progress_render import render_node_progress
-from common.node_progress import ready_miner_progress
+from common.node_progress import native_bootstrap_progress, ready_miner_progress
 
 
 class ProgressDisplayTests(unittest.TestCase):
@@ -55,7 +55,7 @@ class ProgressDisplayTests(unittest.TestCase):
         self.assertIn("FIRST_NODE: acknowledged first node", rendered[services:preparation])
         self.assertIn("File: download complete", rendered[preparation:])
         self.assertIn("SHA-256: verified", rendered[preparation:])
-        self.assertIn("Bitcoin history", rendered[preparation:])
+        self.assertIn("Bitcoin background", rendered[preparation:])
         self.assertIn("Wallet transactions: unavailable", rendered)
         self.assertNotIn("Script registry", rendered)
         self.assertNotIn("Genesis:", rendered)
@@ -66,6 +66,83 @@ class ProgressDisplayTests(unittest.TestCase):
         self.assertIn(report["components"][-1]["head"]["hash"], expanded)
         self.assertIn("Existing snapshot baseline reused; no file rescan needed", expanded)
         self.assertEqual(report, original)
+
+    def test_native_foreground_readiness_is_distinct_from_background_and_balance_history(self):
+        report = native_bootstrap_progress()
+        original = copy.deepcopy(report)
+        for details in (False, True):
+            for width in (40, 80, 120):
+                for unicode in (False, True):
+                    with self.subTest(details=details, width=width, unicode=unicode):
+                        rendered = render_node_progress(report, details=details, width=width, unicode=unicode)
+                        self.assertTrue(all(len(line) <= width for line in rendered.splitlines()))
+                        compact = " ".join(rendered.split())
+                        self.assertIn("Bitcoin foreground READY", compact)
+                        self.assertIn("Bitcoin background SYNCING", compact)
+                        self.assertIn("Balance history SYNCING", compact)
+                        self.assertIn("Bitcoin Core background validation is not complete", compact)
+                        self.assertNotIn("Bitcoin history", compact)
+        self.assertEqual(report, original)
+
+    def test_pre_snapshot_ibd_and_legacy_bitcoin_keep_their_existing_labels(self):
+        for label, phase, background in (("Bitcoin (IBD)", "pre_snapshot_ibd", {}), ("Bitcoin", "", None)):
+            component = NODE._component_progress("bitcoin", "SYNCING", "ordinary block sync", current=100, total=200)
+            component.update(label=label, progress_phase=phase)
+            if background is not None:
+                component["background_validation"] = dict(available=True, validated=False, height=None, target=935000)
+            rendered = render_node_progress(dict(components=[component]))
+            self.assertIn(label + " SYNCING", " ".join(rendered.split()))
+            self.assertNotIn("Bitcoin foreground", rendered)
+            self.assertNotIn("Foreground tip ready", rendered)
+
+    def test_chain_wait_explains_active_bootstrap_but_keeps_raw_diagnostics(self):
+        for phase, state, wording in (("importing", "IMPORTING", "importing the UTXO snapshot"),
+                                      ("replaying", "SYNCING", "replaying blocks"),
+                                      ("waiting_for_blocks", "SYNCING", "waiting for Bitcoin blocks or undo data"),
+                                      ("verifying", "VERIFYING", "verifying the baseline")):
+            with self.subTest(phase=phase):
+                report = native_bootstrap_progress()
+                bh = next(item for item in report["components"] if item["id"] == "balance_history")
+                bh.update(state=state, progress_phase=phase)
+                report["native_bootstrap"]["balance_history"]["phase"] = phase
+                chain = report["components"][-1]
+                chain.update(state="STARTING", detail="waiting for managed service startup; " + chain["detail"])
+                original = copy.deepcopy(report)
+                compact = " ".join(render_node_progress(report).split())
+                self.assertIn("waiting for managed service startup; Waiting for balance-history baseline 963,800: " + wording, compact)
+                self.assertIn("RPC starts after baseline verification and publication", compact)
+                self.assertNotIn("Connection reset by peer", compact)
+                expanded = " ".join(render_node_progress(report, details=True).split())
+                self.assertIn("Readiness probe:", expanded)
+                self.assertIn("Connection reset by peer", expanded)
+                self.assertEqual(report, original)
+
+    def test_bootstrap_hint_never_masks_failed_stale_completed_or_unknown_observations(self):
+        for change in ("failed", "unavailable", "old_process", "missing_timestamp", "sealed", "other_error", "other_gate", "chain_failed"):
+            with self.subTest(change=change):
+                report = native_bootstrap_progress()
+                bh = next(item for item in report["components"] if item["id"] == "balance_history")
+                chain = report["components"][-1]
+                bootstrap = report["native_bootstrap"]["balance_history"]
+                if change == "failed":
+                    bh["state"] = "FAILED"
+                elif change == "unavailable":
+                    bh["observation_unavailable"] = True
+                elif change == "old_process":
+                    bootstrap["observed_file_mtime"] = 1
+                elif change == "missing_timestamp":
+                    bh.pop("service_started_at")
+                elif change == "sealed":
+                    bh["progress_phase"] = bootstrap["phase"] = "sealed"
+                elif change == "other_error":
+                    chain["detail"] = "Waiting for balance-history readiness: readiness RPC returned the wrong service identity"
+                elif change == "other_gate":
+                    chain["detail"] = "Waiting for Bitcoin readiness: Connection reset by peer"
+                else:
+                    chain["state"] = "FAILED"
+                rendered = " ".join(render_node_progress(report).split())
+                self.assertIn(chain["detail"], rendered)
+                self.assertNotIn("RPC starts after baseline", rendered)
 
     def test_rendering_imports_without_node_runtime_and_performs_no_io(self):
         result = subprocess.run([sys.executable, "-c",

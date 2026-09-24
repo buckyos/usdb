@@ -9,6 +9,7 @@ presentation objects, not inputs to readiness or resource decisions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 import math
 import textwrap
 from typing import Any
@@ -80,7 +81,10 @@ def _component_row(component: dict[str, Any], *, details: bool) -> _Row:
         state = "STALE"
     elif component.get("observation_unavailable"):
         state = "UNAVAILABLE"
-    row = _Row(component["label"], state, preparation=component["id"] in {"snapshot", "script_registry"})
+    background = component.get("background_validation")
+    native_bitcoin = component["id"] == "bitcoin" and isinstance(background, dict)
+    label = "Bitcoin foreground" if native_bitcoin and component.get("progress_phase") != "pre_snapshot_ibd" else component["label"]
+    row = _Row(label, state, preparation=component["id"] in {"snapshot", "script_registry"})
     healthy = state in _COMPLETE
     current, total = component.get("current"), component.get("total")
     if _height(current):
@@ -98,6 +102,9 @@ def _component_row(component: dict[str, Any], *, details: bool) -> _Row:
     if details or not healthy or component["id"] == "usdb_chain":
         if component.get("detail"):
             row.info.append(component["detail"])
+    if (native_bitcoin and state == "READY" and background.get("available")
+            and not background.get("stale") and background.get("validated") is False):
+        row.info.append("Foreground tip ready; Bitcoin Core background validation is not complete")
     file = component.get("file_preparation")
     if isinstance(file, dict):
         verification = ("verified" if file["state"] == "VERIFIED" else
@@ -197,7 +204,7 @@ def _history_row(background: dict[str, Any], *, details: bool) -> _Row:
         state, summary = "SYNCING", f"SYNCING {background['height']}/{background['target']}"
     else:
         state, summary = "WAITING", "WAITING for snapshot activation"
-    return _Row("Bitcoin history", state, preparation=True,
+    return _Row("Bitcoin background", state, preparation=True,
                 summary=f"baseline {background['target']:,}" if state == "VALIDATED" and not details else "",
                 info=["Core background history: " + summary] if details or state != "VALIDATED" else [],
                 percent=_coverage(background.get("height"), background.get("target")) if state == "SYNCING" else None)
@@ -244,6 +251,43 @@ def _minting_rows(minting: dict[str, Any], *, details: bool) -> list[_Row]:
     return [index, ord_row]
 
 
+def _chain_bootstrap_detail(report: dict[str, Any], chain: dict[str, Any]) -> str | None:
+    """Explain expected pre-RPC bootstrap waits using evidence from the current BH process."""
+    detail = chain.get("detail", "")
+    marker = "Waiting for balance-history readiness:"
+    if (chain["state"] not in {"WAITING", "STARTING"}
+            or chain.get("display_state", chain["state"]) not in {"WAITING", "STARTING"}
+            or chain.get("last_observed_at")
+            or chain.get("observation_unavailable") or marker not in detail
+            or not any(error in detail.lower() for error in ("connection reset by peer", "connection refused"))):
+        return None
+    bh = next((item for item in report.get("components", []) if item["id"] == "balance_history"), {})
+    if (bh.get("state") not in {"IMPORTING", "SYNCING", "VERIFYING"}
+            or bh.get("last_observed_at") or bh.get("observation_unavailable")
+            or str(bh.get("detail", "")).startswith("STALE")
+            or bh.get("display_state", bh.get("state")) not in {"IMPORTING", "SYNCING", "VERIFYING"}):
+        return None
+    bootstrap = report.get("native_bootstrap", {}).get("balance_history", {})
+    phase = bootstrap.get("phase")
+    stages = {"importing": "importing the UTXO snapshot", "replaying": "replaying blocks",
+              "waiting_for_blocks": "waiting for Bitcoin blocks or undo data", "verifying": "verifying the baseline"}
+    if phase not in stages or phase != bh.get("progress_phase"):
+        return None
+    updated = bootstrap.get("observed_file_mtime")
+    try:
+        started = datetime.fromisoformat(bh["service_started_at"].replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    # A journal left by a previous process cannot explain the current RPC failure.
+    if (started.tzinfo is None or type(updated) not in (int, float)
+            or not math.isfinite(updated) or updated < started.timestamp()):
+        return None
+    baseline = bh.get("genesis_milestone", {}).get("height")
+    target = f" {baseline:,}" if _height(baseline) else ""
+    return (detail.partition(marker)[0] + f"Waiting for balance-history baseline{target}: {stages[phase]}; "
+            "RPC starts after baseline verification and publication")
+
+
 def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
     rows = []
     controller = report.get("controller", {})
@@ -262,7 +306,12 @@ def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
                          info=["Waiting for managed service restart / resource adoption"]))
     for component in report.get("components", []):
         if details or component["state"] != "SKIPPED":
-            rows.append(_component_row(component, details=details))
+            explanation = _chain_bootstrap_detail(report, component) if component["id"] == "usdb_chain" else None
+            displayed = {**component, "detail": explanation} if explanation else component
+            row = _component_row(displayed, details=details)
+            if explanation and details:
+                row.info.append("Readiness probe: " + component["detail"])
+            rows.append(row)
         if isinstance(component.get("background_validation"), dict):
             rows.append(_history_row(component["background_validation"], details=details))
     rows += _minting_rows(report.get("minting", {}), details=details)
@@ -327,7 +376,7 @@ def render_node_progress(report: dict[str, Any], *, phase: str = "observe", widt
             else:
                 mark = "…" if unicode else "[WAIT]"
             prefix = f"  {mark} " if unicode else f"  {mark:<6} "
-            body = f"{row.label:<17} {row.state}"
+            body = f"{row.label:<18} {row.state}"
             info = list(filter(None, row.info))
             if row.percent is not None:
                 bar_width = 20

@@ -90,8 +90,8 @@ usdb-node status --progress-json    # 保留完整的机器可读观测字段
 | `UTXO snapshot`：下载 / 校验 | 准备启动文件 | 看字节进度和当前阶段；下载完成后仍需校验和导入 |
 | `UTXO snapshot`：`WAITING` / 等待基线区块头 | 文件已准备后，等待 Core 识别快照对应的区块头 | 看文件完成提示和目标基线高度；不会因此重新下载，也无需先同步完此前所有完整区块 |
 | `UTXO snapshot`：导入 | Bitcoin 导入启动数据 | 看导入状态与 Bitcoin 日志；r25 不一定有详细导入百分比 |
-| `Bitcoin` | Bitcoin 前台同步 | 看当前高度、目标高度及连接情况 |
-| `Bitcoin history`（旧版为 `Core background history`） | Bitcoin 后台验证较早历史 | 单独观察其高度和 `VALIDATED` 状态 |
+| `Bitcoin foreground`（旧版为 `Bitcoin`） | bitcoind 基于快照追平最新区块的前台链 | `READY` 表示前台就绪；看当前高度、目标高度及连接情况 |
+| `Bitcoin background`（旧版为 `Bitcoin history` / `Core background history`） | 同一个 bitcoind 从创世块开始补齐、验证快照之前的历史 | 单独观察其高度和 `VALIDATED` 状态；这不是 balance-history 服务 |
 | `balance-history` | 导入、重放、校验后提供数据服务 | 看阶段和已处理数量；重放完成后仍可能处于校验或等待服务启动 |
 | `usdb-indexer` | 等待可查询的上游数据，然后继续索引 | 上游尚未可查询时等待是正常依赖关系 |
 | `USDB chain` | 等待上游就绪，再连接并同步 USDB 网络 | 上游完成后看链高度与 peers 状态 |
@@ -100,13 +100,16 @@ usdb-node status --progress-json    # 保留完整的机器可读观测字段
 
 Bitcoin 前台可以先就绪，后台历史验证继续进行。**总体可用和后台验证完成分别观察**；不要为了消除后台进度而停止验证。
 
+包含名称改进的版本会明确区分 `Bitcoin foreground`、`Bitcoin background` 和 `Balance history`。前两项都属于 Bitcoin Core，后一项是独立的余额历史服务，从 UTXO 快照基线重放到 USDB 创世基线，再追踪稳定区块。前台 `READY`、后台 `SYNCING` 可以同时出现，此时前台行会提示后台验证尚未完成。快照尚未激活时，普通区块同步仍显示 `Bitcoin (IBD)`。
+
 ### 高度和等待条件怎么对应
 
 各组件右侧的目标高度来自不同的上游。包含目标来源提示的版本会在默认面板中显示：
 
 | 组件 | 目标来源 | 示例 |
 | --- | --- | --- |
-| Bitcoin | 已知的 Bitcoin 区块头高度 | `967953 / 967961`：前台还差 8 块 |
+| Bitcoin foreground | 已知的 Bitcoin 区块头高度 | `967953 / 967961`：前台还差 8 块 |
+| Bitcoin background | UTXO 快照基线高度 | `340941 / 935000`：bitcoind 后台仍在验证更早的历史 |
 | Balance history | `Target: Bitcoin headers minus 10 confirmation blocks`：区块头高度减去网络要求的确认块数 | `967943 / 967951`：已处理完目前可用的稳定区块，余下部分等待 Bitcoin |
 | USDB indexer | `Target: balance-history available stable height`：BH 当前已提供的稳定高度 | `967943 / 967943`：已追平 BH，可显示 `READY` |
 
@@ -120,6 +123,16 @@ USDB chain WAITING
 ```
 
 其他等待条件包括快照准备、Bitcoin RPC、前台就绪检查、BH 或 indexer 就绪。全部上游检查通过后，短暂显示 `Upstream ready; waiting for controller to start USDB chain`；链初始化失败等明确错误仍优先显示。
+
+BH 首次构建基线时，RPC 要等导入、重放、校验及基线发布完成后才启动。包含提示改进的版本在确认 BH 当前进程仍处于这些阶段时，会把连接拒绝或重置解释为：
+
+```text
+USDB chain WAITING
+  Waiting for balance-history baseline 963,800: replaying blocks;
+  RPC starts after baseline verification and publication
+```
+
+这时继续观察 `Balance history` 的进度。`status --details` 或 `status --watch --details` 仍保留原始 RPC 探测错误；JSON 观测也保留原始诊断。若 BH 已失败、基线已发布、进度记录不属于当前进程，或出现其他 RPC 错误，面板继续显示原始错误，不把它归为基线等待。
 
 重启已有节点也会重新检查这些启动条件，随后使用已有 chain 数据继续同步；等待本身不表示历史区块丢失，也无需清数据或重新初始化。Bitcoin 后台历史验证不属于这个前台启动门槛。r33 原始工具会笼统显示 `waiting for the USDB indexer readiness gate`，需安装并切换到包含此提示修复的工具版本后生效。
 

@@ -36,6 +36,33 @@ def ready_miner_progress():
                 components=[snapshot, NODE._component_progress("script_registry", "SKIPPED", "Native observed-script registry"), bitcoin, bh, indexer, chain])
 
 
+def native_bootstrap_progress():
+    """Mirror a foreground-ready node still validating Core history and building the BH baseline."""
+    report = ready_miner_progress()
+    report.update(release_id="usdb-testnet-v0-r35", node_role="full", overall_state="SYNCING",
+                  observed_at="2026-09-24T11:43:58+00:00", controller=dict(display_state="running"), mining=None,
+                  resources=dict(phase="overlap"), minting=dict(enabled=False))
+    report.pop("observation_elapsed_secs")
+    components = {item["id"]: item for item in report["components"]}
+    components["bitcoin"].update(current=968390, total=968390, progress_phase="foreground", service_elapsed_secs=5338,
+        detail="foreground=968390; background=340941; history_validated=False",
+        background_validation=dict(available=True, validated=False, height=340941, target=935000))
+    components["balance_history"].update(state="SYNCING", current=954400, total=968380,
+        progress_percent=(954400 - 935000) * 100 / (968380 - 935000), progress_phase="replaying",
+        detail="Replaying blocks toward genesis baseline", sync_start_height=935000,
+        service_started_at="2026-09-24T11:09:19.592226+00:00", service_elapsed_secs=2078,
+        genesis_milestone=dict(height=963800, state="replaying", remaining_blocks=9400))
+    components["usdb_indexer"].update(state="WAITING", current=None, total=None, service_elapsed_secs=5331,
+        detail="Waiting for balance-history queryable baseline; indexing has not started")
+    components["usdb_chain"].update(state="WAITING", current=None,
+        detail="Waiting for balance-history readiness: balance-history readiness check failed: [Errno 104] Connection reset by peer")
+    components["usdb_chain"].pop("head")
+    components["usdb_chain"].pop("service_elapsed_secs")
+    report["native_bootstrap"] = dict(balance_history=dict(phase="replaying", height=954400,
+                                                         target=963800, observed_file_mtime=1790250236.0))
+    return report
+
+
 @contextmanager
 def progress_fixture(services, *, pending=False):
     """Exercise the real progress aggregation with ready upstream observations."""

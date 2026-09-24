@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "native-progress-stage-clarity",
+  "type": "changed",
+  "scopes": ["node-runtime"],
+  "summary": "Distinguish Bitcoin foreground and background work from balance-history bootstrap",
+  "details": [
+    "Native progress panels label Core's active chain Bitcoin foreground and its historical validation Bitcoin background, keeping both distinct from the Balance history service. A ready foreground tip with incomplete observed background validation retains an explicit explanation even in compact output. Pre-snapshot Bitcoin (IBD) and legacy Bitcoin labels are preserved.",
+    "When chain startup is waiting on a refused or reset balance-history RPC connection, the compact panel explains the active baseline import, replay or verification stage if a running BH process has matching progress evidence written after that process started. Failed, stale, sealed or unknown bootstrap observations and other RPC errors retain their original diagnostics.",
+    "Expanded panels retain the underlying readiness probe error. Changes are confined to text presentation: progress JSON, readiness decisions, startup gates, resource allocation and service execution are unchanged."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}
