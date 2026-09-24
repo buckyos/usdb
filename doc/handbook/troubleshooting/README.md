@@ -12,6 +12,7 @@
 | 404、下载失败、校验不通过、拉取镜像被拒绝 | [下载问题](#下载失败或校验不通过) |
 | `node.env template is missing keys`，包含 P2P 字段 | [r25 首次配置问题](#首次配置缺少-p2p-字段) |
 | Docker 无权限、版本太低、sudo 失败 | [主机和权限](#docker-权限或主机检查失败) |
+| `doctor` 显示 `ACTION REQUIRED`、`PASSED WITH NOTES` 或 `Not checked` | [阅读诊断报告](#如何阅读-doctor-报告) |
 | `node is already configured` | [已有配置](#提示已有配置) |
 | 磁盘不足、目录容量不符合要求 | [磁盘问题](#磁盘空间不足) |
 | 下载、导入或同步看起来长时间不动 | [同步等待](#同步或导入看起来卡住) |
@@ -27,6 +28,30 @@
 | SourceDAO 初始化失败、等待回执或导出/验证失败 | [SourceDAO 中断与失败恢复](../network-admin/sourcedao.md#中断与失败恢复) |
 | `A SourceDAO task is active`，停机或升级被拒绝 | [SourceDAO 任务互斥](../network-admin/sourcedao.md#维护期间的互斥与备份) |
 | Explorer 预检结果不清楚、check 超时或页面数据失败 | [浏览器与公共 RPC 手册入口](../services/explorer.md#对应章节) |
+
+## 如何阅读 doctor 报告
+
+包含分组报告改进的版本，在 `usdb-node doctor` 顶部显示当前发布版本、网络、Chain ID 和角色。优先阅读 `Needs attention` 中的问题和操作建议，再按分组查看主机、Docker、配置、启动数据、镜像、P2P 及防火墙检查详情，最后跟随 `Next steps` 操作。
+
+| 输出 | 含义与操作 |
+| --- | --- |
+| `PASSED` | 启动前检查通过，可以按计划执行 `up` |
+| `PASSED WITH NOTES` | 检查通过但有提醒；例如 external 防火墙规则需自行核对，工具没有检查云端入站规则 |
+| `ACTION REQUIRED` / `FAIL` | 存在阻断，按具体错误处理后重新执行 `doctor` |
+| `WAIT` | 需要先完成明确操作，例如刷新 Docker 登录会话；单纯在原终端重复检查无效 |
+| `PENDING` | 后续准备工作尚未完成；以该行说明为准，例如首次启动时由 `up` 下载快照 |
+| `SKIP` | 该项未启用或不在检查范围内，不代表已验证通过 |
+| `Not checked` | 前面检查失败，后续组没有执行；不能据此认定后续服务正常或异常 |
+
+检查遇到第一个阻断项后停止；修复后重新运行，才能确认剩余检查。失败仍返回非零退出码。`doctor` 不会下载镜像、导入快照、修复配置或重启服务；通过也不等于节点已经运行或同步完成。运行状态使用 `usdb-node status --watch` 查看。
+
+交互终端会用颜色和符号辅助阅读，同时保留文字状态。窄终端自动换行；重定向时输出纯文本，不写入颜色控制码。保存完整报告：
+
+```bash
+usdb-node doctor > usdb-doctor.txt 2>&1
+```
+
+如需在终端禁用颜色，使用 `NO_COLOR=1 usdb-node doctor`。分享报告前核对其中的主机和目录信息，不提供完整 `node.env` 或钱包文件。
 
 ## 找不到 usdb-node 命令
 
@@ -107,7 +132,7 @@ usdb-node host check
 
 如果同时看到“账号已加入 Docker 组”和“当前会话未生效”，二者并不矛盾：账号授权已写入系统，但这个终端仍使用登录时取得的旧组权限。这常见于首次执行 `prepare-host` 后，不能靠在同一个终端反复运行 `doctor` 解决。
 
-新版会用 `WAIT Docker access`、`Host preparation paused` 和 `DOCKER_SESSION_REFRESH_REQUIRED` 提示刷新会话，最后显示 `USDB node action required`；仅有此项时，再次执行 `prepare-host` 不会询问重新安装软件。旧版末尾的 `Command ... returned non-zero exit status 1` 是主机检查未通过的包装错误，应查看前面的具体原因。
+新版主机检查会用 `WAIT Docker access`、`Host preparation paused` 和 `DOCKER_SESSION_REFRESH_REQUIRED` 提示刷新会话，最后显示 `USDB node action required`；采用分组报告的 `doctor` 则在顶部显示 `ACTION REQUIRED`，在 `Next steps` 列出刷新会话的步骤。仅有此项时，再次执行 `prepare-host` 不会询问重新安装软件。旧版末尾的 `Command ... returned non-zero exit status 1` 是主机检查未通过的包装错误，应查看前面的具体原因。
 
 推荐退出并使用原来的 SSH 命令、以同一运维账号重新登录。希望保留 SSH 连接时，也可以执行：
 

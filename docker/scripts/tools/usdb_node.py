@@ -2099,6 +2099,7 @@ def run_host_action(
     docker_mirror: str = "auto",
     check: bool = True,
     output_to_stderr: bool = False,
+    capture_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if action not in {"check", "install"}:
         raise ValueError(f"unsupported host action: {action}")
@@ -2114,6 +2115,7 @@ def run_host_action(
             arguments,
             check=check,
             output_to_stderr=output_to_stderr,
+            **({"capture_output": True} if capture_output else {}),
         )
     except subprocess.CalledProcessError as error:
         if error.returncode == HOST_SESSION_PENDING_EXIT_CODE:
@@ -2161,6 +2163,7 @@ def run_firewall_action(
     confirm: bool = False,
     ssh_port: int | None = None,
     output_to_stderr: bool = False,
+    capture_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if action not in {"check", "apply"}:
         raise ValueError(f"unsupported firewall action: {action}")
@@ -2201,6 +2204,7 @@ def run_firewall_action(
         "prepare_usdb_firewall.sh",
         arguments,
         output_to_stderr=output_to_stderr,
+        **({"capture_output": True} if capture_output else {}),
     )
 
 
@@ -2231,65 +2235,122 @@ def doctor(
     *,
     output_to_stderr: bool = False,
     allow_pending_snapshot: bool = False,
+    report: Any = None,
 ) -> None:
-    """Check startup strictly; the standalone CLI may defer approved downloads."""
-    if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run configure first")
-    env = read_env(layout.node_env)
-    validate_resource_environment(env, effective_memory_bytes())
-    run_host_action(
+    """Check startup strictly; the CLI can collect a report and defer approved downloads."""
+    def check(section: str, action: Any) -> Any:
+        return report.check(section, action) if report is not None else action()
+
+    def configuration() -> dict[str, str]:
+        if not layout.node_env.is_file():
+            raise ValueError("node is not configured; run usdb-node setup first")
+        env = read_env(layout.node_env)
+        if report is not None:
+            report.identify(layout, env)
+        validate_resource_environment(env, effective_memory_bytes())
+        return env
+
+    env = check("configuration", configuration)
+    capture = {"capture_output": True} if report is not None else {}
+    check("host", lambda: run_host_action(
         layout,
         "check",
         docker_user=default_docker_user(),
         output_to_stderr=output_to_stderr,
-    )
-    pending_snapshot = allow_pending_snapshot and _pending_bootstrap_snapshot(layout, env)
-    _validate_node_config(
-        layout,
-        require_runtime=True,
-        require_bitcoin_runtime=True,
-        require_snapshot_artifacts=not pending_snapshot,
-    )
-    _validate_node_release_images(layout)
+        **capture,
+    ))
+
+    def data() -> bool:
+        pending = allow_pending_snapshot and _pending_bootstrap_snapshot(layout, env)
+        _validate_node_config(
+            layout,
+            require_runtime=True,
+            require_bitcoin_runtime=True,
+            require_snapshot_artifacts=not pending,
+        )
+        return pending
+
+    pending_snapshot = check("data", data)
+    check("images", lambda: _validate_node_release_images(layout))
     import usdb_p2p
-    usdb_p2p.check_host(env)
-    run_helper(
+    check("network", lambda: usdb_p2p.check_host(env))
+    check("runtime", lambda: run_helper(
         layout,
         "run_testnet_runtime.sh",
         ["validate-node"],
         output_to_stderr=output_to_stderr,
-    )
-    registry = _script_registry_doctor_status(layout, read_env(layout.node_env))
+        **capture,
+    ))
+    registry = check("registry", lambda: _script_registry_doctor_status(layout, read_env(layout.node_env)))
     output = sys.stderr if output_to_stderr else sys.stdout
-    if pending_snapshot:
+    if report is not None:
+        if pending_snapshot:
+            report.add("data", "PENDING", "Snapshot", "Release-approved snapshot is not installed yet; "
+                       "usdb-node up to download/resume and verify it. Expected after setup.")
+        if allow_pending_snapshot:
+            report.add("images", "INFO", "Local cache", "usdb-node up pulls required images automatically; "
+                       "local image availability is not required for this preflight.")
+        if env.get("SNAPSHOT_MODE") == "assumeutxo":
+            report.add("data", "INFO", "AssumeUTXO", "up prepares the UTXO file and Core baseline; "
+                       "balance-history imports and replays while Core continues synchronization. "
+                       "Observe with usdb-node status --watch.")
+        report.add("network", "INFO", "Address family", env.get("USDB_P2P_IP_FAMILY", "ipv4") +
+                   "; local checks do not prove public reachability or peer connections")
+        report.add("registry", registry["state"].upper(), "Script registry", registry["summary"] +
+                   (f"; next: {registry['action']}" if registry.get("action") else ""))
+    elif pending_snapshot:
         print(
             "PENDING Snapshot: the release-approved balance-history snapshot is selected "
             "but not yet installed. Run usdb-node up to download/resume and verify it "
             "before startup. This is expected after setup.",
             file=output,
         )
-    if allow_pending_snapshot:
+    if report is None and allow_pending_snapshot:
         print(
             "INFO Docker images: release digests are valid; usdb-node up pulls required "
             "images automatically. Local image availability is not required for this preflight.",
             file=output,
         )
-    if env.get("SNAPSHOT_MODE") == "assumeutxo":
+    if report is None and env.get("SNAPSHOT_MODE") == "assumeutxo":
         print("INFO AssumeUTXO: up downloads/verifies the UTXO file and activates Core's baseline; "
               "balance-history then imports and replays while Core continues synchronization. "
               "Observe both foreground and background with usdb-node status --watch.", file=output)
-    print(
-        f"Script registry {registry['state'].upper()}: {registry['summary']}",
-        file=output,
-    )
-    if configured_firewall_mode(layout) == "managed":
-        run_firewall_action(layout, "check", output_to_stderr=output_to_stderr)
-    else:
-        print(
-            "Host firewall mode is external; skipped UFW inspection. "
-            "Container bind-address validation still passed.",
-            file=output,
-        )
+    if report is None:
+        print(f"Script registry {registry['state'].upper()}: {registry['summary']}", file=output)
+    def firewall() -> Any:
+        if configured_firewall_mode(layout) == "managed":
+            return run_firewall_action(layout, "check", output_to_stderr=output_to_stderr, **capture)
+        if report is not None:
+            report.add("firewall", "SKIP", "External firewall", "UFW inspection skipped; container bind addresses were validated.")
+            report.add("firewall", "WARN", "Ingress rules", "External firewall mode: verify host/cloud rules yourself; "
+                       "usdb-node doctor does not inspect them.")
+        else:
+            print(
+                "Host firewall mode is external; skipped UFW inspection. "
+                "Container bind-address validation still passed.",
+                file=output,
+            )
+        return None
+
+    check("firewall", firewall)
+
+
+def print_doctor_report(load_layout: Any) -> int:
+    """Present standalone doctor, including release-loading errors, without raw log interleaving."""
+    from node_doctor import CHECK_ERRORS, DoctorReport
+    report = DoctorReport()
+    if sys.stdout.isatty():
+        print("Checking USDB node prerequisites...", file=sys.stderr, flush=True)
+    try:
+        layout = report.check("release", load_layout)
+        report.identify(layout)
+        doctor(layout, allow_pending_snapshot=True, report=report)
+    except CHECK_ERRORS:
+        # The failing stage has already retained the error and helper diagnostics.
+        report.print(sys.stdout)
+        return 1
+    report.print(sys.stdout)
+    return 0
 
 
 def _resource_containers(layout: ReleaseLayout) -> dict[str, dict[str, Any]]:
@@ -5762,6 +5823,9 @@ workflow:
     subparsers.add_parser(
         "doctor",
         help="Read-only host, release identity, config and selected firewall preflight",
+        description="Show issues first, followed by grouped preflight checks and next steps. "
+        "Stops at the first blocker and marks remaining checks as not checked. "
+        "A passing preflight does not confirm live service readiness or synchronization.",
     )
 
     snapshot = subparsers.add_parser("snapshot", help="Install an immutable signed snapshot release")
@@ -6128,8 +6192,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         import control_plane_monitor
         control_plane_monitor.dispatch(args, layout, sys.modules[__name__])
     elif args.command == "doctor":
-        doctor(layout, allow_pending_snapshot=True)
-        print(f"USDB node preflight passed: {layout.release_id}")
+        return print_doctor_report(lambda: layout)
     elif args.command == "snapshot":
         if args.snapshot_action == "install":
             release_dir = install_snapshot_release(
@@ -6250,6 +6313,8 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.command == "doctor":
+        return print_doctor_report(lambda: load_release_layout(args.kit_root, args.node_env))
     try:
         layout = load_release_layout(args.kit_root, args.node_env)
         operation = _operation_name(args)

@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "doctor-grouped-diagnostics",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Present doctor results as grouped diagnostics with issues and recovery steps first",
+  "details": [
+    "Standalone doctor shows release, network, chain ID and role, a result summary, a Needs attention list, grouped check evidence and Next steps. Terminal output supports color, UTF-8 status symbols and width-aware wrapping; redirected reports use plain text and NO_COLOR disables color.",
+    "Release-loading, configuration and helper failures are included in the report with nonzero exit status. The existing fail-fast checks are preserved, with later groups explicitly marked not checked. Captured helper stdout/stderr and artifact trust notices appear inside the relevant group instead of interleaving with the report.",
+    "Docker session activation receives explicit recovery steps; optional or deferred bootstrap work remains distinct from blocking errors. External firewall rules are listed as an operator verification reminder. Passing doctor confirms preflight checks only, not live service readiness, synchronization or public peer reachability; startup checks retain their existing strict behavior."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

@@ -112,6 +112,8 @@ usdb-node doctor
 
 这是启动前检查。没有下载镜像或原生启动文件在此阶段可以是正常情况，后续 `up` 会准备。存在失败项时先处理；使用 external 防火墙的节点还需自行确认端口规则。
 
+包含分组报告改进的版本会先显示版本、网络、Chain ID、角色和检查结论，再列出 `Needs attention`、各组详情及 `Next steps`。先处理顶部的 `FAIL` / `WAIT` 项；`Not checked` 表示前面被阻断，后续项目尚未检查。`PASSED WITH NOTES` 表示没有阻断，但仍需阅读提醒。详见[如何阅读 doctor 报告](../troubleshooting/README.md#如何阅读-doctor-报告)。
+
 检查通过后执行：
 
 ```bash

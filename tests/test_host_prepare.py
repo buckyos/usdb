@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise host installation with isolated package, network and service commands."""
 
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import os
 from pathlib import Path
@@ -440,7 +440,8 @@ class HostSessionGuidanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             node_env = Path(directory) / "node.env"
             node_env.touch()
-            layout = SimpleNamespace(node_env=node_env)
+            layout = SimpleNamespace(node_env=node_env, release_id="usdb-testnet-v0-r999",
+                                     bundle_id="usdb-testnet-v0", network_identity={"chain_id": 202608250})
             error_output = io.StringIO()
             with mock.patch.object(sys, "argv", ["usdb-node", "doctor"]), \
                     mock.patch.object(node, "load_release_layout", return_value=layout), \
@@ -449,11 +450,12 @@ class HostSessionGuidanceTests(unittest.TestCase):
                     mock.patch.object(node, "effective_memory_bytes", return_value=32 * 1024**3), \
                     mock.patch.object(node, "run_helper", side_effect=subprocess.CalledProcessError(20, ["host check"])) as helper, \
                     mock.patch.object(node, "_validate_node_config") as runtime_check, \
-                    redirect_stderr(error_output):
+                    redirect_stdout(error_output):
                 self.assertEqual(node.main(), 1)
             helper.assert_called_once()
             runtime_check.assert_not_called()
-            self.assertIn("USDB node action required: DOCKER_SESSION_REFRESH_REQUIRED", error_output.getvalue())
+            self.assertIn("Result: ACTION REQUIRED", error_output.getvalue())
+            self.assertIn("DOCKER_SESSION_REFRESH_REQUIRED", error_output.getvalue())
 
 
 if __name__ == "__main__":

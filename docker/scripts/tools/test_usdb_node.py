@@ -3105,13 +3105,15 @@ class UsdbNodeTests(unittest.TestCase):
                 ):
                     result = NODE._execute_command(layout, NODE.build_parser().parse_args(["doctor"]))
                 self.assertEqual(result, 0)
-                self.assertIn("PENDING Snapshot", output.getvalue())
-                self.assertIn("usdb-node up to download/resume", output.getvalue())
-                self.assertIn("images automatically", output.getvalue())
-                self.assertIn("preflight passed", output.getvalue())
+                rendered = " ".join(output.getvalue().split())
+                self.assertIn("PENDING Snapshot", rendered)
+                self.assertIn("usdb-node up to download/resume", rendered)
+                self.assertIn("images automatically", rendered)
+                self.assertIn("Preflight passed", rendered)
                 install.assert_not_called()
                 helper.assert_called_once_with(
                     layout, "run_testnet_runtime.sh", ["validate-node"], output_to_stderr=False,
+                    capture_output=True,
                 )
                 self.assertEqual(layout.node_env.read_bytes(), original_env)
 
