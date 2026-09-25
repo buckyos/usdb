@@ -258,11 +258,20 @@ Next steps for a first node install:
        usdb-node status
 
 Existing node upgrade within the same network bundle:
-  usdb-node activate-release
-  usdb-node controller install
-  usdb-node doctor
-  usdb-node up
-  usdb-node status
+  If the node is still running, stop it before activation:
+    usdb-node down
+  Then continue with the installed target release:
+    usdb-node activate-release
+    usdb-node doctor
+    usdb-node up
+    usdb-node status
+
+  Routine upgrades do not require a separate controller install.
+  up checks the installed controller and monitor, refreshes recognized standard
+  units, and preserves controller options and existing autostart settings.
+  If the controller was never installed, run usdb-node controller install,
+  or keep using up --foreground for intentional foreground operation.
+  Custom systemd settings require review; follow the reported diagnostics.
 
 The installer does not run these commands automatically.
 EOF

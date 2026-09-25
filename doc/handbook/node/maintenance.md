@@ -192,6 +192,8 @@ usdb-node status
 
 正常 `setup` 已安装并启用 controller，普通换版不必重复安装。包含后台服务自动检查改进的工具会在下一步 `up` 中补齐缺失的核心 monitor（显式关闭时保持关闭），安全停用已识别的旧 console observer，并刷新可识别的旧版标准 unit。超时、镜像拉取选项及已有的开机启动开关会保留；从旧 observer 迁移时保留它的开机启动设置；首次补装的 monitor 沿用 controller 的设置。
 
+部分旧版安装器末尾仍将 `usdb-node controller install` 列为升级步骤。目标工具已支持上述自动检查时，不必因这条旧提示重复安装；新版安装器已将它改为条件说明。
+
 如果 controller 本身从未安装，先执行 `usdb-node controller install`，或继续有意选择的 `up --foreground`。自定义 unit、systemd 覆盖配置、mask 或无法可靠观察的状态会给出明确错误，不会被自动覆盖。旧工具仍按 [controller 诊断](status.md#后台任务状态)或该版本升级说明处理。
 
 ```bash

@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "installer-controller-upgrade-guidance",
+  "type": "fixed",
+  "scopes": ["deployment"],
+  "summary": "Remove redundant controller installation from routine upgrade instructions",
+  "details": [
+    "Installer completion guidance uses activate-release, doctor, up and status after the node is stopped. It explains that up reconciles recognized managed background services while preserving controller options and existing autostart settings.",
+    "Controller installation is documented as conditional for nodes that never installed it; custom systemd configuration still requires review. The handbook explains the outdated unconditional step in older installers. Installation and service-management behavior are unchanged."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}
