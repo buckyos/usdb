@@ -266,6 +266,7 @@ services:
       <<: *bitcoin-environment
       CONTROL_PLANE_ROOT_DIR: /data/usdb-control-plane
       CONTROL_PLANE_MONITOR_DIR: /run/usdb-console
+      CONTROL_PLANE_NOTIFICATION_CONFIG_DIR: /run/usdb-notifications
       CONTROL_PLANE_HOST: 0.0.0.0
       CONTROL_PLANE_PORT: 28040
       CONTROL_PLANE_ALLOWED_ORIGINS: ${CONTROL_PLANE_ALLOWED_ORIGINS:-[]}
@@ -283,6 +284,7 @@ services:
     volumes:
       - ${CONTROL_PLANE_DATA_HOST_DIR:?CONTROL_PLANE_DATA_HOST_DIR is required}:/data/usdb-control-plane
       - ${USDB_CONSOLE_STATE_DIR:-${CONTROL_PLANE_DATA_HOST_DIR}/monitor}:/run/usdb-console:ro
+      - ${USDB_NOTIFICATION_CONFIG_DIR:-${CONTROL_PLANE_DATA_HOST_DIR}/notifications}:/run/usdb-notifications
       - ${BH_DATA_HOST_DIR:?BH_DATA_HOST_DIR is required}:/data/balance-history:ro
       - ${USDB_CHAIN_DATA_HOST_DIR:?USDB_CHAIN_DATA_HOST_DIR is required}:/data/usdb-chain:ro
       - ${USDB_NETWORK_ARTIFACTS_DIR:?USDB_NETWORK_ARTIFACTS_DIR is required}:/network:ro

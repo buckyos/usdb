@@ -137,7 +137,7 @@ class Store:
                 return
             value = dict(alert_id=uuid.uuid4().hex, service=service, code=code, state="pending",
                          severity="warning", first_seen_ms=at, last_seen_ms=at, occurrences=0,
-                         bad_since_ms=None, good_since_ms=None, acknowledged_at_ms=None,
+                         bad_since_ms=None, good_since_ms=None,
                          latched=latched, evidence={})
         if reset:
             value.update(bad_since_ms=None, good_since_ms=None)
@@ -164,7 +164,7 @@ class Store:
         else:
             value["bad_since_ms"] = None
             value["good_since_ms"] = at if value["good_since_ms"] is None else value["good_since_ms"]
-            if not value["latched"] and (value["state"] == "pending" or at - value["good_since_ms"] >= recovery_ms):
+            if value["state"] == "pending" or at - value["good_since_ms"] >= recovery_ms:
                 if value["state"] == "firing":
                     self.event(at, service, "ALERT_RESOLVED", alert_id=value["alert_id"], evidence={"code": code})
                 value.update(state="resolved", resolved_at_ms=at)
@@ -192,26 +192,6 @@ class Store:
             self.put("session", session)
             self.event(at, "monitor", "MONITOR_STOPPED", evidence={"reason": reason})
 
-    def acknowledge(self, identity, at):
-        with self.db:
-            row = self.db.execute("SELECT key,value FROM alerts WHERE alert_id=?", (identity,)).fetchone()
-            if not row or (value := json.loads(row[1]))["state"] != "firing":
-                raise ValueError("Only a firing alert can be acknowledged")
-            if value["acknowledged_at_ms"] is None:
-                value["acknowledged_at_ms"] = at
-                self.save_alert(row[0], value)
-                self.event(at, value["service"], "ALERT_ACKNOWLEDGED", alert_id=identity, evidence={"code": value["code"]})
-
-    def resolve_incident(self, identity, at):
-        """Called only after an explicit recovery confirmation and a fresh source check."""
-        with self.db:
-            row = self.db.execute("SELECT key,value FROM alerts WHERE alert_id=?", (identity,)).fetchone()
-            if not row or not (value := json.loads(row[1]))["latched"] or value["state"] != "firing":
-                raise ValueError("Only a firing latched incident can be manually resolved")
-            value.update(state="resolved", resolved_at_ms=at, condition="good")
-            self.save_alert(row[0], value)
-            self.event(at, value["service"], "INCIDENT_MANUALLY_RESOLVED", alert_id=identity, evidence={"code": value["code"]})
-
     def events(self, *, limit=100, service=None, severity=None, since=None, identity=None):
         if not 1 <= limit <= 1000:
             raise ValueError("Event limit must be between 1 and 1000")
@@ -230,10 +210,13 @@ class Store:
         """Bound ordinary history; never discard events belonging to active alerts."""
         cutoff = at - days * 86400000
         with self.db:
-            self.db.execute("""DELETE FROM events WHERE (at_ms < ? OR seq <=
+            predicate = """(at_ms < ? OR seq <=
                 COALESCE((SELECT seq FROM events ORDER BY seq DESC LIMIT 1 OFFSET ?),0))
                 AND (alert_id IS NULL OR alert_id NOT IN
-                    (SELECT alert_id FROM alerts WHERE json_extract(value,'$.state') != 'resolved'))""", (cutoff, count))
+                    (SELECT alert_id FROM alerts WHERE json_extract(value,'$.state') != 'resolved'))"""
+            removed = self.db.execute("SELECT COALESCE(max(seq),0) FROM events WHERE " + predicate, (cutoff, count)).fetchone()[0]
+            self.put("pruned_through", max(removed, self.get("pruned_through", 0)))
+            self.db.execute("DELETE FROM events WHERE " + predicate, (cutoff, count))
             self.db.execute("""DELETE FROM alerts WHERE json_extract(value,'$.state')='resolved'
                 AND json_extract(value,'$.resolved_at_ms') < ?""", (cutoff,))
         self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")

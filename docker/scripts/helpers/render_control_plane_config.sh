@@ -44,6 +44,7 @@ esac
 cat >"${output_path}" <<EOF
 root_dir = "${root_dir}"
 monitor_dir = "${CONTROL_PLANE_MONITOR_DIR:-${root_dir}}"
+notification_config_dir = "${CONTROL_PLANE_NOTIFICATION_CONFIG_DIR:-${root_dir}/notifications}"
 
 [server]
 host = "${CONTROL_PLANE_HOST:-0.0.0.0}"

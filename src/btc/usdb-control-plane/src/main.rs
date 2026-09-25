@@ -2,6 +2,7 @@ mod access;
 mod config;
 mod models;
 mod monitor;
+mod notifications;
 mod rpc_client;
 mod server;
 

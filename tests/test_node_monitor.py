@@ -32,12 +32,11 @@ class StoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "different node network"):
                 monitor.database(f.layout, writable=True)
 
-    def test_incident_survives_restart_acknowledgement_and_missing_source(self):
+    def test_incident_survives_restart_and_requires_continuous_proven_recovery(self):
         with MonitorFixture() as f:
             f.tick(0, incidents=incident())
             alert = next(v for v in f.store.alerts() if v["latched"])
             identity = alert["alert_id"]
-            f.store.acknowledge(identity, BASE + 1000)
             f.store.end(BASE + 2000, "planned_down")
             with monitor.database(f.layout, writable=True) as reopened:
                 reopened.begin(BASE + 1000000, "r2")
@@ -45,11 +44,10 @@ class StoreTests(unittest.TestCase):
                 rules.evaluate(reopened, report(BASE + 1000002), BASE + 1000002, f.settings)
                 active = next(v for v in reopened.alerts() if v["alert_id"] == identity)
                 self.assertEqual(active["state"], "firing")
-                self.assertEqual(active["acknowledged_at_ms"], BASE + 1000)
                 self.assertEqual(active["condition"], "good")
-                reopened.resolve_incident(identity, BASE + 1000003)
+                rules.evaluate(reopened, report(BASE + 1002002), BASE + 1002002, f.settings)
                 self.assertNotIn(identity, [v["alert_id"] for v in reopened.alerts()])
-                self.assertIn("INCIDENT_MANUALLY_RESOLVED", [v["code"] for v in reopened.events()])
+                self.assertIn("ALERT_RESOLVED", [v["code"] for v in reopened.events()])
 
     def test_stable_incident_deduplication_even_without_source_id(self):
         for identity in ("b" * 32, None):
@@ -344,7 +342,7 @@ else:
             self.assertEqual(value["monitor"]["state"], "stopped")
             self.assertEqual(len(value["monitor"]["alerts"]), 1)
 
-    def test_event_query_filters_and_acknowledges_without_live_probes(self):
+    def test_event_query_filters_without_live_probes(self):
         with MonitorFixture() as f:
             f.tick(0, incidents=incident())
             output = io.StringIO()
@@ -353,22 +351,15 @@ else:
                 monitor.dispatch(args, f.layout, node)
             events = json.loads(output.getvalue())
             self.assertEqual(len(events), 1)
-            args = node.build_parser().parse_args(["monitor", "ack", events[0]["alert_id"]])
-            with redirect_stdout(io.StringIO()):
-                monitor.dispatch(args, f.layout, node)
-            self.assertIsNotNone(f.store.alerts()[0]["acknowledged_at_ms"])
-
-    def test_manual_resolution_requires_fresh_ready_and_available_empty_source(self):
-        with MonitorFixture() as f, mock.patch.object(monitor, "now_ms", return_value=BASE):
+    def test_incident_marker_absence_without_ready_does_not_resolve(self):
+        with MonitorFixture() as f:
             f.tick(0, incidents=incident())
-            identity = f.store.alerts()[0]["alert_id"]
-            args = node.build_parser().parse_args(["monitor", "resolve", identity, "--confirm-recovery"])
-            for value in (report(incidents=incident()), report(available=False), report(incidents=dict(status="unavailable", events=[]))):
-                with mock.patch.object(monitor, "sample", return_value=value), self.assertRaisesRegex(ValueError, "fresh READY"):
-                    monitor.dispatch(args, f.layout, node)
-            with mock.patch.object(monitor, "sample", return_value=report()), redirect_stdout(io.StringIO()):
-                monitor.dispatch(args, f.layout, node)
-            self.assertEqual(f.store.alerts(), [])
+            for at in (2, 4, 8):
+                f.tick(at, phase="FAILED")
+            self.assertTrue(f.store.alerts()[0]["latched"])
+            f.tick(9)
+            f.tick(11)
+            self.assertFalse(any(v["latched"] for v in f.store.alerts()))
 
     def test_configuration_is_bounded_and_enabled_choice_persists(self):
         with MonitorFixture() as f:

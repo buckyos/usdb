@@ -197,6 +197,19 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
         config.server.allowed_origins.clone(),
         config.development_mint.enabled,
     )?);
+    let notification_routes = Router::new()
+        .route(
+            "/api/monitor/notifications/config",
+            get(crate::notifications::get_config).put(crate::notifications::save_config),
+        )
+        .route(
+            "/api/monitor/notifications/test",
+            post(crate::notifications::test_channel),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(65536))
+        .with_state(crate::notifications::Settings::new(
+            config.notification_config_dir.clone(),
+        ));
     let state = AppState {
         config: Arc::new(config),
         rpc_client,
@@ -204,6 +217,7 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
     };
 
     let app = Router::new()
+        .merge(notification_routes)
         .route("/healthz", get(healthz))
         .route("/api/system/overview", get(get_overview))
         .route("/api/system/services", get(get_services))

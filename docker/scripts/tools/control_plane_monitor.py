@@ -87,6 +87,9 @@ def prepare(layout, node) -> Path:
         finally:
             Path(temporary_name).unlink(missing_ok=True)
     read_token(token)
+    import node_monitor
+    import node_notification_config
+    node_notification_config.prepare(node_monitor.root(layout) / "notifications")
     return root
 
 

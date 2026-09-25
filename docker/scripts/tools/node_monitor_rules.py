@@ -53,7 +53,11 @@ def evaluate(store, report, at, config):
                 condition(key, "usdb_chain", event["code"], True, latched=True, evidence=event)
         for row in store.db.execute("SELECT key FROM alerts WHERE key LIKE 'incident:%'").fetchall():
             if row[0] not in active_keys:
-                condition(row[0], "usdb_chain", "DEEP_REORG_HALTED", False if incidents_known else None, latched=True)
+                # The durable guard owns protection. Only fresh READY observations
+                # with a readable, empty source prove recovery; absence alone does not.
+                recovered = (available and incidents_known and not incidents["events"]
+                             and report.get("overall_state") == "READY")
+                condition(row[0], "usdb_chain", "DEEP_REORG_HALTED", False if recovered else None, latched=True)
 
         components = {c.get("id"): c for c in report.get("components", []) if isinstance(c, dict)}
         for service in node_observation.SERVICES:

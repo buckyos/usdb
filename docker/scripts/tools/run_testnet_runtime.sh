@@ -112,7 +112,8 @@ check_readiness() {
 
 compose() {
   USDB_CONSOLE_STATE_DIR="$(dirname "$(realpath "${node_env}")")/console"
-  export USDB_CONSOLE_STATE_DIR
+  USDB_NOTIFICATION_CONFIG_DIR="$(dirname "$(realpath "${node_env}")")/monitor/notifications"
+  export USDB_CONSOLE_STATE_DIR USDB_NOTIFICATION_CONFIG_DIR
   export USDB_NETWORK_ARTIFACTS_DIR="${bundle_dir}/artifacts"
   export BH_SNAPSHOT_TRUST_HOST_DIR="${bundle_dir}/trust"
   local family

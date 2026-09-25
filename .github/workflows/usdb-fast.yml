@@ -64,6 +64,7 @@ jobs:
           python3 tests/test_control_plane_monitor.py
           python3 tests/test_node_observation.py
           python3 tests/test_node_monitor.py
+          python3 tests/test_node_notifications.py
           python3 tests/test_node_minting.py
           python3 tests/test_ord_release.py
           python3 tests/test_node_setup_edit.py

@@ -21,7 +21,7 @@ def default_report():
 
 
 @contextmanager
-def console_server(report=None):
+def console_server(report=None, *, notification_directory=None):
     """Yield the private origin, ephemeral token and observer file of a disposable server."""
     with tempfile.TemporaryDirectory(prefix="usdb-private-console-browser-") as temporary:
         root = Path(temporary)
@@ -46,6 +46,8 @@ console_root = {json.dumps(str(roots[0]))}
 balance_history_explorer_root = {json.dumps(str(roots[1]))}
 usdb_indexer_explorer_root = {json.dumps(str(roots[2]))}
 '''
+        if notification_directory is not None:
+            config = f'notification_config_dir = {json.dumps(str(notification_directory))}\n' + config
         (root / "config.toml").write_text(config)
         report = report or default_report()
         snapshot = root / "node-progress.json"

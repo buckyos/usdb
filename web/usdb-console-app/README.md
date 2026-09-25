@@ -113,6 +113,7 @@ cargo build --locked --manifest-path src/btc/Cargo.toml -p usdb-control-plane
 # Build all three web apps, then use a Python environment with Playwright/Chromium.
 python3 tests/test_control_plane_browser.py
 python3 tests/test_control_plane_wallet_browser.py
+python3 tests/test_node_notifications_browser.py
 node tests/test_control_plane_wallet.mjs
 ```
 

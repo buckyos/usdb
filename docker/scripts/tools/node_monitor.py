@@ -20,7 +20,7 @@ import time
 import node_monitor_rules as rules
 from node_monitor_store import Store, private_directory, private_file
 
-SCHEMA = "usdb-node-monitor:v1"
+SCHEMA = "usdb-node-monitor:v2"
 RELEASE_ENV = "USDB_NODE_MONITOR_RELEASE"
 
 
@@ -134,9 +134,12 @@ def private_creation_mode():
 def summary(store, state, *, at=None):
     """Expose bounded local event evidence without credentials or complete host logs."""
     alerts = sorted(store.alerts(), key=lambda v: (v["state"] != "firing", v["severity"] != "critical", -v["last_seen_ms"]))
+    notifications = store.get("notifications", {"state": "not_started"})
+    if state in {"stopped", "disabled", "failed", "interrupted"}:
+        notifications = {**notifications, "state": "unavailable" if state == "failed" else state}
     return dict(schema_version=SCHEMA, state=state, storage="available", node_id=store.get("node_id"),
                 session=store.get("session"), updated_at_ms=at or now_ms(),
-                notifications="not_implemented", console_export_available=store.get("console_export_available"),
+                notifications=notifications, console_export_available=store.get("console_export_available"),
                 alert_count=len(alerts), alerts=alerts[:32], events=store.events(limit=20))
 
 
@@ -201,7 +204,7 @@ class ResourceObserver:
 def publish_state(layout, node, state, *, store=None):
     report = empty_report()
     report["monitor"] = summary(store, state) if store else dict(schema_version=SCHEMA, state=state,
-        storage="unknown", updated_at_ms=now_ms(), notifications="not_implemented", alerts=[], events=[])
+        storage="unknown", updated_at_ms=now_ms(), notifications={"state": "not_started"}, alerts=[], events=[])
     if store is None:
         try:
             with database(layout) as reader:
@@ -256,6 +259,7 @@ def run(layout, node):
         return
     settings = config(layout)
     stopped = threading.Event()
+    delivery = None
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stopped.set())
     with private_creation_mode(), run_lock(layout):
@@ -270,6 +274,10 @@ def run(layout, node):
                     store.event(now_ms(), "monitor", "MONITOR_POLICY_SELECTED", evidence=settings)
                 publish_state(layout, node, "starting", store=store)
                 resources = ResourceObserver(layout, node, stopped, settings["interval_secs"])
+                import node_notifications
+                delivery = node_notifications.Worker(root(layout), scope(layout),
+                    store.db.execute("SELECT COALESCE(max(seq),0) FROM events").fetchone()[0])
+                delivery.poll()
                 last_prune = 0
                 while not stopped.is_set() and not store.get("stop_requested"):
                     stage = "sample"
@@ -293,6 +301,14 @@ def run(layout, node):
                         report["observations"] = observations
                     stage = "persist"
                     rules.evaluate(store, report, at, settings)
+                    notification_status = delivery.poll()
+                    with store.db:
+                        previous = store.get("notifications", {}).get("state")
+                        current = notification_status["state"]
+                        store.put("notifications", notification_status)
+                        if previous != current:
+                            store.event(at, "monitor", "NOTIFICATION_STATUS_CHANGED",
+                                        "info" if current == "running" else "warning", evidence={"state": current})
                     if at - last_prune > 3600000:
                         store.prune(at, days=settings["retention_days"], count=settings["max_events"])
                         last_prune = at
@@ -302,6 +318,9 @@ def run(layout, node):
                     publish_report(layout, node, report, store=store)
                     stopped.wait(max(0, settings["interval_secs"] - (time.monotonic() - started)))
                 stopped.set()
+                delivery.close()
+                with store.db:
+                    store.put("notifications", {**store.get("notifications", {}), "state": "stopped"})
                 stage = "stop"
                 store.end(now_ms(), "planned_down" if store.get("stop_requested") else "service_stop")
                 publish_state(layout, node, "stopped", store=store)
@@ -315,6 +334,10 @@ def run(layout, node):
             except (OSError, ValueError):
                 pass
             raise ValueError(f"Node monitor failed (stage={stage}, code={error_evidence(error)['code']}); inspect its journal and private state directory") from None
+
+        finally:
+            if delivery is not None:
+                delivery.close()
 
 
 def unit_name(layout):
@@ -373,7 +396,7 @@ def stop(layout, node):
 
 def status(layout, node):
     result = dict(schema_version=SCHEMA, enabled=enabled(layout, node), running=is_running(layout),
-                  state="not_started", notifications="not_implemented", storage="missing", alerts=[], events=[])
+                  state="not_started", notifications={"state": "not_started"}, storage="missing", alerts=[], events=[])
     try:
         with database(layout) as store:
             result.update(summary(store, "running" if result["running"] else "stopped"))
@@ -389,6 +412,8 @@ def status(layout, node):
         result.update(storage="unavailable", state="degraded")
     if not result["enabled"]:
         result["state"] = "disabled"
+    if not result["running"] or not result["enabled"]:
+        result["notifications"] = {**result["notifications"], "state": result["state"]}
     return result
 
 
@@ -405,11 +430,6 @@ def add_parser(subparsers):
     events.add_argument("--since", help="Timezone-qualified ISO timestamp")
     events.add_argument("--id", help="Show one event by its stable ID")
     events.add_argument("--limit", type=int, default=100)
-    for name in ("ack", "resolve"):
-        action = actions.add_parser(name, help="Acknowledge an alert" if name == "ack" else "Record verified manual incident recovery")
-        action.add_argument("alert_id")
-        if name == "resolve":
-            action.add_argument("--confirm-recovery", action="store_true", required=True)
     configure = actions.add_parser("configure", help="Configure local monitoring while the node is stopped")
     configure.add_argument("--enabled", choices=("on", "off"))
     for key in rules.DEFAULTS:
@@ -447,25 +467,10 @@ def dispatch(args, layout, node):
             if args.enabled is not None:
                 node._atomic_write_private(layout.node_env, node.upsert_env(layout.node_env.read_text(),
                     {"USDB_MONITOR_ENABLED": "1" if args.enabled == "on" else "0"}))
-        print("Monitor configuration saved; run usdb-node up to apply. Notification delivery is not implemented in this release.")
+        print("Monitor configuration saved; run usdb-node up to apply.")
         return
     if action == "status":
         result = status(layout, node)
-    elif action in {"ack", "resolve"}:
-        if action == "resolve":
-            report = sample(layout, node, config(layout)["sample_timeout_secs"], include_resources=False)
-            incidents = report.get("observations", {}).get("incidents", {})
-            observed = report.get("observed_at_ms")
-            if (report.get("observation_available") is not True or report.get("overall_state") != "READY"
-                    or type(observed) is not int or not -5000 <= now_ms() - observed <= 120000
-                    or incidents.get("status") != "available" or incidents.get("events") != []):
-                raise ValueError("Manual resolution requires a fresh READY node and an available, empty incident source; no source files were changed")
-        if not (root(layout) / "events.sqlite3").is_file():
-            raise ValueError("Monitor event database has not been initialized")
-        with database(layout, writable=True) as store:
-            (store.acknowledge if action == "ack" else store.resolve_incident)(args.alert_id, now_ms())
-        print("Alert acknowledged; incident protection is unchanged." if action == "ack" else "Manual recovery recorded; incident source files were not changed.")
-        return
     else:
         since = None
         if action == "events" and args.since:
@@ -482,7 +487,17 @@ def dispatch(args, layout, node):
         print(json.dumps(result, indent=2, allow_nan=False))
     elif action == "status":
         print(f"Monitor: {result.get('state', 'not_started')}; enabled={result['enabled']}; running={result['running']}; storage={result['storage']}")
-        print(f"Active/pending alerts: {len(result['alerts'])}; notifications: {result['notifications']}")
+        delivery = result["notifications"]
+        counts = delivery.get("counts", {})
+        print(f"Active/pending alerts: {len(result['alerts'])}; notifications: {delivery['state']}; "
+              f"pending={counts.get('pending', 0)}; failed={counts.get('failed', 0)}")
+        for channel in delivery.get("channels", []):
+            latest = channel.get("latest") or {}
+            print(f"  {channel['id']}: {latest.get('state', 'no_deliveries')}; "
+                  f"result={channel.get('last_error') or latest.get('code') or '-'}; "
+                  f"pending={channel.get('pending_count', 0)}")
+        if delivery.get("config_error"):
+            print(f"Notification configuration: {delivery['config_error']}; last valid settings remain active")
     else:
         for item in result:
             at = item.get("at_ms", item.get("last_seen_ms"))

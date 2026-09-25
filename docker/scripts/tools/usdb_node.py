@@ -1543,7 +1543,7 @@ def setup_node(
     monitor_enabled = _prompt_yes_no("Enable node monitor (local events and alerts)", default=True,
                                      input_fn=input_fn, output=output)
     print("", file=output)
-    print(f"Node monitor: {'enabled' if monitor_enabled else 'disabled'}; notification delivery will be added in a later release.", file=output)
+    print(f"Node monitor: {'enabled' if monitor_enabled else 'disabled'}; configure notifications in the private console or monitor/notifications/config.json.", file=output)
     print(f"Data root: {data_root.expanduser().resolve()}", file=output)
     print(f"Role: {role}", file=output)
     print("Explorer support: " + ("archive + private HTTP tracing" if explorer_queries

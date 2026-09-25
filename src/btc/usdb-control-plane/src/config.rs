@@ -269,6 +269,9 @@ pub struct ControlPlaneConfig {
     /// Optional read-only host observer directory, separate from service-owned data.
     #[serde(default)]
     pub monitor_dir: Option<PathBuf>,
+    /// Dedicated writable notification configuration, separate from monitor state.
+    #[serde(default)]
+    pub notification_config_dir: Option<PathBuf>,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -288,6 +291,7 @@ impl Default for ControlPlaneConfig {
         Self {
             root_dir: default_root_dir(),
             monitor_dir: None,
+            notification_config_dir: None,
             server: ServerConfig::default(),
             rpc: RpcTargets::default(),
             bitcoin: BitcoinRpcConfig::default(),

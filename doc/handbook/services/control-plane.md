@@ -314,3 +314,10 @@ Ord 启动后遇到短暂 RPC 故障或 txindex 落后时会继续运行，只�
 后者使用 JSON/TOML 数组，例如 `["https://console.internal.example"]`，不能包含路径；
 反向代理保留原始 Host/Origin。更改后运行 `usdb-node console start` 应用容器配置。
 这不会自动配置 TLS，也不会使控制台适合公开访问。
+
+## 通知配置
+
+“节点监控 → 通知配置与投递”支持编辑 Webhook/SMTP 渠道、通知级别和频率，并发送测试通知。
+本地文件和页面共用同一份配置，配置有效时 monitor 在线应用；没有 ack 或人工消警操作。
+控制台仅获得专用通知配置目录的写权限，事件库和通知队列仍由宿主机 monitor 管理。
+需配套更新 node-kit 与服务镜像，详细参数、投递结果和排障见[通知配置与投递](../node/notifications.md)。

@@ -1,0 +1,26 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-monitor-notifications",
+  "type": "added",
+  "scopes": [
+    "deployment",
+    "node-runtime"
+  ],
+  "summary": "Add durable Webhook and SMTP notifications with console configuration",
+  "details": [
+    "Monitor alerts now recover automatically from continuous valid evidence; ack and manual monitor resolution are removed while durable incident protection remains owned by the source service.",
+    "Persist independent notification jobs with bounded retry, per-channel delivery results, configurable warning and critical reminder intervals, and no new-channel historical replay.",
+    "Edit the same private notification configuration from a local JSON file or authenticated control-plane forms, with masked credentials and local-worker test delivery.",
+    "Monitor snapshots use usdb-node-monitor:v2 for structured notification status; event schema and event database version remain v1."
+  ],
+  "operator_actions": [
+    "Upgrade the node kit and services image together using the normal down/activate/setup/up flow, then configure notification channels in the private console or monitor/notifications/config.json."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": []
+}

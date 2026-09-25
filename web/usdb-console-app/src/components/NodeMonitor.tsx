@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { MintingBackend } from './MintingBackend'
 import { HostResources } from './HostResources'
+import { NotificationSettings } from './NotificationSettings'
 import { useI18n } from '../i18n/provider'
 import type { MonitorSnapshot } from '../lib/types'
 import { componentTitle, monitorValue, progressCounter, serviceTitle } from '../lib/monitoring'
@@ -33,7 +34,7 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
       <p className="text-sm">{zh ? '采集时间' : 'Observed'}: {report?.observed_at_ms ? new Date(report.observed_at_ms).toLocaleString(locale) : '—'}</p>
       {core && <div className="grid gap-2 text-sm">
         <p>{zh ? '核心监控' : 'Core monitor'}: {core.state} · {zh ? '事件存储' : 'Event storage'}: {core.storage}</p>
-        <p>{zh ? '本版持续记录本地事件，通知投递尚未接入。' : 'This release records local events; notification delivery is not yet implemented.'}</p>
+
         {core.state === 'disabled' && <p>{zh ? '监控已按节点配置关闭，历史记录保留。需要启用时在节点终端配置 monitor，再执行 up。' : 'Monitoring is disabled by node configuration; history is retained. Configure monitor on the node, then run up to enable it.'}</p>}
         {core.storage === 'unavailable' && <p role="alert">{zh ? '事件持久化未确认正常，请检查 monitor status 和服务日志。' : 'Event persistence is not confirmed healthy. Inspect monitor status and its journal.'}</p>}
         {!!core.alerts.length && <div className="grid gap-2">
@@ -41,7 +42,7 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
           {core.alerts.map(alert => <div key={alert.alert_id} className="rounded border border-[color:var(--cp-border)] p-3">
             <p>{alert.severity} · {serviceTitle(alert.service, t)} · {alert.code} · {alert.state}</p>
             <p>{zh ? '首次 / 最近发现' : 'First / last seen'}: {new Date(alert.first_seen_ms).toLocaleString(locale)} / {new Date(alert.last_seen_ms).toLocaleString(locale)}</p>
-            <p>{alert.acknowledged_at_ms ? (zh ? '已确认接手' : 'Acknowledged') : (zh ? '未确认' : 'Unacknowledged')}{alert.latched && (zh ? '；需人工核实恢复，确认不解除保护。' : '; manual recovery verification required; acknowledgement does not release protection.')}</p>
+            <p>{zh ? '修复后由有效观测自动确认恢复。' : 'Recovery is confirmed automatically from valid observations.'}</p>
             <p className="break-all">ID: {alert.alert_id}</p>
           </div>)}
         </div>}
@@ -124,6 +125,7 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
           </article>})}
         </div>
       </>}
+      <NotificationSettings status={core?.notifications} />
       <HostResources data={report?.host_resources} fresh={fresh} ageMs={age} observedAt={report?.observed_at_ms} />
       <MintingBackend snapshot={snapshot} />
     </section>

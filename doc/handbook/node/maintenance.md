@@ -76,7 +76,7 @@ Seed/P2P 变更使用 `peers` 命令；编辑已有节点时不要给 `setup` �
 
 ## 持续观察与告警
 
-包含核心 monitor 的版本默认持续保存本地事件和告警，可通过 [monitor 命令](monitor.md)查询；邮件/webhook 投递将在下一批接入。无人值守节点仍可将[状态采集](status.md#自动采集)接入自己的通知系统。至少关注以下变化：
+包含核心 monitor 的版本默认持续保存本地事件和告警，可通过 [monitor 命令](monitor.md)查询；邮件/webhook 可通过[通知配置](notifications.md)接入。无人值守节点仍可将[状态采集](status.md#自动采集)接入自己的通知系统。至少关注以下变化：
 
 包含观测契约改进的工具提供[结构化证据与持久事故](observations.md)，可作为告警输入。
 该功能本身尚不发送邮件或 webhook。

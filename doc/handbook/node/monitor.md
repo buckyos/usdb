@@ -8,10 +8,9 @@
 每个节点独立保存配置和记录。集群集中管理、外部心跳、主机断电/断网检测不在首期范围。
 monitor 不参与共识，不自动修复服务或解除深重组保护。
 
-第一批实现常驻服务、setup/controller/up/down 接入、本地事件库、规则状态、查询命令，
-并让控制台消费核心 monitor 的观测。第二批在持久事件基础上增加多个 webhook/SMTP
-渠道、持久投递队列、重试和通知配置；网页配置随后复用同一受控接口。
-第一批不配置或发送通知，即使未配置通知，本地事件记录也独立工作。
+第一批提供常驻服务、setup/controller/up/down 接入、本地事件库、规则状态、查询命令和控制台展示。
+第二批增加 [Webhook/SMTP 通知](notifications.md)、独立持久队列、文件与网页配置；故障持续时按
+级别控制通知频率，获得有效恢复证据后自动结束。没有配置通知时，本地事件记录仍独立工作。
 
 以下命令随包含本功能的新 node-kit 提供；现网旧版本不会因文档更新自动获得这些能力。
 控制台展示新增事件还需要配套的 `usdb-services` 镜像。
@@ -30,12 +29,12 @@ monitor。升级沿用 down → 安装/激活版本 → 更新服务定义 → u
 
 up 恢复已有告警并开始新的观测会话。停机、采集缺口及重启空档不算连续故障或恢复时间。
 普通规则有启动宽限期，持久严重事故立即呈现。禁用监控时控制台明确显示监控关闭。
-监控关闭或停止不删除事件、确认记录或事故，不清除节点的保护状态。
+监控关闭或停止不删除事件、历史记录或事故，不清除节点的保护状态。
 
 ## 持久事件与告警
 
 SQLite 保存稳定节点 ID、版本化元数据、事件历史、当前告警及规则计算状态。
-事件与告警变化事务提交，进程重启后可继续查询；通知将使用独立持久游标消费这些事件。
+事件与告警变化事务提交，进程重启后可继续查询；通知使用独立持久游标消费这些事件。
 通知未配置、投递失败或外部网络异常均不影响本地事件落盘。
 
 事件记录发生/发现时间、服务、稳定代码、严重程度、结构化证据和日志排查线索；未知
@@ -44,9 +43,10 @@ SQLite 保存稳定节点 ID、版本化元数据、事件历史、当前告警�
 历史按时间与数量清理，活动事故和告警保留；数据库写入失败必须在 journal 和状态中可见。
 数据库版本不兼容时拒绝写入，不能偷偷重建或清空历史；升级前应备份，回退需使用兼容版本。
 
-普通告警经过 pending → firing → resolved，unknown 不代表恢复。严重事故 latched，
-确认仅表示有人接手，不表示恢复；标记消失也不自动解除。解除需明确人工操作并核对新的
-源证据，不修改 halted.json 或链数据。每次重复发生的普通告警有独立生命周期。
+告警经过 pending → firing → resolved，unknown 不代表恢复。持续故障按严重级别定期通知，
+无须 ack 或人工消警。严重事故源仍然 latched；monitor 在保护标记已解除、事故源可读且为空、
+并连续获得新鲜 READY 观测后自动登记恢复，不修改 halted.json 或链数据。历史记录保留。
+每次重复发生的普通告警有独立生命周期。
 
 ## 操作入口
 
@@ -58,7 +58,6 @@ usdb-node monitor events --limit 100
 usdb-node monitor events --service usdb_chain --severity critical --json
 usdb-node monitor events --since 2026-09-24T00:00:00Z --json
 usdb-node monitor events --id EVENT_ID --json
-usdb-node monitor ack ALERT_ID
 ```
 
 查询直接读取本地记录，不依赖业务 RPC。事件详情包含稳定 ID 和结构化证据，`--json`
@@ -66,17 +65,9 @@ usdb-node monitor ack ALERT_ID
 事件使用 `usdb-node-event:v1`，包含节点 ID 和稳定网络身份，便于后续统一接收与去重。
 控制台按严重程度优先展示最多 32 个活动告警和最近 20 个事件，完整记录通过 CLI 查询。
 
-确认事故已经按网络恢复流程处理，并且当前节点重新 READY、持久事故源可读取且为空后，
-可显式登记人工恢复：
+旧版的 `monitor ack` 和 `monitor resolve` 入口已移除；已有审计历史保留，不影响自动恢复。
 
-```bash
-usdb-node monitor resolve ALERT_ID --confirm-recovery
-```
-
-此命令重新探测当前源证据，不删除事故文件，不重启链。仅适用于 latched 事故；普通告警
-依据连续的有效恢复观测自动结束。确认接手与人工恢复各自追加审计事件。
-
-配置修改要求节点和监控已停止：
+采集规则配置修改要求节点和监控已停止；通知配置支持在线修改：
 
 ```bash
 usdb-node down
@@ -86,8 +77,8 @@ usdb-node up
 ```
 
 `--enabled off` 关闭监控并保留记录；首次 `configure --monitor off` 也可关闭。
-setup 中的对应问题默认开启，重复 setup 按回车保持现值。配置不包含通知渠道，webhook/SMTP
-将在第二批增加；当前没有 test-notification 或通知投递命令。
+setup 中的对应问题默认开启，重复 setup 按回车保持现值。通知配置使用独立文件或控制台表单，
+参见 [通知配置与投递](notifications.md)。
 
 标准 systemd unit 为 `usdb-node-monitor-<bundle-id>.service`。`up` 迁移可识别的旧
 `usdb-console-monitor-<bundle-id>.service`：先停止并禁用旧进程，保留其 unit 文件供核查，
@@ -119,7 +110,7 @@ SQLite WAL/SHM 文件）。数据库损坏、权限不符或版本不兼容时�
 有效证据。同步停滞在确认上游推进后连续 900 秒 warning、1800 秒 critical。
 历史默认保留 90 天、最近 20000 个普通事件，活动告警/事故关联事件不受此清理上限影响。
 规则参数可通过 `monitor configure --help` 查看。规则策略在每次启动时记录到本地事件中。
-critical 表示影响严重，只有 latched/manual_intervention 事故要求显式人工登记恢复。
+critical 表示影响严重；latched/manual_intervention 描述事故源的保护状态，修复后监控自动确认恢复。
 
 - `DEEP_REORG_HALTED`：首次有效观测立即 critical，证据损坏但已知标记存在仍保留事故。
 - 采集失败、证据无法读取：监控能力异常，与服务故障分别记录。
