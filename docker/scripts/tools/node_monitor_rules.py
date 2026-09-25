@@ -161,9 +161,14 @@ def evaluate(store, report, at, config):
         # controller; optional minting is evaluated only when it is enabled.
         controller = report.get("controller", {})
         controller_state = controller.get("runtime_state")
+        # Guidance distinguishes a historical manual exit from a current crash.
+        historical_manual = (controller.get("display_state") in {"idle", "waiting_for_seed"}
+                             and controller.get("result") == "exit-code"
+                             and controller.get("exit_code") == 1 and controller.get("exit_status") == 2)
         condition("controller:health", "controller", "CONTROLLER_FAILED",
                   None if not available or warming or controller_state not in {"failed", "active", "inactive"}
-                  else controller_state == "failed", evidence={"exit_code": node_observation.quantity(controller.get("exit_code"))})
+                  else controller_state == "failed" and not historical_manual,
+                  evidence={"exit_code": node_observation.quantity(controller.get("exit_code"))})
         for service, component, active in (("control_plane", components.get("control_plane", {}), True),
                                           ("ord", report.get("minting", {}), report.get("minting", {}).get("enabled") is True)):
             state = component.get("state")

@@ -59,7 +59,7 @@ usdb-node status --watch
 
 | 分组 | 内容 |
 | --- | --- |
-| `◆ Attention` | 需要处理的失败、资源配置问题、失联或过期观测，以及 controller 的处理命令 |
+| `◆ Attention` | 需要操作的事项，包括缺少 Seed、配置问题、故障及失联或过期观测；出现在这里不一定表示服务失败 |
 | `◆ Work in progress` | 正在下载、校验、导入、同步或等待依赖的工作；启用 Ord 时单列 Bitcoin txindex 和 Ord |
 | `◆ Node services` | 已就绪服务的高度与运行时间，以及独立的挖矿状态 |
 | `◆ Preparation` | 已完成的快照文件准备、Bitcoin 历史验证等工作 |
@@ -246,15 +246,16 @@ r25 中可能出现缺少详细进度、RPC 暂不可用时状态变化、等待
 | `RUNNING` | 正在运行启动或运维编排；查看同步进度或 controller 日志 |
 | `STOPPING` | 编排正在停止，等待当前停机操作完成 |
 | `IDLE` | 当前没有编排任务；节点已经 `READY` 时可以是正常完成，不必重新安装 |
+| `WAITING_FOR_SEED` | 链服务已运行，尚未配置入网 Seed；执行 `usdb-node peers add ENODE`，再用 `usdb-node peers status --watch` 查看连接和高度 |
 | `MANUAL_ACTION` | 上次编排以退出码 2 要求人工处理；先看当前节点检查项，`AWAITING_PEERS` 应处理入网条件 |
 | `FAILED` | 编排异常退出；按提示先查日志，再决定是否重试 `up` |
 | `UNAVAILABLE` | 未取得可靠的 systemd 状态；检查 `controller status`，不能据此断定节点服务失败 |
 
 状态说明还会显示开机启动是否启用。若显示 `automatic startup after reboot is disabled`，手动 `up` 仍可启动，但不会恢复开机启动；仅在希望恢复开机启动时执行提示中的 `controller install`。该操作不会由状态查询自动执行。
 
-包含持续观察改进的工具会让进度面板和普通 `status` 使用相同的 controller 诊断。r28 可能在核心服务已启动、正连接已配置的 peer 或追块时，以退出码 2 结束编排；链随后自行同步到 `READY`，systemd 仍保留 `failed`。新版此时显示 `controller=idle`，同时保留 `systemd=failed | last exit=2` 和历史结果说明，不会在查询时清除记录。真实异常退出仍显示失败并提供日志检查入口。
+包含 Seed 等待提示改进的工具，会让进度面板和普通 `status` 根据当前入网检查给出具体操作。r35 及更早的工具可能在核心服务已启动、但缺少 Seed 时以退出码 2 结束编排，systemd 因而记录为 `failed`。新版将这种情况解释为 `controller=waiting_for_seed`，直接提示添加 Seed；若节点已就绪则显示 `controller=idle`。默认面板不再将这条历史记录展示成当前故障，原始 `systemd=failed | last exit=2` 及说明可在 `status --details` 或 `status --watch --details` 查看，JSON 原始字段也保留。状态查询不会清除 systemd 记录。真实异常退出仍显示失败并提供日志检查入口。
 
-新版编排会把核心服务健康、已有 seed、正在连接或同步视为启动已完成，以成功状态退出；节点总体仍可为 `AWAITING_PEERS`，继续看连接数和链高度即可。缺少 seed、查询失败或服务故障仍需按提示处理。旧工具还可能因 systemd 的 PATH 没有包含 `~/.local/bin`，把标准安装误报为 `REVIEW_REQUIRED`；新版会识别标准安装路径。只为处理这些旧显示问题，不需要重建数据或重启已正常同步的链。
+新版编排在确认核心服务健康后，即使尚未添加 Seed，也会以成功状态结束启动，避免留下新的 systemd 失败记录；`up` 的结果为 `awaiting_seed`，总体状态仍为 `AWAITING_PEERS`，不会误报节点已入网。添加同网络、可达的 Seed 后，full 节点即可同步和验证区块，无需开启挖矿。使用 IPv6 Seed 时，先按[节点地址与连接管理](peers.md)配置对应地址族。已有 Seed、正在连接或同步时同样属于启动已完成，继续观察即可；查询失败或服务故障仍需按提示处理。旧工具还可能因 systemd 的 PATH 没有包含 `~/.local/bin`，把标准安装误报为 `REVIEW_REQUIRED`；新版会识别标准安装路径。只为处理这些旧显示问题，不需要重建数据或重启已正常同步的链。
 
 **普通 rN 升级不要求每次重装 controller。** 稳定命令入口、配置路径和 unit 模板仍匹配时可以复用；支持的自定义超时和 `--skip-pull` 不会被误判为版本过旧。需要刷新时，提示命令保留这些选项。手工编辑或 systemd 覆盖配置需要自行核对。
 

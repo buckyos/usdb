@@ -4500,6 +4500,14 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         report["node_role"] = "unconfigured"
     guidance = dict(overall_state=report["overall_state"], checks={"controller": controller},
                     next_actions=[], operator_guidance=[])
+    # Progress and lifecycle use different overall states. Reuse fresh chain
+    # membership evidence so WAITING can still explain a missing seed.
+    chain = next((item for item in report["components"] if item["id"] == "usdb_chain"), {})
+    if (chain.get("state") in {"WAITING", "SYNCING"} and not chain.get("observation_unavailable")
+            and not chain.get("last_observed_at")):
+        guidance["checks"]["network_membership"] = {
+            "state": chain["state"], "reason": chain.get("membership"),
+        }
     apply_controller_guidance(guidance)
     report["controller"] = controller
     node_observation.attach(report, layout, sys.modules[__name__])
@@ -5114,7 +5122,10 @@ def _finish_node_status(
         "summary": recovery["up_summary"],
     }
     report["operator_guidance"] = [*recovery["guidance"], *additional_guidance]
-    if _startup_completed_outcome(report) == "awaiting_peers":
+    completed = _startup_completed_outcome(report)
+    if completed == "awaiting_seed":
+        report["up"] = {"mode": "manual", "summary": "Startup completed; add a seed to join the network."}
+    elif completed == "awaiting_peers":
         report["up"] = {"mode": "observe", "summary": "Services are running; the chain will continue connecting and synchronizing."}
         report["next_actions"] = ["usdb-node peers status", "usdb-node status --watch"]
         report["operator_guidance"] = ["Observe peer connections and chain height; no repeated up or service restart is needed.",
@@ -5405,13 +5416,16 @@ def _up_action(report: dict[str, Any], allow_activation: bool) -> str | None:
 
 
 def _startup_completed_outcome(report: dict[str, Any]) -> str | None:
-    """Healthy services can finish startup while configured peers connect or sync."""
+    """Service startup can succeed before network membership is configured or ready."""
     if report["overall_state"] == "READY":
         return "ready"
     checks = report.get("checks", {})
-    if (report["overall_state"] == "AWAITING_PEERS" and checks.get("runtime", {}).get("state") == "ready"
-            and checks.get("network_membership", {}).get("reason") in {"WAITING_FOR_PEERS", "SYNCING"}):
-        return "awaiting_peers"
+    if report["overall_state"] == "AWAITING_PEERS" and checks.get("runtime", {}).get("state") == "ready":
+        reason = checks.get("network_membership", {}).get("reason")
+        if reason == "SEED_REQUIRED":
+            return "awaiting_seed"
+        if reason in {"WAITING_FOR_PEERS", "SYNCING"}:
+            return "awaiting_peers"
     return None
 
 
@@ -6315,7 +6329,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             )
         if (
             return_code == 0
-            and result["outcome"] in {"controller_started", "ready", "awaiting_peers"}
+            and result["outcome"] in {"controller_started", "ready", "awaiting_peers", "awaiting_seed"}
             and not args.json and not args.dry_run and not args.no_watch
             and sys.stdout.isatty()
             and _terminal_refresh_supported(sys.stderr)

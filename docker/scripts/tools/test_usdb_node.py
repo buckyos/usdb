@@ -2725,12 +2725,14 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(detached["outcome"], "controller_detached")
         stop.assert_not_called()
 
-    def test_controller_finishes_successfully_while_configured_peers_connect_or_sync(self) -> None:
+    def test_controller_finishes_successfully_while_healthy_services_await_network_membership(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
-        for reason in ("WAITING_FOR_PEERS", "SYNCING", "SEED_REQUIRED", "UNKNOWN"):
-            with self.subTest(reason=reason):
+        cases = [(reason, "ready") for reason in ("WAITING_FOR_PEERS", "SYNCING", "SEED_REQUIRED", "UNKNOWN")]
+        cases += [("SEED_REQUIRED", state) for state in ("degraded", "unavailable", "starting")]
+        for reason, runtime in cases:
+            with self.subTest(reason=reason, runtime=runtime):
                 awaiting = {"overall_state": "AWAITING_PEERS", "checks": {
-                    "runtime": {"state": "ready"},
+                    "runtime": {"state": runtime},
                     "network_membership": {"state": "WAITING", "reason": reason}}}
                 reports = [{"overall_state": "STARTING"}, {"overall_state": "STARTING"}, awaiting]
                 with mock.patch.object(NODE, "collect_node_status", side_effect=reports), \
@@ -2738,34 +2740,39 @@ class UsdbNodeTests(unittest.TestCase):
                      mock.patch.object(NODE, "print_up_result") as printed:
                     code = NODE.run_bootstrap_controller(layout, sync_timeout_secs=60, pull=False)
                 start.assert_called_once()
-                if reason in {"WAITING_FOR_PEERS", "SYNCING"}:
+                if runtime == "ready" and reason in {"WAITING_FOR_PEERS", "SYNCING", "SEED_REQUIRED"}:
                     self.assertEqual(code, 0)
-                    self.assertEqual(printed.call_args.args[0]["outcome"], "awaiting_peers")
+                    expected = "awaiting_seed" if reason == "SEED_REQUIRED" else "awaiting_peers"
+                    self.assertEqual(printed.call_args.args[0]["outcome"], expected)
+                    self.assertEqual(printed.call_args.args[0]["status"]["overall_state"], "AWAITING_PEERS")
                 else:
                     self.assertEqual(code, NODE.CONTROLLER_MANUAL_EXIT_CODE)
                     self.assertEqual(printed.call_args.args[0]["outcome"], "manual_action_required")
 
     def test_repeated_up_does_not_restart_services_already_joining(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
-        report = {"overall_state": "AWAITING_PEERS", "checks": {
-            "runtime": {"state": "ready"}, "network_membership": {"reason": "SYNCING"}}}
-        with mock.patch.object(NODE, "collect_node_status", return_value=report), \
-             mock.patch.object(NODE, "start_controller_unit") as start, \
-             mock.patch.object(NODE, "ensure_background_services", return_value={"state": "ready"}), \
-             mock.patch.object(NODE, "run_helper"):
-            result, code = NODE.submit_up_to_controller(layout, dry_run=False, allow_activation=False)
-        self.assertEqual((result["outcome"], code), ("awaiting_peers", 0))
-        self.assertEqual(result["status"]["overall_state"], "AWAITING_PEERS")
-        start.assert_not_called()
+        for reason, outcome in (("SYNCING", "awaiting_peers"), ("SEED_REQUIRED", "awaiting_seed")):
+            with self.subTest(reason=reason):
+                report = {"overall_state": "AWAITING_PEERS", "checks": {
+                    "runtime": {"state": "ready"}, "network_membership": {"reason": reason}}}
+                with mock.patch.object(NODE, "collect_node_status", return_value=report), \
+                     mock.patch.object(NODE, "start_controller_unit") as start, \
+                     mock.patch.object(NODE, "ensure_background_services", return_value={"state": "ready"}), \
+                     mock.patch.object(NODE, "run_helper"):
+                    result, code = NODE.submit_up_to_controller(layout, dry_run=False, allow_activation=False)
+                self.assertEqual((result["outcome"], code), (outcome, 0))
+                self.assertEqual(result["status"]["overall_state"], "AWAITING_PEERS")
+                start.assert_not_called()
 
     def test_interactive_up_watches_ready_nodes_but_explicit_nonwatch_modes_return(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
-        for options, tty, expected_watch in (([], True, True), (["--foreground"], True, True),
-                                            (["--no-watch"], True, False), (["--json"], True, False),
-                                            (["--dry-run"], True, False), ([], False, False)):
-            with self.subTest(options=options, tty=tty):
+        modes = (([], True, True), (["--foreground"], True, True), (["--no-watch"], True, False),
+                 (["--json"], True, False), (["--dry-run"], True, False), ([], False, False))
+        for options, tty, expected_watch, outcome in [(*mode, result) for mode in modes for result in ("ready", "awaiting_seed")]:
+            with self.subTest(options=options, tty=tty, outcome=outcome):
                 args = NODE.build_parser().parse_args(["up", *options])
-                result = {"outcome": "ready", "initial_state": "READY", "status": {"overall_state": "READY"}}
+                state = "READY" if outcome == "ready" else "AWAITING_PEERS"
+                result = {"outcome": outcome, "initial_state": state, "status": {"overall_state": state}}
                 with mock.patch.object(NODE, "submit_up_to_controller", return_value=(result, 0)), \
                      mock.patch.object(NODE, "up_node", return_value=(result, 0)), \
                      mock.patch.object(NODE, "follow_submitted_controller", return_value=(result, 0)) as follow, \

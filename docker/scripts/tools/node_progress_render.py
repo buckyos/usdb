@@ -300,11 +300,21 @@ def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
             f"Detected: {event.get('detected_at') or 'unknown'} | evidence={event.get('evidence_status', 'unknown')}",
             "Preserve the deep BTC reorg recovery record; restarting does not clear this incident."]))
     controller = report.get("controller", {})
-    if controller and (details or controller.get("action_required") or controller.get("runtime_state") == "failed"):
+    historical_exit = (controller.get("runtime_state") == "failed"
+                       and controller.get("result") == "exit-code" and controller.get("exit_code") == 1
+                       and controller.get("exit_status") == 2
+                       and controller.get("display_state") in {"idle", "waiting_for_seed"})
+    if controller and (details or controller.get("action_required")
+                       or (controller.get("runtime_state") == "failed" and not historical_exit)):
         row = _Row("Controller", controller.get("display_state", "unknown").upper(),
                    attention=bool(controller.get("action_required")), info=[controller.get("summary", "")])
         if controller.get("observation_available"):
-            row.summary = f"systemd={controller['runtime_state']} | last exit={controller.get('exit_status', 'unknown')}"
+            runtime = f"systemd={controller['runtime_state']} | last exit={controller.get('exit_status', 'unknown')}"
+            if historical_exit:
+                if details:
+                    row.info.append(f"Historical controller result: {runtime}; exit 2 requested operator action, not a service crash")
+            elif details or controller.get("display_state") != "waiting_for_seed":
+                row.summary = runtime
         row.info += [f"Action: {action}" for action in controller.get("actions", [])]
         rows.append(row)
     resources = report.get("resources", {})

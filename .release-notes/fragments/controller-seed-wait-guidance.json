@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "controller-seed-wait-guidance",
+  "type": "fixed",
+  "scopes": ["node-runtime"],
+  "summary": "Distinguish missing network seeds from controller failures",
+  "details": [
+    "Healthy core services now complete startup successfully while awaiting a seed, returning outcome awaiting_seed without claiming network readiness. Repeated up does not restart the controller, and interactive up continues watching.",
+    "Status and watch use fresh chain membership observations to show WAITING_FOR_SEED with peers add and peers status actions. Historical exit-2 results remain available in detailed output and JSON, while genuine controller failures and unavailable observations retain their diagnostics.",
+    "The monitor preserves controller outcome fields and no longer raises CONTROLLER_FAILED for confirmed historical manual exits when the node is ready or waiting for a seed. Status queries do not clear systemd records or alter services."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

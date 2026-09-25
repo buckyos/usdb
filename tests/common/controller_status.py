@@ -53,10 +53,19 @@ class ControllerStatusFixture:
             raise AssertionError(f"Unexpected mutation or probe: {command}")
         return subprocess.CompletedProcess(command, 0, "\n".join(f"{key}={value}" for key, value in self.properties.items()), "")
 
-    def report(self, overall="READY"):
+    def report(self, overall="READY", *, checks=None):
         controller = CONTROLLER.inspect_controller(self.layout, node=NODE)
         return NODE._finish_node_status({"release_id": self.layout.release_id,
-                                        "checks": {"controller": controller}}, overall)
+                                        "checks": {**(checks or {}), "controller": controller}}, overall)
+
+    def progress(self, overall="WAITING", **chain_updates):
+        """Run the real progress/guidance path with a fresh seed-required chain probe."""
+        chain = NODE._component_progress("usdb_chain", "WAITING", "SEED_REQUIRED", current=0)
+        chain.update(membership="SEED_REQUIRED", peer_count=0, **chain_updates)
+        base = dict(release_id="test", observed_at="now", overall_state=overall,
+                    components=[chain], controller_state=self.properties["ActiveState"])
+        with mock.patch.object(NODE, "_collect_node_progress", return_value=base):
+            return NODE.collect_node_progress(self.layout)
 
     def __exit__(self, *args):
         return self.stack.__exit__(*args)

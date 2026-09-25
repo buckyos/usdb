@@ -41,10 +41,59 @@ class ControllerStatusTests(unittest.TestCase):
                     progress = NODE.collect_node_progress(fixture.layout)
                 rendered = NODE.render_node_progress(progress)
                 self.assertIn("controller=" + expected, rendered)
-                self.assertIn("systemd=failed | last exit=" + exit_status, rendered)
+                if exit_status == "2":
+                    self.assertNotIn("systemd=failed", rendered)
+                else:
+                    self.assertIn("systemd=failed | last exit=1", rendered)
+                self.assertIn("systemd=failed | last exit=" + exit_status,
+                              NODE.render_node_progress(progress, details=True))
                 self.assertEqual(progress["overall_state"], "READY")
                 self.assertEqual(progress["controller_state"], "failed")
                 self.assertEqual(progress["controller"]["action_required"], exit_status == "1")
+
+    def test_waiting_for_seed_is_actionable_in_progress_and_lifecycle_status(self):
+        for active, result, code, status in (("failed", "exit-code", "1", "2"), ("inactive", "success", "1", "0")):
+            with self.subTest(active=active), ControllerStatusFixture() as fixture:
+                fixture.properties.update(ActiveState=active, Result=result, ExecMainCode=code, ExecMainStatus=status)
+                for overall in ("WAITING", "SYNCING", "STARTING"):
+                    progress = fixture.progress(overall)
+                    controller = progress["controller"]
+                    self.assertEqual(controller["display_state"], "waiting_for_seed")
+                    self.assertEqual(controller["runtime_state"], active)
+                    self.assertEqual(controller["exit_status"], int(status))
+                    self.assertEqual(progress["overall_state"], overall)
+                    rendered = NODE.render_node_progress(progress)
+                    self.assertIn("controller=waiting_for_seed", rendered)
+                    self.assertIn("== Attention", rendered)
+                    self.assertIn("Action: usdb-node peers add ENODE", rendered)
+                    self.assertIn("Action: usdb-node peers status --watch", rendered)
+                    self.assertNotIn("systemd=", rendered)
+                    self.assertNotIn("controller logs", rendered)
+                    self.assertIn(f"systemd={active} | last exit={status}", NODE.render_node_progress(progress, details=True))
+                report = fixture.report("AWAITING_PEERS", checks={
+                    "runtime": {"state": "ready"},
+                    "network_membership": {"state": "WAITING", "reason": "SEED_REQUIRED"},
+                })
+                self.assertEqual(report["checks"]["controller"]["display_state"], "waiting_for_seed")
+                self.assertEqual(report["up"], {"mode": "manual", "summary": "Startup completed; add a seed to join the network."})
+                self.assertIn("usdb-node peers add ENODE", report["next_actions"])
+
+    def test_seed_wait_does_not_hide_real_controller_failures_or_unreliable_probes(self):
+        with ControllerStatusFixture() as fixture:
+            fixture.properties.update(ActiveState="failed", Result="exit-code", ExecMainCode="1", ExecMainStatus="1")
+            progress = fixture.progress()
+            self.assertEqual(progress["controller"]["display_state"], "failed")
+            self.assertIn("systemd=failed | last exit=1", NODE.render_node_progress(progress))
+            self.assertEqual(progress["controller"]["actions"], ["usdb-node controller logs --follow"])
+            fixture.properties["ExecMainStatus"] = "2"
+            for fields in ({"observation_unavailable": True}, {"last_observed_at": "earlier"},
+                           {"state": "BLOCKED"}, {"state": "STARTING"}):
+                with self.subTest(fields=fields):
+                    self.assertEqual(fixture.progress(**fields)["controller"]["display_state"], "manual_action")
+            for overall in ("BLOCKED", "FAILED", "DEGRADED"):
+                self.assertEqual(fixture.progress(overall)["controller"]["display_state"], "manual_action")
+            fixture.properties["DropInPaths"] = "/etc/systemd/system/custom.conf"
+            self.assertEqual(fixture.progress()["controller"]["display_state"], "review_required")
 
     def test_progress_keeps_controller_probe_failure_actionable(self):
         with ControllerStatusFixture() as fixture:

@@ -174,7 +174,15 @@ def apply_controller_guidance(report: dict) -> None:
         active = controller.get("runtime_state")
         manual = (controller.get("result") == "exit-code" and controller.get("exit_code") == 1
                   and controller.get("exit_status") == 2)
-        if active == "failed" and manual:
+        membership = report["checks"].get("network_membership", {})
+        needs_seed = (membership.get("state") == "WAITING" and membership.get("reason") == "SEED_REQUIRED"
+                      and overall in {"AWAITING_PEERS", "WAITING", "SYNCING", "STARTING"})
+        if needs_seed and (active == "inactive" or (active == "failed" and manual)):
+            controller.update(display_state="waiting_for_seed",
+                              summary="Chain is running; add a seed to join the network")
+            actions.extend(["usdb-node peers add ENODE", "usdb-node peers status --watch"])
+            guidance.append("Use a reachable enode from the same network. Full nodes can sync and validate blocks without enabling mining.")
+        elif active == "failed" and manual:
             controller.update(display_state="manual_action", summary="Last controller run requested operator action (exit 2); follow the current node checks")
             if overall == "READY":
                 controller.update(display_state="idle", summary="Earlier controller run exited with code 2; the node is currently ready")

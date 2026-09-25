@@ -15,6 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/tools"))
 import node_monitor as monitor
 import node_monitor_rules as rules
+from control_plane_monitor import project
 import usdb_node as node
 from common.node_monitor import BASE, MonitorFixture, incident, report
 
@@ -113,6 +114,19 @@ class StoreTests(unittest.TestCase):
 
 
 class RuleTests(unittest.TestCase):
+    def test_controller_manual_seed_wait_does_not_fire_failure_alert(self):
+        for display, exit_status, expected in (("waiting_for_seed", 2, False), ("idle", 2, False),
+                                              ("failed", 1, True), ("manual_action", 2, True),
+                                              ("waiting_for_seed", 1, True)):
+            with self.subTest(display=display, exit_status=exit_status), MonitorFixture() as f:
+                for seconds in (0, 1, 3, 5):
+                    at = BASE + seconds * 1000
+                    value = report(at)
+                    value["controller"] = dict(runtime_state="failed", display_state=display,
+                                               result="exit-code", exit_code=1, exit_status=exit_status)
+                    rules.evaluate(f.store, project(value, at), at, f.settings)
+                self.assertEqual(any(v["code"] == "CONTROLLER_FAILED" for v in f.store.alerts()), expected)
+
     def test_unready_initial_sync_never_becomes_readiness_regression(self):
         with MonitorFixture() as f:
             for at in range(10):

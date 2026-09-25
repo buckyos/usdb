@@ -37,7 +37,10 @@ def project(report: dict, now_ms: int) -> dict:
     result = dict(schema_version=SCHEMA, observed_at_ms=now_ms, observation_available=True,
                   **select(report, ("release_id", "bundle_id", "overall_state", "node_role", "observed_at")))
     result["network"] = select(report.get("network"), ("name", "chain_id", "network_id", "genesis_hash", "bitcoin_network"))
-    result["controller"] = select(report.get("controller"), ("state", "runtime_state", "observation_available", "restart_count", "exit_code"))
+    result["controller"] = select(report.get("controller"), (
+        "state", "runtime_state", "display_state", "observation_available", "restart_count",
+        "result", "exit_code", "exit_status",
+    ))
     result["resources"] = select(report.get("resources"), ("mode", "phase", "target_phase", "transition_pending", "runtime_adopted", "host_memory_bytes", "external_services_bytes"))
     result["mining"] = select(report.get("mining"), ("state", "enabled", "drift", "observation_unavailable", "role", "configured_role", "runtime_role"))
     from ord_runtime import FIELDS
