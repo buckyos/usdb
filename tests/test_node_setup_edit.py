@@ -60,6 +60,16 @@ class SetupEditTests(unittest.TestCase):
                 mock.patch.object(node, "configure_node", side_effect=AssertionError("recreated node")):
             return node.setup_node(self.layout, input_fn=answer, output=self.output, **kwargs)
 
+    def test_monitor_default_and_explicit_opt_out_survive_repeated_setup(self):
+        self.assertEqual(node.read_env(self.layout.node_env)["USDB_MONITOR_ENABLED"], "1")
+        self.edit({"Enable node monitor": "n"})
+        self.assertEqual(node.read_env(self.layout.node_env)["USDB_MONITOR_ENABLED"], "0")
+        original = self.layout.node_env.read_bytes()
+        self.edit()
+        self.assertEqual(self.layout.node_env.read_bytes(), original)
+        self.edit({"Enable node monitor": "y"})
+        self.assertEqual(node.read_env(self.layout.node_env)["USDB_MONITOR_ENABLED"], "1")
+
     def test_enter_preserves_miner_identity_credentials_data_and_steady_budget(self):
         env = node.read_env(self.layout.node_env)
         self.update({**policy.build_resource_plan(64 * policy.GIB, "steady", env).environment(),

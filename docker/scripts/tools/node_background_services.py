@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-import control_plane_monitor as monitor
+import node_monitor as monitor
 from node_controller_status import _command_options, _directives, PROBE_TIMEOUT_SECS, UNIT_MAX_BYTES
 
 
@@ -91,7 +91,7 @@ def _running_release(unit: Path, state: dict, proc: Path = Path("/proc")) -> str
             data = source.read(128 * 1024 + 1)
         if len(data) > 128 * 1024:
             raise ValueError("process environment exceeds limit")
-        prefix = b"USDB_CONSOLE_MONITOR_RELEASE="
+        prefix = (monitor.RELEASE_ENV + "=").encode()
         return next((entry[len(prefix):].decode("utf-8") for entry in data.split(b"\0")
                      if entry.startswith(prefix)), None)
     except (FileNotFoundError, ProcessLookupError, PermissionError) as error:
@@ -102,7 +102,7 @@ def _running_release(unit: Path, state: dict, proc: Path = Path("/proc")) -> str
         raise _review(unit, f"could not verify the observer process release ({detail}); check access to its /proc entry") from error
 
 
-def _observe_release(unit: Path, *, after_start: bool = False) -> tuple[dict, str | None]:
+def _observe_release(unit: Path, *, after_start: bool = False, ready=None) -> tuple[dict, str | None]:
     """Wait briefly for a readable process, re-probing systemd instead of pinning a stale PID.
 
     Type=simple acknowledges fork before the service has switched user and exec'd.
@@ -130,11 +130,11 @@ def _observe_release(unit: Path, *, after_start: bool = False) -> tuple[dict, st
             except _ProcessReleasePending as error:
                 pending = str(error)
             else:
-                if release is not None or (not after_start and int(state["MainPID"]) > 0):
+                if (release is not None or (not after_start and int(state["MainPID"]) > 0)) and (ready is None or ready(state, release)):
                     if waited:
                         print(f"Background service {unit.name}: process release observation available", file=sys.stderr, flush=True)
                     return state, release
-                pending = "running process has no release stamp yet"
+                pending = "monitor event database has not initialized" if release is not None and ready else "running process has no release stamp yet"
         else:
             pending = "observer is still starting"
         if not waited:
@@ -162,7 +162,8 @@ def _plan(layout, node, context) -> list[dict]:
         )
         # The pre-console template differs only in this dependency. Other edited
         # values (including paths or restart settings) are never guessed away.
-        legacy = expected.replace(" docker.service " + monitor.unit_name(layout), " docker.service")
+        legacy = expected.replace("Wants=network-online.target docker.service\n",
+                                  f"Wants=network-online.target docker.service usdb-console-monitor-{layout.bundle_id}.service\n")
         current = _normalized(content) == _normalized(expected)
         if not current and _normalized(content) != _normalized(legacy):
             raise ValueError("unrecognized controller template")
@@ -180,7 +181,7 @@ def _plan(layout, node, context) -> list[dict]:
         env_key = ("Service", "Environment")
         for values in (installed, wanted):
             values[env_key] = [value for value in values.get(env_key, [])
-                               if not (len(value) == 1 and value[0].startswith("USDB_CONSOLE_MONITOR_RELEASE="))]
+                               if not (len(value) == 1 and value[0].startswith(monitor.RELEASE_ENV + "="))]
         if content is not None and installed != wanted:
             raise ValueError("unrecognized observer template")
     except ValueError as error:
@@ -195,12 +196,37 @@ def _plan(layout, node, context) -> list[dict]:
     return plan
 
 
+def legacy_monitor_plan(layout, node, context):
+    """Validate the old observer before retiring it; preserve custom units and overrides."""
+    import control_plane_monitor as console
+    unit = node.controller_unit_path(layout).with_name(console.legacy_unit_name(layout))
+    content = _read(unit)
+    if content is None:
+        return None
+    installed, expected = _normalized(content), _normalized(console.legacy_render_unit(layout, node, context))
+    for value in (installed, expected):
+        key = ("Service", "Environment")
+        value[key] = [v for v in value.get(key, []) if not (len(v) == 1 and v[0].startswith("USDB_CONSOLE_MONITOR_RELEASE="))]
+    if installed != expected:
+        raise _review(unit, "legacy console observer is customized; review it before monitor migration")
+    return dict(unit=unit, state=_probe(unit))
+
+
+def retire_legacy_monitor(plan, node):
+    if plan and (plan["state"]["UnitFileState"] != "disabled" or plan["state"]["ActiveState"] != "inactive"):
+        node._privileged_command(["systemctl", "disable", "--now", plan["unit"].name])
+        return True
+    return False
+
+
 def ensure(layout, *, node) -> dict:
     """Repair known units and run the observer, preserving deliberate autostart settings."""
     if not layout.node_env.is_file():
         raise ValueError("Configure the node before background startup")
     context = node._controller_install_context()
     plan = _plan(layout, node, context)
+    legacy = legacy_monitor_plan(layout, node, context)
+    monitoring = monitor.enabled(layout, node)
     needs_update = any(item["changed"] or item["state"]["NeedDaemonReload"] == "yes" for item in plan)
     actions = []
     # An already current monitor can be checked while the controller owns the
@@ -208,7 +234,10 @@ def ensure(layout, *, node) -> dict:
     with node.node_operation_lock(layout, "up-background-services") if needs_update else nullcontext():
         if needs_update:
             plan = _plan(layout, node, context)
+            legacy = legacy_monitor_plan(layout, node, context)
         try:
+            if retire_legacy_monitor(legacy, node):
+                actions.append("disable:" + legacy["unit"].name)
             for item in plan:
                 if item["changed"]:
                     print(f"Refreshing background service: {item['unit'].name}", file=sys.stderr, flush=True)
@@ -219,9 +248,16 @@ def ensure(layout, *, node) -> dict:
             observer = plan[1]
             # A new observer inherits the existing controller's boot policy;
             # disabled existing services remain disabled after manual up.
-            if observer["content"] is None and plan[0]["state"]["UnitFileState"] == "enabled":
+            autostart = legacy["state"]["UnitFileState"] if legacy else plan[0]["state"]["UnitFileState"]
+            if monitoring and observer["content"] is None and autostart == "enabled":
                 node._privileged_command(["systemctl", "enable", observer["unit"].name])
-            monitor.prepare(layout, node)
+            if not monitoring:
+                if observer["state"]["UnitFileState"] != "disabled" or observer["state"]["ActiveState"] != "inactive":
+                    node._privileged_command(["systemctl", "disable", "--now", observer["unit"].name])
+                    actions.append("disable:" + observer["unit"].name)
+                monitor.publish_state(layout, node, "disabled")
+                return dict(state="ready", monitor="disabled", actions=actions,
+                            controller_autostart=plan[0]["state"]["UnitFileState"], monitor_autostart="disabled")
             # Reconcile against a fresh, readable process observation; a running
             # unit may have restarted since the configuration plan was collected.
             refresh = observer["changed"] or observer["state"]["NeedDaemonReload"] == "yes"
@@ -238,7 +274,8 @@ def ensure(layout, *, node) -> dict:
                 # accepting an asynchronous request is not evidence of startup.
                 node._privileged_command(["systemctl", verb, observer["unit"].name])
                 actions.append(verb + ":" + observer["unit"].name)
-            final, running_release = _observe_release(observer["unit"], after_start=True)
+            final, running_release = _observe_release(observer["unit"], after_start=True,
+                ready=lambda state, release: release != layout.release_id or monitor.initialized_process(layout, state["MainPID"]))
             if final["LoadState"] != "loaded" or final["ActiveState"] != "active" or final["SubState"] != "running":
                 raise _review(observer["unit"], "observer did not reach running state; inspect its journal")
             if running_release != layout.release_id:
@@ -246,6 +283,6 @@ def ensure(layout, *, node) -> dict:
         except (OSError, subprocess.SubprocessError) as error:
             raise ValueError("Background service preparation failed; check the preceding systemd/sudo error and "
                              "retry usdb-node up from the node operator's terminal. Existing core services were "
-                             "not restarted by this preparation; console monitoring is not confirmed ready.") from error
+                             "not restarted by this preparation; node monitoring is not confirmed ready.") from error
     return dict(state="ready", monitor="running", actions=actions,
                 controller_autostart=plan[0]["state"]["UnitFileState"], monitor_autostart=final["UnitFileState"])

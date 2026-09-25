@@ -18,6 +18,55 @@ from common.background_services import BackgroundServicesFixture
 
 
 class BackgroundServicesTests(unittest.TestCase):
+    def test_legacy_console_observer_migrates_without_duplicate_collectors(self):
+        import control_plane_monitor as console
+        for autostart in ("enabled", "disabled"):
+            with self.subTest(autostart=autostart), BackgroundServicesFixture() as f:
+                old = f.unit.with_name(console.legacy_unit_name(f.layout))
+                old.write_text(console.legacy_render_unit(f.layout, NODE, f.context))
+                f.states[old.name] = {**f.properties, "FragmentPath": str(old), "UnitFileState": autostart,
+                                      "ActiveState": "active", "SubState": "running", "MainPID": "100"}
+                f.unit.write_text(f.unit.read_text().replace("Wants=network-online.target docker.service\n",
+                                  "Wants=network-online.target docker.service " + old.name + "\n"))
+                f.remove_observer()
+                result = NODE.ensure_background_services(f.layout)
+                self.assertEqual(result["monitor"], "running")
+                self.assertEqual(result["monitor_autostart"], autostart)
+                stopped = f.commands.index(["systemctl", "disable", "--now", old.name])
+                started = f.commands.index(["systemctl", "start", f.observer.name])
+                self.assertLess(stopped, started)
+                self.assertNotIn("Requires=docker", f.observer.read_text())
+                self.assertNotIn("usdb-console-monitor-", f.unit.read_text())
+
+    def test_custom_legacy_observer_prevents_any_migration_writes(self):
+        import control_plane_monitor as console
+        with BackgroundServicesFixture() as f:
+            old = f.unit.with_name(console.legacy_unit_name(f.layout))
+            old.write_text(console.legacy_render_unit(f.layout, NODE, f.context) + "\n[Service]\nNice=5\n")
+            f.layout.release_id = "r27"
+            with self.assertRaisesRegex(ValueError, "legacy.*customized"):
+                NODE.ensure_background_services(f.layout)
+            self.assertEqual(f.commands, [])
+
+    def test_disabled_monitor_is_not_started_by_up_or_upgrade(self):
+        with BackgroundServicesFixture() as f:
+            f.layout.node_env.write_text("USDB_MONITOR_ENABLED=0\n")
+            f.layout.release_id = "r27"
+            result = NODE.ensure_background_services(f.layout)
+            self.assertEqual(result["monitor"], "disabled")
+            self.assertFalse(any("start" in command or "restart" in command for command in f.commands))
+            self.assertEqual(f.states[f.observer.name]["UnitFileState"], "disabled")
+            snapshot = json.loads((f.layout.node_env.parent / "console/node-progress.json").read_text())
+            self.assertEqual(snapshot["monitor"]["state"], "disabled")
+            self.assertFalse(snapshot["observation_available"])
+
+    def test_process_without_initialized_database_is_not_reported_ready(self):
+        with BackgroundServicesFixture() as f:
+            SERVICES.monitor.initialized_process.return_value = False
+            with self.assertRaisesRegex(ValueError, "event database has not initialized"):
+                NODE.ensure_background_services(f.layout)
+            self.assertAlmostEqual(f.elapsed, SERVICES.PROCESS_RELEASE_WAIT_SECS)
+
     def test_ready_up_repairs_legacy_units_and_keeps_installed_options(self):
         with BackgroundServicesFixture() as f:
             f.write_unit(sync_timeout_secs=123, pull=False)
@@ -30,7 +79,7 @@ class BackgroundServicesTests(unittest.TestCase):
             self.assertEqual((code, result["outcome"]), (0, "ready"))
             self.assertEqual(result["background_services"]["monitor"], "running")
             self.assertIn("--sync-timeout-secs 123 --skip-pull", f.unit.read_text())
-            self.assertIn(f.observer.name, f.unit.read_text())
+            self.assertNotIn("usdb-console-monitor-", f.unit.read_text())
             self.assertIn(["systemctl", "enable", f.observer.name], f.commands)
             self.assertNotIn(["systemctl", "enable", f.unit.name], f.commands)
             f.helper.assert_called_once_with(f.layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=True)
@@ -65,7 +114,7 @@ class BackgroundServicesTests(unittest.TestCase):
             original = f.unit.read_text()
             result = NODE.ensure_background_services(f.layout)
             self.assertEqual(f.unit.read_text(), original)
-            self.assertIn("USDB_CONSOLE_MONITOR_RELEASE=r27", f.observer.read_text())
+            self.assertIn("USDB_NODE_MONITOR_RELEASE=r27", f.observer.read_text())
             self.assertEqual(result["actions"], ["install:" + f.observer.name, "restart:" + f.observer.name])
             self.assertFalse(any(command[-1] == f.unit.name for command in f.commands))
             f.commands.clear()
@@ -194,7 +243,7 @@ class BackgroundServicesTests(unittest.TestCase):
             self.assertEqual(f.commands, [])
 
     def test_invalid_process_environment_is_not_retried_or_exposed(self):
-        for data in (b"USDB_CONSOLE_MONITOR_RELEASE=SECRET\xff\0", b"SECRET" * (128 * 1024)):
+        for data in (b"USDB_NODE_MONITOR_RELEASE=SECRET\xff\0", b"SECRET" * (128 * 1024)):
             with self.subTest(size=len(data)), BackgroundServicesFixture() as f:
                 f.running_observer()
                 (f.proc / "321/environ").write_bytes(data)
@@ -207,9 +256,9 @@ class BackgroundServicesTests(unittest.TestCase):
     def test_legacy_unstamped_observer_is_recognized(self):
         with BackgroundServicesFixture() as f:
             f.observer.write_text("\n".join(line for line in f.observer.read_text().splitlines()
-                                           if "USDB_CONSOLE_MONITOR_RELEASE=" not in line) + "\n")
+                                           if "USDB_NODE_MONITOR_RELEASE=" not in line) + "\n")
             NODE.ensure_background_services(f.layout)
-            self.assertIn("USDB_CONSOLE_MONITOR_RELEASE=", f.observer.read_text())
+            self.assertIn("USDB_NODE_MONITOR_RELEASE=", f.observer.read_text())
 
     def test_both_units_are_reviewed_before_any_write(self):
         variants = {

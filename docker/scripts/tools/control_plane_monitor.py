@@ -8,10 +8,8 @@ import os
 import re
 from pathlib import Path
 import secrets
-import signal
 import subprocess
 import tempfile
-import threading
 import time
 
 from control_plane_resources import ResourceCollector
@@ -102,9 +100,8 @@ def read_token(path: Path) -> str:
     return value
 
 
-def export(layout, node, collector=None) -> dict:
-    """Publish one complete snapshot atomically, including failed observation attempts."""
-    root = prepare(layout, node)
+def collect(layout, node, collector=None, *, include_resources=True) -> dict:
+    """Collect a sanitized snapshot; the core monitor owns persistence and publication."""
     observed = int(time.time() * 1000)
     env = {}
     try:
@@ -126,28 +123,45 @@ def export(layout, node, collector=None) -> dict:
     except (OSError, ValueError, subprocess.SubprocessError):
         report = dict(schema_version=SCHEMA, observed_at_ms=observed, observation_available=False,
                       overall_state="UNAVAILABLE", components=[])
+    # A daemon uses a persistent resource sampler; isolated service probes must
+    # not start a new expensive directory scan on every iteration.
+    if not include_resources:
+        return report
     # Resource observation failures do not erase node readiness or minting progress.
     try:
         report["host_resources"] = (collector or ResourceCollector()).sample(
             env, layout.bundle_id, wait_for_disk=collector is None)
     except (OSError, ValueError, subprocess.SubprocessError):
         report["host_resources"] = dict(schema_version="usdb-console-resources:v1", status="unavailable")
-    node._atomic_write_private(root / "node-progress.json", json.dumps(report, allow_nan=False) + "\n")
+    return report
+
+
+def publish(layout, node, report) -> None:
+    """Publish a complete, bounded snapshot on the existing read-only console mount."""
+    root = prepare(layout, node)
+    payload = json.dumps(report, allow_nan=False) + "\n"
+    if len(payload.encode()) > 256 * 1024:
+        raise ValueError("Monitor console snapshot exceeds its size limit")
+    node._atomic_write_private(root / "node-progress.json", payload)
+
+
+def export(layout, node, collector=None) -> dict:
+    """Keep one-shot export compatible without replacing the core daemon's snapshot."""
+    report = collect(layout, node, collector)
+    import node_monitor
+    if not node_monitor.is_running(layout):
+        report["monitor"] = node_monitor.status(layout, node)
+        publish(layout, node, report)
     return report
 
 
 def run(layout, node) -> None:
-    """Refresh after controller exit too; SIGTERM stops between bounded observations."""
-    stopped = threading.Event()
-    for event in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(event, lambda *_: stopped.set())
-    collector = ResourceCollector()
-    while not stopped.is_set():
-        export(layout, node, collector)
-        stopped.wait(10)
+    """Compatibility entrypoint; all persistent observation uses the core monitor."""
+    import node_monitor
+    node_monitor.run(layout, node)
 
 
-def unit_name(layout) -> str:
+def legacy_unit_name(layout) -> str:
     return f"usdb-console-monitor-{layout.bundle_id}.service"
 
 
@@ -155,7 +169,7 @@ def unit_path(layout, node) -> Path:
     return node.controller_unit_path(layout).with_name(unit_name(layout))
 
 
-def render_unit(layout, node, context) -> str:
+def legacy_render_unit(layout, node, context) -> str:
     """Include the release identity so upgrades reload long-running observer code."""
     quote = node._systemd_quote
     command = " ".join(quote(str(value)) for value in (context.launcher, "--node-env", layout.node_env, "console", "monitor"))
@@ -181,12 +195,17 @@ WantedBy=multi-user.target
 """
 
 def install(layout, node, context) -> None:
-    """Install a separate observer so completed bootstrap does not freeze the dashboard."""
-    node._install_service_unit(unit_path(layout, node), render_unit(layout, node, context), context.service_user)
+    """Compatibility wrapper for the core monitor service."""
+    import node_monitor
+    node_monitor.install(layout, node, context)
 
 
 def start(layout, node) -> bool:
     """Request observer startup; return False when its systemd unit is missing."""
+    import node_monitor
+    if not node_monitor.enabled(layout, node):
+        node_monitor.publish_state(layout, node, "disabled")
+        return False
     prepare(layout, node)
     if unit_path(layout, node).is_file():
         node._privileged_command(["systemctl", "start", "--no-block", unit_name(layout)])
@@ -195,8 +214,19 @@ def start(layout, node) -> bool:
 
 
 def stop(layout, node) -> None:
-    if unit_path(layout, node).is_file():
-        node._privileged_command(["systemctl", "stop", unit_name(layout)])
+    import node_monitor
+    node_monitor.stop(layout, node)
+
+
+# Keep old Python callers on the same service, without running a second collector.
+def unit_name(layout):
+    import node_monitor
+    return node_monitor.unit_name(layout)
+
+
+def render_unit(layout, node, context):
+    import node_monitor
+    return node_monitor.render_unit(layout, node, context)
 
 
 def add_parser(subparsers) -> None:
@@ -225,7 +255,11 @@ def dispatch(args, layout, node) -> None:
         node.run_helper(layout, "run_testnet_runtime.sh", ["up-console"])
         print("Private console started. Use an SSH tunnel to localhost:28040 and usdb-node console token to sign in.")
         if not monitoring:
-            print("WARNING: host monitoring is not installed; without a separate console monitor process, "
+            import node_monitor
+            if not node_monitor.enabled(layout, node):
+                print("Node monitoring is disabled by configuration; local event history is retained.")
+                return
+            print("WARNING: host monitoring is not installed; without a separate node monitor process, "
                   "node and Ord observations will be missing or become stale. "
                   "Run usdb-node controller install, then usdb-node console start; "
-                  "or keep usdb-node console monitor running in a separate terminal.")
+                  "or keep usdb-node monitor run (legacy: usdb-node console monitor) running in a separate terminal.")

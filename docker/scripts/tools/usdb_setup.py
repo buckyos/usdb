@@ -84,6 +84,12 @@ def _collect(env, node, *, input_fn, output, resource_mode, bitcoin_profile, cap
         return node._prompt_yes_no(label, default=default, input_fn=input_fn, output=output)
 
     updates = {}
+    current_monitor = env.get("USDB_MONITOR_ENABLED", "1")
+    if current_monitor not in {"0", "1"}:
+        raise ValueError("USDB_MONITOR_ENABLED must be 0 or 1")
+    selected_monitor = "1" if yes_no("Enable node monitor (local events and alerts)", current_monitor == "1") else "0"
+    if selected_monitor != current_monitor:
+        updates["USDB_MONITOR_ENABLED"] = selected_monitor
     state, tracing, remaining = node.chain_query_settings(env)
     if (state, tracing) in {("archive", "1"), ("full", "0")}:
         full = yes_no("Provide full Explorer support (archive + private tracing)", state == "archive")
@@ -178,6 +184,9 @@ def edit(layout, node, *, input_fn, output, resource_mode=None, bitcoin_profile=
     if layout.node_env.is_symlink() or not layout.node_env.is_file():
         raise ValueError("Existing node configuration must be a regular file, not a symlink")
     _require_stopped(layout, node)
+    import node_monitor
+    if node_monitor.is_running(layout):
+        raise ValueError("Stop the node monitor with usdb-node down before editing configuration")
     original = layout.node_env.read_text(encoding="utf-8")
     env = node.read_env(layout.node_env)
     print(f"Edit existing node configuration: {layout.node_env}", file=output)

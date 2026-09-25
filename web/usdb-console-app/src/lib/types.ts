@@ -49,6 +49,14 @@ export interface MonitorSnapshot {
     node_identity?: { configured_miner_address?: string }
     host_resources?: HostResources
     observations?: NodeObservation
+    monitor?: {
+      schema_version: 'usdb-node-monitor:v1'; state: string; storage: string; node_id?: string
+      updated_at_ms: number; notifications: string
+      alerts: Array<{ alert_id: string; service: string; code: string; state: string; severity: string
+        first_seen_ms: number; last_seen_ms: number; acknowledged_at_ms?: number | null; latched: boolean; condition: string }>
+      events: Array<{ event_id: string; at_ms: number; service: string; code: string; severity: string
+        alert_id?: string | null; evidence: Record<string, unknown> }>
+    }
     controller?: { state?: string; runtime_state?: string }
     resources?: { mode?: string; phase?: string; transition_pending?: boolean; configured_limits_bytes?: Record<string, number>; host_memory_bytes?: number }
     mining?: { state?: string }

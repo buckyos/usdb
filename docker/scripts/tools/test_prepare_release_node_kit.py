@@ -96,6 +96,12 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertIn("--details", command.stdout)
         self.assertTrue((output / "docker/scripts/tools/control_plane_monitor.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/node_observation.py").is_file())
+        for name in ("node_monitor.py", "node_monitor_rules.py", "node_monitor_store.py"):
+            self.assertTrue((output / "docker/scripts/tools" / name).is_file())
+        command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
+                                  "monitor", "events", "--help"], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(command.returncode, 0, command.stderr)
+        self.assertIn("--since", command.stdout)
         self.assertTrue((output / "docker/scripts/tools/control_plane_resources.py").is_file())
         command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
                                   "console", "--help"], cwd=self.root, capture_output=True, text=True)

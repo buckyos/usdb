@@ -10,6 +10,7 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
   const { locale, t } = useI18n()
   const zh = locale === 'zh-CN'
   const report = snapshot?.report
+  const core = report?.monitor
   const [age, setAge] = useState(snapshot?.age_ms ?? 0)
   useEffect(() => {
     const received = performance.now()
@@ -30,10 +31,34 @@ export function NodeMonitor({ snapshot }: { snapshot?: MonitorSnapshot }) {
         <strong role="status">{statusNames[freshness] ?? freshness} · {fresh ? monitorValue('states', report?.overall_state, t) : (zh ? '当前状态未知' : 'Current state unknown')}</strong>
       </div>
       <p className="text-sm">{zh ? '采集时间' : 'Observed'}: {report?.observed_at_ms ? new Date(report.observed_at_ms).toLocaleString(locale) : '—'}</p>
+      {core && <div className="grid gap-2 text-sm">
+        <p>{zh ? '核心监控' : 'Core monitor'}: {core.state} · {zh ? '事件存储' : 'Event storage'}: {core.storage}</p>
+        <p>{zh ? '本版持续记录本地事件，通知投递尚未接入。' : 'This release records local events; notification delivery is not yet implemented.'}</p>
+        {core.state === 'disabled' && <p>{zh ? '监控已按节点配置关闭，历史记录保留。需要启用时在节点终端配置 monitor，再执行 up。' : 'Monitoring is disabled by node configuration; history is retained. Configure monitor on the node, then run up to enable it.'}</p>}
+        {core.storage === 'unavailable' && <p role="alert">{zh ? '事件持久化未确认正常，请检查 monitor status 和服务日志。' : 'Event persistence is not confirmed healthy. Inspect monitor status and its journal.'}</p>}
+        {!!core.alerts.length && <div className="grid gap-2">
+          <strong>{zh ? '已记录的活动告警' : 'Recorded active alerts'}</strong>
+          {core.alerts.map(alert => <div key={alert.alert_id} className="rounded border border-[color:var(--cp-border)] p-3">
+            <p>{alert.severity} · {serviceTitle(alert.service, t)} · {alert.code} · {alert.state}</p>
+            <p>{zh ? '首次 / 最近发现' : 'First / last seen'}: {new Date(alert.first_seen_ms).toLocaleString(locale)} / {new Date(alert.last_seen_ms).toLocaleString(locale)}</p>
+            <p>{alert.acknowledged_at_ms ? (zh ? '已确认接手' : 'Acknowledged') : (zh ? '未确认' : 'Unacknowledged')}{alert.latched && (zh ? '；需人工核实恢复，确认不解除保护。' : '; manual recovery verification required; acknowledgement does not release protection.')}</p>
+            <p className="break-all">ID: {alert.alert_id}</p>
+          </div>)}
+        </div>}
+        <details>
+          <summary>{zh ? '最近本地事件' : 'Recent local events'} ({core.events.length})</summary>
+          <p className="mt-2">{zh ? '完整历史和筛选请使用 usdb-node monitor events；事件记录不替代服务完整日志。' : 'Use usdb-node monitor events for full history and filters. Events complement the service logs.'}</p>
+          {core.events.map(event => <details key={event.event_id} className="mt-2 rounded border border-[color:var(--cp-border)] p-2">
+            <summary>{new Date(event.at_ms).toLocaleString(locale)} · {event.severity} · {event.service} · {event.code}</summary>
+            <p className="mt-2 break-all">ID: {event.event_id}</p>
+            <pre className="mt-2 whitespace-pre-wrap break-all">{JSON.stringify(event.evidence, null, 2)}</pre>
+          </details>)}
+        </details>
+      </div>}
       {!fresh && <div role="alert" className="grid gap-2 text-sm">
         <p>{zh ? '当前状态未知表示宿主机观测缺失或已过期，不代表所有服务离线。以下数值仅为最后一次观测，刷新网页不会启动采集进程。' : 'Unknown means host observations are missing or stale, not that every service is offline. Values below are the last observation; refreshing this page does not start the observer.'}</p>
         <p>{zh ? '已有节点升级后，先在节点终端执行 usdb-node up --no-watch，检查并补齐标准后台服务（可能需要 sudo 密码）。自定义服务按命令提示检查，不直接覆盖。' : 'After upgrading, run usdb-node up --no-watch to check and repair managed background services (sudo may be required). Follow its guidance for custom units without overwriting them.'}</p>
-        <p>{zh ? '检查采集进程：systemctl status usdb-console-monitor-<bundle-id>.service；前台模式可持续运行 usdb-node console monitor。' : 'Inspect systemctl status usdb-console-monitor-<bundle-id>.service; foreground mode can keep usdb-node console monitor running.'}</p>
+        <p>{zh ? '检查监控：usdb-node monitor status；systemctl status usdb-node-monitor-<bundle-id>.service。前台模式可运行 usdb-node monitor run。' : 'Inspect usdb-node monitor status and systemctl status usdb-node-monitor-<bundle-id>.service. Foreground deployments can run usdb-node monitor run.'}</p>
       </div>}
       {report && <>
         {report.observations?.incidents.status === 'unavailable' && <p role="alert" className="text-sm">

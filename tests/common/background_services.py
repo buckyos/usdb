@@ -22,6 +22,8 @@ class BackgroundServicesFixture(ControllerStatusFixture):
         account = pwd.getpwuid(os.getuid())
         self.context = SimpleNamespace(launcher=self.launcher, docker_launcher=self.docker,
                                        service_user=account.pw_name, home=Path(account.pw_dir))
+        self.layout.network_identity = {"chain_id": 12}
+        self.stack.enter_context(mock.patch.object(SERVICES.monitor, "initialized_process", return_value=True))
         self.stack.enter_context(mock.patch.object(NODE, "_controller_install_context", return_value=self.context))
         self.observer = MONITOR.unit_path(self.layout, NODE)
         self.observer.write_text(MONITOR.render_unit(self.layout, NODE, self.context))
@@ -71,7 +73,7 @@ class BackgroundServicesFixture(ControllerStatusFixture):
         self.states[self.observer.name].update(ActiveState="active", SubState="running", MainPID=str(pid))
         path = self.proc / str(pid)
         path.mkdir(exist_ok=True)
-        path.joinpath("environ").write_bytes(b"UNRELATED=SECRET\0USDB_CONSOLE_MONITOR_RELEASE="
+        path.joinpath("environ").write_bytes(b"UNRELATED=SECRET\0USDB_NODE_MONITOR_RELEASE="
                                             + (release or self.layout.release_id).encode() + b"\0")
 
     def remove_observer(self):
@@ -103,6 +105,8 @@ class BackgroundServicesFixture(ControllerStatusFixture):
                 self.states[command[-1]].update(ActiveState="active", SubState="running")
         elif command[1] == "enable":
             self.states[command[-1]]["UnitFileState"] = "enabled"
+        elif command[1] == "disable":
+            self.states[command[-1]].update(UnitFileState="disabled", ActiveState="inactive", SubState="dead")
         elif command[1] != "reset-failed":
             raise AssertionError(f"Unexpected mutation: {command}")
         return subprocess.CompletedProcess(command, 0)

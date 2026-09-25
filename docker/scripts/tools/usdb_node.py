@@ -267,7 +267,7 @@ def render_controller_unit(
     command = " ".join(command_parts)
     return f"""[Unit]
 Description=USDB bootstrap controller for {layout.bundle_id}
-Wants=network-online.target docker.service usdb-console-monitor-{layout.bundle_id}.service
+Wants=network-online.target docker.service
 After=network-online.target docker.service
 StartLimitIntervalSec={CONTROLLER_START_LIMIT_INTERVAL_SECS}s
 StartLimitBurst={CONTROLLER_START_LIMIT_BURST}
@@ -378,11 +378,14 @@ def install_controller_unit(
         docker_launcher=context.docker_launcher, sync_timeout_secs=sync_timeout_secs, pull=pull,
     )
     destination = controller_unit_path(layout)
+    import node_monitor
+    import node_background_services
+    legacy = node_background_services.legacy_monitor_plan(layout, sys.modules[__name__], context)
     _install_service_unit(destination, content, context.service_user)
-    import control_plane_monitor
-    control_plane_monitor.install(layout, sys.modules[__name__], context)
+    node_monitor.install(layout, sys.modules[__name__], context)
+    node_background_services.retire_legacy_monitor(legacy, sys.modules[__name__])
     _privileged_command(["systemctl", "daemon-reload"])
-    _privileged_command(["systemctl", "enable", control_plane_monitor.unit_name(layout)])
+    _privileged_command(["systemctl", "enable" if node_monitor.enabled(layout, sys.modules[__name__]) else "disable", node_monitor.unit_name(layout)])
     _privileged_command(["systemctl", "enable", destination.name])
     return destination
 
@@ -423,16 +426,19 @@ def disable_controller_unit(layout: ReleaseLayout) -> None:
     """Stop and disable bootstrap orchestration without deleting its audit trail."""
     unit = _require_controller_unit(layout).name
     _privileged_command(["systemctl", "disable", "--now", unit])
+    import node_monitor
+    if node_monitor.unit_path(layout, sys.modules[__name__]).is_file():
+        _privileged_command(["systemctl", "disable", node_monitor.unit_name(layout)])
 
 
 def down_node(layout: ReleaseLayout, *, keep_bitcoin: bool) -> None:
     """Stop bootstrap orchestration and then stop node services in dependency order."""
     import usdb_sourcedao
     usdb_sourcedao.require_idle(layout)
-    if controller_unit_path(layout).is_file():
-        stop_controller_unit(layout)
     import control_plane_monitor
     control_plane_monitor.stop(layout, sys.modules[__name__])
+    if controller_unit_path(layout).is_file():
+        stop_controller_unit(layout)
     with node_operation_lock(layout, "down"):
         run_helper(layout, "run_testnet_runtime.sh", ["down"])
         if not keep_bitcoin:
@@ -1134,6 +1140,7 @@ def configure_node(
     expected_p2p: dict[str, str] | None = None,
     explorer_queries: bool = False,
     minting: bool = False,
+    monitor: bool = True,
 ) -> Path:
     """Create node configuration, optionally enabling both full Explorer RPC capabilities.
 
@@ -1244,7 +1251,8 @@ def configure_node(
                              {key: value for key, value in updates.items() if key not in resource_updates})
         # Persist operator-local policies even when the immutable bundle template
         # does not yet contain these fields, including the resolved P2P family.
-        content = upsert_env(content, {**resource_updates, **query_updates, **native_updates, **p2p_updates, **minting_updates})
+        content = upsert_env(content, {**resource_updates, **query_updates, **native_updates, **p2p_updates, **minting_updates,
+                                      "USDB_MONITOR_ENABLED": "1" if monitor else "0"})
         _atomic_write_private(layout.node_env, content)
         _validate_node_config(
             layout,
@@ -1532,7 +1540,10 @@ def setup_node(
             input_fn=input_fn,
             output=output,
         )
+    monitor_enabled = _prompt_yes_no("Enable node monitor (local events and alerts)", default=True,
+                                     input_fn=input_fn, output=output)
     print("", file=output)
+    print(f"Node monitor: {'enabled' if monitor_enabled else 'disabled'}; notification delivery will be added in a later release.", file=output)
     print(f"Data root: {data_root.expanduser().resolve()}", file=output)
     print(f"Role: {role}", file=output)
     print("Explorer support: " + ("archive + private HTTP tracing" if explorer_queries
@@ -1570,6 +1581,7 @@ def setup_node(
         resource_caps=resource_caps,
         explorer_queries=explorer_queries,
         minting=minting,
+        monitor=monitor_enabled,
     )
     return SetupResult(
         node_env=path,
@@ -4068,7 +4080,7 @@ def _container_start_failed(service: dict[str, Any] | None) -> bool:
 
 
 def _control_plane_progress(services, *, observation_available=True):
-    """Report the private monitor independently from chain consensus readiness."""
+    """Report the private console independently from chain consensus readiness."""
     if not observation_available:
         return dict(id="control_plane", state="UNAVAILABLE", observation_unavailable=True)
     service = services.get("usdb-control-plane", {})
@@ -5672,7 +5684,7 @@ def print_up_result(result: dict[str, Any], *, json_output: bool) -> None:
     print(f"USDB node up outcome: {result['outcome']}")
     print(f"Initial state: {result['initial_state']}")
     if background := result.get("background_services"):
-        print(f"Background services: {background['state']}; console monitor: {background['monitor']}")
+        print(f"Background services: {background['state']}; node monitor: {background['monitor']}")
         for action in background.get("actions", []):
             print(f"  {action}")
     completed = result.get("completed_actions", [])
@@ -5768,6 +5780,7 @@ def build_parser() -> argparse.ArgumentParser:
                        advertise_port=None, advertise_discovery_port=None)
 
     configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
+    configure.add_argument("--monitor", choices=("on", "off"), default="on", help="Enable local node monitoring (default: on)")
     configure.add_argument("--minting", choices=("on", "off"), default="off", help="Enable optional private Ord and early Bitcoin txindex")
     configure.add_argument("--data-root", type=Path, default=Path.home() / ".usdb")
     configure.add_argument("--role", choices=("bootnode", "full"), default="full")
@@ -5909,6 +5922,8 @@ workflow:
 
     import control_plane_monitor
     control_plane_monitor.add_parser(subparsers)
+    import node_monitor
+    node_monitor.add_parser(subparsers)
 
     firewall = subparsers.add_parser("firewall", help="Check or apply the host UFW profile")
     firewall_actions = firewall.add_subparsers(dest="firewall_action", required=True)
@@ -5921,7 +5936,7 @@ workflow:
     up = subparsers.add_parser(
         "up",
         help="Idempotently bring a configured node to READY and attach progress",
-        description=("Start or observe the node. Background mode checks managed controller and console "
+        description=("Start or observe the node. Background mode checks managed controller and node monitor "
                      "services, repairs recognized older units and starts the observer even when the node "
                      "is READY. Custom units require review; disabled autostart remains disabled. "
                      "Foreground mode and dry runs do not install systemd services."),
@@ -6061,6 +6076,14 @@ def _operation_name(args: argparse.Namespace) -> str | None:
 
 
 def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
+    if args.command == "monitor":
+        import node_monitor
+        import sqlite3
+        try:
+            node_monitor.dispatch(args, layout, sys.modules[__name__])
+        except sqlite3.Error as error:
+            raise ValueError(f"Monitor database operation failed ({type(error).__name__}); preserve the database and inspect monitor status") from None
+        return 0
     if args.command == "peers":
         import usdb_peers
         return usdb_peers.execute(layout, args)
@@ -6161,6 +6184,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             nat=args.nat,
             bitcoin_rpc_user=args.bitcoin_rpc_user,
             minting=args.minting == "on",
+            monitor=args.monitor == "on",
             bitcoin_p2p=args.bitcoin_p2p,
             ssh_port=args.ssh_port,
             firewall_mode=args.firewall_mode,

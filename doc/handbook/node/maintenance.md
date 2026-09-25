@@ -76,7 +76,7 @@ Seed/P2P 变更使用 `peers` 命令；编辑已有节点时不要给 `setup` �
 
 ## 持续观察与告警
 
-无人值守节点应将[状态采集](status.md#自动采集)接入自己的监控系统。至少关注以下变化：
+包含核心 monitor 的版本默认持续保存本地事件和告警，可通过 [monitor 命令](monitor.md)查询；邮件/webhook 投递将在下一批接入。无人值守节点仍可将[状态采集](status.md#自动采集)接入自己的通知系统。至少关注以下变化：
 
 包含观测契约改进的工具提供[结构化证据与持久事故](observations.md)，可作为告警输入。
 该功能本身尚不发送邮件或 webhook。
@@ -190,7 +190,7 @@ usdb-node activate-release
 usdb-node status
 ```
 
-正常 `setup` 已安装并启用 controller，普通换版不必重复安装。包含后台服务自动检查改进的工具会在下一步 `up` 中补齐缺失的 console monitor，并刷新可识别的旧版标准 unit。超时、镜像拉取选项及已有的开机启动开关会保留；新补装的 monitor 沿用 controller 的开机启动设置。
+正常 `setup` 已安装并启用 controller，普通换版不必重复安装。包含后台服务自动检查改进的工具会在下一步 `up` 中补齐缺失的核心 monitor（显式关闭时保持关闭），安全停用已识别的旧 console observer，并刷新可识别的旧版标准 unit。超时、镜像拉取选项及已有的开机启动开关会保留；从旧 observer 迁移时保留它的开机启动设置；首次补装的 monitor 沿用 controller 的设置。
 
 如果 controller 本身从未安装，先执行 `usdb-node controller install`，或继续有意选择的 `up --foreground`。自定义 unit、systemd 覆盖配置、mask 或无法可靠观察的状态会给出明确错误，不会被自动覆盖。旧工具仍按 [controller 诊断](status.md#后台任务状态)或该版本升级说明处理。
 

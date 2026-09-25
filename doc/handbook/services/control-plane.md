@@ -12,7 +12,7 @@ Control-plane 随 USDB 节点发布，供节点运维人员查看本机同步、
 
 ## 启用与访问
 
-新安装使用 `usdb-node setup` 的默认 systemd 模式，会安装启动控制器和独立的 console monitor。
+新安装使用 `usdb-node setup` 的默认 systemd 模式，会安装启动控制器和默认启用的[核心 node monitor](../node/monitor.md)。
 `usdb-node up` 先准备 USDB 服务镜像并启动控制台，再继续 Bitcoin 镜像准备、快照和同步。
 首次 USDB 镜像尚未下载完成时，网页暂不可用，使用 `usdb-node status --watch` 观察。
 
@@ -29,7 +29,7 @@ usdb-node console token
 有意使用前台模式的节点仍保持前台方式。自定义 unit、覆盖配置或 mask 按提示核对，不自动覆盖。
 尚未包含此改进的旧工具，仍使用 `controller install` 后 `console start` 的方式补齐监控。
 
-`controller install` 安装或更新两个 systemd unit，不会启动或重启链；
+`controller install` 安装或更新 controller 与核心 monitor 的 systemd unit，不会启动或重启链。首次 setup 可关闭监控，后续操作保留该选择；
 `console start` 只启动／更新控制台容器及已安装的监控进程，不等待 BTC、BH、Indexer 或 Chain 就绪。
 如果旧节点只有启动控制器而没有 console monitor，单独启动控制台容器不会自动安装采集服务；
 命令会提示监控未安装，先补做 `controller install`，再执行 `console start`。安装时可能需要输入 sudo 密码。
@@ -52,11 +52,11 @@ ssh -N -L 28040:127.0.0.1:28040 usdb@NODE_IP
 使用 `setup --no-controller`，或使用前台启动而未启动 systemd 监控进程时，另开一个终端运行：
 
 ```bash
-usdb-node console monitor
+usdb-node monitor run
 ```
 
-这个命令只持续采集状态，不控制节点启动。结束该进程后网页会显示数据过期；
-也可用 `usdb-node console export` 生成一次观测。需要断开终端后继续监控时，安装 systemd 控制器。
+这个命令持续采集状态并保存本地事件，不控制节点启动。结束该进程后历史记录仍保留，当前观测不可用；
+也可用 `usdb-node console export` 生成一次观测；核心 monitor 运行时一次性导出不会覆盖它的快照。需要断开终端后继续监控时，安装 systemd 控制器。
 一次性导出只适合诊断：没有持续采集时，网页会在观测过期后再次显示状态未知。
 
 ### Ord 容器运行，但尚未启动 HTTP 服务
@@ -69,7 +69,7 @@ txindex 全部满足条件后，才启动 Ord 本体与 HTTP 服务。容器显�
 | --- | --- |
 | 等待交易索引追平 | 对比交易索引高度与 Bitcoin 前台高度；等待完成后自动启动 Ord，无需反复重启 |
 | Ord 索引／规范链校验中 | Ord 已启动，继续等待它自己的索引；txindex 完成不代表 Ord 索引也完成 |
-| 监控未启用／当前状态未知 | 无法判定 Ord 当前是否正常；先恢复 console monitor，不能当作 Ord 离线 |
+| 监控未启用／当前状态未知 | 无法判定 Ord 当前是否正常；先恢复核心 monitor，不能当作 Ord 离线 |
 | Ord 运行失败／磁盘余量不足 | 执行 `usdb-node minting-status --json` 并查看 `usdb-node logs ord-server`，按具体原因处理 |
 
 正式节点的首页和 Ord 服务页使用相同的宿主机观测；等待依赖不会影响 USDB 节点同步、挖矿或已有矿工证查询。
@@ -128,7 +128,7 @@ txindex 全部满足条件后，才启动 Ord 本体与 HTTP 服务。容器显�
 使用新功能需要一起升级 node kit 和控制台镜像。按正常升级流程执行后台 `up`，使控制台和采集进程使用新版代码。
 新版工具通过 monitor 的版本标记识别升级；同版本且健康的进程不会因重复 `up` 被重启。
 使用旧工具时，如只更新工具而采集进程一直运行，可执行
-`sudo systemctl restart usdb-console-monitor-usdb-testnet-v0.service`；其他网络替换对应 bundle 名。
+`sudo systemctl restart usdb-node-monitor-usdb-testnet-v0.service`；其他网络替换对应 bundle 名。
 旧工具尚未安装该服务时，先执行 `usdb-node controller install` 和 `usdb-node console start`。
 
 | 指标 | 口径 |
@@ -180,7 +180,7 @@ BTC 网络单独校验。**当前 USDB testnet-v0 使用 Bitcoin mainnet，BTC �
 Bitcoin testnet / signet 等共享地址格式时，以钱包报告的链为准，不靠地址前缀猜测。
 钱包不能报告网络时，页面显示“网络身份尚未确认”，可改用只读地址查询本节点数据。
 
-本节点监控缺失或过期时暂停查询，先恢复 `usdb-node console monitor`。
+本节点监控缺失或过期时暂停查询，先恢复 `usdb-node monitor run`。
 BTC 查询还要求 indexer 的查询能力就绪、网络匹配。数据约每 15 秒刷新，可能落后于网络；
 “未查到有效矿工证”只表示当前本机索引高度的查询结果。查询超时、RPC 故障和索引未就绪会单独提示，
 不会显示为余额零或没有矿工证。矿工证查询也不等于当前已满足全部挖矿条件。
@@ -297,7 +297,7 @@ Ord 启动后遇到短暂 RPC 故障或 txindex 落后时会继续运行，只�
 | 网页无法连接 | 先确认 SSH 隧道、本机端口，再执行 `usdb-node console start`；查看 `usdb-node logs` 中 control-plane 的启动错误 |
 | `Host is not allowed` / `Cross-origin` | 使用隧道的实际本机地址，同一地址完成登录和后续访问；不要通过任意域名或修改 Origin 绕过检查 |
 | HTTP 401 / 登录失效 | 重新运行 `usdb-node console token` 并登录；控制台重启会清除会话 |
-| 监控进程未启用 / 数据过期 | `systemctl status usdb-console-monitor-usdb-testnet-v0.service`；用 `journalctl -u usdb-console-monitor-usdb-testnet-v0.service -n 100 --no-pager` 查看采集错误 |
+| 监控进程未启用 / 数据过期 | `systemctl status usdb-node-monitor-usdb-testnet-v0.service`；用 `journalctl -u usdb-node-monitor-usdb-testnet-v0.service -n 100 --no-pager` 查看采集错误 |
 | 状态文件无效 / 采集不可用 | 执行 `usdb-node status --progress-json` 对照，检查配置目录权限、Docker 和本机 RPC；不要删除节点数据来“恢复进度” |
 | 网页可用，但某个 RPC 不可达 | 查看对应服务日志和 `usdb-node doctor`；监控页面可以在上游未启动时正常运行 |
 | 未检测到钱包 | 在当前浏览器启用扩展并刷新；可先使用只读地址查询。BTC 当前适配 UniSat 和具备账户读取／事件接口的 OKX Bitcoin |
