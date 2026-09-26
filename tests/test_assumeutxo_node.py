@@ -160,12 +160,19 @@ class NativeBundleTests(unittest.TestCase):
              mock.patch.object(node, "_chain_component", return_value=node._component_progress("usdb_chain", "WAITING", "not started")), \
              mock.patch.object(node, "controller_observed_state", return_value="STARTING"):
             report = node.collect_node_progress(layout)
+            progress.write_text(json.dumps(dict(phase="replaying", height=943740, target=963800)))
+            replay = node.collect_node_progress(layout)
+            replay_bh = next(item for item in replay["components"] if item["id"] == "balance_history")
+            self.assertEqual(replay_bh["bootstrap_progress"]["updated_at_ms"], int(progress.stat().st_mtime * 1000))
+            self.assertEqual(replay_bh["bootstrap_progress"]["height"], 943740)
+            self.assertEqual(replay_bh["readiness"]["status"], "unavailable")
         components = {item["id"]: item for item in report["components"]}
         self.assertEqual(components["bitcoin"]["state"], "READY")
         self.assertIn("history_validated=False", components["bitcoin"]["detail"])
         self.assertEqual(components["balance_history"]["state"], "STARTING")
         self.assertNotEqual(report["overall_state"], "READY")
         self.assertEqual(report["native_bootstrap"]["balance_history"]["phase"], "sealed")
+        self.assertEqual(components["balance_history"]["bootstrap_progress"], {})
 
     def test_native_progress_distinguishes_startup_wait_from_probe_and_container_failures(self):
         layout = native_kit(self.root)

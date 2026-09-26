@@ -73,6 +73,18 @@ class PrivateMonitorTests(unittest.TestCase):
         self.assertEqual(bitcoin["current"], 935000)
         self.assertEqual(exported["overall_state"], "SYNCING")
 
+    def test_bootstrap_projection_keeps_original_freshness_and_only_safe_evidence(self):
+        evidence = dict(phase="replaying", updated_at_ms=1234, height=943740, target=963800,
+                        imported_coins=None)
+        value = dict(components=[dict(id="balance_history", state="SYNCING",
+            bootstrap_progress={**evidence, "error": "SECRET", "rpc_url": "http://SECRET", "published": True})])
+        exported = monitor.project(value, 2000)
+        exported = monitor.project(exported, 9000)
+        self.assertEqual(exported["components"][0]["bootstrap_progress"], evidence)
+        self.assertNotIn("SECRET", json.dumps(exported))
+        value["components"][0]["bootstrap_progress"]["phase"] = "SECRET"
+        self.assertEqual(monitor.project(value, 9000)["components"][0]["bootstrap_progress"], {})
+
     def test_export_failure_replaces_previous_ready_and_keeps_token_private(self):
         with mock.patch.object(node, "collect_node_progress", return_value=dict(overall_state="READY", components=[])):
             monitor.export(self.layout, node)

@@ -17,7 +17,7 @@ import node_monitor as monitor
 import node_monitor_rules as rules
 from control_plane_monitor import project
 import usdb_node as node
-from common.node_monitor import BASE, MonitorFixture, incident, report
+from common.node_monitor import BASE, MonitorFixture, bootstrap_report, incident, report
 
 
 class StoreTests(unittest.TestCase):
@@ -112,6 +112,97 @@ class StoreTests(unittest.TestCase):
 
 
 class RuleTests(unittest.TestCase):
+    def test_native_bootstrap_progress_keeps_closed_rpc_port_out_of_health_alerts(self):
+        for phase in ("importing", "replaying", "waiting_for_blocks", "verifying"):
+            with self.subTest(phase=phase), MonitorFixture() as f:
+                for offset in range(12):
+                    at = BASE + offset * 1000
+                    value = project(bootstrap_report(at, phase=phase, incidents=incident()), at)
+                    rules.evaluate(f.store, value, at, f.settings)
+                self.assertFalse(any(a["service"] == "balance_history" for a in f.store.alerts()))
+                self.assertEqual(value["observations"]["services"]["balance_history"]["readiness"]["status"], "unavailable")
+                self.assertTrue(any(a["latched"] and a["severity"] == "critical" for a in f.store.alerts()))
+                self.assertFalse(f.store.get("ever_ready:balance_history"))
+
+    def test_bootstrap_exception_requires_fresh_current_run_evidence(self):
+        for problem in ("stale", "future", "previous_run", "sealed", "missing", "unknown_phase", "bad_counter", "unknown_runtime"):
+            with self.subTest(problem=problem), MonitorFixture() as f:
+                for offset in range(10):
+                    at = BASE + offset * 1000
+                    value = bootstrap_report(at, updated=BASE if problem == "stale" else at)
+                    component = next(c for c in value["components"] if c["id"] == "balance_history")
+                    progress = component["bootstrap_progress"]
+                    if problem in {"sealed", "unknown_phase"}:
+                        progress["phase"] = problem
+                    elif problem == "future":
+                        progress["updated_at_ms"] = at + 60000
+                    elif problem == "previous_run":
+                        progress["updated_at_ms"] = BASE - 1
+                    elif problem == "missing":
+                        component.pop("bootstrap_progress")
+                    elif problem == "bad_counter":
+                        progress["height"] = True
+                    elif problem == "unknown_runtime":
+                        value["observations"]["services"]["balance_history"]["runtime"].pop("started_at")
+                    rules.evaluate(f.store, project(value, at), at, f.settings)
+                alerts = [a for a in f.store.alerts() if a["service"] == "balance_history"]
+                self.assertTrue(any(a["code"] == "SERVICE_UNAVAILABLE" and a["severity"] == "critical" for a in alerts))
+
+    def test_bootstrap_progress_never_masks_runtime_failure_or_post_ready_rpc_loss(self):
+        for problem in ("exited", "dead", "restarting", "paused", "oom", "exit_code", "post_ready"):
+            with self.subTest(problem=problem), MonitorFixture() as f:
+                if problem == "post_ready":
+                    f.tick(0)
+                    f.store.begin(BASE + 1000, "r2")
+                for offset in range(1, 7):
+                    at = BASE + offset * 1000
+                    value = bootstrap_report(at)
+                    runtime = value["observations"]["services"]["balance_history"]["runtime"]
+                    if problem == "oom":
+                        runtime["oom_killed"] = True
+                    elif problem == "exit_code":
+                        runtime["exit_code"] = 1
+                    elif problem != "post_ready":
+                        runtime["state"] = problem
+                    rules.evaluate(f.store, project(value, at), at, f.settings)
+                self.assertTrue(any(a["service"] == "balance_history" and a["severity"] == "critical" for a in f.store.alerts()))
+                if problem == "oom":
+                    self.assertIn("CONTAINER_OOM_OBSERVED", f.codes())
+
+    def test_false_bootstrap_alert_recovers_only_with_continuous_fresh_evidence(self):
+        with MonitorFixture() as f:
+            for offset in range(5):
+                at = BASE + offset * 1000
+                rules.evaluate(f.store, bootstrap_report(at, phase="unknown"), at, f.settings)
+            self.assertTrue(any(a["service"] == "balance_history" for a in f.store.alerts()))
+            for offset in (5, 6, 7):
+                at = BASE + offset * 1000
+                rules.evaluate(f.store, project(bootstrap_report(at), at), at, f.settings)
+                if offset < 7:
+                    self.assertTrue(any(a["service"] == "balance_history" for a in f.store.alerts()))
+            self.assertFalse(any(a["service"] == "balance_history" for a in f.store.alerts()))
+
+    def test_progress_does_not_suppress_container_restart_loop(self):
+        with MonitorFixture() as f:
+            for offset in range(10):
+                at = BASE + offset * 1000
+                rules.evaluate(f.store, project(bootstrap_report(at, restarts=offset), at), at, f.settings)
+            self.assertTrue(any(a["service"] == "balance_history" and a["code"] == "CONTAINER_RESTART_LOOP"
+                                and a["severity"] == "critical" for a in f.store.alerts()))
+
+    def test_new_container_run_can_bootstrap_but_cannot_reuse_old_journal(self):
+        for fresh_journal in (True, False):
+            with self.subTest(fresh_journal=fresh_journal), MonitorFixture() as f:
+                f.tick(0)
+                for offset in range(1, 8):
+                    at = BASE + offset * 1000
+                    value = bootstrap_report(at, updated=at if fresh_journal else BASE)
+                    runtime = value["observations"]["services"]["balance_history"]["runtime"]
+                    runtime["started_at"] = report(BASE + 1000)["observations"]["observed_at"]
+                    rules.evaluate(f.store, project(value, at), at, f.settings)
+                firing = any(a["service"] == "balance_history" and a["severity"] == "critical" for a in f.store.alerts())
+                self.assertEqual(firing, not fresh_journal)
+
     def test_controller_manual_seed_wait_does_not_fire_failure_alert(self):
         for display, exit_status, expected in (("waiting_for_seed", 2, False), ("idle", 2, False),
                                               ("failed", 1, True), ("manual_action", 2, True),

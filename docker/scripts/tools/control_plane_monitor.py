@@ -51,6 +51,8 @@ def project(report: dict, now_ms: int) -> dict:
         item = select(component, COMPONENT_FIELDS)
         item["background_validation"] = select(component.get("background_validation"), ("height", "target", "validated", "available", "waiting_for_start"))
         item["file_preparation"] = select(component.get("file_preparation"), ("state", "download_complete", "sha256_verified", "size_bytes", "completed_bytes", "total_bytes", "base_height"))
+        if component.get("id") == "balance_history":
+            item["bootstrap_progress"] = node_observation.bootstrap_progress(component.get("bootstrap_progress"))
         result["components"].append(item)
     if report.get("control_plane"):
         result["components"].append(select(report["control_plane"], COMPONENT_FIELDS))

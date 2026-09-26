@@ -18,6 +18,24 @@ def fresh(timestamp, at, max_age):
         return False
 
 
+def bootstrap_rpc_pending(component, runtime, at, max_age):
+    """Bound the pre-RPC exception to progress written by the current container run."""
+    progress = node_observation.bootstrap_progress(component.get("bootstrap_progress"))
+    if (not progress or component.get("state") not in {"IMPORTING", "SYNCING", "VERIFYING"}
+            or runtime.get("state") != "running" or not runtime.get("details_available")
+            or not runtime.get("container_id") or runtime.get("oom_killed") is not False
+            or runtime.get("exit_code") not in (None, 0)):
+        return False
+    updated = progress["updated_at_ms"]
+    try:
+        started = int(datetime.fromisoformat(runtime.get("started_at")).timestamp() * 1000)
+    except (ValueError, TypeError, OverflowError):
+        return False
+    counter = progress["imported_coins"] if progress["phase"] == "importing" else progress["height"]
+    return (counter is not None and updated is not None and updated >= started
+            and -5000 <= at - updated <= max_age)
+
+
 def evaluate(store, report, at, config):
     """Commit one sample's state and transitions together; gaps never imply recovery."""
     with store.db:
@@ -69,7 +87,7 @@ def evaluate(store, report, at, config):
                      and fresh(readiness.get("observed_at"), at, gap_ms))
             component = components.get(service, {})
             phase = component.get("state")
-            if available and phase in {"READY", "SYNCING", "WAITING", "SKIPPED", "FAILED", "BLOCKED", "UNAVAILABLE", "STARTING"}:
+            if available and phase in {"READY", "SYNCING", "IMPORTING", "VERIFYING", "WAITING", "SKIPPED", "FAILED", "BLOCKED", "UNAVAILABLE", "STARTING"}:
                 previous_phase = store.baseline(service + ":phase")
                 if previous_phase != phase:
                     store.event(at, service, "SERVICE_STATE_CHANGED", "warning" if phase in {"FAILED", "BLOCKED"} else "info",
@@ -79,6 +97,9 @@ def evaluate(store, report, at, config):
                         "exit_code": runtime.get("exit_code"), "probe_status": item.get("probe_status")}
             if available and phase == "READY":
                 store.put("ever_running:" + service, True)
+            runtime_identity = dict(container_id=runtime.get("container_id"), started_at=runtime.get("started_at"))
+            if service == "balance_history" and (known and readiness.get("rpc_alive") is True or available and phase == "READY"):
+                store.put("bootstrap_rpc_started_run", runtime_identity)
             health_bad = None
             if (available and not warming and phase == "WAITING" and store.get("ever_running:" + service)
                     and report.get("controller", {}).get("runtime_state") in {"inactive", "failed"}):
@@ -94,6 +115,18 @@ def evaluate(store, report, at, config):
                     health_bad = False
                 elif phase in {"FAILED", "BLOCKED"}:
                     health_bad = True
+                # Port-based Docker health checks fail normally while native BH
+                # imports/replays before opening RPC. Stale journals, a previous
+                # RPC-ready service, exits and OOMs cannot use this exception.
+                if (service == "balance_history" and readiness.get("status") == "unavailable"
+                        and store.get("bootstrap_rpc_started_run") != runtime_identity):
+                    progress = node_observation.bootstrap_progress(component.get("bootstrap_progress"))
+                    if progress:
+                        evidence["bootstrap_phase"] = progress["phase"]
+                        evidence["bootstrap_updated_at_ms"] = progress["updated_at_ms"]
+                    if bootstrap_rpc_pending(component, runtime, at, config["stall_after_secs"] * 1000):
+                        health_bad = False
+                        evidence["reason"] = "native_bootstrap_rpc_pending"
             condition(service + ":health", service, "SERVICE_UNAVAILABLE", health_bad, evidence=evidence)
 
             ready = readiness.get("consensus_ready") if known else None

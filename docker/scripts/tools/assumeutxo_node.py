@@ -448,6 +448,12 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
                 total=target if replay else None, progress_percent=percent,
                 unit="utxos" if phase == "importing" else "blocks")
             item["progress_phase"] = phase
+            # The service starts RPC only after native bootstrap. Preserve the
+            # journal's real update time; collecting it again is not progress.
+            modified = bootstrap.get("observed_file_mtime")
+            item["bootstrap_progress"] = node.node_observation.bootstrap_progress({
+                **bootstrap, "updated_at_ms": int(modified * 1000)
+                if type(modified) in (int, float) and math.isfinite(modified) else None})
         if component == "balance_history" and services.get(service, {}).get("state") == "running":
             item = _balance_history_progress(item, readiness, bootstrap, core, activation,
                 base=int(env["BH_ASSUMEUTXO_BASE_HEIGHT"]), origin=int(env["USDB_GENESIS_BLOCK_HEIGHT"]),

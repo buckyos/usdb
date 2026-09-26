@@ -50,6 +50,20 @@ usdb-node monitor events --service btc-node --since 2026-09-25T16:00:00Z --json
 两者时间戳独立：`observation.observed_at_ms` 是探针轮次开始时间，`observation_is_new=false` 表示复用了
 此前探测结果，不能当作新的 RPC 成功。整轮采集被超时终止时，只有整轮耗时/失败信息，不能补出未返回的逐服务探针结果。
 
+`observation.probes[].outcome` 和分钟汇总中的 `probes.*.outcomes` 区分以下结果：
+
+| 结果 | 含义 |
+| --- | --- |
+| `ok` | 探测成功。节点整体是否就绪仍看各服务的状态和就绪条件。 |
+| `not_ready` | 收到有效响应，但尚未满足就绪条件，例如 Bitcoin 仍在追块，或 BH/indexer 尚未同步完成。不是 RPC 通信失败。 |
+| `timeout` | helper 执行超时，或 Bitcoin 返回明确的 RPC 超时诊断。 |
+| `failed` | 探测失败，例如 RPC 无法连接、响应无效、配置错误或 helper 异常退出。 |
+
+BH 在原生基线启动期间尚未开放 RPC，此时探针确实可能记录 `failed`；是否属于服务异常，
+由 monitor 结合启动进度判断，见 [冷启动告警规则](monitor.md#首期规则原则)。
+新分类只影响升级后的采样，历史记录不会重写。旧版本的 `failed` 可能包含正常未就绪，
+不能直接把旧统计中的全部 `failed` 当成 RPC 故障次数。
+
 如果 RPC 超时同时伴随容器触顶、内存压力和 swap 增长，而主机仍有大量可用内存，应优先核对容器配额。
 若内存压力不明显，应继续检查磁盘 I/O、进程日志及网络；不能仅凭一次超时就判定内存不足。
 配额调整步骤见 [日常维护](maintenance.md)。监控只记录和告警，不会自动改配额或重启服务。

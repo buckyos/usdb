@@ -32,6 +32,43 @@ def capture_probes():
         PROBES.reset(token)
 
 
+def helper_outcome(result, service):
+    """Separate a valid not-ready report from a failed probe; retain no RPC payload."""
+    try:
+        payload = json.loads(result.stdout or "")
+    except (ValueError, TypeError):
+        return "failed"
+    if (isinstance(payload, dict) and service == "bitcoin"
+            and payload.get("schema_version") == "usdb-bitcoin-assumeutxo:v1"
+            and payload.get("rpc_available") is False and payload.get("error_kind") == "rpc_unavailable"
+            and isinstance(payload.get("rpc_failure"), dict) and payload["rpc_failure"].get("kind") == "timeout"):
+        return "timeout"
+    if (not isinstance(payload, dict) or payload.get("error") or payload.get("error_kind")
+            or payload.get("rpc_available") is False or payload.get("rpc_alive") is False):
+        return "failed"
+    if result.returncode not in (0, 1):
+        return "failed"
+    ready = None
+    if service == "bitcoin":
+        if payload.get("schema_version") == "usdb-bitcoin-assumeutxo:v1":
+            if payload.get("rpc_available") is not True or type(payload.get("tip_ready")) is not bool:
+                return "failed"
+            ready = payload["tip_ready"]
+        elif payload.get("schema_version") in {"usdb-bitcoin-readiness:v1", "usdb-bitcoin-data-start-readiness:v1"}:
+            if not isinstance(payload.get("status"), dict) or type(payload.get("ready")) is not bool:
+                return "failed"
+            ready = payload["ready"]
+    elif payload.get("service") == service.replace("_", "-"):
+        if type(payload.get("consensus_ready")) is not bool:
+            return "failed"
+        ready = payload["consensus_ready"]
+    if ready is False:
+        return "not_ready"
+    # Keep older successful helper formats compatible, but never reinterpret an
+    # unknown nonzero exit as a readiness wait.
+    return "ok" if result.returncode == 0 else "failed"
+
+
 def trace_helper(function):
     """Only collect allowlisted operations inside an explicit monitor sample."""
     @wraps(function)
@@ -43,13 +80,7 @@ def trace_helper(function):
         started, at, outcome = time.monotonic(), now_ms(), "failed"
         try:
             result = function(layout, helper, arguments, **kwargs)
-            if result.returncode == 0:
-                try:
-                    payload = json.loads(result.stdout or "")
-                    if isinstance(payload, dict) and not payload.get("error") and payload.get("rpc_available") is not False:
-                        outcome = "ok"
-                except (ValueError, TypeError):
-                    pass
+            outcome = helper_outcome(result, service)
             return result
         except subprocess.TimeoutExpired:
             outcome = "timeout"

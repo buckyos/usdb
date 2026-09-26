@@ -79,23 +79,66 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(values[0]["outcome"], "timeout")
         self.assertNotIn("SECRET", json.dumps(values))
 
+    def test_probe_results_distinguish_sync_wait_from_failed_rpc_and_invalid_reports(self):
+        native = dict(schema_version="usdb-bitcoin-assumeutxo:v1", rpc_available=True,
+                      bootstrap_ready=True, tip_ready=False)
+        legacy = dict(schema_version="usdb-bitcoin-readiness:v1", ready=False,
+                      status=dict(blocks=935000, headers=968000), blockers=["syncing"])
+        bh = dict(service="balance-history", rpc_alive=True, query_ready=False, consensus_ready=False)
+        cases = [
+            ("bitcoin", 1, native, "not_ready"),
+            ("bitcoin", 0, {**native, "tip_ready": True}, "ok"),
+            ("bitcoin", 0, legacy, "not_ready"),
+            ("bitcoin", 0, {**legacy, "status": None}, "failed"),
+            ("bitcoin", 0, {**legacy, "ready": True}, "ok"),
+            ("bitcoin", 1, {**native, "error": "SECRET"}, "failed"),
+            ("bitcoin", 1, {**native, "rpc_available": False}, "failed"),
+            ("bitcoin", 1, {**native, "rpc_available": False, "error_kind": "rpc_unavailable",
+                            "rpc_failure": {"kind": "timeout"}}, "timeout"),
+            ("bitcoin", 1, {**native, "error_kind": "identity_or_configuration"}, "failed"),
+            ("bitcoin", 1, {**native, "tip_ready": "false"}, "failed"),
+            ("bitcoin", 1, {**native, "tip_ready": True}, "failed"),
+            ("bitcoin", 2, native, "failed"),
+            ("bitcoin", 1, {}, "failed"),
+            ("bitcoin", 0, [], "failed"),
+            ("balance_history", 0, bh, "not_ready"),
+            ("balance_history", 0, {**bh, "query_ready": True, "consensus_ready": True}, "ok"),
+            ("balance_history", 1, {**bh, "rpc_alive": False}, "failed"),
+            ("balance_history", 0, {**bh, "consensus_ready": "false"}, "failed"),
+            ("usdb_indexer", 0, {**bh, "service": "usdb-indexer"}, "not_ready"),
+        ]
+        for service, code, payload, expected in cases:
+            with self.subTest(service=service, code=code, payload=payload):
+                result = subprocess.CompletedProcess([], code, json.dumps(payload), "SECRET")
+                helper = metrics.trace_helper(mock.Mock(return_value=result))
+                action = "progress" if service == "bitcoin" else "data-status" if service == "balance_history" else "indexer-status"
+                script = "run_testnet_bitcoin.sh" if service == "bitcoin" else "run_testnet_runtime.sh"
+                with metrics.capture_probes() as values:
+                    self.assertIs(helper(None, script, [action]), result)
+                self.assertEqual(values[0]["outcome"], expected)
+                self.assertNotIn("SECRET", json.dumps(values))
+        for output in ("", "not JSON", '{"ready":'):
+            self.assertEqual(metrics.helper_outcome(subprocess.CompletedProcess([], 0, output), "bitcoin"), "failed")
+
 
 class HistoryTests(unittest.TestCase):
     def test_minute_probe_failures_and_peaks_are_not_overwritten_or_counted_twice(self):
         with MonitorFixture() as f:
             with history.History(node_monitor.root(f.layout)/"resources.sqlite3", node_monitor.scope(f.layout), writable=True) as db:
-                for offset, fresh, outcome, duration in ((0, True, "timeout", 5000), (1000, False, "timeout", 5000), (2000, True, "ok", 20)):
+                for offset, fresh, outcome, duration in ((0, True, "timeout", 5000), (1000, False, "timeout", 5000),
+                                                        (2000, True, "ok", 20), (3000, True, "not_ready", 20)):
                     value = evidence(BASE + offset)
                     value["observation_is_new"] = fresh
-                    value["observation"].update(collection={"outcome": outcome}, probes=[dict(service="bitcoin", operation="progress", duration_ms=duration, outcome=outcome)])
+                    value["observation"].update(collection={"outcome": "ok" if outcome == "not_ready" else outcome},
+                                                probes=[dict(service="bitcoin", operation="progress", duration_ms=duration, outcome=outcome)])
                     db.append(value)
                 record = db.query(resolution="minute")["records"][0]
-                self.assertEqual(record["collection_outcomes"], {"timeout": 1, "ok": 1})
+                self.assertEqual(record["collection_outcomes"], {"timeout": 1, "ok": 2})
                 probe = record["probes"]["bitcoin:progress"]
-                self.assertEqual(probe["count"], 2)
+                self.assertEqual(probe["count"], 3)
                 self.assertEqual(probe["max_ms"], 5000)
-                self.assertEqual(probe["mean_ms"], 2510)
-                self.assertEqual(probe["outcomes"], {"timeout": 1, "ok": 1})
+                self.assertEqual(probe["mean_ms"], 1680)
+                self.assertEqual(probe["outcomes"], {"timeout": 1, "ok": 1, "not_ready": 1})
 
     def test_capacity_eviction_and_corruption_are_visible(self):
         with MonitorFixture() as f:

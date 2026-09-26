@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "native-bootstrap-monitor-readiness",
+  "type": "fixed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Distinguish native BH bootstrap and normal synchronization from probe failures",
+  "details": [
+    "The monitor recognizes fresh native balance-history bootstrap progress written after the current container start, avoiding SERVICE_UNAVAILABLE alerts caused solely by its intentionally unopened RPC port. This evidence never grants readiness or bypasses controller gates.",
+    "Stale or invalid journals, sealed baselines, post-RPC regressions and runtime failures retain normal health checks. OOM, restart loops and durable incidents remain independently monitored.",
+    "Resource probe history distinguishes not_ready from failed and timeout for supported readiness reports, including AssumeUTXO status helpers that exit with code 1 while syncing. Minute summaries preserve separate counts without storing raw RPC payloads."
+  ],
+  "operator_actions": [
+    "Use the normal node-kit upgrade procedure to run the updated monitor. Existing resource history is preserved; older failed records are not retroactively reclassified.",
+    "Consult the monitor and resource-history handbook pages for native bootstrap freshness limits and probe outcome meanings."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}

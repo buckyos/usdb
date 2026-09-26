@@ -85,6 +85,15 @@ def readiness(value, *, observed_at=None) -> dict:
     return result
 
 
+def bootstrap_progress(value) -> dict:
+    """Allowlist pre-RPC native bootstrap evidence, never a readiness assertion."""
+    if not isinstance(value, dict) or value.get("phase") not in (
+            "importing", "replaying", "waiting_for_blocks", "verifying"):
+        return {}
+    return {"phase": value["phase"], **{key: quantity(value.get(key)) for key in (
+        "updated_at_ms", "imported_coins", "height", "target")}}
+
+
 def runtime(value) -> dict:
     """Expose container evidence, excluding inspect errors and environment variables."""
     value = value if isinstance(value, dict) else {}

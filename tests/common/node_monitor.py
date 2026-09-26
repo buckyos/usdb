@@ -16,7 +16,8 @@ def report(at=BASE, *, ready=True, incidents=None, available=True, phase="READY"
     services = {service: dict(probe_status="available", readiness=node_observation.readiness(dict(
         rpc_alive=True, query_ready=True, consensus_ready=ready, blockers=[] if ready else ["CatchingUp"],
         current=current, total=target), observed_at=timestamp), runtime=dict(state="running", health="healthy",
-        details_available=True, container_id="a" * 64, restart_count=restarts, oom_killed=False))
+        details_available=True, container_id="a" * 64, restart_count=restarts, oom_killed=False,
+        started_at=datetime.fromtimestamp(BASE / 1000, timezone.utc).isoformat()))
         for service in node_observation.SERVICES}
     return dict(schema_version="usdb-console-monitor:v1", observation_available=available, observed_at_ms=at,
                 overall_state=phase, components=[dict(id=k, state=phase) for k in services],
@@ -27,6 +28,22 @@ def report(at=BASE, *, ready=True, incidents=None, available=True, phase="READY"
 def incident(identity="b" * 32):
     return dict(status="available", events=[dict(code="DEEP_REORG_HALTED", event_id=identity,
                 latched=True, evidence_status="available", detected_at="2026-09-24T00:00:00+00:00")])
+
+
+def bootstrap_report(at=BASE, *, phase="replaying", updated=None, **options):
+    """A live native BH bootstrap with a closed RPC port and its real journal age."""
+    value = report(at, **options)
+    bh = value["observations"]["services"]["balance_history"]
+    bh.update(probe_status="unavailable", readiness=node_observation.readiness(None))
+    bh["runtime"].update(health="unhealthy", exit_code=0,
+                         started_at=datetime.fromtimestamp(BASE / 1000, timezone.utc).isoformat())
+    component = next(c for c in value["components"] if c["id"] == "balance_history")
+    component.update(state={"importing": "IMPORTING", "verifying": "VERIFYING"}.get(phase, "SYNCING"),
+                     bootstrap_progress=dict(phase=phase, updated_at_ms=at if updated is None else updated,
+                                             height=943740 + (at - BASE) // 1000, target=963800,
+                                             imported_coins=100000 + (at - BASE) // 1000))
+    value["overall_state"] = "SYNCING"
+    return value
 
 
 class MonitorFixture:
