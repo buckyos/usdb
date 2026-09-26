@@ -1,0 +1,17 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "legacy-monitor-shutdown",
+  "type": "fixed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Stop and disable retained legacy monitors before node uninstall",
+  "details": [
+    "usdb-node down stops both the current node monitor and a retained console monitor for the selected network. Controller disable removes autostart for both, without migrating or rewriting service definitions.",
+    "Uninstall still refuses active or enabled services, and now reports their observed state and a service-specific stop/disable command.",
+    "The handbook documents the r38 recovery command for upgrades that have not migrated the legacy observer."
+  ],
+  "operator_actions": [
+    "On r38, if down and controller disable leave usdb-console-monitor active or enabled, stop and disable the named legacy service with sudo systemctl disable --now before retrying uninstall."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

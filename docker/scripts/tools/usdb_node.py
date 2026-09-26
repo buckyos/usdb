@@ -425,12 +425,12 @@ def stop_controller_unit(layout: ReleaseLayout) -> None:
 
 
 def disable_controller_unit(layout: ReleaseLayout) -> None:
-    """Stop and disable bootstrap orchestration without deleting its audit trail."""
+    """Stop orchestration and disable controller/monitor autostart, retaining history."""
     unit = _require_controller_unit(layout).name
     _privileged_command(["systemctl", "disable", "--now", unit])
     import node_monitor
-    if node_monitor.unit_path(layout, sys.modules[__name__]).is_file():
-        _privileged_command(["systemctl", "disable", node_monitor.unit_name(layout)])
+    for monitor_unit in node_monitor.installed_unit_paths(layout, sys.modules[__name__]):
+        _privileged_command(["systemctl", "disable", monitor_unit.name])
 
 
 def down_node(layout: ReleaseLayout, *, keep_bitcoin: bool) -> None:
@@ -6053,7 +6053,7 @@ workflow:
     )
     controller_actions.add_parser(
         "disable",
-        help="stop the controller and prevent it from resuming after host reboot",
+        help="stop the controller and disable controller and monitor autostart",
     )
     controller_actions.add_parser("status", help="show the systemd controller status")
     controller_logs = controller_actions.add_parser("logs", help="show controller journal logs")
@@ -6390,7 +6390,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         elif args.controller_action == "disable":
             disable_controller_unit(layout)
             print(
-                "Disabled bootstrap orchestration; Docker services and journal records were left intact."
+                "Disabled bootstrap and monitor autostart; use usdb-node down to stop running node services."
             )
         elif args.controller_action == "status":
             return show_controller_unit(layout)

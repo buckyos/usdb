@@ -187,6 +187,21 @@ class UninstallTests(unittest.TestCase):
             node._execute_command(layout, args)
         self.assertFalse(self.f.backup.exists())
 
+    def test_legacy_observer_block_names_state_and_specific_recovery_command(self):
+        value = self.plan(True)
+        unit = f"usdb-console-monitor-{self.f.bundle}.service"
+        stopped = "LoadState=loaded\nActiveState=inactive\nUnitFileState=disabled\n"
+        for active, autostart in (("active", "enabled"), ("inactive", "enabled"), ("active", "disabled")):
+            with self.subTest(active=active, autostart=autostart):
+                blocked = f"LoadState=loaded\nActiveState={active}\nUnitFileState={autostart}\n"
+                with mock.patch.object(core, "command", side_effect=[stopped, stopped, blocked]), \
+                        self.assertRaises(ValueError) as raised:
+                    uninstall.check_stopped(value)
+                self.assertIn(f"active={active}, autostart={autostart}", str(raised.exception))
+                self.assertIn(f"sudo systemctl disable --now {unit}", str(raised.exception))
+                self.assertFalse(self.f.backup.exists())
+                self.assertTrue(self.f.env.exists())
+
     def test_unreadable_state_and_custom_unit_overrides_refuse_cleanup(self):
         value = self.plan(True)
         with mock.patch.object(core, "command", return_value=""), self.assertRaisesRegex(ValueError, "Cannot inspect"):

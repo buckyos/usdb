@@ -337,6 +337,14 @@ def unit_path(layout, node):
     return node.controller_unit_path(layout).with_name(unit_name(layout))
 
 
+def installed_unit_paths(layout, node):
+    """Include pre-migration observers when stopping a node or disabling autostart."""
+    import control_plane_monitor
+    current = unit_path(layout, node)
+    legacy = current.with_name(control_plane_monitor.legacy_unit_name(layout))
+    return tuple(path for path in (current, legacy) if path.is_file())
+
+
 def render_unit(layout, node, context):
     """No Requires=docker: unexpected Docker outages must remain observable."""
     quote = node._systemd_quote
@@ -376,8 +384,8 @@ def stop(layout, node):
                 store.event(now_ms(), "monitor", "NODE_DOWN_REQUESTED")
         except (OSError, ValueError, sqlite3.Error) as error:
             print(f"MONITOR_STOP_RECORD_FAILED: type={type(error).__name__}; continuing explicit node shutdown", file=sys.stderr)
-    if unit_path(layout, node).is_file():
-        node._privileged_command(["systemctl", "stop", unit_name(layout)])
+    for unit in installed_unit_paths(layout, node):
+        node._privileged_command(["systemctl", "stop", unit.name])
     if is_running(layout):
         raise ValueError("A foreground monitor is still stopping; stop it before retrying usdb-node down")
     publish_state(layout, node, "stopped" if enabled(layout, node) else "disabled")

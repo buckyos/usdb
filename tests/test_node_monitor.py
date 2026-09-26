@@ -330,7 +330,7 @@ else:
     def test_planned_down_retains_incidents_and_stops_monitor_before_services(self):
         with MonitorFixture() as f:
             f.tick(0, incidents=incident())
-            unit = f.root / "monitor.service"
+            unit = f.root / monitor.unit_name(f.layout)
             unit.write_text("fixture")
             with mock.patch.object(monitor, "unit_path", return_value=unit), \
                     mock.patch.object(node, "_privileged_command") as privileged:

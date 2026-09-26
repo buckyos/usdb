@@ -18,6 +18,42 @@ from common.background_services import BackgroundServicesFixture
 
 
 class BackgroundServicesTests(unittest.TestCase):
+    def test_down_and_disable_cover_current_and_legacy_observers_in_either_order(self):
+        import control_plane_monitor as console
+        for installed in ("current", "legacy", "both"):
+            for disable_first in (False, True):
+                with self.subTest(installed=installed, disable_first=disable_first), BackgroundServicesFixture() as f:
+                    observers = [f.observer] if installed != "legacy" else []
+                    if installed != "current":
+                        old = f.unit.with_name(console.legacy_unit_name(f.layout))
+                        old.write_text(console.legacy_render_unit(f.layout, NODE, f.context))
+                        f.states[old.name] = {**f.properties, "FragmentPath": str(old)}
+                        observers.append(old)
+                    if installed == "legacy":
+                        f.remove_observer()
+                    for unit in (f.unit, *observers):
+                        f.states[unit.name].update(ActiveState="active", SubState="running", UnitFileState="enabled")
+                    contents = {unit: unit.read_bytes() for unit in (f.unit, *observers)}
+                    if disable_first:
+                        NODE.disable_controller_unit(f.layout)
+                    NODE.down_node(f.layout, keep_bitcoin=False)
+                    if not disable_first:
+                        # down stops processes without silently changing reboot policy.
+                        self.assertTrue(all(f.states[unit.name]["UnitFileState"] == "enabled" for unit in observers))
+                        NODE.disable_controller_unit(f.layout)
+                    for unit in (f.unit, *observers):
+                        self.assertEqual(f.states[unit.name]["ActiveState"], "inactive")
+                        self.assertEqual(f.states[unit.name]["UnitFileState"], "disabled")
+                        self.assertEqual(unit.read_bytes(), contents[unit])
+                    for unit in observers:
+                        self.assertIn(["systemctl", "stop", unit.name], f.commands)
+                        self.assertIn(["systemctl", "disable", unit.name], f.commands)
+                    f.helper.assert_has_calls([
+                        mock.call(f.layout, "run_testnet_runtime.sh", ["down"]),
+                        mock.call(f.layout, "run_testnet_bitcoin.sh", ["down"]),
+                    ])
+                    self.assertFalse(any("start" in command or "restart" in command for command in f.commands))
+
     def test_legacy_console_observer_migrates_without_duplicate_collectors(self):
         import control_plane_monitor as console
         for autostart in ("enabled", "disabled"):

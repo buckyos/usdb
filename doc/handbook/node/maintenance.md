@@ -123,11 +123,11 @@ usdb-node up --dry-run
 
 | 操作 | 命令 | 实际影响 |
 | --- | --- | --- |
-| 停止整个节点 | `usdb-node down` | 停止后台编排、USDB 服务和 Bitcoin，保留配置及持久数据 |
+| 停止整个节点 | `usdb-node down` | 停止后台编排、本地监控、USDB 服务和 Bitcoin，保留配置及持久数据 |
 | 暂停 USDB、保留 Bitcoin | `usdb-node down --keep-bitcoin` | 停止 USDB 服务，Bitcoin 继续运行 |
 | 恢复整个节点 | `usdb-node up` | 使用现有配置和数据继续启动 |
 | 只停止后台编排 | `usdb-node controller stop` | 已经启动的容器继续运行；不是停机命令 |
-| 关闭编排的开机自动启动 | `usdb-node controller disable` | 停止并禁用编排；已运行容器仍需用 `down` 停止 |
+| 关闭编排和监控的开机自动启动 | `usdb-node controller disable` | 停止并禁用编排，关闭监控自启；已运行监控及容器仍需用 `down` 停止 |
 
 计划重启节点时执行：
 
@@ -157,6 +157,9 @@ Bitcoin 停止时可能需要较长时间完成写盘，终端会显示停机耗
 usdb-node down
 usdb-node controller disable
 ```
+
+从旧版本升级后，这两个命令也需要覆盖遗留的 `usdb-console-monitor`。
+r38 遗留服务未停用时，按[卸载前的兼容处理](uninstall.md#先预览再停机执行)补充停用旧监控。
 
 之后需要恢复默认行为时执行：
 

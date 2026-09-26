@@ -118,7 +118,11 @@ def check_stopped(value, *, deleting=None):
         core.require("LoadState" in fields and "ActiveState" in fields, f"Cannot inspect {unit}; no paths will be changed")
         core.require(fields["LoadState"] == "not-found" or (fields["ActiveState"] in {"inactive", "failed"}
                      and fields.get("UnitFileState") in {"disabled", "masked", "static"}),
-                     f"Stop the node with usdb-node down, then usdb-node controller disable; {unit} is still active or enabled")
+                     f"{unit} is still active or enabled "
+                     f"(active={fields['ActiveState']}, autostart={fields.get('UnitFileState', 'unknown')}). "
+                     "Run usdb-node down, then usdb-node controller disable. "
+                     f"If this service remains after those commands, inspect it with systemctl status {unit} "
+                     f"and stop/disable it with sudo systemctl disable --now {unit}")
         # Drop-ins can start another executable or contain private environment values.
         core.require(not Path(path + ".d").exists(), f"Custom service overrides require manual review: {path}.d")
     paths = [Path(p) for p in value["scope"]]

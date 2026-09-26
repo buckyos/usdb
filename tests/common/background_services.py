@@ -106,7 +106,11 @@ class BackgroundServicesFixture(ControllerStatusFixture):
         elif command[1] == "enable":
             self.states[command[-1]]["UnitFileState"] = "enabled"
         elif command[1] == "disable":
-            self.states[command[-1]].update(UnitFileState="disabled", ActiveState="inactive", SubState="dead")
+            self.states[command[-1]]["UnitFileState"] = "disabled"
+            if "--now" in command:
+                self.states[command[-1]].update(ActiveState="inactive", SubState="dead")
+        elif command[1] == "stop":
+            self.states[command[-1]].update(ActiveState="inactive", SubState="dead")
         elif command[1] != "reset-failed":
             raise AssertionError(f"Unexpected mutation: {command}")
         return subprocess.CompletedProcess(command, 0)

@@ -41,9 +41,22 @@ usdb-node controller disable
 ```
 
 SourceDAO 任务活动时先等待或按 [SourceDAO 运维](../network-admin/sourcedao.md)处理。
-前台 `monitor run` 也需要正常退出。旧版遗留的 console monitor、活动容器或引用这些目录的其他容器
-会阻止卸载；按错误指出的具体服务检查。若旧 console monitor 仍启用，可核对后使用
-`sudo systemctl disable --now usdb-console-monitor-<bundle-id>.service`，将占位符换成预览里的网络 ID。
+前台 `monitor run` 也需要正常退出。活动监控、容器或引用这些目录的其他容器会阻止卸载；
+按错误指出的具体服务检查。包含旧监控停用修复的版本会通过 `down` 停止新旧监控，并通过
+`controller disable` 关闭它们的开机启动。
+
+**r38 从旧版升级后，可能仍保留 `usdb-console-monitor`。** r38 的上述两个命令仅处理新版
+`usdb-node-monitor`，因此即使已显示停机成功，卸载仍可能报告旧服务 `active or enabled`。
+在本机终端补充执行以下命令，再重试卸载即可，无需先运行 `up`：
+
+```bash
+sudo systemctl disable --now usdb-console-monitor-usdb-testnet-v0.service
+systemctl show usdb-console-monitor-usdb-testnet-v0.service \
+  -p ActiveState -p UnitFileState
+```
+
+正常结果应为 `ActiveState=inactive`、`UnitFileState=disabled`。其他网络需将服务名中的
+`usdb-testnet-v0` 换成预览里的网络 ID。这一步保留服务定义、监控历史和节点数据。
 
 随后只选择下面一个命令执行：
 
