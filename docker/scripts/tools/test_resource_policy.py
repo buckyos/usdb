@@ -51,6 +51,71 @@ class ResourcePolicyTests(unittest.TestCase):
         self.assertEqual(plan.balance_cache_bytes, 15 * POLICY.GIB)
         self.assertEqual(plan.environment()["BH_SYNC_MAX_MEMORY_PERCENT"], "80")
 
+    def test_native_steady_transfers_memory_without_growing_dbcache_or_total(self):
+        for memory in (32_000_000_000, 32_495_595_520, 32 * POLICY.GIB,
+                       64 * POLICY.GIB, 256 * POLICY.GIB):
+            with self.subTest(memory=memory):
+                native_env = {"SNAPSHOT_MODE": "assumeutxo"}
+                legacy = POLICY.build_resource_plan(memory, "steady", {"USDB_BTC_STEADY_MEMORY_CAP": "16g"})
+                native = POLICY.build_resource_plan(memory, "steady", native_env)
+                gain = native.limits["BTC_MEMORY_LIMIT"] - legacy.limits["BTC_MEMORY_LIMIT"]
+                self.assertGreaterEqual(gain, 0)
+                if memory <= 64 * POLICY.GIB:
+                    self.assertGreater(gain, 3 * POLICY.GIB)
+                self.assertEqual(native.limits["BH_MEMORY_LIMIT"], legacy.limits["BH_MEMORY_LIMIT"] - gain)
+                self.assertEqual(native.dbcache_mib, legacy.dbcache_mib)
+                self.assertEqual(native.total_bytes, legacy.total_bytes + 128 * POLICY.MIB)
+                self.assertLessEqual(native.total_bytes, memory)
+                self.assertEqual(native.utxo_cache_bytes + native.balance_cache_bytes,
+                                 native.limits["BH_MEMORY_LIMIT"] * 5 // 8)
+                POLICY.validate_resource_environment({**native_env, **native.environment()}, memory)
+
+    def test_native_headroom_respects_caps_external_services_and_optional_ord(self):
+        for memory in (32 * POLICY.GIB, 64 * POLICY.GIB, 256 * POLICY.GIB):
+            for cap in ("4g", "8g", "16g", "32g"):
+                for bh_cap in ("4g", "64g"):
+                    env = {"SNAPSHOT_MODE": "assumeutxo", "USDB_BTC_STEADY_MEMORY_CAP": cap,
+                           "USDB_BH_MEMORY_CAP": bh_cap, "USDB_MINTING_ENABLED": "1"}
+                    if memory >= 64 * POLICY.GIB:
+                        env["USDB_EXTERNAL_MEMORY_BUDGET"] = "8g"
+                    with self.subTest(memory=memory, cap=cap, bh_cap=bh_cap):
+                        plan = POLICY.build_resource_plan(memory, "steady", env)
+                        self.assertLessEqual(plan.total_bytes, memory)
+                        self.assertLessEqual(plan.limits["BTC_MEMORY_LIMIT"], POLICY.memory_bytes(cap, "cap"))
+                        self.assertGreaterEqual(plan.limits["BH_MEMORY_LIMIT"], 4 * POLICY.GIB)
+                        POLICY.validate_resource_environment({**env, **plan.environment()}, memory)
+
+    def test_native_old_steady_plan_requires_recalculation(self):
+        memory = 32 * POLICY.GIB
+        old = {"SNAPSHOT_MODE": "assumeutxo",
+               **POLICY.build_resource_plan(memory, "steady", {}).environment(),
+               "BTC_BOOTSTRAP_MEMORY_LIMIT": str(128 * POLICY.MIB)}
+        with self.assertRaisesRegex(ValueError, "set-resource-policy --mode auto"):
+            POLICY.validate_resource_environment(old, memory)
+        updated = {**old, **POLICY.build_resource_plan(memory, "steady", old).environment()}
+        POLICY.validate_resource_environment(updated, memory)
+        self.assertEqual(updated["USDB_RESOURCE_PHASE"], "steady")
+
+    def test_native_pre_steady_allocations_are_unchanged(self):
+        for phase in ("bitcoin", "overlap"):
+            legacy = POLICY.build_resource_plan(32 * POLICY.GIB, phase, {})
+            native = POLICY.build_resource_plan(32 * POLICY.GIB, phase, {"SNAPSHOT_MODE": "assumeutxo"})
+            self.assertEqual(native.dbcache_mib, legacy.dbcache_mib)
+            self.assertEqual(native.utxo_cache_bytes, legacy.utxo_cache_bytes)
+            for key, value in legacy.limits.items():
+                self.assertEqual(native.limits[key], value)
+
+    def test_native_default_and_explicit_steady_caps(self):
+        memory = 32 * POLICY.GIB
+        native = {"SNAPSHOT_MODE": "assumeutxo"}
+        plan = POLICY.build_resource_plan(memory, "steady", native)
+        self.assertEqual(plan.limits["BTC_MEMORY_LIMIT"], 16 * POLICY.GIB)
+        self.assertEqual(plan.limits["BH_MEMORY_LIMIT"], 4 * POLICY.GIB)
+        self.assertEqual(plan.dbcache_mib, 2048)
+        constrained = POLICY.build_resource_plan(memory, "steady", {**native, "USDB_BTC_STEADY_MEMORY_CAP": "8g"})
+        self.assertEqual(constrained.limits["BTC_MEMORY_LIMIT"], 8 * POLICY.GIB)
+        self.assertEqual(constrained.limits["BH_MEMORY_LIMIT"], 12 * POLICY.GIB)
+
     def test_bitcoin_boost_keeps_cache_and_system_headroom(self):
         # The diagnosed node has about 30.6 GiB of effective RAM.
         memory = 32_866_566_144

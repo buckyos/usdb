@@ -53,13 +53,28 @@ snapshot 绑定。已经从旧整体 snapshot 导入 RocksDB 的节点仍需要�
 | `overlap` | 25% | 16 GiB | 37.5% | 64 GiB |
 | `steady` | 12.5% | 8 GiB | 50% | 64 GiB |
 
-`steady` 表示 Bitcoin 已完成同步；balance-history 可以仍在追赶历史区块。
+上表为普通同步模式的基准。原生 AssumeUTXO 模式进入 `steady` 只要求前台追平、BH/indexer
+共识就绪；**不表示 Core 后台历史验证完成**。该模式的稳态 Bitcoin 额度改为有效内存的
+50%（受 `USDB_BTC_STEADY_MEMORY_CAP` 原生默认 16 GiB 封顶），增加部分从 BH 原额度等量转移，
+BH 至少保留 4 GiB。自定义 BH 封顶不足以转移时，Bitcoin 的增量也相应减少。
+BH 应用缓存随新额度重新计算，额度转移不增加整机总预算，所有阶段仍校验有效主机内存上限。
 
 | 有效主机内存 | 独立阶段 BTC | 交叠阶段 BTC / BH | 稳态阶段 BTC / BH |
 | --- | ---: | ---: | ---: |
 | 32 GiB | 约 25.6 GiB | 8 / 12 GiB | 4 / 16 GiB |
 | 64 GiB | 32 GiB | 16 / 24 GiB | 8 / 32 GiB |
 | 256 GiB | 32 GiB | 16 / 64 GiB | 8 / 64 GiB |
+
+原生 AssumeUTXO 的 **32 GiB** 主机稳态为 **BTC 16 GiB / BH 4 GiB**；64 GiB 主机为
+**16 / 24 GiB**，256 GiB 主机为 **16 / 64 GiB**。实际有效内存约 30.3 GiB 的主机约为
+BTC 14.9 GiB / BH 4 GiB，避免后台验证期间 Core 被过小的容器额度挤压。
+历史验证结束后保留这一预算，不因状态查询触发停机降档；前台、chain 和 mining 的就绪条件不变。
+
+已有原生自动配置如仍保存旧稳态预算，安装包含该修复的 node kit 后，需要在正常停机状态执行
+`usdb-node set-resource-policy --mode auto --bitcoin-steady-memory-cap 16g`，再运行 `doctor` 和 `up`。
+已有封顶值（包括旧默认 8g）会保留，因此需要显式提高；新原生配置默认使用 16g。重新计算保留 `steady`
+阶段和已有数据，不回到独占同步阶段；不一致的旧预算会被预检明确拒绝，不会仅修改配置后
+假装运行中的容器已获得新额度。若同次升级还需激活镜像，按第一节顺序先重新计算、再激活。
 
 实际 `MemTotal` 比标称 64 GiB 小时，额度随之降低，不向上套用标称档位。
 例如有效内存约 30.6 GiB 的主机，独立阶段 Bitcoin 约分配 24.5 GiB。
@@ -77,7 +92,7 @@ snapshot 绑定。已经从旧整体 snapshot 导入 RocksDB 的节点仍需要�
 | `--bh-memory-cap` | `USDB_BH_MEMORY_CAP` | `64g` |
 | `--bitcoin-ibd-memory-cap` | `USDB_BTC_IBD_MEMORY_CAP` | `32g` |
 | `--bitcoin-overlap-memory-cap` | `USDB_BTC_OVERLAP_MEMORY_CAP` | `16g` |
-| `--bitcoin-steady-memory-cap` | `USDB_BTC_STEADY_MEMORY_CAP` | `8g` |
+| `--bitcoin-steady-memory-cap` | `USDB_BTC_STEADY_MEMORY_CAP` | 原生 AssumeUTXO `16g`；普通模式 `8g` |
 
 其他服务按 64 GiB 基准同比缩放并分别封顶：indexer 4 GiB、chain 5 GiB、control-plane
 1 GiB、registry installer 2 GiB、paired-checkpoint verification 1 GiB。`bitcoin` 阶段只计入
@@ -97,8 +112,9 @@ balance-history 应用缓存合计为其容器额度的 **62.5%**，其中 UTXO 
 
 Bitcoin 独立同步阶段 dbcache 保留原有预算：先按有效主机内存的 50%（受 IBD 封顶及外部服务预留约束）
 计算旧容器额度，再取其 62.5%。容器新增的空间留给文件缓存和其他开销，避免增大 dbcache 后再次挤压
-文件缓存；约 30.6 GiB 主机上的 dbcache 仍为约 9.6 GiB。交叠/稳态阶段为对应容器额度的 50%，并统一封顶到
-当前固定的 [Bitcoin Core 28.1 支持的 16 GiB](https://github.com/bitcoin/bitcoin/blob/v28.1/src/txdb.h#L25-L28)。Bitcoin 的
+文件缓存；约 30.6 GiB 主机上的 dbcache 仍为约 9.6 GiB。交叠/稳态阶段按**增加文件缓存余量前**的
+Bitcoin 基准额度取 50%，并统一封顶到 16 GiB。因此原生 32 GiB 主机稳态的 Bitcoin 容器虽扩大到
+16 GiB，dbcache 仍为 2 GiB，增加部分留给文件缓存及其他开销。Bitcoin 的
 memory+swap 上限仅额外允许最多 2 GiB 或容器额度的八分之一，BH 额外允许 2 GiB。
 
 自动计划中的具体字节字段应由配置工具生成。手工修改自动模式下的容器额度或缓存而未保持
@@ -111,6 +127,10 @@ UTXO cache + balance cache <= BH memory limit × (pressure threshold - 10) / 100
 因此，旧配置中的 12 GiB 容器、8 GiB 缓存和 75% 压力阈值会在 snapshot 导入前报错。
 
 ## 4. controller 的切换顺序
+
+以下六步描述普通同步/旧快照路径。原生 AssumeUTXO 在 snapshot 激活且启动文件准备完成后
+进入 `overlap` 并启动 BH/indexer；前台追平且两个数据服务共识就绪后进入 `steady` 并启动 chain。
+Core 后台历史验证继续独立运行，采用上述保留文件缓存余量的稳态预算。
 
 1. 启动 Bitcoin，周期性读取完整 readiness 和数据启动锚点。锚点仍为 snapshot 高度
    （无 snapshot 时为 index origin）加 stable lag，并校验配置的 BTC block hash。

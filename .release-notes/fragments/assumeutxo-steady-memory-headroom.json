@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "assumeutxo-steady-memory-headroom",
+  "type": "fixed",
+  "scopes": ["bitcoin", "deployment", "node-runtime"],
+  "summary": "Preserve Bitcoin file-cache headroom during AssumeUTXO background validation",
+  "details": [
+    "Native steady plans transfer memory from balance-history to Bitcoin up to a 50 percent host share, keeping at least 4 GiB for balance-history and staying within the whole-node budget. New native configurations default to a 16 GiB steady cap; existing explicit caps remain unchanged.",
+    "Bitcoin dbcache is calculated before transferring extra file-cache headroom; balance-history caches shrink with its allocation. The retained steady budget does not gate chain startup or mining on historical validation and does not trigger a later automatic restart.",
+    "The operator handbook explains how container memory pressure can cause RPC timeouts even on an idle host, and how to recalculate existing automatic plans while preserving data."
+  ],
+  "operator_actions": [
+    "After installing the updated node kit, stop an existing AssumeUTXO node and run usdb-node set-resource-policy --mode auto --bitcoin-steady-memory-cap 16g before doctor/up. If release activation is also required, recalculate before activate-release.",
+    "Confirm actual container limits after restart and observe RPC latency and background progress. Custom caps and manual allocations require individual review."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": true, "restart_required": true},
+  "references": []
+}

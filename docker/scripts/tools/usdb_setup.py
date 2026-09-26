@@ -40,7 +40,8 @@ def _resources(env, updates, node, *, choice, yes_no, prompt, resource_mode, bit
     mode = choice("Resource management", ("auto", "manual"), resource_mode or current)
     if bitcoin_profile is not None and mode != "manual":
         raise ValueError("--bitcoin-profile requires manual resource mode")
-    settings = {key: env.get(key, default) for key, default in node.CAP_DEFAULTS.items()}
+    defaults = node.resource_cap_defaults(env)
+    settings = {key: env.get(key, default) for key, default in defaults.items()}
     settings.update(caps or {})
     if yes_no("Adjust memory budgets (bytes or k/m/g; external reserve may be 0)", bool(caps)):
         for key in node.CAP_DEFAULTS:
@@ -48,7 +49,7 @@ def _resources(env, updates, node, *, choice, yes_no, prompt, resource_mode, bit
     for key, value in settings.items():
         if key != "USDB_EXTERNAL_MEMORY_BUDGET" or value != "0":
             memory_bytes(value, key)
-    caps_changed = any(value != env.get(key, node.CAP_DEFAULTS[key]) for key, value in settings.items())
+    caps_changed = any(value != env.get(key, defaults[key]) for key, value in settings.items())
     mint_changed = any(key in updates for key in ("USDB_MINTING_ENABLED", "ORD_MEMORY_LIMIT"))
     recalculate = mode != current or caps_changed or mint_changed
     if mode == "auto" and not recalculate:

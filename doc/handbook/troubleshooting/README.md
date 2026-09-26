@@ -16,6 +16,7 @@
 | `node is already configured` | [已有配置](#提示已有配置) |
 | 磁盘不足、目录容量不符合要求 | [磁盘问题](#磁盘空间不足) |
 | 下载、导入或同步看起来长时间不动 | [同步等待](#同步或导入看起来卡住) |
+| Bitcoin 反复 RPC timeout / `STALE`，但主机很空闲 | [Bitcoin 内存额度](#bitcoin-反复-rpc-超时但主机很空闲) |
 | `status --watch` 报 `KeyError: 'sync_start_height'` | [进度面板退出](#进度面板报-keyerror-后退出) |
 | `AWAITING_PEERS`、没有实际连接 | [入网问题](#等待-peers-或一直没有连接) |
 | enode 是回环地址、缺少 IPv6 地址或双栈连接失败 | [节点地址与 IPv6 常见问题](../node/peers.md#常见问题) |
@@ -228,6 +229,44 @@ usdb-node controller logs --follow
 最近日志、处理量或高度持续变化时继续等待。RPC 不可用期间面板可能暂时缺少可靠进度，单次显示变化不证明数据丢失。长时间没有新进度且重复报错时，转到[后台或服务失败](#后台任务或服务失败)。
 
 **恢复标志**：组件进入后续阶段、处理量继续增长，最后通过整体状态和入网检查。仍失败时提供两次带时间的观察结果、阶段及同一时间段日志。
+
+## Bitcoin 反复 RPC 超时但主机很空闲
+
+**适用范围**：Bitcoin 前台已追平、后台仍在验证历史区块，反复出现 `getblockchaininfo failed (timeout)`、
+`STALE` 或 BH 查询 Bitcoin 超时。偶发超时不能单独确定原因；持续发生时要检查容器限制和磁盘 I/O。
+
+```bash
+usdb-node resources
+docker stats --no-stream
+free -h
+```
+
+主机有空闲内存，不代表 Bitcoin 容器可以使用它。重点对照 Bitcoin 的 `MEM USAGE / LIMIT`：
+旧自动预算在约 32 GB 主机的 `steady` 阶段只分配约 4 GiB，而 AssumeUTXO 后台仍可能长时间读写数据库。
+容器额度不足会导致频繁回收文件缓存、换页和 RPC 等待；CPU 不高、容器没有 OOM 也不能排除这个问题。
+Docker 显示的内存用量会扣除部分文件缓存，因此没有贴近上限也不能单凭这一项排除压力。
+
+包含该修复的新版本为原生模式保留更多 Bitcoin 内存，适当减少 BH 的额度和缓存，整机预算仍受主机内存约束。
+升级工具后，已有自动配置需要重新计算一次（短暂停止节点，同步数据保留）：
+
+```bash
+usdb-node down
+usdb-node set-resource-policy --mode auto --bitcoin-steady-memory-cap 16g
+# 同次升级如还未激活新 release，在此执行 usdb-node activate-release
+usdb-node doctor
+usdb-node up
+usdb-node status --watch
+```
+
+这里显式将旧的 8g 稳态封顶提高到 16g；不代表小内存主机会强行分配满 16 GiB，工具仍保留系统及其他服务预算。
+新原生节点默认使用新的封顶值；已有自定义封顶不会被静默覆盖。
+
+确认 `resources` 中的新预算，并对照 `docker stats` 中实际运行容器的上限；只安装新工具不会改变
+现有容器额度。自定义封顶、manual 模式或同机部署其他服务时，需结合整机预算单独检查。
+不需要清空数据库、重新导入快照或等待所有历史区块验证完成后才恢复 chain/mining。
+
+**恢复标志**：连续观察中 RPC 超时明显减少，前台和后台高度继续推进，BH/indexer 与 chain 恢复就绪。
+如果调整后仍持续超时，保留同一时段的日志、实际容器额度和磁盘 I/O 观测继续排查，不把所有超时归因于内存。
 
 ## 进度面板报 KeyError 后退出
 

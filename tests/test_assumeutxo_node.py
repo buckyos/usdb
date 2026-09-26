@@ -754,6 +754,32 @@ class NativeControllerTests(unittest.TestCase):
         self.assertEqual(node.read_env(r.layout.node_env)["USDB_RESOURCE_PHASE"], "steady")
         self.assertFalse(node._read_resource_state(r.layout)["pending"])
 
+    def test_small_native_node_keeps_core_headroom_while_chain_starts(self):
+        r = self.runtime
+        r.memory = 32 * policy.GIB
+        env = node.read_env(r.layout.node_env)
+        env.update(policy.build_resource_plan(r.memory, "bitcoin", env).environment())
+        r.layout.node_env.write_text(node.upsert_env("", env))
+        r.advance = self.complete_after_data
+        with mock.patch.object(node, "effective_memory_bytes", return_value=r.memory):
+            self.start(timeout=60)
+            configured = node.read_env(r.layout.node_env)
+            node._check_running_resource_budget(configured, r.containers)
+        self.assertFalse(r.core["history_validated"])
+        self.assertEqual(r.containers["usdb-chain"]["state"], "running")
+        self.assertEqual(r.containers["btc-node"]["memory"], 16 * policy.GIB)
+        self.assertEqual(r.containers["btc-node"]["environment"]["BTC_DBCACHE_MB"], "2048")
+        self.assertEqual(r.containers["balance-history"]["memory"], 4 * policy.GIB)
+        self.assertTrue(node._resource_container_matches(r.containers["balance-history"], configured, "balance-history"))
+
+    def test_native_defaults_are_persisted_without_overriding_operator_caps(self):
+        native_caps = node._resource_policy_updates("auto", {"SNAPSHOT_MODE": "assumeutxo"})
+        self.assertEqual(native_caps["USDB_BTC_STEADY_MEMORY_CAP"], "16g")
+        legacy_caps = node._resource_policy_updates("auto", {})
+        self.assertEqual(legacy_caps["USDB_BTC_STEADY_MEMORY_CAP"], "8g")
+        custom_caps = node._resource_policy_updates("auto", {"SNAPSHOT_MODE": "assumeutxo", "USDB_BTC_STEADY_MEMORY_CAP": "8g"})
+        self.assertEqual(custom_caps["USDB_BTC_STEADY_MEMORY_CAP"], "8g")
+
     def test_partial_data_start_is_adopted_after_controller_restart(self):
         r = self.runtime
         r.crash = "native-start-data"

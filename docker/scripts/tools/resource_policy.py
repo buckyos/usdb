@@ -49,6 +49,12 @@ MANUAL_DEFAULTS = {
 }
 
 
+def resource_cap_defaults(env: dict[str, str]) -> dict[str, str]:
+    """Native foreground readiness can overlap two active Core chainstates."""
+    return {**CAP_DEFAULTS, **({"USDB_BTC_STEADY_MEMORY_CAP": "16g"}
+                             if env.get("SNAPSHOT_MODE") == "assumeutxo" else {})}
+
+
 def memory_bytes(value: str, label: str) -> int:
     """Parse a positive Docker byte quantity without accepting unlimited budgets."""
     match = re.fullmatch(r"([0-9]+)([bBkKmMgG]?)", value)
@@ -153,7 +159,7 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
         raise ValueError("automatic resources require at least 32 GB of effective host memory")
     if phase not in PHASES:
         raise ValueError(f"invalid USDB_RESOURCE_PHASE: {phase}")
-    caps = {key: memory_bytes(env.get(key, default), key) for key, default in CAP_DEFAULTS.items()
+    caps = {key: memory_bytes(env.get(key, default), key) for key, default in resource_cap_defaults(env).items()
             if key != "USDB_EXTERNAL_MEMORY_BUDGET"}
     external = external_services_budget(env)
     reserve = max(4 * GIB, host_memory * 10 // 64)
@@ -191,10 +197,19 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
     bitcoin_cache_limit = limits["BTC_MEMORY_LIMIT"]
     if phase == "bitcoin":
         limits["BTC_MEMORY_LIMIT"] = share(4, caps[cap_key], 5)
+    elif phase == "steady" and env.get("SNAPSHOT_MODE") == "assumeutxo":
+        # Foreground readiness does not end Core's background validation. Keep
+        # file-cache headroom after chain startup without growing dbcache or the
+        # whole-node budget. Retain this allocation after validation, too, so a
+        # read-only probe never triggers a disruptive resource demotion.
+        desired = share(32, caps[cap_key])
+        extra = min(desired - bitcoin_cache_limit, max(0, limits["BH_MEMORY_LIMIT"] - 4 * GIB))
+        limits["BTC_MEMORY_LIMIT"] += extra
+        limits["BH_MEMORY_LIMIT"] -= extra
     if limits["BTC_MEMORY_LIMIT"] < 2 * GIB or limits["BH_MEMORY_LIMIT"] < 4 * GIB:
         raise ValueError("resource caps must allow at least 2 GiB for Bitcoin and 4 GiB for balance-history")
     cache = limits["BH_MEMORY_LIMIT"] * 5 // 8
-    # IBD retains its legacy cache size; later phases use half their container limit.
+    # Cache sizes use the allocation before any file-cache headroom transfer.
     dbcache = min(MAX_BITCOIN_DBCACHE_MIB,
                   bitcoin_cache_limit * (5 if phase == "bitcoin" else 4) // 8 // MIB)
     plan = ResourcePlan(

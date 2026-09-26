@@ -289,7 +289,7 @@ class SetupEditTests(unittest.TestCase):
         self.assertIn("memory 4.0 GiB, index cache 1.0 GiB, free-disk reserve 50.0 GiB", text)
         self.assertIn("phase=steady", text)
         self.assertIn("calculated budgets, not manual overrides", text)
-        self.assertIn("BH_MEMORY_LIMIT: 32.0 GiB -> 29.6 GiB", text)
+        self.assertIn("BH_MEMORY_LIMIT: 24.0 GiB -> 21.0 GiB", text)
         self.assertIn("BTC_DBCACHE_MB: 4.0 GiB -> 3.7 GiB", text)
         self.assertNotIn(str(4 * policy.GIB), text)
         self.assertFalse(any(prompt.startswith(("Adjust Ord", "ORD_")) for prompt in self.prompts))

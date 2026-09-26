@@ -74,6 +74,7 @@ from resource_policy import (  # noqa: E402
     build_resource_plan,
     effective_memory_bytes,
     memory_bytes,
+    resource_cap_defaults,
     resource_mode,
     validate_resource_environment,
 )
@@ -823,7 +824,7 @@ def configured_firewall_mode(layout: ReleaseLayout) -> str:
 def _resource_policy_updates(mode: str, caps: dict[str, str]) -> dict[str, str]:
     """Rebudget an existing automatic phase; only new policies start Bitcoin-only."""
     resource_mode({"USDB_RESOURCE_MODE": mode})
-    settings = {**CAP_DEFAULTS, **caps, "USDB_RESOURCE_MODE": mode}
+    settings = {**resource_cap_defaults(caps), **caps, "USDB_RESOURCE_MODE": mode}
     if mode == "auto":
         # Enabling txindex/Ord is not a rollback of completed synchronization.
         current_phase = caps.get("USDB_RESOURCE_PHASE", "bitcoin") if resource_mode(caps) == "auto" else "bitcoin"
@@ -897,7 +898,7 @@ def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) 
         raise ValueError("stop the node with usdb-node down before changing its resource policy")
     original = layout.node_env.read_text(encoding="utf-8")
     env = read_env(layout.node_env)
-    settings = {key: env.get(key, default) for key, default in CAP_DEFAULTS.items()}
+    settings = {key: env.get(key, default) for key, default in resource_cap_defaults(env).items()}
     updates = _resource_policy_updates(mode, {**settings, **caps,
         **{key: env[key] for key in ("USDB_RESOURCE_MODE", "USDB_RESOURCE_PHASE") if key in env},
         "USDB_MINTING_ENABLED": env.get("USDB_MINTING_ENABLED", "0"), "ORD_MEMORY_LIMIT": env.get("ORD_MEMORY_LIMIT", "4g"),
@@ -975,7 +976,7 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
     report = {"mode": resource_mode(env), "effective_host_memory_bytes": memory,
               "configured_host_memory_bytes": env.get("USDB_RESOURCE_HOST_MEMORY_BYTES"),
               "configured_phase": env.get("USDB_RESOURCE_PHASE"),
-              "caps": {key: env.get(key, value) for key, value in CAP_DEFAULTS.items()},
+              "caps": {key: env.get(key, value) for key, value in resource_cap_defaults(env).items()},
               "phases": plans}
     if json_output:
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -5719,8 +5720,9 @@ def _add_resource_cap_arguments(parser: argparse.ArgumentParser) -> None:
                       ("bitcoin-ibd-memory-cap", "USDB_BTC_IBD_MEMORY_CAP"),
                       ("bitcoin-overlap-memory-cap", "USDB_BTC_OVERLAP_MEMORY_CAP"),
                       ("bitcoin-steady-memory-cap", "USDB_BTC_STEADY_MEMORY_CAP")):
+        default = "16g for AssumeUTXO, 8g otherwise" if key == "USDB_BTC_STEADY_MEMORY_CAP" else CAP_DEFAULTS[key]
         parser.add_argument(f"--{flag}", dest=key, default=None, metavar="BYTES",
-                            help=f"automatic proportional allocation ceiling (default {CAP_DEFAULTS[key]})")
+                            help=f"automatic proportional allocation ceiling (default {default})")
 
 
 def _resource_caps_from_args(args: argparse.Namespace) -> dict[str, str]:
