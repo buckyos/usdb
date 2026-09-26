@@ -1,0 +1,17 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "native-verification-single-utxo-pass",
+  "type": "changed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Compute native bootstrap UTXO digests and independent balance aggregates in one database scan",
+  "details": [
+    "Native verification feeds bounded temporary balance aggregation from the canonical UTXO scan, removing the second full UTXO traversal. The balance table and temporary aggregates are still scanned and compared independently.",
+    "Canonical ordering, digest encoding, commit identities and publication gates are unchanged. Verification scratch state is removed on success, cancellation and errors.",
+    "Status and monitoring report the combined scan as scanning UTXOs and rebuilding balances, with real-work counters and unknown totals preserved. Older four-stage progress records remain supported."
+  ],
+  "operator_actions": [
+    "Upgrade the node kit and matching usdb-services image through the normal release procedure to use the merged scan and its progress display. Existing sealed databases do not need to be rebuilt."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}

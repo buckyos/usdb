@@ -444,14 +444,13 @@ fn prepare(
         )?;
         let mut journal = VerificationJournal::new(root, origin, started);
         let mut observe = |value| journal.observe(value, Instant::now());
-        let origin_identity = db.bootstrap_origin_identity_cancellable(
+        let origin_identity = db.verify_native_bootstrap_origin(
             identity.snapshot.network,
             origin,
             identity.origin_block_hash,
             cancelled,
             &mut observe,
         )?;
-        db.verify_native_bootstrap_balances(&origin_identity, cancelled, &mut observe)?;
         if client.get_block_hash(origin)? != identity.origin_block_hash {
             return Err("Native origin changed during verification".to_string());
         }

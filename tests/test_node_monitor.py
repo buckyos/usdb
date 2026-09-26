@@ -120,8 +120,8 @@ class RuleTests(unittest.TestCase):
                 advanced = min(offset, 3600)
                 value = bootstrap_report(at, phase="verifying", updated=BASE + advanced * 1000)
                 component = next(c for c in value["components"] if c["id"] == "balance_history")
-                component["bootstrap_progress"].update(height=963800, verification_stage="aggregate_utxos",
-                    verification_scanned=advanced * 20000, verification_total=165748439)
+                component["bootstrap_progress"].update(height=963800, verification_stage="utxos_and_balance_aggregation",
+                    verification_scanned=advanced * 20000, verification_total=None)
                 rules.evaluate(f.store, project(value, at), at, f.settings)
                 if offset <= 3600:
                     self.assertFalse(any(a["service"] == "balance_history" for a in f.store.alerts()))

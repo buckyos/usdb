@@ -167,6 +167,21 @@ fn origin_state_digest_database_projection_matches_python_and_binds_actual_state
     assert_eq!(original.origin_state_digest, golden["origin_state_digest"]);
     assert_eq!(original.identity.utxos.rows, 3); // Keep the zero-valued output.
     {
+        let db =
+            BalanceHistoryDB::open_read_only(Arc::new(config(&root, Network::Regtest))).unwrap();
+        let verified = db
+            .verify_native_bootstrap_origin(
+                Network::Regtest,
+                103,
+                block_hash,
+                &|| false,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        // Pin the merged scan to an independent Python encoding vector, including vout=256 and zero outputs.
+        assert_eq!(serde_json::to_value(&verified).unwrap(), golden["identity"]);
+    }
+    {
         let db = BalanceHistoryDB::open(
             Arc::new(config(&root, Network::Regtest)),
             BalanceHistoryDBMode::Normal,

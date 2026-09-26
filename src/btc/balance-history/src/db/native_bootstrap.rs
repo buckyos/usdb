@@ -1,9 +1,10 @@
 //! Durable native bootstrap metadata, verification and atomic origin sealing.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use rust_rocksdb::{DB, IteratorMode, Options, ReadOptions, WriteBatch, WriteOptions};
+use rust_rocksdb::{DB, IteratorMode, Options, WriteBatch, WriteOptions};
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -287,19 +288,34 @@ impl BalanceHistoryDB {
             .write_opt(&batch, &options)
             .map_err(|e| format!("Commit native bootstrap {:?}: {e}", state.phase))
     }
+}
 
-    /// Independently aggregate persisted live UTXOs using bounded batches and a private scratch DB.
-    /// Matching the complete ordered projection detects per-script errors even when totals agree.
-    pub(crate) fn verify_native_bootstrap_balances(
-        &self,
-        origin: &BootstrapOriginIdentity,
-        cancelled: &dyn Fn() -> bool,
-        observe: &mut dyn FnMut(VerificationProgress) -> Result<(), String>,
-    ) -> Result<(), String> {
-        let parent = self
-            .file
-            .parent()
-            .ok_or("Missing native verification parent directory")?;
+/// Remove temporary aggregates after the RocksDB handle has closed, including on errors.
+struct VerificationScratch(PathBuf);
+
+impl Drop for VerificationScratch {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0) {
+            log::warn!(
+                "Native verification scratch cleanup failed: path={}, error={error}",
+                self.0.display()
+            );
+        }
+    }
+}
+
+/// Bounded independent aggregation fed only by persisted UTXO rows from the origin scanner.
+pub(super) struct NativeBalanceVerifier {
+    // Fields drop in declaration order: close RocksDB before removing its directory.
+    scratch: DB,
+    _directory: VerificationScratch,
+    sums: HashMap<[u8; 32], u64>,
+    scanned: u64,
+    started: Instant,
+}
+
+impl NativeBalanceVerifier {
+    pub(super) fn new(parent: &Path, height: u32) -> Result<Self, String> {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
@@ -307,86 +323,54 @@ impl BalanceHistoryDB {
         let scratch_path = parent.join(format!("native-verify-{}-{unique}", std::process::id()));
         std::fs::create_dir(&scratch_path)
             .map_err(|e| format!("Create native verification workspace: {e}"))?;
-        struct Scratch(std::path::PathBuf);
-        impl Drop for Scratch {
-            fn drop(&mut self) {
-                if let Err(error) = std::fs::remove_dir_all(&self.0) {
-                    log::warn!(
-                        "Native verification scratch cleanup failed: path={}, error={error}",
-                        self.0.display()
-                    );
-                }
-            }
-        }
-        let _scratch = Scratch(scratch_path.clone());
+        let directory = VerificationScratch(scratch_path.clone());
         let mut options = Options::default();
         options.create_if_missing(true);
         options.set_write_buffer_size(32 * 1024 * 1024);
         options.set_max_write_buffer_number(2);
         options.set_max_open_files(64);
         let scratch = DB::open(&options, &scratch_path).map_err(|e| e.to_string())?;
-        let cf = self
-            .db
-            .cf_handle(UTXO_CF)
-            .ok_or("Missing verification UTXO column family")?;
-        let view = self.db.snapshot();
-        let mut sums = HashMap::<[u8; 32], u64>::new();
-        let mut scanned = 0u64;
-        let started = Instant::now();
-        let mut progress = Instant::now();
-        eprintln!(
-            "Native balance verification started: height={}",
-            origin.origin_height
-        );
-        observe(VerificationProgress {
-            stage: VerificationStage::AggregateUtxos,
+        eprintln!("Native balance verification started: height={height}, source=origin_utxo_scan");
+        Ok(Self {
+            scratch,
+            _directory: directory,
+            sums: HashMap::new(),
             scanned: 0,
-            total: Some(origin.utxos.rows),
-        })?;
-        let mut read_options = ReadOptions::default();
-        read_options.set_total_order_seek(true);
-        read_options.fill_cache(false);
-        for row in view.iterator_cf_opt(cf, read_options, IteratorMode::Start) {
-            let (_, value) = row.map_err(|e| e.to_string())?;
-            if value.len() != 40 {
-                return Err("Invalid native verification UTXO value".to_string());
-            }
-            let hash: [u8; 32] = value[..32].try_into().unwrap();
-            let amount = u64::from_be_bytes(value[32..].try_into().unwrap());
-            if amount != 0 {
-                let total = sums.entry(hash).or_default();
-                *total = total
-                    .checked_add(amount)
-                    .ok_or("Native verification balance overflow")?;
-            }
-            scanned += 1;
-            if scanned.is_multiple_of(20_000) {
-                if cancelled() {
-                    return Err(
-                        "Native bootstrap cancelled during balance verification".to_string()
-                    );
-                }
-                flush_sums(&scratch, &mut sums)?;
-                observe(VerificationProgress {
-                    stage: VerificationStage::AggregateUtxos,
-                    scanned,
-                    total: Some(origin.utxos.rows),
-                })?;
-            }
-            if progress.elapsed().as_secs() >= 10 {
-                eprintln!(
-                    "Native balance verification progress: utxos={scanned}, elapsed_seconds={:.1}",
-                    started.elapsed().as_secs_f64()
-                );
-                progress = Instant::now();
-            }
+            started: Instant::now(),
+        })
+    }
+
+    /// Include zero-valued outputs in the source count, but never create zero balance rows.
+    pub(super) fn push(&mut self, script: [u8; 32], amount: u64) -> Result<(), String> {
+        if amount != 0 {
+            let total = self.sums.entry(script).or_default();
+            *total = total
+                .checked_add(amount)
+                .ok_or("Native verification balance overflow")?;
         }
-        flush_sums(&scratch, &mut sums)?;
-        observe(VerificationProgress {
-            stage: VerificationStage::AggregateUtxos,
-            scanned,
-            total: Some(origin.utxos.rows),
-        })?;
+        self.scanned += 1;
+        if self.scanned.is_multiple_of(20_000) {
+            self.finish()?;
+        }
+        Ok(())
+    }
+
+    /// Flush the final partial batch before the canonical scanner leaves the UTXO table.
+    pub(super) fn finish(&mut self) -> Result<(), String> {
+        flush_sums(&self.scratch, &mut self.sums)
+    }
+
+    /// Compare the complete ordered projection, detecting per-script errors even if totals agree.
+    pub(super) fn verify(
+        &self,
+        origin: &BootstrapOriginIdentity,
+        cancelled: &dyn Fn() -> bool,
+        observe: &mut dyn FnMut(VerificationProgress) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if !self.sums.is_empty() {
+            return Err("Native verification aggregate has an unflushed batch".to_string());
+        }
+        let mut progress = Instant::now();
         let mut hash = Sha256::new();
         let mut rows = 0u64;
         let mut total_sats = 0u64;
@@ -395,7 +379,7 @@ impl BalanceHistoryDB {
             scanned: 0,
             total: Some(origin.balances.rows),
         })?;
-        for row in scratch.iterator(IteratorMode::End) {
+        for row in self.scratch.iterator(IteratorMode::End) {
             let (key, value) = row.map_err(|e| e.to_string())?;
             if rows.is_multiple_of(4096) {
                 if cancelled() {
@@ -416,7 +400,7 @@ impl BalanceHistoryDB {
             if progress.elapsed().as_secs() >= 10 {
                 eprintln!(
                     "Native balance comparison progress: balances={rows}, elapsed_seconds={:.1}",
-                    started.elapsed().as_secs_f64()
+                    self.started.elapsed().as_secs_f64()
                 );
                 progress = Instant::now();
             }
@@ -434,15 +418,16 @@ impl BalanceHistoryDB {
             scanned: rows,
             total: Some(origin.balances.rows),
         })?;
-        if scanned != origin.utxos.rows || actual != origin.balances {
+        if self.scanned != origin.utxos.rows || actual != origin.balances {
             return Err(format!(
                 "Native per-script balance verification failed: expected={:?}, actual={actual:?}",
                 origin.balances
             ));
         }
         eprintln!(
-            "Native balance verification finished: utxos={scanned}, balances={rows}, elapsed_seconds={:.1}",
-            started.elapsed().as_secs_f64()
+            "Native balance verification finished: utxos={}, balances={rows}, elapsed_seconds={:.1}",
+            self.scanned,
+            self.started.elapsed().as_secs_f64()
         );
         Ok(())
     }

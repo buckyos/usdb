@@ -32,6 +32,64 @@ impl Drop for Workspace {
     }
 }
 
+/// Build repeated scripts across aggregation batches, including scripts with only zero outputs.
+pub fn verification_database(root: &Path, outputs: u32) -> (Arc<BalanceHistoryConfig>, BlockHash) {
+    use bitcoincore_rpc::bitcoin::{Txid, hashes::Hash};
+    use usdb_util::BtcScriptHash;
+
+    let cfg = Arc::new(config(root, Network::Regtest));
+    let db = BalanceHistoryDB::open(cfg.clone(), BalanceHistoryDBMode::Normal).unwrap();
+    let block_hash = BlockHash::from_byte_array([0x42; 32]);
+    let mut balances = vec![0u64; 20_011];
+    let script = |index: u32| {
+        let mut bytes = [0u8; 32];
+        bytes[..4].copy_from_slice(&index.to_be_bytes());
+        BtcScriptHash::from_byte_array(bytes)
+    };
+    let utxos: Vec<_> = (0..outputs)
+        .map(|i| {
+            let index = i % balances.len() as u32;
+            let value = if index.is_multiple_of(97) {
+                0
+            } else {
+                u64::from(i % 113 + 1)
+            };
+            balances[index as usize] += value;
+            UTXOEntry {
+                outpoint: OutPoint {
+                    txid: Txid::from_byte_array([0x24; 32]),
+                    vout: i,
+                },
+                script_hash: script(index),
+                value,
+            }
+        })
+        .collect();
+    db.put_utxos(&utxos).unwrap();
+    db.update_address_history_with_block_commits_async(
+        &balances
+            .into_iter()
+            .enumerate()
+            .map(|(index, balance)| crate::BalanceHistoryEntry {
+                script_hash: script(index as u32),
+                block_height: 103,
+                balance,
+                delta: balance as i64,
+            })
+            .collect(),
+        103,
+        &[BlockCommitEntry {
+            block_height: 103,
+            btc_block_hash: block_hash,
+            balance_delta_root: [0; 32],
+            block_commit: [0; 32],
+        }],
+    )
+    .unwrap();
+    db.flush_all().unwrap();
+    (cfg, block_hash)
+}
+
 #[derive(Clone)]
 pub struct Fixture {
     pub blocks: Vec<Block>,

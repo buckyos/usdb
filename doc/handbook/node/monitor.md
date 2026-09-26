@@ -143,14 +143,17 @@ OOM、重启循环及持久严重事故仍独立记录和告警。
 
 | 子阶段 | 含义 |
 | --- | --- |
-| `scanning stored UTXOs` | 扫描本地 BH 数据库的 UTXO，计算状态摘要。 |
+| `scanning UTXOs and rebuilding balances` | 一次扫描本地 BH 数据库的 UTXO，同时计算状态摘要、独立按脚本汇总余额。 |
 | `scanning stored balances` | 扫描本地余额表，提取基线高度的有效余额并计算摘要。 |
-| `rebuilding balances from UTXOs` | 再次读取本地 UTXO，独立按脚本汇总余额。 |
 | `checking rebuilt balances` | 扫描临时聚合结果，核对记录数、总金额和余额摘要。 |
 
 记录数在切换子阶段后从零开始，只代表该子阶段的扫描量。前两步的准确总量尚未知，
-只显示已扫描数；后两步可显示已扫描数/总数。单个子阶段扫完仍是 `VERIFYING`，
+只显示已扫描数；最后一步可显示已扫描数/总数。单个子阶段扫完仍是 `VERIFYING`，
 必须完成内容比较、封存和 RPC 启动才可能就绪。
+
+合并扫描需要新版 BH 镜像。旧版仍可能分别显示 `scanning stored UTXOs` 和
+`rebuilding balances from UTXOs`，工具兼容这些进度记录。合并减少一次完整的 UTXO 读取，
+但余额表扫描、临时聚合读写和比较仍然保留，不代表核验耗时减半。
 
 可选组件关闭属于预期状态；controller 正常完成不算退出故障。单节点链头不推进不能证明
 整个网络停摆。首期只使用已存在的观测证据，不伪造内部重试次数或短暂 Docker 事件历史。

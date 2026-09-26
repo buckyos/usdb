@@ -6,6 +6,7 @@ use bitcoincore_rpc::bitcoin::{BlockHash, Network};
 use rust_rocksdb::{IteratorMode, ReadOptions};
 use sha2::{Digest, Sha256};
 
+use super::native_bootstrap::NativeBalanceVerifier;
 use super::{
     BALANCE_HISTORY_CF, BALANCE_HISTORY_DATA_MODEL_VERSION, BLOCK_COMMIT_VALUE_LEN,
     BLOCK_COMMITS_CF, BalanceHistoryDB, BalanceHistoryDBIdentity, META_CF,
@@ -41,6 +42,46 @@ impl BalanceHistoryDB {
         block_hash: BlockHash,
         cancelled: &dyn Fn() -> bool,
         observe: &mut dyn FnMut(VerificationProgress) -> Result<(), String>,
+    ) -> Result<BootstrapOriginIdentity, String> {
+        self.scan_bootstrap_origin(network, height, block_hash, cancelled, observe, None)
+    }
+
+    /// Hash persisted UTXOs and independently aggregate their balances in the same read view.
+    /// The separately scanned balance table remains the comparison source, never an input to aggregation.
+    pub(crate) fn verify_native_bootstrap_origin(
+        &self,
+        network: Network,
+        height: u32,
+        block_hash: BlockHash,
+        cancelled: &dyn Fn() -> bool,
+        observe: &mut dyn FnMut(VerificationProgress) -> Result<(), String>,
+    ) -> Result<BootstrapOriginIdentity, String> {
+        let parent = self
+            .file
+            .parent()
+            .ok_or("Missing native verification parent directory")?;
+        let mut verifier = NativeBalanceVerifier::new(parent, height)?;
+        let origin = self.scan_bootstrap_origin(
+            network,
+            height,
+            block_hash,
+            cancelled,
+            observe,
+            Some(&mut verifier),
+        )?;
+        verifier.verify(&origin, cancelled, observe)?;
+        Ok(origin)
+    }
+
+    /// Keep the canonical descending row encoding shared with the read-only origin inspector.
+    fn scan_bootstrap_origin(
+        &self,
+        network: Network,
+        height: u32,
+        block_hash: BlockHash,
+        cancelled: &dyn Fn() -> bool,
+        observe: &mut dyn FnMut(VerificationProgress) -> Result<(), String>,
+        mut verifier: Option<&mut NativeBalanceVerifier>,
     ) -> Result<BootstrapOriginIdentity, String> {
         let identity = self.get_db_identity()?;
         if (identity != Some(BalanceHistoryDBIdentity::for_network(network))
@@ -96,7 +137,11 @@ impl BalanceHistoryDB {
             let mut total_sats = 0u64;
             let mut previous_script: Option<[u8; 32]> = None;
             let stage = if name == "utxos" {
-                VerificationStage::OriginUtxos
+                if verifier.is_some() {
+                    VerificationStage::UtxosAndBalanceAggregation
+                } else {
+                    VerificationStage::OriginUtxos
+                }
             } else {
                 VerificationStage::OriginBalances
             };
@@ -134,7 +179,11 @@ impl BalanceHistoryDB {
                     }
                     hash.update(&key);
                     hash.update(&value);
-                    u64::from_be_bytes(value[32..40].try_into().unwrap())
+                    let amount = u64::from_be_bytes(value[32..40].try_into().unwrap());
+                    if let Some(verifier) = verifier.as_deref_mut() {
+                        verifier.push(value[..32].try_into().unwrap(), amount)?;
+                    }
+                    amount
                 } else {
                     if key.len() != 36 || value.len() != 16 {
                         return Err("Invalid origin balance encoding".to_string());
@@ -161,6 +210,11 @@ impl BalanceHistoryDB {
                     .checked_add(amount)
                     .ok_or("Origin amount sum overflow")?;
                 rows += 1;
+            }
+            if name == "utxos"
+                && let Some(verifier) = verifier.as_deref_mut()
+            {
+                verifier.finish()?;
             }
             eprintln!(
                 "Bootstrap origin scan finished: table={name}, scanned={scanned}, rows={rows}, total_sats={total_sats}, elapsed_seconds={:.1}",

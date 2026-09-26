@@ -93,7 +93,7 @@ def bootstrap_progress(value) -> dict:
     result = {"phase": value["phase"], **{key: quantity(value.get(key)) for key in (
         "updated_at_ms", "imported_coins", "height", "target")}}
     if value["phase"] == "verifying" and value.get("verification_stage") in (
-            "origin_utxos", "origin_balances", "aggregate_utxos", "compare_balances"):
+            "utxos_and_balance_aggregation", "origin_utxos", "origin_balances", "aggregate_utxos", "compare_balances"):
         result["verification_stage"] = value["verification_stage"]
         for key in ("verification_scanned", "verification_total"):
             result[key] = quantity(value.get(key))

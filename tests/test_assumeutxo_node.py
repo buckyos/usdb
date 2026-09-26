@@ -166,16 +166,21 @@ class NativeBundleTests(unittest.TestCase):
             self.assertEqual(replay_bh["bootstrap_progress"]["updated_at_ms"], int(progress.stat().st_mtime * 1000))
             self.assertEqual(replay_bh["bootstrap_progress"]["height"], 943740)
             self.assertEqual(replay_bh["readiness"]["status"], "unavailable")
-            progress.write_text(json.dumps(dict(phase="verifying", height=963800,
-                verification_stage="aggregate_utxos", verification_scanned=40000, verification_total=165748439)))
-            verifying = node.collect_node_progress(layout)
-            verifying_bh = next(item for item in verifying["components"] if item["id"] == "balance_history")
-            self.assertEqual(verifying_bh["state"], "VERIFYING")
-            self.assertEqual(verifying_bh["bootstrap_progress"]["verification_scanned"], 40000)
-            self.assertIn("rebuilding balances from UTXOs; records 40,000 / 165,748,439", verifying_bh["detail"])
-            self.assertEqual(verifying_bh["readiness"]["status"], "unavailable")
-            rendered = " ".join(node.render_node_progress(verifying, width=120).split())
-            self.assertIn("rebuilding balances from UTXOs; records 40,000 / 165,748,439", rendered)
+            for stage, total, detail in (
+                    ("aggregate_utxos", 165748439, "rebuilding balances from UTXOs; records 40,000 / 165,748,439"),
+                    ("utxos_and_balance_aggregation", None, "scanning UTXOs and rebuilding balances; records 40,000")):
+                with self.subTest(stage=stage):
+                    progress.write_text(json.dumps(dict(phase="verifying", height=963800,
+                        verification_stage=stage, verification_scanned=40000, verification_total=total)))
+                    verifying = node.collect_node_progress(layout)
+                    verifying_bh = next(item for item in verifying["components"] if item["id"] == "balance_history")
+                    self.assertEqual(verifying_bh["state"], "VERIFYING")
+                    self.assertEqual(verifying_bh["bootstrap_progress"]["verification_scanned"], 40000)
+                    self.assertEqual(verifying_bh["bootstrap_progress"]["verification_total"], total)
+                    self.assertIn(detail, verifying_bh["detail"])
+                    self.assertEqual(verifying_bh["readiness"]["status"], "unavailable")
+                    rendered = " ".join(node.render_node_progress(verifying, width=120).split())
+                    self.assertIn(detail, rendered)
         components = {item["id"]: item for item in report["components"]}
         self.assertEqual(components["bitcoin"]["state"], "READY")
         self.assertIn("history_validated=False", components["bitcoin"]["detail"])

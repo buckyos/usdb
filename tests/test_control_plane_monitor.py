@@ -84,8 +84,8 @@ class PrivateMonitorTests(unittest.TestCase):
         self.assertNotIn("SECRET", json.dumps(exported))
         value["components"][0]["bootstrap_progress"]["phase"] = "SECRET"
         self.assertEqual(monitor.project(value, 9000)["components"][0]["bootstrap_progress"], {})
-        evidence.update(phase="verifying", height=963800, verification_stage="aggregate_utxos",
-                        verification_scanned=40000, verification_total=165748439)
+        evidence.update(phase="verifying", height=963800, verification_stage="utxos_and_balance_aggregation",
+                        verification_scanned=40000, verification_total=None)
         value["components"][0]["bootstrap_progress"] = {**evidence, "error": "SECRET"}
         exported = monitor.project(monitor.project(value, 9000), 12000)
         self.assertEqual(exported["components"][0]["bootstrap_progress"], evidence)

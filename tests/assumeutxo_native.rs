@@ -1,6 +1,6 @@
 //! Native bootstrap acceptance using real Core snapshots and the normal indexer/RPC implementations.
 
-use super::test_common::{Fixture, Workspace};
+use super::test_common::{Fixture, Workspace, verification_database};
 use super::*;
 use crate::bootstrap::{
     NativeBootstrapPhase, VerificationJournal, VerificationProgress, VerificationStage,
@@ -99,7 +99,7 @@ fn native_verification_reports_all_scans_without_changing_origin_identity() {
         Ok(())
     };
     let identity = db
-        .bootstrap_origin_identity_cancellable(
+        .verify_native_bootstrap_origin(
             Network::Regtest,
             103,
             chain.blocks[103].block_hash(),
@@ -107,13 +107,20 @@ fn native_verification_reports_all_scans_without_changing_origin_identity() {
             &mut observe,
         )
         .unwrap();
-    db.verify_native_bootstrap_balances(&identity, &|| false, &mut observe)
-        .unwrap();
     assert_eq!(sealed.origin.as_ref(), Some(&identity));
+    let mut stages: Vec<_> = samples.iter().map(|v| v.stage).collect();
+    stages.dedup();
+    assert_eq!(
+        stages,
+        [
+            VerificationStage::UtxosAndBalanceAggregation,
+            VerificationStage::OriginBalances,
+            VerificationStage::CompareBalances,
+        ]
+    );
     for (stage, total) in [
-        (VerificationStage::OriginUtxos, None),
+        (VerificationStage::UtxosAndBalanceAggregation, None),
         (VerificationStage::OriginBalances, None),
-        (VerificationStage::AggregateUtxos, Some(identity.utxos.rows)),
         (
             VerificationStage::CompareBalances,
             Some(identity.balances.rows),
@@ -128,12 +135,70 @@ fn native_verification_reports_all_scans_without_changing_origin_identity() {
             assert_eq!(records.last().unwrap().scanned, total);
         }
     }
+    assert_eq!(
+        samples
+            .iter()
+            .filter(|v| v.stage == VerificationStage::UtxosAndBalanceAggregation)
+            .next_back()
+            .unwrap()
+            .scanned,
+        identity.utxos.rows
+    );
     let error = db
-        .verify_native_bootstrap_balances(&identity, &|| false, &mut |_| {
-            Err("verification observation failed".to_string())
-        })
+        .verify_native_bootstrap_origin(
+            Network::Regtest,
+            103,
+            chain.blocks[103].block_hash(),
+            &|| false,
+            &mut |_| Err("verification observation failed".to_string()),
+        )
         .unwrap_err();
     assert_eq!(error, "verification observation failed");
+    assert!(!fs::read_dir(cfg.db_dir()).unwrap().any(|e| {
+        e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("native-verify-")
+    }));
+}
+
+#[test]
+fn native_verification_preserves_identity_across_batches_and_cleans_cancelled_aggregates() {
+    let work = Workspace::new();
+    let (cfg, block_hash) = verification_database(&work.0, 40_017);
+    let db = BalanceHistoryDB::open_read_only(cfg.clone()).unwrap();
+    let original = db
+        .bootstrap_origin_identity(Network::Regtest, 103, block_hash)
+        .unwrap();
+    let cancelled = Cell::new(false);
+    let error = db
+        .verify_native_bootstrap_origin(
+            Network::Regtest,
+            103,
+            block_hash,
+            &|| cancelled.get(),
+            &mut |v| {
+                if v.stage == VerificationStage::UtxosAndBalanceAggregation && v.scanned > 20_000 {
+                    cancelled.set(true);
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert!(error.contains("cancelled"), "{error}");
+    assert!(!fs::read_dir(cfg.db_dir()).unwrap().any(|e| {
+        e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("native-verify-")
+    }));
+    let verified = db
+        .verify_native_bootstrap_origin(Network::Regtest, 103, block_hash, &|| false, &mut |_| {
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(verified, original);
+    assert_eq!(verified.utxos.rows, 40_017);
     assert!(!fs::read_dir(cfg.db_dir()).unwrap().any(|e| {
         e.unwrap()
             .file_name()
@@ -153,7 +218,7 @@ fn native_verification_journal_failure_never_publishes_partial_state() {
         if fs::read(&path)
             .ok()
             .and_then(|v| serde_json::from_slice::<serde_json::Value>(&v).ok())
-            .is_some_and(|v| v["verification_stage"] == "origin_utxos")
+            .is_some_and(|v| v["verification_stage"] == "utxos_and_balance_aggregation")
         {
             fs::create_dir_all(&pending).unwrap();
         }

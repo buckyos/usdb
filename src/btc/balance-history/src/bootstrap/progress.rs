@@ -11,7 +11,7 @@ use serde::Serialize;
 pub(crate) enum VerificationStage {
     OriginUtxos,
     OriginBalances,
-    AggregateUtxos,
+    UtxosAndBalanceAggregation,
     CompareBalances,
 }
 
