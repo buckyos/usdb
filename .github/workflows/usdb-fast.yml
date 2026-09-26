@@ -73,6 +73,7 @@ jobs:
           python3 tests/test_node_controller_status.py
           python3 tests/test_node_background_services.py
           python3 tests/test_node_rebuild.py
+          python3 tests/test_node_uninstall.py
           python3 docker/scripts/tools/test_resource_policy.py
           python3 docker/scripts/tools/test_resource_controller.py
           python3 docker/scripts/tools/test_resource_runner.py

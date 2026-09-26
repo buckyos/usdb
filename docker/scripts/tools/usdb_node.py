@@ -5760,6 +5760,8 @@ def build_parser() -> argparse.ArgumentParser:
     usdb_peers.add_parser(subparsers)
     import usdb_sourcedao
     usdb_sourcedao.add_parser(subparsers)
+    import node_uninstall
+    node_uninstall.add_parser(subparsers)
 
     prepare_host_parser = subparsers.add_parser(
         "prepare-host",
@@ -6108,6 +6110,9 @@ def _operation_name(args: argparse.Namespace) -> str | None:
 
 
 def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
+    if args.command == "uninstall":
+        import node_uninstall
+        return node_uninstall.dispatch(args, layout, sys.modules[__name__])
     if args.command == "monitor":
         import node_monitor
         import sqlite3

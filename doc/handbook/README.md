@@ -19,6 +19,7 @@
 | 网络开始出块后初始化 SourceDAO | [SourceDAO 初始化与验证](network-admin/sourcedao.md) |
 | 查看本地监控事件、活动告警及配置 | [核心节点监控](node/monitor.md) |
 | 回看冷启动资源分配、内存压力与 RPC 超时 | [资源历史与内存压力排查](node/resource-history.md) |
+| 卸载程序、清空节点并重新同步 | [卸载与清空](node/uninstall.md) |
 | 配置 Webhook、SMTP 并查看通知投递结果 | [通知配置与投递](node/notifications.md) |
 | 私下查看本机同步、资源和服务状态 | [私有节点控制台](services/control-plane.md) |
 | 使用或部署浏览器、公共 RPC 与专用查询节点 | [USDB Explorer](services/explorer.md) |

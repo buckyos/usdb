@@ -116,6 +116,9 @@ usdb-node up --dry-run
 
 ## 停止与重新启动
 
+需要移除安装或清空数据重新同步时，使用 [卸载节点与清空后重新同步](uninstall.md)中的
+`usdb-node uninstall`。默认只预览；普通 `down` 始终保留数据。
+
 **先确认本机没有运行中的 SourceDAO 任务。** 执行过初始化、导出或验证的节点，先运行 `usdb-node sourcedao status`；任务活动时，停机、升级和矿工配置变更会被拒绝。等待任务结束；异常时按[SourceDAO 恢复步骤](../network-admin/sourcedao.md#中断与失败恢复)处理。停止 controller 不会终止独立的 SourceDAO 任务。
 
 | 操作 | 命令 | 实际影响 |

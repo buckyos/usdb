@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-uninstall-command",
+  "type": "added",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Provide an operator-facing node uninstall command with explicit data purge and private backups",
+  "details": [
+    "usdb-node uninstall previews exact paths by default. Interactive --execute removes the selected network's software and stopped containers while retaining configuration and node data unless --purge-data is explicitly selected.",
+    "Data purge copies and SHA-256 verifies private configuration, monitor history, wallets, node identities and service definitions before deletion. Blocks and index databases require resynchronization; unrelated networks, old unreferenced datasets and Docker images remain untouched.",
+    "A standalone runner and durable operation record outside release/data roots support interrupted uninstall recovery. Active services, conflicting operations, changed targets, unreadable state, unverified backups and unsafe paths block execution.",
+    "The handbook documents preview, down/disable, software removal versus purge, private backup recovery, retained host components and reinstallation."
+  ],
+  "operator_actions": [
+    "Install a node kit containing the new command and review usdb-node uninstall --help. Existing releases do not gain the command automatically.",
+    "Before explicit execution, stop the node, disable its controller and use a new backup directory outside the selected data/configuration/release roots. Retain the private backup and printed resume command."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

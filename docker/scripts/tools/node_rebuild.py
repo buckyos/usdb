@@ -101,7 +101,7 @@ class Plan:
     layout: dict
 
 
-def build_plan(home: Path, bundle: str, backup: Path, unit_dir=Path("/etc/systemd/system")) -> Plan:
+def build_plan(home: Path, bundle: str, backup: Path, unit_dir=Path("/etc/systemd/system"), *, protect_script=True, archive_bh=True) -> Plan:
     """Derive only known v2 service paths; archived config supports interrupted cleanup."""
     home, backup = absolute(home), absolute(backup)
     require(re.fullmatch(r"usdb-(testnet|mainnet)-v[0-9]+", bundle), "Invalid bundle ID")
@@ -145,8 +145,8 @@ def build_plan(home: Path, bundle: str, backup: Path, unit_dir=Path("/etc/system
     # A v1 move already in progress must retain its original whole-root boundary.
     previous_bh = saved.get("items", {}).get("balance-history")
     bh_source = bh if previous_bh and previous_bh["source"] == str(bh) else bh / "db/balance_history"
-    targets = [Target("balance-history", bh_source, ())]
-    if bh_source != bh:
+    targets = [Target("balance-history", bh_source, ())] if archive_bh else []
+    if bh_source != bh or not archive_bh:
         targets.append(Target("balance-history-root", bh, None))
     targets += [
         Target("bitcoin", expected["BTC_NODE_DATA_HOST_DIR"], None),
@@ -187,7 +187,8 @@ def build_plan(home: Path, bundle: str, backup: Path, unit_dir=Path("/etc/system
     for target in targets:
         safe_path(target.path, leaf_link=bool(target.link))
         require(not overlap(target.path, backup), f"Backup overlaps cleanup path: {target.path}")
-        require(not overlap(target.path, Path(__file__).resolve()), "Copy this standalone script outside all cleanup targets before running it")
+        if protect_script:
+            require(not overlap(target.path, Path(__file__).resolve()), "Copy this standalone script outside all cleanup targets before running it")
     require(all(not overlap(left.path, right.path) or {left.key, right.key} == {"balance-history", "balance-history-root"}
                 for i, left in enumerate(targets) for right in targets[i + 1:]),
             "Cleanup targets overlap each other; this data layout needs manual review")
