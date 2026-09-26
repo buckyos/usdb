@@ -255,4 +255,14 @@ usdb-node doctor
 核对新的预算后执行 `usdb-node up`。已有自动模式节点重算时保留当前资源阶段。
 只更新工具包不会自动重算已有预算；同机还有其他服务时，需要为它们预留实际额度，不能将节点预算之外的内存视作无限可用。
 
+原生 AssumeUTXO 节点在 `overlap` 阶段同时运行 Bitcoin 历史验证和 BH 基线启动。新版策略给
+Bitcoin 增加内存余量，并为 BH 保留至少 8 GiB（用户原有显式上限不足时保持原上限）。例如有效内存
+32 GiB 的主机，该阶段分配 Bitcoin 12 GiB、BH 8 GiB；Bitcoin dbcache 不随容器额度一起增大。
+进入 `steady` 后采用稳态预算，不要求 Bitcoin 历史验证先完成。
+
+若升级时节点仍处于旧 `overlap` 配额，先用原版本 `down`，安装新版工具后执行
+`usdb-node set-resource-policy --mode auto` 重算，再执行 `activate-release`、`doctor`、`up`。
+数据无需清除；已在 `steady` 的节点不会因此重做基线同步。
+通过 [资源历史](resource-history.md) 核对实际容器上限、swap 和内存压力，不能只看主机剩余内存。
+
 更多故障处理见[故障排查](../troubleshooting/README.md)。

@@ -360,9 +360,19 @@ class BitcoinBootstrapTests(unittest.TestCase):
         env = {"PATH": os.environ["PATH"], "BTC_RPC_URL": core.url, "BTC_RPC_USER": "test", "BTC_RPC_PASSWORD": "pass",
                "BTC_NETWORK": "bitcoin", "PYTHONDONTWRITEBYTECODE": "1"}
         command = [sys.executable, str(ROOT / "docker/scripts/tools/bitcoin_assumeutxo.py"), "status"]
+        core.warmup_remaining = 1
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(json.loads(result.stdout)["bootstrap_ready"])
+        self.assertEqual(json.loads(result.stdout)["rpc_probe"]["retries"], 1)
+        self.assertEqual(core.calls["loadtxoutset"], 0)
+        # A transport recovery cannot override a mismatched baseline identity.
+        core.canonical_hash = "d" * 64
+        core.warmup_remaining = 1
+        rejected = subprocess.run(command, env=env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(rejected.returncode, 1)
+        self.assertEqual(json.loads(rejected.stdout)["error_kind"], "identity_or_configuration")
+        self.assertFalse(json.loads(rejected.stdout)["bootstrap_ready"])
         result = subprocess.run(command, env={**env, "BTC_NETWORK": "regtest"}, capture_output=True, text=True, timeout=5)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(json.loads(result.stdout)["bootstrap_ready"])

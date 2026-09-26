@@ -19,8 +19,10 @@ class CoreProbeError(ValueError):
     """The helper response cannot be interpreted as a native readiness report."""
 
 
-def core_progress(layout, *, command_timeout_secs: float = 45) -> dict:
+def core_progress(layout, *, command_timeout_secs: float = 20) -> dict:
     """An unsuccessful probe is pending; a reported identity error is a hard failure."""
+    # The native helper shares a 12s RPC budget; include Docker/process overhead
+    # without consuming the monitor's entire default 25s collection window.
     result = node.run_helper(layout, "run_testnet_bitcoin.sh", ["progress"], check=False,
                              capture_output=True, command_timeout_secs=command_timeout_secs)
     try:

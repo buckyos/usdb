@@ -53,7 +53,12 @@ snapshot 绑定。已经从旧整体 snapshot 导入 RocksDB 的节点仍需要�
 | `overlap` | 25% | 16 GiB | 37.5% | 64 GiB |
 | `steady` | 12.5% | 8 GiB | 50% | 64 GiB |
 
-上表为普通同步模式的基准。原生 AssumeUTXO 模式进入 `steady` 只要求前台追平、BH/indexer
+上表为普通同步模式的基准。原生 AssumeUTXO 的 `overlap` 阶段，Bitcoin 仍需补齐历史，
+同时 BH 导入、重放和核验。Bitcoin 目标额度提高到有效内存的 37.5%，仍受交叠阶段封顶约束；
+增加部分从 BH 原额度等量转移，BH 至少保留 8 GiB 用于基线启动。如果显式 BH 封顶或外部服务预留
+使 BH 原额度低于 8 GiB，则不从它转出内存；不擅自提高用户设置的上限。
+
+原生 AssumeUTXO 模式进入 `steady` 只要求前台追平、BH/indexer
 共识就绪；**不表示 Core 后台历史验证完成**。该模式的稳态 Bitcoin 额度改为有效内存的
 50%（受 `USDB_BTC_STEADY_MEMORY_CAP` 原生默认 16 GiB 封顶），增加部分从 BH 原额度等量转移，
 BH 至少保留 4 GiB。自定义 BH 封顶不足以转移时，Bitcoin 的增量也相应减少。
@@ -69,6 +74,16 @@ BH 应用缓存随新额度重新计算，额度转移不增加整机总预算�
 **16 / 24 GiB**，256 GiB 主机为 **16 / 64 GiB**。实际有效内存约 30.3 GiB 的主机约为
 BTC 14.9 GiB / BH 4 GiB，避免后台验证期间 Core 被过小的容器额度挤压。
 历史验证结束后保留这一预算，不因状态查询触发停机降档；前台、chain 和 mining 的就绪条件不变。
+
+原生交叠阶段的 **32 GiB** 主机为 **BTC 12 GiB / BH 8 GiB**；约 30.3 GiB 有效内存的
+测试机为 **BTC 10.9 GiB / BH 8 GiB**。64 GiB 及以上主机在默认交叠封顶 16 GiB 下不转移额度。
+Bitcoin dbcache 使用转移前的基准，BH 应用缓存按新额度重算；8 GiB BH 的两项应用缓存合计 5 GiB。
+这是保留整机预算的固定阶段分配，不依据瞬时内存使用自动调整。是否降低 swap、RPC 超时和总同步耗时，
+仍需在冷启动中对照资源历史验证。
+
+已有原生 `overlap` 节点安装新 node kit 后，需要在停机窗口显式运行
+`usdb-node set-resource-policy --mode auto`，再激活 release、运行 `doctor/up`。
+旧配额不会在线自动修改；不匹配的新旧计划会明确要求重算。已在 `steady` 的节点重算后仍保持该阶段。
 
 已有原生自动配置如仍保存旧稳态预算，安装包含该修复的 node kit 后，需要在正常停机状态执行
 `usdb-node set-resource-policy --mode auto --bitcoin-steady-memory-cap 16g`，再运行 `doctor` 和 `up`。

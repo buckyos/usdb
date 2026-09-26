@@ -197,6 +197,14 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
     bitcoin_cache_limit = limits["BTC_MEMORY_LIMIT"]
     if phase == "bitcoin":
         limits["BTC_MEMORY_LIMIT"] = share(4, caps[cap_key], 5)
+    elif phase == "overlap" and env.get("SNAPSHOT_MODE") == "assumeutxo":
+        # Core still validates history while BH imports/replays/verifies. Transfer
+        # headroom without increasing dbcache or starving BH's bootstrap work.
+        # An explicit BH cap below 8 GiB is preserved and donates no memory.
+        desired = share(24, caps[cap_key])
+        extra = min(desired - bitcoin_cache_limit, max(0, limits["BH_MEMORY_LIMIT"] - 8 * GIB))
+        limits["BTC_MEMORY_LIMIT"] += extra
+        limits["BH_MEMORY_LIMIT"] -= extra
     elif phase == "steady" and env.get("SNAPSHOT_MODE") == "assumeutxo":
         # Foreground readiness does not end Core's background validation. Keep
         # file-cache headroom after chain startup without growing dbcache or the

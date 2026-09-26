@@ -18,7 +18,7 @@ import bitcoin_assumeutxo as BOOT
 import usdb_mining as MINING
 import usdb_node as NODE
 from common.mining import ADDRESS, MiningFixture
-from common.bitcoin_readiness import READY, failed_rpc
+from common.bitcoin_readiness import READY, ScheduledRpc, failed_rpc
 
 
 class RpcDiagnosticsTests(unittest.TestCase):
@@ -75,8 +75,83 @@ class RpcDiagnosticsTests(unittest.TestCase):
                 redirect_stdout(output):
             self.assertEqual(BOOT.main(), 1)
         report = json.loads(output.getvalue())
+        counts = report.pop("rpc_probe")
+        self.assertEqual(counts["retries"], 0)
+        self.assertEqual(counts["budget_ms"], 12000)
         self.assertEqual(report, failed_rpc())
         self.assertNotIn("secret", output.getvalue())
+
+
+class StatusProbeTests(unittest.TestCase):
+    def test_slow_read_can_finish_without_a_retry(self):
+        rpc = ScheduledRpc([(7, {"blocks": 968710})])
+        with mock.patch.object(BOOT, "time", rpc):
+            probe = BOOT.StatusRpc(rpc)
+            self.assertEqual(probe.call("getblockchaininfo"), {"blocks": 968710})
+            self.assertEqual(probe.diagnostic()["retries"], 0)
+            self.assertEqual(rpc.now, 7)
+
+    def test_retry_recovers_but_later_methods_share_the_budget_and_retry_allowance(self):
+        rpc = ScheduledRpc([(20, None), (1, {"blocks": 968710}),
+                            (0.5, BOOT.RpcFailure("getchainstates", kind="connection"))])
+        with mock.patch.object(BOOT, "time", rpc), redirect_stderr(io.StringIO()) as log:
+            probe = BOOT.StatusRpc(rpc)
+            self.assertEqual(probe.call("getblockchaininfo")["blocks"], 968710)
+            with self.assertRaises(BOOT.RpcFailure):
+                probe.call("getchainstates")
+            self.assertEqual([timeout for _, timeout in rpc.calls], [8, 3.75, 2.75])
+            self.assertEqual(probe.diagnostic()["retries"], 1)
+            self.assertEqual(probe.diagnostic()["attempts"], 3)
+            self.assertLess(rpc.now, 12)
+            self.assertEqual(log.getvalue().count("retry=1/1"), 1)
+
+    def test_persistent_stall_exhausts_one_budget_and_cannot_issue_more_requests(self):
+        rpc = ScheduledRpc([(30, None), (30, None)])
+        with mock.patch.object(BOOT, "time", rpc), redirect_stderr(io.StringIO()):
+            probe = BOOT.StatusRpc(rpc)
+            with self.assertRaises(BOOT.RpcFailure) as error:
+                probe.call("getblockchaininfo")
+            self.assertEqual(error.exception.kind, "timeout")
+            self.assertEqual(rpc.now, 12)
+            with self.assertRaises(BOOT.RpcFailure):
+                probe.call("getchainstates")
+            self.assertEqual(len(rpc.calls), 2)
+
+    def test_deadline_is_shared_even_when_earlier_requests_succeed(self):
+        rpc = ScheduledRpc([(7, {}), (4, {}), (3, {})])
+        with mock.patch.object(BOOT, "time", rpc):
+            probe = BOOT.StatusRpc(rpc)
+            probe.call("getblockchaininfo")
+            probe.call("getnetworkinfo")
+            with self.assertRaises(BOOT.RpcFailure):
+                probe.call("getchainstates")
+            self.assertEqual([timeout for _, timeout in rpc.calls], [8, 5, 1])
+            self.assertEqual(rpc.now, 12)
+            self.assertEqual(probe.diagnostic()["retries"], 0)
+
+    def test_backoff_past_deadline_does_not_count_an_unattempted_retry(self):
+        rpc = ScheduledRpc([(8, None)])
+        with mock.patch.object(BOOT, "time", rpc), redirect_stderr(io.StringIO()):
+            probe = BOOT.StatusRpc(rpc)
+            with mock.patch.object(rpc, "sleep", side_effect=lambda _: setattr(rpc, "now", 13)):
+                with self.assertRaises(BOOT.RpcFailure):
+                    probe.call("getblockchaininfo")
+            self.assertEqual(probe.diagnostic()["attempts"], 1)
+            self.assertEqual(probe.diagnostic()["retries"], 0)
+
+    def test_permanent_errors_never_retry_and_mutating_methods_never_run(self):
+        for kind in ("authentication", "invalid_response", "tls", "http_error", "rpc_error"):
+            rpc = ScheduledRpc([(0.1, BOOT.RpcFailure("getblockchaininfo", kind=kind))])
+            with self.subTest(kind=kind), mock.patch.object(BOOT, "time", rpc):
+                probe = BOOT.StatusRpc(rpc)
+                with self.assertRaises(BOOT.RpcFailure):
+                    probe.call("getblockchaininfo")
+                self.assertEqual(len(rpc.calls), 1)
+                self.assertEqual(probe.diagnostic()["retries"], 0)
+                for method in ("loadtxoutset", "stop", "invalidateblock"):
+                    with self.assertRaisesRegex(ValueError, "read-only"):
+                        probe.call(method)
+                self.assertEqual(len(rpc.calls), 1)
 
 
 class MiningProbeTests(unittest.TestCase):

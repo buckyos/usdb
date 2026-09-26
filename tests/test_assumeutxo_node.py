@@ -795,8 +795,16 @@ class NativeControllerTests(unittest.TestCase):
         env = node.read_env(r.layout.node_env)
         env.update(policy.build_resource_plan(r.memory, "bitcoin", env).environment())
         r.layout.node_env.write_text(node.upsert_env("", env))
-        r.advance = self.complete_after_data
         with mock.patch.object(node, "effective_memory_bytes", return_value=r.memory):
+            with self.assertRaisesRegex(ValueError, "timed out"):
+                self.start()
+            configured = node.read_env(r.layout.node_env)
+            self.assertEqual(configured["USDB_RESOURCE_PHASE"], "overlap")
+            self.assertEqual(r.containers["btc-node"]["memory"], 12 * policy.GIB)
+            self.assertEqual(r.containers["btc-node"]["environment"]["BTC_DBCACHE_MB"], "4096")
+            self.assertEqual(r.containers["balance-history"]["memory"], 8 * policy.GIB)
+            node._check_running_resource_budget(configured, r.containers)
+            r.advance = self.complete_after_data
             self.start(timeout=60)
             configured = node.read_env(r.layout.node_env)
             node._check_running_resource_budget(configured, r.containers)

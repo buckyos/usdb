@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "native-rpc-probe-and-overlap-resources",
+  "type": "changed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Tolerate transient Core RPC stalls and rebalance native bootstrap overlap memory",
+  "details": [
+    "Native Core status shares a 12-second RPC budget with up to 8 seconds per request and at most one transient retry across the observation. Authentication, protocol and chain identity failures remain failures; mutating RPCs are excluded from this retry path.",
+    "Resource history records sanitized RPC attempt and retry counts, including successful retries, without converting missing legacy counters to zero. The normal host helper deadline is 20 seconds and the monitor retains its existing overall collection limit.",
+    "Native overlap budgets transfer memory from balance-history to Core toward a 37.5 percent host share, bounded by the configured Core cap and an 8 GiB BH floor. Smaller explicit BH allocations are preserved. Core dbcache, whole-node totals and system reserves do not grow; BH caches follow the resulting limit."
+  ],
+  "operator_actions": [
+    "Upgrade both the node kit and Bitcoin Core image through a matching release to obtain the new RPC retry behavior and counters.",
+    "For an existing native overlap configuration, stop using the current release, install the new kit, run usdb-node set-resource-policy --mode auto, then activate-release, doctor and up. Existing data and the current resource phase are preserved; running containers are not retuned by status queries."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": true, "restart_required": true},
+  "references": []
+}

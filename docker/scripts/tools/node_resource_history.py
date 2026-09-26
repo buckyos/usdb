@@ -139,6 +139,10 @@ class History:
                     stats.update(count=stats["count"] + 1, min_ms=min(stats["min_ms"], probe["duration_ms"]),
                                  max_ms=max(stats["max_ms"], probe["duration_ms"]), sum_ms=stats["sum_ms"] + probe["duration_ms"])
                     stats["outcomes"][probe["outcome"]] = stats["outcomes"].get(probe["outcome"], 0) + 1
+                    for key in ("rpc_attempts", "rpc_retries"):
+                        count = probe.get(key)
+                        if type(count) is int and count >= 0:
+                            stats[key] = stats.get(key, 0) + count
             previous = {item["service"]: item for item in aggregate["items"]}
             for item in value["items"]:
                 target = previous.setdefault(item["service"], dict(service=item["service"], identity=item["identity"],

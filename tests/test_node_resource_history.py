@@ -120,6 +120,25 @@ class MetricTests(unittest.TestCase):
         for output in ("", "not JSON", '{"ready":'):
             self.assertEqual(metrics.helper_outcome(subprocess.CompletedProcess([], 0, output), "bitcoin"), "failed")
 
+    def test_probe_retry_evidence_is_bounded_and_does_not_reclassify_failures(self):
+        for outcome, code, fields in (
+                ("ok", 0, dict(rpc_available=True, tip_ready=True)),
+                ("not_ready", 1, dict(rpc_available=True, tip_ready=False)),
+                ("timeout", 1, dict(rpc_available=False, error_kind="rpc_unavailable", rpc_failure={"kind": "timeout"}))):
+            body = dict(schema_version="usdb-bitcoin-assumeutxo:v1", **fields,
+                        rpc_probe=dict(attempts=8, retries=1, password="SECRET"))
+            helper = metrics.trace_helper(mock.Mock(return_value=subprocess.CompletedProcess([], code, json.dumps(body))))
+            with self.subTest(outcome=outcome), metrics.capture_probes() as values:
+                helper(None, "run_testnet_bitcoin.sh", ["progress"])
+            self.assertEqual(values[0]["outcome"], outcome)
+            self.assertEqual(values[0]["rpc_retries"], 1)
+            self.assertEqual(values[0]["rpc_attempts"], 8)
+            self.assertNotIn("SECRET", json.dumps(values))
+        for probe in (None, {}, {"attempts": True, "retries": 0}, {"attempts": 1, "retries": 2},
+                      {"attempts": 33, "retries": 1}, {"attempts": 1, "retries": -1}):
+            result = subprocess.CompletedProcess([], 0, json.dumps(dict(schema_version="usdb-bitcoin-assumeutxo:v1", rpc_probe=probe)))
+            self.assertEqual(metrics.bitcoin_probe_counts(result), {})
+
 
 class HistoryTests(unittest.TestCase):
     def test_minute_probe_failures_and_peaks_are_not_overwritten_or_counted_twice(self):
@@ -139,6 +158,23 @@ class HistoryTests(unittest.TestCase):
                 self.assertEqual(probe["max_ms"], 5000)
                 self.assertEqual(probe["mean_ms"], 1680)
                 self.assertEqual(probe["outcomes"], {"timeout": 1, "ok": 1, "not_ready": 1})
+                self.assertNotIn("rpc_retries", probe)  # Older helpers never imply zero retries.
+
+    def test_minute_sums_retry_counts_only_for_fresh_observations(self):
+        with MonitorFixture() as f:
+            with history.History(node_monitor.root(f.layout)/"resources.sqlite3", node_monitor.scope(f.layout), writable=True) as db:
+                for offset, fresh, outcome, attempts, retries in ((0, True, "ok", 8, 1),
+                        (1000, False, "ok", 8, 1), (2000, True, "timeout", 2, 1), (3000, True, "ok", 7, 0)):
+                    value = evidence(BASE + offset)
+                    value["observation_is_new"] = fresh
+                    value["observation"].update(probes=[dict(service="bitcoin", operation="progress",
+                        duration_ms=9000, outcome=outcome, rpc_attempts=attempts, rpc_retries=retries)])
+                    db.append(value)
+                stats = db.query(resolution="minute")["records"][0]["probes"]["bitcoin:progress"]
+                self.assertEqual(stats["count"], 3)
+                self.assertEqual(stats["rpc_retries"], 2)
+                self.assertEqual(stats["rpc_attempts"], 17)
+                self.assertEqual(stats["outcomes"], {"ok": 2, "timeout": 1})
 
     def test_capacity_eviction_and_corruption_are_visible(self):
         with MonitorFixture() as f:

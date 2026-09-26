@@ -96,14 +96,60 @@ class ResourcePolicyTests(unittest.TestCase):
         POLICY.validate_resource_environment(updated, memory)
         self.assertEqual(updated["USDB_RESOURCE_PHASE"], "steady")
 
-    def test_native_pre_steady_allocations_are_unchanged(self):
-        for phase in ("bitcoin", "overlap"):
-            legacy = POLICY.build_resource_plan(32 * POLICY.GIB, phase, {})
-            native = POLICY.build_resource_plan(32 * POLICY.GIB, phase, {"SNAPSHOT_MODE": "assumeutxo"})
-            self.assertEqual(native.dbcache_mib, legacy.dbcache_mib)
-            self.assertEqual(native.utxo_cache_bytes, legacy.utxo_cache_bytes)
-            for key, value in legacy.limits.items():
-                self.assertEqual(native.limits[key], value)
+    def test_native_bitcoin_exclusive_allocations_are_unchanged(self):
+        legacy = POLICY.build_resource_plan(32 * POLICY.GIB, "bitcoin", {})
+        native = POLICY.build_resource_plan(32 * POLICY.GIB, "bitcoin", {"SNAPSHOT_MODE": "assumeutxo"})
+        self.assertEqual(native.dbcache_mib, legacy.dbcache_mib)
+        self.assertEqual(native.utxo_cache_bytes, legacy.utxo_cache_bytes)
+        for key, value in legacy.limits.items():
+            self.assertEqual(native.limits[key], value)
+
+    def test_native_overlap_retains_bh_bootstrap_capacity_and_core_cache(self):
+        for memory in (32_000_000_000, 32_495_595_520, 32 * POLICY.GIB, 48 * POLICY.GIB,
+                       64 * POLICY.GIB, 256 * POLICY.GIB):
+            with self.subTest(memory=memory):
+                env = {"SNAPSHOT_MODE": "assumeutxo"}
+                previous = POLICY.build_resource_plan(memory, "overlap", {})
+                plan = POLICY.build_resource_plan(memory, "overlap", env)
+                gain = plan.limits["BTC_MEMORY_LIMIT"] - previous.limits["BTC_MEMORY_LIMIT"]
+                if memory <= 48 * POLICY.GIB:
+                    self.assertGreater(gain, 3 * POLICY.GIB)
+                self.assertGreaterEqual(plan.limits["BH_MEMORY_LIMIT"], 8 * POLICY.GIB)
+                self.assertEqual(plan.limits["BH_MEMORY_LIMIT"], previous.limits["BH_MEMORY_LIMIT"] - gain)
+                self.assertEqual(plan.dbcache_mib, previous.dbcache_mib)
+                self.assertEqual(plan.total_bytes, previous.total_bytes + 128 * POLICY.MIB)
+                self.assertLessEqual(plan.total_bytes, memory)
+                POLICY.validate_resource_environment({**env, **plan.environment()}, memory)
+        plan = POLICY.build_resource_plan(32 * POLICY.GIB, "overlap", env)
+        self.assertEqual(plan.limits["BTC_MEMORY_LIMIT"], 12 * POLICY.GIB)
+        self.assertEqual(plan.limits["BH_MEMORY_LIMIT"], 8 * POLICY.GIB)
+
+    def test_overlap_transfer_honors_caps_and_reserved_services(self):
+        for memory in (32 * POLICY.GIB, 64 * POLICY.GIB, 256 * POLICY.GIB):
+            for cap in ("4g", "8g", "16g", "32g"):
+                for bh_cap in ("4g", "8g", "64g"):
+                    env = {"SNAPSHOT_MODE": "assumeutxo", "USDB_BTC_OVERLAP_MEMORY_CAP": cap,
+                           "USDB_BH_MEMORY_CAP": bh_cap, "USDB_MINTING_ENABLED": "1"}
+                    if memory >= 64 * POLICY.GIB:
+                        env["USDB_EXTERNAL_MEMORY_BUDGET"] = "8g"
+                    with self.subTest(memory=memory, cap=cap, bh_cap=bh_cap):
+                        previous = POLICY.build_resource_plan(memory, "overlap", {**env, "SNAPSHOT_MODE": "none"})
+                        plan = POLICY.build_resource_plan(memory, "overlap", env)
+                        self.assertLessEqual(plan.total_bytes, memory)
+                        self.assertLessEqual(plan.limits["BTC_MEMORY_LIMIT"], POLICY.memory_bytes(cap, "cap"))
+                        self.assertGreaterEqual(plan.limits["BH_MEMORY_LIMIT"], min(previous.limits["BH_MEMORY_LIMIT"], 8 * POLICY.GIB))
+                        POLICY.validate_resource_environment({**env, **plan.environment()}, memory)
+
+    def test_old_native_overlap_requires_explicit_recalculation_without_changing_phase(self):
+        memory = 32_495_595_520
+        old = {"SNAPSHOT_MODE": "assumeutxo", **POLICY.build_resource_plan(memory, "overlap", {}).environment(),
+               "BTC_BOOTSTRAP_MEMORY_LIMIT": str(128 * POLICY.MIB)}
+        with self.assertRaisesRegex(ValueError, "set-resource-policy --mode auto"):
+            POLICY.validate_resource_environment(old, memory)
+        updated = {**old, **POLICY.build_resource_plan(memory, "overlap", old).environment()}
+        POLICY.validate_resource_environment(updated, memory)
+        self.assertEqual(updated["USDB_RESOURCE_PHASE"], "overlap")
+        self.assertEqual(int(updated["BH_MEMORY_LIMIT"]), 8 * POLICY.GIB)
 
     def test_native_default_and_explicit_steady_caps(self):
         memory = 32 * POLICY.GIB

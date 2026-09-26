@@ -34,6 +34,9 @@ from bitcoin_release import UTXO_SIZE, default_trust_path, validate_utxo
 
 SCHEMA = "usdb-bitcoin-assumeutxo:v1"
 CHUNK_BYTES = 4 * 1024 * 1024
+# Leave time for Docker and the remaining services within the monitor's 25s sample.
+STATUS_RPC_BUDGET_SECS = 12
+STATUS_RPC_TIMEOUT_SECS = 8
 
 
 @dataclass(frozen=True)
@@ -301,7 +304,49 @@ class Rpc:
             raise RpcFailure(method, kind=kind) from error
 
 
-def core_status(rpc: Rpc, snapshot: Snapshot) -> dict:
+class StatusRpc:
+    """One bounded read-only observation; at most one transient retry across all methods."""
+    METHODS = {"getblockchaininfo", "getnetworkinfo", "getchainstates", "getblockhash", "getblockheader"}
+
+    def __init__(self, rpc: Rpc):
+        self.rpc = rpc
+        self.started = time.monotonic()
+        self.deadline = self.started + STATUS_RPC_BUDGET_SECS
+        self.attempts = self.retries = 0
+
+    def diagnostic(self) -> dict:
+        """Only numeric evidence; never include RPC parameters, credentials or responses."""
+        return dict(attempts=self.attempts, retries=self.retries,
+                    elapsed_ms=round((time.monotonic() - self.started) * 1000),
+                    budget_ms=STATUS_RPC_BUDGET_SECS * 1000)
+
+    def call(self, method: str, params: list | None = None):
+        if method not in self.METHODS:
+            raise ValueError("Status probe only permits read-only chain observation methods")
+        retry_pending = False
+        while True:
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise RpcFailure(method, kind="timeout")
+            self.attempts += 1
+            if retry_pending:
+                self.retries += 1
+            try:
+                result = self.rpc.call(method, params, timeout=min(STATUS_RPC_TIMEOUT_SECS, remaining))
+                if time.monotonic() >= self.deadline:
+                    raise RpcFailure(method, kind="timeout")
+                return result
+            except RpcFailure as error:
+                # No retries of writes, authentication/identity failures or malformed responses.
+                # Reserve at least one second after backoff, and do not restart the whole probe.
+                if not error.retryable or self.retries or self.deadline - time.monotonic() < 1.25:
+                    raise
+                retry_pending = True
+                print(f"Bitcoin status RPC retry scheduled: method={method}, kind={error.kind}, retry=1/1", file=sys.stderr)
+                time.sleep(0.25)
+
+
+def core_status(rpc: Rpc | StatusRpc, snapshot: Snapshot) -> dict:
     """Inspect the active chain, independently reporting snapshot activation and full validation."""
     info = rpc.call("getblockchaininfo")
     network = rpc.call("getnetworkinfo")
@@ -345,7 +390,7 @@ def loading(rpc: Rpc) -> bool:
     return any(command.get("method") == "loadtxoutset" for command in commands)
 
 
-def tip_status(rpc: Rpc, snapshot: Snapshot, env: dict) -> dict:
+def tip_status(rpc: Rpc | StatusRpc, snapshot: Snapshot, env: dict) -> dict:
     """Foreground readiness does not depend on background validation or txindex."""
     report = core_status(rpc, snapshot)
     report["tip_ready"] = False
@@ -506,6 +551,7 @@ def main() -> int:
     parser.add_argument("--reuse-active-snapshot-file", action="store_true",
                         help="With --ensure-snapshot-file, skip rescanning an existing file after Core confirms the baseline; downstream consumers must verify their own imports")
     args = parser.parse_args()
+    probe = None
     try:
         snapshot = pinned_snapshot(os.environ)
         if args.reserve_bytes < 0:
@@ -526,7 +572,9 @@ def main() -> int:
                 password = Path(os.environ["BTC_RPC_PASSWORD_FILE"]).read_text().strip()
             rpc = Rpc(args.rpc_url, cookie=args.cookie_file, user=os.environ.get("BTC_RPC_USER", ""), password=password)
             if args.command == "status":
-                report = tip_status(rpc, snapshot, os.environ) if args.require_tip else core_status(rpc, snapshot)
+                probe = StatusRpc(rpc)
+                report = tip_status(probe, snapshot, os.environ) if args.require_tip else core_status(probe, snapshot)
+                report["rpc_probe"] = probe.diagnostic()
             else:
                 report = activate(snapshot, args.snapshot_file, rpc, args.state_dir, url=args.source_url,
                                   poll_seconds=args.poll_seconds, wait_seconds=args.wait_seconds,
@@ -542,6 +590,8 @@ def main() -> int:
                           error_kind="rpc_unavailable" if isinstance(error, RpcFailure) else "identity_or_configuration")
             if isinstance(error, RpcFailure):
                 report.update(rpc_available=False, rpc_failure=error.diagnostic())
+            if probe is not None:
+                report["rpc_probe"] = probe.diagnostic()
             print(json.dumps(report))
         else:
             print(f"Bitcoin bootstrap failed: {error}", file=sys.stderr)

@@ -78,9 +78,12 @@ def trace_helper(function):
         if values is None or service is None:
             return function(layout, helper, arguments, **kwargs)
         started, at, outcome = time.monotonic(), now_ms(), "failed"
+        retry_counts = {}
         try:
             result = function(layout, helper, arguments, **kwargs)
             outcome = helper_outcome(result, service)
+            if service == "bitcoin":
+                retry_counts = bitcoin_probe_counts(result)
             return result
         except subprocess.TimeoutExpired:
             outcome = "timeout"
@@ -88,8 +91,25 @@ def trace_helper(function):
         finally:
             if len(values) < 32:
                 values.append(dict(service=service, operation=arguments[0], started_at_ms=at,
-                                   duration_ms=round((time.monotonic() - started) * 1000), outcome=outcome))
+                                   duration_ms=round((time.monotonic() - started) * 1000), outcome=outcome, **retry_counts))
     return measured
+
+
+def bitcoin_probe_counts(result):
+    """Keep bounded attempt counts from new Core helpers; old helpers remain unknown."""
+    try:
+        payload = json.loads(result.stdout or "")
+        if not isinstance(payload, dict) or payload.get("schema_version") != "usdb-bitcoin-assumeutxo:v1":
+            return {}
+        probe = payload.get("rpc_probe")
+        if not isinstance(probe, dict):
+            return {}
+        attempts, retries = probe.get("attempts"), probe.get("retries")
+        if type(attempts) is int and type(retries) is int and 0 <= retries <= 1 and retries <= attempts <= 32:
+            return dict(rpc_attempts=attempts, rpc_retries=retries)
+    except (TypeError, ValueError):
+        pass
+    return {}
 
 
 def trace_chain_rpc(function):
