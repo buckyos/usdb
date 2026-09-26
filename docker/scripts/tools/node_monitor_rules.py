@@ -6,7 +6,8 @@ import node_observation
 
 DEFAULTS = dict(interval_secs=30, sample_timeout_secs=25, startup_grace_secs=120,
                 warning_after_secs=120, critical_after_secs=600, recovery_after_secs=60,
-                stall_after_secs=900, retention_days=90, max_events=20000)
+                stall_after_secs=900, retention_days=90, max_events=20000,
+                resource_interval_secs=10, resource_raw_days=7, resource_minute_days=30, resource_max_mib=256)
 
 
 def fresh(timestamp, at, max_age):
@@ -182,3 +183,5 @@ def evaluate(store, report, at, config):
 
         store.put("last_sample_ms", at)
         store.put("last_observation_available", available)
+        import node_resource_monitor
+        node_resource_monitor.evaluate(store, report.get("host_resources", {}), at, config)

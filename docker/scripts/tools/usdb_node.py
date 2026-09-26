@@ -80,6 +80,7 @@ from resource_policy import (  # noqa: E402
 )
 from node_progress_timing import ProgressTiming, service_elapsed  # noqa: E402
 import node_observation  # noqa: E402
+from node_resource_metrics import trace_helper, trace_chain_rpc  # noqa: E402
 from node_progress_render import (  # noqa: E402
     duration_text as _duration_text,
     human_size as _human_size,
@@ -2034,6 +2035,7 @@ def _helper_environment(
     return environment
 
 
+@trace_helper
 def run_helper(
     layout: ReleaseLayout,
     helper: str,
@@ -2468,6 +2470,7 @@ def _transition_resources(layout: ReleaseLayout, target: str, *, output_to_stder
             "btc-node": {"state": "running", "memory": plan.limits["BTC_MEMORY_LIMIT"]},
         })
     state = _read_resource_state(layout)
+    recovering = state.get("pending") is True
     plan_id = _resource_plan_id(env, target)
     if state.get("pending"):
         if state["phase"] != target or state.get("plan_id") != plan_id:
@@ -2481,28 +2484,40 @@ def _transition_resources(layout: ReleaseLayout, target: str, *, output_to_stder
                  })}
         # This intent must survive interruption before the first stop request.
         _write_resource_state(layout, state)
-    _print_startup_phase("resources", f"applying {current} -> {target}; "
-                        f"Bitcoin={_human_bytes(plan.limits['BTC_MEMORY_LIMIT'])}, "
-                        f"balance-history={_human_bytes(plan.limits['BH_MEMORY_LIMIT'])}",
-                        output_to_stderr=output_to_stderr)
-    bitcoin_matches = _resource_container_matches(observed.get("btc-node"), desired, "btc-node")
-    bh = observed.get("balance-history")
-    bh_matches = bh is None or bh["state"] not in {"running", "restarting"} or _resource_container_matches(bh, desired, "balance-history")
-    if not bitcoin_matches or not bh_matches:
-        # Snapshot import is independent and is deliberately allowed to finish.
-        run_helper(layout, "run_testnet_runtime.sh", ["quiesce-data"], output_to_stderr=output_to_stderr)
-    if not bitcoin_matches and "btc-node" in observed:
-        run_helper(layout, "run_testnet_bitcoin.sh", ["down"], output_to_stderr=output_to_stderr)
-    if any(env.get(key) != value for key, value in plan.environment().items()):
-        _atomic_write_private(layout.node_env, upsert_env(layout.node_env.read_text(encoding="utf-8"), plan.environment()))
-    if not bitcoin_matches:
-        run_helper(layout, "run_testnet_bitcoin.sh", ["start"], output_to_stderr=output_to_stderr)
-    observed = _resource_containers(layout)
-    if not _resource_container_matches(observed.get("btc-node"), desired, "btc-node"):
-        raise ValueError("Bitcoin did not adopt the requested resource plan; downstream startup remains blocked")
-    _check_running_resource_budget(desired, observed)
-    state["pending"] = False
-    _write_resource_state(layout, state)
+    import node_resource_monitor
+    import uuid
+    operation_id = uuid.uuid4().hex
+    def record(code, *, error=None):
+        node_resource_monitor.transition(layout, sys.modules[__name__], code, operation_id, current, target,
+                                         error=error, observed=observed, desired=plan.environment(), plan_id=plan_id)
+    record("RESOURCE_TRANSITION_RESUMED" if recovering else "RESOURCE_TRANSITION_STARTED")
+    try:
+        _print_startup_phase("resources", f"applying {current} -> {target}; "
+                            f"Bitcoin={_human_bytes(plan.limits['BTC_MEMORY_LIMIT'])}, "
+                            f"balance-history={_human_bytes(plan.limits['BH_MEMORY_LIMIT'])}",
+                            output_to_stderr=output_to_stderr)
+        bitcoin_matches = _resource_container_matches(observed.get("btc-node"), desired, "btc-node")
+        bh = observed.get("balance-history")
+        bh_matches = bh is None or bh["state"] not in {"running", "restarting"} or _resource_container_matches(bh, desired, "balance-history")
+        if not bitcoin_matches or not bh_matches:
+            # Snapshot import is independent and is deliberately allowed to finish.
+            run_helper(layout, "run_testnet_runtime.sh", ["quiesce-data"], output_to_stderr=output_to_stderr)
+        if not bitcoin_matches and "btc-node" in observed:
+            run_helper(layout, "run_testnet_bitcoin.sh", ["down"], output_to_stderr=output_to_stderr)
+        if any(env.get(key) != value for key, value in plan.environment().items()):
+            _atomic_write_private(layout.node_env, upsert_env(layout.node_env.read_text(encoding="utf-8"), plan.environment()))
+        if not bitcoin_matches:
+            run_helper(layout, "run_testnet_bitcoin.sh", ["start"], output_to_stderr=output_to_stderr)
+        observed = _resource_containers(layout)
+        if not _resource_container_matches(observed.get("btc-node"), desired, "btc-node"):
+            raise ValueError("Bitcoin did not adopt the requested resource plan; downstream startup remains blocked")
+        _check_running_resource_budget(desired, observed)
+        state["pending"] = False
+        _write_resource_state(layout, state)
+    except Exception as error:
+        record("RESOURCE_TRANSITION_FAILED", error=error)
+        raise
+    record("RESOURCE_TRANSITION_APPLIED")
 
 
 def _managed_data_ready(layout: ReleaseLayout, anchor: BitcoinDataStartAnchor) -> bool:
@@ -4277,6 +4292,7 @@ def _host_rpc_url(env: dict[str, str], address_key: str, port_key: str, default_
     return f"http://{address}:{port}"
 
 
+@trace_chain_rpc
 def _json_rpc_batch(
     url: str,
     calls: tuple[tuple[str, list[Any]], ...],

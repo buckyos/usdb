@@ -754,6 +754,19 @@ class NativeControllerTests(unittest.TestCase):
         self.assertEqual(node.read_env(r.layout.node_env)["USDB_RESOURCE_PHASE"], "steady")
         self.assertFalse(node._read_resource_state(r.layout)["pending"])
 
+        import node_monitor
+        from node_resource_history import History
+        with History(node_monitor.root(r.layout) / "resources.sqlite3", node_monitor.scope(r.layout)) as history:
+            events = history.query(resolution="transitions")["records"]
+        self.assertIn("RESOURCE_TRANSITION_FAILED", [event["code"] for event in events])
+        self.assertIn("RESOURCE_TRANSITION_RESUMED", [event["code"] for event in events])
+        failed = next(event for event in events if event["code"] == "RESOURCE_TRANSITION_FAILED")
+        resumed = next(event for event in events if event["code"] == "RESOURCE_TRANSITION_RESUMED")
+        self.assertEqual(failed["plan_id"], resumed["plan_id"])
+        self.assertEqual(events[0]["code"], "RESOURCE_TRANSITION_APPLIED")
+        self.assertEqual(events[0]["to_phase"], "steady")
+        self.assertEqual(events[0]["desired"]["limits"]["btc-node"], events[0]["observed"]["btc-node"]["memory"])
+
     def test_small_native_node_keeps_core_headroom_while_chain_starts(self):
         r = self.runtime
         r.memory = 32 * policy.GIB

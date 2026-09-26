@@ -45,7 +45,7 @@ def native_kit(root, *, manifest=None, trusted=None, bundle=None):
 class NativeRuntime:
     """Model Docker observations, including graceful resource stops and interrupted starts."""
     def __init__(self, root):
-        self.layout = SimpleNamespace(node_env=root / "node.env", bundle_id="native-test",
+        self.layout = SimpleNamespace(node_env=root / "node.env", bundle_id="native-test", release_id="r-test",
                                       network_identity={"btc_index_origin_height": 963800})
         self.memory = 64 * policy.GIB
         env = dict(SNAPSHOT_MODE="assumeutxo", USDB_BITCOIN_IMAGE="bitcoin@sha256:1", USDB_SERVICES_IMAGE="services@sha256:2")

@@ -231,7 +231,8 @@ class CommandTests(unittest.TestCase):
                 observer.worker.join(timeout=1)
                 self.assertFalse(observer.worker.is_alive())
                 collector.assert_called_once()
-                self.assertEqual(observer.snapshot(), {"sample": 2})
+                self.assertEqual(observer.snapshot()["sample"], 2)
+                self.assertEqual(observer.snapshot()["history"]["state"], "available")
 
     def test_independent_incident_probe_survives_regular_collection_failure(self):
         import control_plane_monitor as console
@@ -290,7 +291,7 @@ else:
     layout = SimpleNamespace(node_env=Path({str(f.layout.node_env)!r}), kit_root=Path({str(f.root)!r}),
         release_id=sys.argv[-1], bundle_id="test", network_identity={f.layout.network_identity!r})
     node.__file__ = __file__
-    monitor.ResourceObserver = lambda *args: SimpleNamespace(snapshot=lambda: {{"status": "unavailable"}})
+    monitor.ResourceObserver = lambda *args: SimpleNamespace(snapshot=lambda: {{"status": "unavailable"}}, observe=lambda report: None)
     monitor.run(layout, node)
 ''')
             for release in ("r1", "r2"):

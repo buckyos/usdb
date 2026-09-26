@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-resource-history",
+  "type": "added",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Record bounded resource history and sustained memory pressure in the node monitor",
+  "details": [
+    "An independent resource worker records host RAM, swap, CPU/I/O pressure and cgroup v2 container usage, limits, cache, swap and memory-event deltas while service probes run separately.",
+    "History includes release/session/boot/container identity, resource configuration, timestamped service progress, existing probe durations and controller resource transition boundaries. Probe instrumentation does not introduce new RPC requests.",
+    "Local monitor resources queries export raw samples, minute summaries or transitions with time/session/service filters and pagination. Default retention is 7 days raw and 30 days summarized within a separate 256 MiB history budget; early capacity eviction and collection/storage failures are visible.",
+    "Sustained memory-pressure alerts require pressure evidence, preserve unknown observations and use the existing notification lifecycle without automatically changing budgets or restarting services. The handbook explains diagnosis and metric limits."
+  ],
+  "operator_actions": [
+    "Activate the updated node kit through the normal upgrade procedure and start its monitor with up. Check monitor status and monitor resources; past measurements are not backfilled.",
+    "Fine-grained container measurements require readable Linux cgroup v2 counters. Unsupported or unreadable fields remain explicitly unavailable."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}

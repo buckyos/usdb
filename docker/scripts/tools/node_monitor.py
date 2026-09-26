@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -19,6 +18,7 @@ import time
 
 import node_monitor_rules as rules
 from node_monitor_store import Store, private_directory, private_file
+from node_resource_monitor import ResourceObserver
 
 SCHEMA = "usdb-node-monitor:v2"
 RELEASE_ENV = "USDB_NODE_MONITOR_RELEASE"
@@ -64,7 +64,9 @@ def validate_config(value):
     ranges = dict(interval_secs=(5, 300), sample_timeout_secs=(1, 120), startup_grace_secs=(0, 3600),
                   warning_after_secs=(1, 86400), critical_after_secs=(1, 604800),
                   recovery_after_secs=(1, 3600), stall_after_secs=(60, 86400),
-                  retention_days=(1, 3650), max_events=(100, 1000000))
+                  retention_days=(1, 3650), max_events=(100, 1000000),
+                  resource_interval_secs=(5, 60), resource_raw_days=(1, 30),
+                  resource_minute_days=(1, 365), resource_max_mib=(32, 4096))
     for name, (minimum, maximum) in ranges.items():
         if type(value[name]) is not int or not minimum <= value[name] <= maximum:
             raise ValueError(f"Monitor {name} must be an integer between {minimum} and {maximum}")
@@ -135,11 +137,18 @@ def summary(store, state, *, at=None):
     """Expose bounded local event evidence without credentials or complete host logs."""
     alerts = sorted(store.alerts(), key=lambda v: (v["state"] != "firing", v["severity"] != "critical", -v["last_seen_ms"]))
     notifications = store.get("notifications", {"state": "not_started"})
+    history = store.get("resource_history", {"state": "not_started"})
     if state in {"stopped", "disabled", "failed", "interrupted"}:
         notifications = {**notifications, "state": "unavailable" if state == "failed" else state}
+        history = {**history, "state": state}
+    elif history.get("state") == "available":
+        age_limit = (store.get("policy", {}).get("resource_interval_secs", 10) * 3 + 15) * 1000
+        if not -5000 <= (at or now_ms()) - history.get("last_sample_ms", 0) <= age_limit:
+            history = {**history, "state": "stale"}
     return dict(schema_version=SCHEMA, state=state, storage="available", node_id=store.get("node_id"),
                 session=store.get("session"), updated_at_ms=at or now_ms(),
-                notifications=notifications, console_export_available=store.get("console_export_available"),
+                notifications=notifications, resource_history=history,
+                console_export_available=store.get("console_export_available"),
                 alert_count=len(alerts), alerts=alerts[:32], events=store.events(limit=20))
 
 
@@ -175,32 +184,6 @@ def empty_report():
                 overall_state="UNAVAILABLE", components=[])
 
 
-class ResourceObserver:
-    """Reuse resource/directory caches without blocking rule evaluation or shutdown."""
-
-    def __init__(self, layout, node, stopped, interval):
-        self.lock = threading.Lock()
-        self.value = {"schema_version": "usdb-console-resources:v1", "status": "unavailable"}
-        self.worker = threading.Thread(target=self._run, args=(layout, node, stopped, interval), daemon=True)
-        self.worker.start()
-
-    def _run(self, layout, node, stopped, interval):
-        from control_plane_resources import ResourceCollector
-        collector = ResourceCollector()
-        while not stopped.is_set():
-            try:
-                value = collector.sample(node.read_env(layout.node_env), layout.bundle_id)
-            except (OSError, ValueError, subprocess.SubprocessError):
-                value = {"schema_version": "usdb-console-resources:v1", "status": "unavailable"}
-            with self.lock:
-                self.value = value
-            stopped.wait(interval)
-
-    def snapshot(self):
-        with self.lock:
-            return copy.deepcopy(self.value)
-
-
 def publish_state(layout, node, state, *, store=None):
     report = empty_report()
     report["monitor"] = summary(store, state) if store else dict(schema_version=SCHEMA, state=state,
@@ -231,7 +214,7 @@ def sample(layout, node, timeout, stopped=None, *, incidents_only=False, include
         try:
             while process.poll() is None:
                 if stopped.wait(min(0.1, max(0, deadline - time.monotonic()))) or time.monotonic() >= deadline:
-                    return empty_report()
+                    return {**empty_report(), "collection": {"outcome": "stopped" if stopped.is_set() else "timeout"}}
             if process.returncode != 0 or output.tell() > 256 * 1024:
                 return empty_report()
             output.seek(0)
@@ -273,7 +256,8 @@ def run(layout, node):
                     store.put("policy", settings)
                     store.event(now_ms(), "monitor", "MONITOR_POLICY_SELECTED", evidence=settings)
                 publish_state(layout, node, "starting", store=store)
-                resources = ResourceObserver(layout, node, stopped, settings["interval_secs"])
+                resources = ResourceObserver(layout, node, stopped, settings["resource_interval_secs"],
+                                             settings, store.get("session"), store.get("node_id"))
                 import node_notifications
                 delivery = node_notifications.Worker(root(layout), scope(layout),
                     store.db.execute("SELECT COALESCE(max(seq),0) FROM events").fetchone()[0])
@@ -283,10 +267,15 @@ def run(layout, node):
                     stage = "sample"
                     started = time.monotonic()
                     incident_report = sample(layout, node, min(5, settings["sample_timeout_secs"]), stopped, incidents_only=True)
+                    probe_started = time.monotonic()
                     report = sample(layout, node, settings["sample_timeout_secs"], stopped, include_resources=False)
+                    report["collection"] = dict(duration_ms=round((time.monotonic() - probe_started) * 1000),
+                                                outcome=report.get("collection", {}).get("outcome") or
+                                                ("ok" if report.get("observation_available") else "unavailable"))
                     if stopped.is_set() or store.get("stop_requested"):
                         break
                     at = now_ms()
+                    resources.observe(report)
                     report["host_resources"] = resources.snapshot()
                     incident_observation = incident_report.get("observations", {})
                     if (incident_observation.get("incidents", {}).get("status") == "available"
@@ -420,6 +409,8 @@ def status(layout, node):
 def add_parser(subparsers):
     parser = subparsers.add_parser("monitor", help="Node monitoring, local events and persistent alerts")
     actions = parser.add_subparsers(dest="monitor_action", required=True)
+    import node_resource_history
+    node_resource_history.add_parser(actions)
     for name in ("status", "alerts"):
         action = actions.add_parser(name)
         action.add_argument("--json", action="store_true")
@@ -442,6 +433,9 @@ def add_parser(subparsers):
 
 def dispatch(args, layout, node):
     action = args.monitor_action
+    if action == "resources":
+        import node_resource_history
+        return node_resource_history.dispatch(args, layout)
     if action == "run":
         return run(layout, node)
     if action == "sample":
@@ -487,6 +481,11 @@ def dispatch(args, layout, node):
         print(json.dumps(result, indent=2, allow_nan=False))
     elif action == "status":
         print(f"Monitor: {result.get('state', 'not_started')}; enabled={result['enabled']}; running={result['running']}; storage={result['storage']}")
+        history = result.get("resource_history", {})
+        sampled = history.get("last_sample_ms")
+        sampled = datetime.fromtimestamp(sampled / 1000, timezone.utc).isoformat() if type(sampled) is int else "unknown"
+        print(f"Resource history: {history.get('state', 'not_started')}; last sample={sampled}; "
+              f"capacity evictions={history.get('capacity_evictions', 0)}; failed samples={history.get('failed_samples', 0)}")
         delivery = result["notifications"]
         counts = delivery.get("counts", {})
         print(f"Active/pending alerts: {len(result['alerts'])}; notifications: {delivery['state']}; "

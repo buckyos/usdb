@@ -14,6 +14,7 @@ import time
 
 from control_plane_resources import ResourceCollector
 import node_observation
+from node_resource_metrics import capture_probes
 
 SCHEMA = "usdb-console-monitor:v1"
 # Deliberate projection: never export node.env, credentials, raw RPC errors,
@@ -111,7 +112,9 @@ def collect(layout, node, collector=None, *, include_resources=True) -> dict:
     observed = int(time.time() * 1000)
     env = {}
     try:
-        report = project(node.collect_node_progress(layout), observed)
+        with capture_probes() as probes:
+            report = project(node.collect_node_progress(layout), observed)
+        report["probes"] = probes
         # Expose configured ceilings, never the rest of the private environment.
         if layout.node_env.is_file():
             from resource_policy import SERVICE_MEMORY_KEYS, memory_bytes
@@ -129,6 +132,7 @@ def collect(layout, node, collector=None, *, include_resources=True) -> dict:
     except (OSError, ValueError, subprocess.SubprocessError):
         report = dict(schema_version=SCHEMA, observed_at_ms=observed, observation_available=False,
                       overall_state="UNAVAILABLE", components=[])
+        report["probes"] = probes
     # A daemon uses a persistent resource sampler; isolated service probes must
     # not start a new expensive directory scan on every iteration.
     if not include_resources:

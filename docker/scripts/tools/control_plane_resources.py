@@ -101,10 +101,14 @@ def container_stats(bundle_id):
                 continue
             if not re.fullmatch(r"[0-9a-f]{12,64}", identifier) or len(containers) >= 32:
                 raise ValueError("invalid container inventory")
-            containers[identifier] = dict(service=service, state=state, status="not_running" if state != "running" else "unavailable")
+            containers[identifier] = dict(container_id=identifier, service=service, state=state, status="not_running" if state != "running" else "unavailable")
     running = [key for key, value in containers.items() if value["state"] == "running"]
     if running:
-        output = command(["docker", "stats", "--no-stream", "--format", "{{json .}}", *running], 5)
+        try:
+            output = command(["docker", "stats", "--no-stream", "--format", "{{json .}}", *running], 5)
+        except (OSError, subprocess.SubprocessError):
+            # Keep identities for independent cgroup inspection when stats stalls.
+            return dict(status="unavailable", observed_at_ms=now_ms(), items=list(containers.values()))
         for line in output.splitlines():
             value = json.loads(line)
             item = containers.get(value.get("ID"))
