@@ -32,6 +32,8 @@ def bootstrap_rpc_pending(component, runtime, at, max_age):
     except (ValueError, TypeError, OverflowError):
         return False
     counter = progress["imported_coins"] if progress["phase"] == "importing" else progress["height"]
+    if "verification_stage" in progress:
+        counter = progress["verification_scanned"]
     return (counter is not None and updated is not None and updated >= started
             and -5000 <= at - updated <= max_age)
 
@@ -124,6 +126,9 @@ def evaluate(store, report, at, config):
                     if progress:
                         evidence["bootstrap_phase"] = progress["phase"]
                         evidence["bootstrap_updated_at_ms"] = progress["updated_at_ms"]
+                        for field in ("verification_stage", "verification_scanned", "verification_total"):
+                            if field in progress:
+                                evidence[field] = progress[field]
                     if bootstrap_rpc_pending(component, runtime, at, config["stall_after_secs"] * 1000):
                         health_bad = False
                         evidence["reason"] = "native_bootstrap_rpc_pending"

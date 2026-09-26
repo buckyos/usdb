@@ -2,12 +2,16 @@
 
 use super::test_common::{Fixture, Workspace};
 use super::*;
-use crate::bootstrap::{NativeBootstrapPhase, prepare_native_bootstrap};
+use crate::bootstrap::{
+    NativeBootstrapPhase, VerificationJournal, VerificationProgress, VerificationStage,
+    prepare_native_bootstrap,
+};
 use crate::index::BalanceHistoryIndexer;
 use crate::service::*;
 use crate::status::{SyncPhase, SyncStatusManager};
 use bitcoincore_rpc::bitcoin::{ScriptBuf, hashes::Hash};
 use std::cell::Cell;
+use std::time::{Duration, Instant};
 use usdb_util::{ConsensusRpcErrorCode, ToBtcScriptHash};
 
 fn fixture(branch: &str) -> Fixture {
@@ -25,6 +29,144 @@ fn staged_config(cfg: &Arc<BalanceHistoryConfig>) -> Arc<BalanceHistoryConfig> {
     let mut staged = (**cfg).clone();
     staged.root_dir = cfg.root_dir.join("bootstrap-staging");
     Arc::new(staged)
+}
+
+#[test]
+fn native_verification_journal_tracks_work_without_refreshing_stalled_scans() {
+    let work = Workspace::new();
+    let started = Instant::now();
+    let path = work.0.join("bootstrap-progress.json");
+    let mut journal = VerificationJournal::new(&work.0, 103, started);
+    let mut progress = VerificationProgress {
+        stage: VerificationStage::OriginUtxos,
+        scanned: 0,
+        total: None,
+    };
+    journal.observe(progress, started).unwrap();
+    let initial = fs::read(&path).unwrap();
+    progress.scanned = 4097;
+    journal
+        .observe(progress, started + Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), initial);
+    journal
+        .observe(progress, started + Duration::from_secs(10))
+        .unwrap();
+    let advancing = fs::read(&path).unwrap();
+    assert_ne!(advancing, initial);
+    let value: serde_json::Value = serde_json::from_slice(&advancing).unwrap();
+    assert_eq!(value["phase"], "verifying");
+    assert_eq!(value["height"], 103);
+    assert_eq!(value["verification_scanned"], 4097);
+    assert!(value["verification_total"].is_null());
+    // Repeated observation alone cannot manufacture a heartbeat, even after an hour.
+    journal
+        .observe(progress, started + Duration::from_secs(3600))
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), advancing);
+    progress = VerificationProgress {
+        stage: VerificationStage::CompareBalances,
+        scanned: 0,
+        total: Some(2),
+    };
+    journal
+        .observe(progress, started + Duration::from_secs(3601))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(value["verification_stage"], "compare_balances");
+    progress.scanned = 2;
+    journal
+        .observe(progress, started + Duration::from_secs(3602))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(value["verification_scanned"], 2);
+    assert_eq!(value["phase"], "verifying");
+    assert!(value.get("published").is_none());
+}
+
+#[test]
+fn native_verification_reports_all_scans_without_changing_origin_identity() {
+    let work = Workspace::new();
+    let chain = fixture("blocks");
+    let cfg = native_config(&work, &chain, 103);
+    let sealed = prepare_native_bootstrap(cfg.clone(), chain.client_with_stable_tip(), &|| false)
+        .unwrap()
+        .unwrap();
+    let db = BalanceHistoryDB::open_read_only(cfg.clone()).unwrap();
+    let mut samples = Vec::new();
+    let mut observe = |value| {
+        samples.push(value);
+        Ok(())
+    };
+    let identity = db
+        .bootstrap_origin_identity_cancellable(
+            Network::Regtest,
+            103,
+            chain.blocks[103].block_hash(),
+            &|| false,
+            &mut observe,
+        )
+        .unwrap();
+    db.verify_native_bootstrap_balances(&identity, &|| false, &mut observe)
+        .unwrap();
+    assert_eq!(sealed.origin.as_ref(), Some(&identity));
+    for (stage, total) in [
+        (VerificationStage::OriginUtxos, None),
+        (VerificationStage::OriginBalances, None),
+        (VerificationStage::AggregateUtxos, Some(identity.utxos.rows)),
+        (
+            VerificationStage::CompareBalances,
+            Some(identity.balances.rows),
+        ),
+    ] {
+        let records: Vec<_> = samples.iter().filter(|v| v.stage == stage).collect();
+        assert_eq!(records.first().unwrap().scanned, 0);
+        assert!(records.last().unwrap().scanned > 0);
+        assert!(records.windows(2).all(|v| v[0].scanned <= v[1].scanned));
+        assert!(records.iter().all(|v| v.total == total));
+        if let Some(total) = total {
+            assert_eq!(records.last().unwrap().scanned, total);
+        }
+    }
+    let error = db
+        .verify_native_bootstrap_balances(&identity, &|| false, &mut |_| {
+            Err("verification observation failed".to_string())
+        })
+        .unwrap_err();
+    assert_eq!(error, "verification observation failed");
+    assert!(!fs::read_dir(cfg.db_dir()).unwrap().any(|e| {
+        e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("native-verify-")
+    }));
+}
+
+#[test]
+fn native_verification_journal_failure_never_publishes_partial_state() {
+    let work = Workspace::new();
+    let chain = fixture("blocks");
+    let cfg = native_config(&work, &chain, 103);
+    let path = cfg.root_dir.join("bootstrap-progress.json");
+    let pending = path.with_extension("json.tmp");
+    let error = prepare_native_bootstrap(cfg.clone(), chain.client_with_stable_tip(), &|| {
+        if fs::read(&path)
+            .ok()
+            .and_then(|v| serde_json::from_slice::<serde_json::Value>(&v).ok())
+            .is_some_and(|v| v["verification_stage"] == "origin_utxos")
+        {
+            fs::create_dir_all(&pending).unwrap();
+        }
+        false
+    })
+    .unwrap_err();
+    assert!(error.contains("Create report"), "{error}");
+    assert!(!cfg.db_dir().join("balance_history").exists());
+    fs::remove_dir(&pending).unwrap();
+    let state = prepare_native_bootstrap(cfg.clone(), chain.client_with_stable_tip(), &|| false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.phase, NativeBootstrapPhase::Sealed);
 }
 
 fn rpc(cfg: Arc<BalanceHistoryConfig>, db: Arc<BalanceHistoryDB>) -> BalanceHistoryRpcServer {

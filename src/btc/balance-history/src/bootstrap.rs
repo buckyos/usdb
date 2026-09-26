@@ -4,6 +4,8 @@ mod checkpoint;
 pub use checkpoint::*;
 mod native;
 pub use native::*;
+mod progress;
+pub(crate) use progress::{VerificationJournal, VerificationProgress, VerificationStage};
 
 use std::path::Path;
 use std::sync::Arc;

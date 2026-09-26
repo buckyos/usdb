@@ -13,7 +13,7 @@ use super::{
 };
 use crate::bootstrap::{
     BOOTSTRAP_COMMIT_PROTOCOL_VERSION, BOOTSTRAP_ORIGIN_SCHEMA, BootstrapOriginIdentity,
-    OriginTableDigest,
+    OriginTableDigest, VerificationProgress, VerificationStage,
 };
 
 impl BalanceHistoryDB {
@@ -25,7 +25,13 @@ impl BalanceHistoryDB {
         height: u32,
         block_hash: BlockHash,
     ) -> Result<BootstrapOriginIdentity, String> {
-        self.bootstrap_origin_identity_cancellable(network, height, block_hash, &|| false)
+        self.bootstrap_origin_identity_cancellable(
+            network,
+            height,
+            block_hash,
+            &|| false,
+            &mut |_| Ok(()),
+        )
     }
 
     pub(crate) fn bootstrap_origin_identity_cancellable(
@@ -34,6 +40,7 @@ impl BalanceHistoryDB {
         height: u32,
         block_hash: BlockHash,
         cancelled: &dyn Fn() -> bool,
+        observe: &mut dyn FnMut(VerificationProgress) -> Result<(), String>,
     ) -> Result<BootstrapOriginIdentity, String> {
         let identity = self.get_db_identity()?;
         if (identity != Some(BalanceHistoryDBIdentity::for_network(network))
@@ -88,14 +95,31 @@ impl BalanceHistoryDB {
             let mut scanned = 0u64;
             let mut total_sats = 0u64;
             let mut previous_script: Option<[u8; 32]> = None;
+            let stage = if name == "utxos" {
+                VerificationStage::OriginUtxos
+            } else {
+                VerificationStage::OriginBalances
+            };
+            observe(VerificationProgress {
+                stage,
+                scanned: 0,
+                total: None,
+            })?;
             let begin = Instant::now();
             let mut progress = Instant::now();
             eprintln!("Bootstrap origin scan started: table={name}, height={height}");
             for item in view.iterator_cf_opt(cf, options, IteratorMode::End) {
                 let (key, value) = item.map_err(|e| format!("Read origin {name}: {e}"))?;
                 scanned += 1;
-                if scanned % 4096 == 1 && cancelled() {
-                    return Err("Native bootstrap cancelled during origin scan".to_string());
+                if scanned % 4096 == 1 {
+                    if cancelled() {
+                        return Err("Native bootstrap cancelled during origin scan".to_string());
+                    }
+                    observe(VerificationProgress {
+                        stage,
+                        scanned,
+                        total: None,
+                    })?;
                 }
                 if progress.elapsed().as_secs() >= 10 {
                     eprintln!(
@@ -142,6 +166,11 @@ impl BalanceHistoryDB {
                 "Bootstrap origin scan finished: table={name}, scanned={scanned}, rows={rows}, total_sats={total_sats}, elapsed_seconds={:.1}",
                 begin.elapsed().as_secs_f64()
             );
+            observe(VerificationProgress {
+                stage,
+                scanned,
+                total: None,
+            })?;
             tables.push(OriginTableDigest {
                 rows,
                 total_sats,

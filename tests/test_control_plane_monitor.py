@@ -84,6 +84,14 @@ class PrivateMonitorTests(unittest.TestCase):
         self.assertNotIn("SECRET", json.dumps(exported))
         value["components"][0]["bootstrap_progress"]["phase"] = "SECRET"
         self.assertEqual(monitor.project(value, 9000)["components"][0]["bootstrap_progress"], {})
+        evidence.update(phase="verifying", height=963800, verification_stage="aggregate_utxos",
+                        verification_scanned=40000, verification_total=165748439)
+        value["components"][0]["bootstrap_progress"] = {**evidence, "error": "SECRET"}
+        exported = monitor.project(monitor.project(value, 9000), 12000)
+        self.assertEqual(exported["components"][0]["bootstrap_progress"], evidence)
+        self.assertNotIn("SECRET", json.dumps(exported))
+        value["components"][0]["bootstrap_progress"]["verification_stage"] = "SECRET"
+        self.assertNotIn("SECRET", json.dumps(monitor.project(value, 13000)))
 
     def test_export_failure_replaces_previous_ready_and_keeps_token_private(self):
         with mock.patch.object(node, "collect_node_progress", return_value=dict(overall_state="READY", components=[])):

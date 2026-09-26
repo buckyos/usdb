@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "native-verification-progress",
+  "type": "fixed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Keep native balance-history verification observable throughout long database scans",
+  "details": [
+    "Native verification atomically records UTXO scan, balance scan, independent balance aggregation and comparison progress as real work advances, with throttled updates and immediate stage transitions. Idle observers cannot refresh stalled progress.",
+    "The node monitor and resource history preserve sanitized verification counters and original observation age. Status explains the active verification step; unknown totals remain unknown and completed scan counters do not grant readiness.",
+    "UTXO and balance hashes, scan ordering, independent verification, commit identities and publication gates are unchanged. Progress write failures abort startup while preserving resumable staging state."
+  ],
+  "operator_actions": [
+    "Upgrade both the node kit and the matching usdb-services image through the normal release procedure. Updating only host tooling cannot add verification progress to older balance-history binaries.",
+    "Consult the monitor handbook for verification stages and the resource-history handbook for recorded counters."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}

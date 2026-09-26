@@ -17,7 +17,7 @@ use crate::assumeutxo::{SnapshotCoin, SnapshotScan};
 use crate::bootstrap::{
     BOOTSTRAP_COMMIT_PROTOCOL_VERSION, BootstrapOriginIdentity, NATIVE_BOOTSTRAP_SCHEMA,
     NativeBootstrapIdentity, NativeBootstrapPhase, NativeBootstrapState, OriginTableDigest,
-    derive_origin_state_digest,
+    VerificationProgress, VerificationStage, derive_origin_state_digest,
 };
 
 const NATIVE_STATE: &str = "native_bootstrap_v1";
@@ -294,6 +294,7 @@ impl BalanceHistoryDB {
         &self,
         origin: &BootstrapOriginIdentity,
         cancelled: &dyn Fn() -> bool,
+        observe: &mut dyn FnMut(VerificationProgress) -> Result<(), String>,
     ) -> Result<(), String> {
         let parent = self
             .file
@@ -337,6 +338,11 @@ impl BalanceHistoryDB {
             "Native balance verification started: height={}",
             origin.origin_height
         );
+        observe(VerificationProgress {
+            stage: VerificationStage::AggregateUtxos,
+            scanned: 0,
+            total: Some(origin.utxos.rows),
+        })?;
         let mut read_options = ReadOptions::default();
         read_options.set_total_order_seek(true);
         read_options.fill_cache(false);
@@ -361,6 +367,11 @@ impl BalanceHistoryDB {
                     );
                 }
                 flush_sums(&scratch, &mut sums)?;
+                observe(VerificationProgress {
+                    stage: VerificationStage::AggregateUtxos,
+                    scanned,
+                    total: Some(origin.utxos.rows),
+                })?;
             }
             if progress.elapsed().as_secs() >= 10 {
                 eprintln!(
@@ -371,13 +382,30 @@ impl BalanceHistoryDB {
             }
         }
         flush_sums(&scratch, &mut sums)?;
+        observe(VerificationProgress {
+            stage: VerificationStage::AggregateUtxos,
+            scanned,
+            total: Some(origin.utxos.rows),
+        })?;
         let mut hash = Sha256::new();
         let mut rows = 0u64;
         let mut total_sats = 0u64;
+        observe(VerificationProgress {
+            stage: VerificationStage::CompareBalances,
+            scanned: 0,
+            total: Some(origin.balances.rows),
+        })?;
         for row in scratch.iterator(IteratorMode::End) {
             let (key, value) = row.map_err(|e| e.to_string())?;
-            if rows.is_multiple_of(4096) && cancelled() {
-                return Err("Native bootstrap cancelled during balance comparison".to_string());
+            if rows.is_multiple_of(4096) {
+                if cancelled() {
+                    return Err("Native bootstrap cancelled during balance comparison".to_string());
+                }
+                observe(VerificationProgress {
+                    stage: VerificationStage::CompareBalances,
+                    scanned: rows,
+                    total: Some(origin.balances.rows),
+                })?;
             }
             if key.len() != 32 || value.len() != 8 {
                 return Err("Invalid native verification aggregate".to_string());
@@ -401,6 +429,11 @@ impl BalanceHistoryDB {
             total_sats,
             sha256: crate::assumeutxo::format::hex(&hash.finalize()),
         };
+        observe(VerificationProgress {
+            stage: VerificationStage::CompareBalances,
+            scanned: rows,
+            total: Some(origin.balances.rows),
+        })?;
         if scanned != origin.utxos.rows || actual != origin.balances {
             return Err(format!(
                 "Native per-script balance verification failed: expected={:?}, actual={actual:?}",

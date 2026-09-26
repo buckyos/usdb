@@ -307,6 +307,15 @@ def _balance_history_progress(item, readiness, bootstrap, core, activation, *, b
                           "waiting_for_blocks": "Waiting for Bitcoin blocks or undo data",
                           "verifying": "Verifying genesis baseline before publication",
                           "sealed": "Baseline sealed; waiting for service RPC"}.get(phase, item["detail"])
+        if phase == "verifying":
+            verification = node.node_observation.bootstrap_progress(bootstrap)
+            stage = {"origin_utxos": "scanning stored UTXOs", "origin_balances": "scanning stored balances",
+                     "aggregate_utxos": "rebuilding balances from UTXOs", "compare_balances": "checking rebuilt balances"}.get(
+                         verification.get("verification_stage"))
+            scanned, total = verification.get("verification_scanned"), verification.get("verification_total")
+            if stage and scanned is not None:
+                count = f"{scanned:,}" + (f" / {total:,}" if total is not None else "")
+                item["detail"] = f"Verifying genesis baseline: {stage}; records {count}"
     return item
 
 

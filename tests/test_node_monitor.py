@@ -112,6 +112,24 @@ class StoreTests(unittest.TestCase):
 
 
 class RuleTests(unittest.TestCase):
+    def test_long_verification_stays_healthy_while_scans_advance_then_alerts_when_frozen(self):
+        with MonitorFixture() as f:
+            f.settings.update(stall_after_secs=900, warning_after_secs=120, critical_after_secs=600)
+            for offset in range(0, 5251, 30):
+                at = BASE + offset * 1000
+                advanced = min(offset, 3600)
+                value = bootstrap_report(at, phase="verifying", updated=BASE + advanced * 1000)
+                component = next(c for c in value["components"] if c["id"] == "balance_history")
+                component["bootstrap_progress"].update(height=963800, verification_stage="aggregate_utxos",
+                    verification_scanned=advanced * 20000, verification_total=165748439)
+                rules.evaluate(f.store, project(value, at), at, f.settings)
+                if offset <= 3600:
+                    self.assertFalse(any(a["service"] == "balance_history" for a in f.store.alerts()))
+            alert = next(a for a in f.store.alerts() if a["service"] == "balance_history")
+            self.assertEqual(alert["code"], "SERVICE_UNAVAILABLE")
+            self.assertEqual(alert["severity"], "critical")
+            self.assertFalse(f.store.get("ever_ready:balance_history"))
+
     def test_native_bootstrap_progress_keeps_closed_rpc_port_out_of_health_alerts(self):
         for phase in ("importing", "replaying", "waiting_for_blocks", "verifying"):
             with self.subTest(phase=phase), MonitorFixture() as f:

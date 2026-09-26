@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     BOOTSTRAP_COMMIT_PROTOCOL_VERSION, BootstrapCommitCheckpoint, BootstrapOriginIdentity,
-    derive_origin_state_digest, embedded_bootstrap_checkpoint,
+    VerificationJournal, derive_origin_state_digest, embedded_bootstrap_checkpoint,
 };
 use crate::assumeutxo::{
     AssumeUtxoWorkspaceLock, SnapshotIdentity, SnapshotScan, scan_snapshot, write_report,
@@ -442,13 +442,16 @@ fn prepare(
             &root.join("bootstrap-progress.json"),
             &serde_json::json!({"phase":"verifying","height":origin,"elapsed_seconds":started.elapsed().as_secs_f64()}),
         )?;
+        let mut journal = VerificationJournal::new(root, origin, started);
+        let mut observe = |value| journal.observe(value, Instant::now());
         let origin_identity = db.bootstrap_origin_identity_cancellable(
             identity.snapshot.network,
             origin,
             identity.origin_block_hash,
             cancelled,
+            &mut observe,
         )?;
-        db.verify_native_bootstrap_balances(&origin_identity, cancelled)?;
+        db.verify_native_bootstrap_balances(&origin_identity, cancelled, &mut observe)?;
         if client.get_block_hash(origin)? != identity.origin_block_hash {
             return Err("Native origin changed during verification".to_string());
         }
