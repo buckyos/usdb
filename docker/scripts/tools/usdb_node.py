@@ -37,6 +37,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from generate_bitcoin_rpcauth import generate as generate_rpcauth  # noqa: E402
+from peer_sources import load_bootnodes, parse_seeds, resolve_bootnodes  # noqa: E402
 from release_manifest import (  # noqa: E402
     SCHEMA_VERSION as RELEASE_MANIFEST_SCHEMA_VERSION,
     build_network_identity,
@@ -1128,7 +1129,7 @@ def configure_node(
     role: str,
     miner_address: str,
     miner_threads: int,
-    bootnodes: str,
+    bootnodes: str | None = None,
     nat: str,
     bitcoin_rpc_user: str | None,
     bitcoin_p2p: str,
@@ -1156,8 +1157,7 @@ def configure_node(
     if role == "miner":
         raise ValueError("Configure a full node first; use usdb-node mining enable after upstream and chain initialization")
     _require_role(role, miner_address, miner_threads)
-    import usdb_peers
-    bootnodes = ",".join(usdb_peers.parse_seeds(bootnodes))
+    bootnodes = resolve_bootnodes(layout.bundle_dir, layout.bundle_id, bootnodes)
     p2p_updates = {}
     if p2p_options is not None:
         import usdb_p2p
@@ -1443,12 +1443,21 @@ def setup_node(
     miner_address = ""
     miner_threads = 1
     print("Enable mining after the full node is ready with usdb-node mining enable --address ADDRESS.", file=output)
-    bootnodes = ""
-    if role != "bootnode":
-        bootnodes = _prompt("Seed enode(s), comma separated; may be added later with usdb-node peers add", input_fn=input_fn)
-        if not bootnodes:
-            print("No seed configured: upstream sync can proceed; network membership will remain SEED_REQUIRED. "
-                  "Only the network founder uses mining enable --first-node.", file=output)
+    default_seeds = load_bootnodes(layout.bundle_dir, layout.bundle_id)
+    print(f"Default network seeds ({len(default_seeds)}):", file=output)
+    for seed in default_seeds:
+        print(f"  {seed}", file=output)
+    seed_choice = _prompt("Seed enode(s), comma separated; 'default' uses the list above, 'none' disables seeds",
+                          default="default" if default_seeds else "none", input_fn=input_fn)
+    if seed_choice.lower() == "default":
+        bootnodes = ",".join(default_seeds)
+    elif seed_choice.lower() == "none":
+        bootnodes = ""
+    else:
+        bootnodes = ",".join(parse_seeds(seed_choice))
+    if not bootnodes:
+        print("No seed configured: upstream sync can proceed; network membership will remain SEED_REQUIRED. "
+              "Only the network founder uses mining enable --first-node.", file=output)
     import usdb_p2p
     p2p_options = {"requested": "auto", **{key: value for key, value in (p2p_options or {}).items() if value is not None}}
     print("Choose dual/ipv6 when IPv6 is required; auto may fall back to IPv4 if host checks fail.", file=output)
@@ -5820,7 +5829,8 @@ def build_parser() -> argparse.ArgumentParser:
     configure.add_argument("--role", choices=("bootnode", "full"), default="full")
     configure.add_argument("--miner-address", default="")
     configure.add_argument("--miner-threads", type=int, default=1)
-    configure.add_argument("--bootnodes", default="")
+    configure.add_argument("--bootnodes", default=None,
+                           help="Comma-separated seed enodes; omitted uses release defaults, '' explicitly disables seeds")
     configure.add_argument("--nat", default="")
     usdb_p2p.add_options(configure, setup=True)
     configure.add_argument(

@@ -203,6 +203,10 @@ usdb-node doctor
 身份；sudo 验证当前 operator 的密码，不验证 root 密码。默认 external 模式不会安装、读取或修改 UFW。
 只有明确的前台调试、CI 或非 systemd 环境才使用 `setup --no-controller`。
 
+**新建网络首节点时**，包含默认 Seed 功能的新版 setup 要在 `Seed enode(s)` 输入 `none`，
+高级 `configure` 对应 `--bootnodes ''`，之后按本手册显式授权 `mining enable --first-node`。
+已有测试网的普通加入节点采用默认列表即可。升级已有首节点会保留空 Seed 和既有授权记录。
+
 `prepare-host` 统一包装主机软件检查，并只在失败后询问是否安装；如果安装修改了 docker 用户组，退出后重新
 登录再继续。`doctor` 是可选的显式预检：它会执行完整主机、release/network identity、节点配置、image
 digest 和安全 bind 检查，不会拉取 image、启动服务或修改配置。managed 模式额外读取 UFW 状态并可能请求

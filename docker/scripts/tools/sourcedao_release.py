@@ -9,6 +9,8 @@ import shutil
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from peer_sources import BOOTNODES_FILE, load_bootnodes
+
 FREEZE_SCHEMA = "usdb-sourcedao-bootstrap-freeze:v1"
 PUBLIC_STATE_SCHEMA = "sourcedao-bootstrap-public-state:v1"
 SOURCE_ARTIFACTS = {"sourcedao_bootstrap_freeze", "sourcedao_contract_golden", "sourcedao_bootstrap_source", "sourcedao_bootstrap_imported"}
@@ -123,6 +125,9 @@ def public_config(config: dict) -> None:
 def copy_public_bundle(source: Path, destination: Path, network: dict, *, include_freeze: bool = True) -> None:
     """Copy declared public inputs only, never node.env, logs or recovery journals."""
     names = {"network.json", "network.env", "node.env.example", "compose.network.yml", "snapshots/balance-history-snapshot-release-record.json"}
+    load_bootnodes(source, network["network_bundle_id"])
+    if (source / BOOTNODES_FILE).is_file():
+        names.add(BOOTNODES_FILE)
     if (source / "README.md").is_file():
         names.add("README.md")
     for key, entry in network["artifacts"].items():

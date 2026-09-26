@@ -3,76 +3,22 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
-import ipaddress
 import json
 import math
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import time
-from urllib.parse import urlsplit
 import uuid
 
 import usdb_node as node
 import usdb_mining as mining
 import usdb_p2p as p2p
+from peer_sources import MAX_SEEDS, normalize_enode, parse_seeds
 
 SCHEMA = "usdb-node-peers:v1"
 PHASES = {"QUEUED", "CONFIGURING", "STOPPING", "STARTING", "APPLIED"}
-MAX_SEEDS = 64
-
-
-def normalize_enode(value: str) -> str:
-    """Validate a complete enode without DNS/IO; retain distinct address families."""
-    try:
-        if not isinstance(value, str) or len(value) > 1024 or any(c.isspace() for c in value):
-            raise ValueError("whitespace or excessive length")
-        parsed = urlsplit(value)
-        key = parsed.username or ""
-        if (parsed.scheme != "enode" or not re.fullmatch(r"[0-9a-fA-F]{128}", key)
-                or parsed.password is not None or parsed.path or parsed.fragment
-                or not parsed.hostname or not parsed.port):
-            raise ValueError("expected enode://PUBLIC_KEY@HOST:PORT")
-        # An arbitrary 128-digit string is not necessarily a secp256k1 public key.
-        prime = 2**256 - 2**32 - 977
-        x, y = int(key[:64], 16), int(key[64:], 16)
-        if x >= prime or y >= prime or (y * y - x * x * x - 7) % prime:
-            raise ValueError("public key is not on secp256k1")
-        host = parsed.hostname
-        if "%" in host:
-            raise ValueError("scoped/escaped addresses cannot be shared")
-        try:
-            address = ipaddress.ip_address(host)
-        except ValueError:
-            host = host.encode("idna").decode("ascii").lower().rstrip(".")
-            if (len(host) > 253 or ":" in host or not all(
-                    re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part)
-                    for part in host.split("."))):
-                raise ValueError("invalid DNS hostname")
-        else:
-            if address.is_unspecified or address.is_multicast or address.is_link_local:
-                raise ValueError("use a routable address or an explicit loopback/LAN test address")
-            host = f"[{address.compressed}]" if address.version == 6 else str(address)
-        query = ""
-        if parsed.query:
-            match = re.fullmatch(r"discport=([0-9]+)", parsed.query)
-            if not match or not 1 <= int(match[1]) <= 65535:
-                raise ValueError("invalid discovery port")
-            if int(match[1]) != parsed.port:
-                query = f"?discport={int(match[1])}"
-        return f"enode://{key.lower()}@{host}:{parsed.port}{query}"
-    except (ValueError, UnicodeError) as error:
-        raise ValueError(f"INVALID_PEER_SOURCE: {error}") from error
-
-
-def parse_seeds(value: str) -> list[str]:
-    """Normalize a bounded persistent list without collapsing one node's endpoints."""
-    values = value.split(",")
-    if len(values) > MAX_SEEDS:
-        raise ValueError(f"INVALID_PEER_SOURCE: at most {MAX_SEEDS} seed endpoints are supported")
-    return list(dict.fromkeys(normalize_enode(v.strip()) for v in values if v.strip()))
 
 
 def state_path(layout):

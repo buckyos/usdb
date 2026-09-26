@@ -1,0 +1,7 @@
+{
+  "schema_version": "usdb-bootnodes:v1",
+  "network_bundle_id": "usdb-testnet-v0",
+  "bootnodes": [
+    "enode://6e87bcafb1524f5765f46893d8cb1f8854d753d7cec5cc219877cd997bdeeb1da04f764eae872c511252399cbef8e28982c7b4ff42fbca8bc03d3f691e2454aa@usdb-testnet.tbudr.top:31303"
+  ]
+}

@@ -17,7 +17,8 @@ class SetupFixture:
         self.stack = ExitStack()
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.layout = SimpleNamespace(node_env=self.root / "node.env", snapshot={"status": "none"},
-                                      release_id="usdb-testnet-v0-r1")
+                                      release_id="usdb-testnet-v0-r1", bundle_id="usdb-testnet-v0",
+                                      bundle_dir=self.root / "bundle")
         self.host = deepcopy(HOST)
         self.output = io.StringIO()
         self.stack.enter_context(mock.patch.object(P2P, "host_capabilities", side_effect=lambda: deepcopy(self.host)))

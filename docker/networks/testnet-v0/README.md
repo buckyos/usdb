@@ -3,6 +3,7 @@
 `testnet-v0` 是第一个三节点联调网络的可重置 bundle。它把网络共同身份与每台机器的运行参数分开：
 
 - Git 中的 `network.json`、`network.env`、genesis 和 bootstrap config 是所有节点共享的网络输入。
+- `bootnodes.json` 保存随发布包交付的默认入网地址，独立于链身份。
 - 未提交的 `node.env` 保存镜像引用、BTC RPC、snapshot 模式、节点角色、bootnodes 和 miner 参数。
 - `docker/compose.bitcoin.yml` 是独立 Bitcoin full-node project；`docker/compose.runtime.yml` 是 USDB image-only 运行基座。
 
@@ -37,6 +38,29 @@
 本次 bootstrap admin 隔离已经改变 genesis。任何曾用旧 block hash
 `0xac89ddec...70e560` 初始化的 USDB-chain datadir 都必须丢弃并用本 bundle 重新 `geth init`；
 仅因此变化不要求重建 Bitcoin Core 或 BTC-side index 数据。
+
+## 默认入网节点
+
+`bootnodes.json` 使用 `usdb-bootnodes:v1`，以 `network_bundle_id` 绑定本测试网，
+`bootnodes` 是完整 enode 字符串数组。当前包含 `usdb-testnet.tbudr.top:31303` 的入口。
+后续稳定节点直接追加到数组，然后按正常流程发布新 node-kit；完整地址包含各节点自己的公钥。
+列表最多 64 条，读取时规范化并去重，支持 IPv4、IPv6、域名及 `?discport=`，校验阶段不查询 DNS。
+
+首次 `setup` 显示列表，回车或输入 `default` 使用它；也可输入自定义逗号分隔列表，或输入 `none`
+明确不配置 Seed。`configure` 未传 `--bootnodes` 时采用默认列表；`--bootnodes ''` 明确保存空列表。
+这些规则同时适用于 full 和 bootnode 角色。创建一个新网络的真正首节点时显式选择 `none`，
+之后仍需独立执行首节点挖矿授权。
+
+默认值只在创建配置时写入 `node.env` 的 `USDB_BOOTNODES`。已有节点再次 setup、启动或升级均保留
+自己的列表，包括手动删除后的空列表；需追加入口时使用 `usdb-node peers add`。新版列表只自动用于
+新版首次安装，不会远程推送或自动合并到在线节点。旧 bundle 缺少该文件时按无默认入口处理。
+
+文件经公共输入白名单复制到 AssumeUTXO 候选包和最终 node-kit，由安装归档的 SHA-256 校验覆盖。
+不要将它加入 `network.json` 的 artifact 哈希或矿工身份绑定：入口变化不应改变 genesis、
+`network_json_sha256`、数据兼容 ID 或已有首节点/矿工记录。
+
+验证新增入口时分别检查公网 TCP/UDP 31303、公告地址、实际 peer 与链同步。
+当前 Geth 首次解析 Seed 域名失败仍可能阻断启动；本批仅交付默认列表，不包含该重试修复或 DNS 节点目录。
 
 ## 启动前输入
 

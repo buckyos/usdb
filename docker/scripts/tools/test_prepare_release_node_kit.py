@@ -82,6 +82,9 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         )
         self.assertEqual(result, output.resolve())
         layout = BUILDER.load_release_layout(output)
+        self.assertEqual((layout.bundle_dir / "bootnodes.json").read_bytes(),
+                         (self.bundle / "bootnodes.json").read_bytes())
+        self.assertTrue((output / "docker/scripts/tools/peer_sources.py").is_file())
         self.assertEqual(layout.release_id, "usdb-testnet-v0-r1")
         self.assertTrue((output / "docker/compose.runtime.yml").is_file())
         self.assertTrue((output / "docker/compose.p2p-dual.yml").is_file())

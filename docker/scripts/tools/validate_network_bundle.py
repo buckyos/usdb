@@ -28,6 +28,7 @@ from runtime_compatibility import (  # noqa: E402
 )
 from resource_policy import resource_mode, validate_resource_environment  # noqa: E402
 from sourcedao_release import validate_frozen_bundle  # noqa: E402
+from peer_sources import load_bootnodes  # noqa: E402
 
 EXPECTED_BUNDLE_ID = "usdb-testnet-v0"
 EXPECTED_CHAIN_ID = 202608250
@@ -505,6 +506,8 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
 
     require(network.get("schema_version") == "usdb-network-bundle:v2", "unexpected network bundle schema")
     require(network.get("network_bundle_id") == EXPECTED_BUNDLE_ID, "unexpected network bundle ID")
+    # Deployment defaults are validated separately and do not enter chain identity.
+    load_bootnodes(bundle_dir, network["network_bundle_id"])
     require(network.get("status") == "development-resettable", "testnet-v0 must remain resettable")
     require(network.get("deployment_tier") == "testnet", "testnet-v0 deployment tier must be testnet")
     require(network.get("chain_id") == EXPECTED_CHAIN_ID, "unexpected testnet-v0 chain ID")

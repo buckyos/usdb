@@ -8,7 +8,7 @@
 
 ## 1. 确认安装输入
 
-准备好满足环境要求的机器、普通运维账号、可写的数据盘，以及同一测试网的 Seed 地址。整个过程保持使用这个账号。
+准备好满足环境要求的机器、普通运维账号和可写的数据盘。包含默认 Seed 功能的发布包会提供同网入网地址；旧版本或自定义入口需要向网络运维方取得 Seed。整个过程保持使用这个账号。
 
 从[测试网资料](../networks/testnet.md)取得指定安装版本及其 Release 页面。该版本应明确支持本页的启动方式，并已解决首次配置问题。
 
@@ -78,7 +78,7 @@ usdb-node setup
 | --- | --- |
 | `Host data root` | 填写已准备的数据目录，例如 `/data/usdb`；确认显示的是正确磁盘 |
 | `Node role` | `full` |
-| `Seed enode(s)` | 填写同网 Seed 完整地址；多条以逗号分隔。暂缺时可留空，但之后必须补充才能入网 |
+| `Seed enode(s)` | 包含默认 Seed 功能的版本会先显示入口列表，回车或输入 `default` 使用它；也可填写自定义完整地址，多条以逗号分隔。输入 `none` 明确不配置 Seed |
 | `USDB P2P address family`（包含向导改进的版本） | 默认 `auto`；明确需要 IPv6 时选 `dual`（双栈）或 `ipv6`。所选模式不满足主机条件时，按提示修复 |
 | `Provide full Explorer support` | 普通节点选 `n`；专用查询节点应在首次同步前另行规划 |
 | `Enable local minting backend`（包含此改进的版本） | 默认 `n`；选 `y` 使用 Ord 推荐配置并提前开启 Bitcoin txindex，检查基础节点之外至少 **300 GiB** 的额外空间。首次总容量和可用空间均需 **1.5 TiB + 300 GiB**；参见[机器要求](requirements.md#启用-ord-时的额外资源) |
@@ -88,6 +88,10 @@ usdb-node setup
 | `Write this node configuration` | 核对目录、角色及网络暴露后确认写入 |
 
 工具会生成私有凭据、保存配置，并安装后台启动管理服务。sudo 提示要求当前运维账号的密码。首次部署采用默认后台方式，不使用 `--no-controller`。
+
+默认 Seed 功能需使用包含此改进的新发布包；旧版本仍需手动填写地址，留空后再用 `peers add` 补充。
+新版本的空输入表示采用提示中的默认选择，明确不配置请填 `none`。配置的入口仍需实际可达；
+保存成功不表示已经连通或同步完成。
 
 **r28 及此前的向导没有地址族交互项，摘要中的 `USDB P2P: public TCP/UDP 31303` 只说明端口。** 首次部署且需要双栈时，使用以下命令代替上面的普通 `setup`；主机检查应先通过：
 
@@ -134,7 +138,7 @@ usdb-node status --watch
 
 ## 6. 补充 Seed 并确认入网
 
-如果向导已填 Seed，先查看连接状态：
+如果向导已采用默认 Seed 或填写了自定义地址，直接查看连接状态，无需重复添加：
 
 ```bash
 usdb-node peers status --watch
