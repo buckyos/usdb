@@ -12,13 +12,15 @@ from unittest import mock
 
 import resource_policy as POLICY
 import usdb_node as NODE
+import node_monitor
+from node_resource_history import History
 
 
 class ResourceControllerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.layout = SimpleNamespace(node_env=Path(self.temp.name) / "node.env", bundle_id="test",
+        self.layout = SimpleNamespace(node_env=Path(self.temp.name) / "node.env", bundle_id="test", release_id="test-release",
                                       network_identity={"btc_index_origin_height": 100})
         self.events = []
         self.containers = {}
@@ -85,6 +87,13 @@ class ResourceControllerTests(unittest.TestCase):
         state = NODE._read_resource_state(self.layout)
         self.assertFalse(state["pending"])
         self.assertEqual(state["phase"], "overlap")
+        # Keep the real history writer active so transitions exercise release attribution.
+        with History(node_monitor.root(self.layout) / "resources.sqlite3", node_monitor.scope(self.layout)) as history:
+            records = history.query(resolution="transitions")["records"]
+        self.assertEqual([record["code"] for record in reversed(records)],
+                         ["RESOURCE_TRANSITION_STARTED", "RESOURCE_TRANSITION_APPLIED"])
+        self.assertEqual({record["release_id"] for record in records}, {self.layout.release_id})
+        self.assertEqual(len({record["operation_id"] for record in records}), 1)
 
     def test_interruption_after_stop_preserves_old_config_and_resumes(self):
         self.crash = "down"
@@ -168,7 +177,6 @@ class ResourceControllerTests(unittest.TestCase):
         self.assertFalse(NODE._read_resource_state(self.layout)["pending"])
 
     def test_progress_waits_for_final_handoff_without_hiding_real_failures(self):
-        self.layout.release_id = "test-release"
         services = {name: {"state": "running"} for name in NODE.CORE_RUNTIME_SERVICES}
 
         def component(name):
