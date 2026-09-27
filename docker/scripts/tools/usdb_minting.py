@@ -186,7 +186,7 @@ def progress(env, *, now_ms=None):
 def configure(layout, active, node):
     """Change optional services only while stopped, recalculating all phase budgets."""
     if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run setup first")
+        raise ValueError("node is not configured; run 'usdb-node setup' first")
     if any(item.get("state") not in {"exited", "dead", "created"}
            for item in node._collect_compose_services(layout).values()):
         raise ValueError("stop the node with usdb-node down before changing minting support")

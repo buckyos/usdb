@@ -1,5 +1,6 @@
 """Operator uninstall boundaries and recovery, using disposable node data only."""
 from contextlib import ExitStack, redirect_stdout
+from dataclasses import replace
 import fcntl
 import io
 import os
@@ -16,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/too
 import node_rebuild as core
 import node_uninstall as uninstall
 import usdb_node as node
+from common.native_node import native_kit
 from common.node_rebuild import RebuildFixture
 
 
@@ -33,11 +35,11 @@ class UninstallTests(unittest.TestCase):
         capture.__enter__()
         self.addCleanup(capture.__exit__, None, None, None)
 
-    def plan(self, purge=False):
-        return uninstall.plan(self.f.home, self.f.bundle, self.f.backup, purge, self.f.units)
+    def plan(self, purge=False, *, keep_bitcoin=False):
+        return uninstall.plan(self.f.home, self.f.bundle, self.f.backup, purge, self.f.units, keep_bitcoin=keep_bitcoin)
 
-    def session(self, purge=False):
-        uninstall.stage(self.plan(purge), self.f.backup)
+    def session(self, purge=False, *, keep_bitcoin=False):
+        uninstall.stage(self.plan(purge, keep_bitcoin=keep_bitcoin), self.f.backup)
         return uninstall.Session(self.f.backup)
 
     def execution(self, purge=False):
@@ -55,6 +57,7 @@ class UninstallTests(unittest.TestCase):
         args = node.build_parser().parse_args(["uninstall"])
         self.assertFalse(args.execute)
         self.assertFalse(args.purge_data)
+        self.assertFalse(args.keep_bitcoin)
         before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
         value = self.plan()
         uninstall.show(value, self.f.backup)
@@ -70,6 +73,7 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(before, sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")))
 
     def test_default_uninstall_preserves_all_config_data_and_wallets(self):
+        files = self.f.add_native_bitcoin_data()
         session = self.session()
         with self.execution():
             self.assertEqual(session.run(), 0)
@@ -82,8 +86,12 @@ class UninstallTests(unittest.TestCase):
         self.assertFalse(self.f.release.exists())
         self.assertTrue(session.state["complete"])
         self.assertEqual(list(self.f.units.iterdir()), [])
+        for path, content in files.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertTrue(self.f.activation.exists())
 
     def test_purge_verifies_private_backup_and_preserves_unrelated_data(self):
+        self.f.add_native_bitcoin_data()
         ord_dir = self.f.data / "datasets/ord/btc-mainnet/ord-0.23.3"
         ord_dir.mkdir(parents=True)
         (ord_dir / "index.redb").write_bytes(b"rebuildable")
@@ -100,6 +108,9 @@ class UninstallTests(unittest.TestCase):
         with self.execution(True):
             session.run()
         self.assertFalse(self.f.env.exists())
+        self.assertFalse(self.f.paths["BTC_NODE_DATA_HOST_DIR"].exists())
+        self.assertFalse(self.f.artifact.exists())
+        self.assertFalse(self.f.activation.exists())
         self.assertFalse(ord_dir.exists())
         self.assertFalse(self.f.launcher.is_symlink())
         self.assertEqual((self.f.backup / "private/bitcoin/wallet.dat").read_bytes(), b"private wallet")
@@ -111,6 +122,117 @@ class UninstallTests(unittest.TestCase):
         self.assertFalse((self.f.backup / "private/chain/geth/chaindata").exists())
         self.assertTrue(foreign.exists())
         self.assertNotIn("private-test-value", (self.f.backup / "uninstall.json").read_text())
+
+    def test_keep_bitcoin_requires_purge_and_preview_retains_exact_scope(self):
+        self.f.add_native_bitcoin_data()
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
+        layout = SimpleNamespace(node_env=self.f.env, bundle_id=self.f.bundle)
+        args = node.build_parser().parse_args(["uninstall", "--keep-bitcoin"])
+        with self.assertRaisesRegex(ValueError, "requires --purge-data"):
+            uninstall.dispatch(args, layout, node)
+        with self.assertRaisesRegex(ValueError, "requires --purge-data"):
+            self.plan(keep_bitcoin=True)
+        args = node.build_parser().parse_args(["uninstall", "--purge-data", "--keep-bitcoin"])
+        value = self.plan(True, keep_bitcoin=True)
+        with mock.patch.object(uninstall, "operator_home", return_value=self.f.home), \
+                mock.patch.object(uninstall, "plan", return_value=value) as planner, \
+                mock.patch.object(uninstall.subprocess, "run", side_effect=AssertionError("preview must not execute host operations")):
+            self.assertEqual(uninstall.dispatch(args, layout, node), 0)
+        self.assertTrue(planner.call_args.kwargs["keep_bitcoin"])
+        self.assertEqual(set(value["retained"]), {str(self.f.paths["BTC_NODE_DATA_HOST_DIR"]), str(self.f.artifact)})
+        self.assertIn(str(self.f.paths["BTC_NODE_DATA_HOST_DIR"]), value["scope"])
+        self.assertIn("utxo-state", {item["key"] for item in value["targets"]})
+        self.assertIn("not copied to the private backup", self.output.getvalue())
+        self.assertIn(str(self.f.data), self.output.getvalue())
+        self.assertEqual(before, sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")))
+
+    def test_keep_bitcoin_purge_preserves_files_and_supports_fresh_native_configuration(self):
+        files = self.f.add_native_bitcoin_data()
+        layout = replace(native_kit(self.root), node_env=self.f.env)
+        marker = self.f.paths["BTC_NODE_DATA_HOST_DIR"] / node.DATASET_IDENTITY_FILE
+        marker.write_text(node._dataset_marker_content("bitcoin_core", layout))
+        files[marker] = marker.read_bytes()
+        identities = {path: core.stamp(path) for path in files}
+        session = self.session(True, keep_bitcoin=True)
+        with self.execution(True):
+            session.run()
+        for path, content in files.items():
+            self.assertEqual(path.read_bytes(), content)
+            self.assertEqual(core.stamp(path), identities[path])
+        for key, path in self.f.paths.items():
+            if key != "BTC_NODE_DATA_HOST_DIR":
+                self.assertFalse(path.exists())
+        self.assertFalse(self.f.activation.exists())
+        self.assertFalse(self.f.env.exists())
+        self.assertFalse(self.f.release.exists())
+        self.assertFalse(self.f.launcher.is_symlink())
+        self.assertFalse((self.f.backup / "private/bitcoin").exists())
+        self.assertTrue((self.f.backup / "private/chain/keystore/key").exists())
+        self.assertTrue((self.f.backup / "private/config/node.env").exists())
+        self.assertTrue(session.state["plan"]["keep_bitcoin"])
+        # The same configuration path used by first setup adopts the retained
+        # identity, recreates downstream datasets and regenerates credentials.
+        with mock.patch.object(node, "_validate_data_root_capacity"), \
+                mock.patch.object(node, "effective_memory_bytes", return_value=32 * 1024**3):
+            node.configure_node(layout, data_root=self.f.data, role="full", miner_address="", miner_threads=1,
+                bootnodes="", nat="none", bitcoin_rpc_user=None, bitcoin_p2p="private", resource_management="auto")
+        env = node.read_env(self.f.env)
+        node._validate_node_config(layout, require_runtime=True, require_bitcoin_runtime=True)
+        self.assertEqual(env["BTC_NODE_DATA_HOST_DIR"], str(self.f.paths["BTC_NODE_DATA_HOST_DIR"]))
+        self.assertEqual(env["BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR"], str(self.f.artifact))
+        self.assertEqual(env["USDB_RESOURCE_PHASE"], "bitcoin")
+        self.assertEqual(list(self.f.activation.iterdir()), [])
+        self.assertEqual({p.name for p in Path(env["BH_DATA_HOST_DIR"]).iterdir()}, {node.DATASET_IDENTITY_FILE})
+        for path, content in files.items():
+            self.assertEqual(path.read_bytes(), content)
+        marker.write_text("{}\n")
+        with self.assertRaisesRegex(ValueError, "identity mismatch"):
+            node._initialize_dataset_directory(marker.parent, "bitcoin_core", layout)
+        self.assertEqual((marker.parent / "blocks/blk00000.dat").read_bytes(), files[marker.parent / "blocks/blk00000.dat"])
+
+    def test_keep_bitcoin_survives_interruption_and_standalone_resume(self):
+        files = self.f.add_native_bitcoin_data()
+        session = self.session(True, keep_bitcoin=True)
+        original = core.remove_tree
+        def remove(path):
+            original(path)
+            if path == self.f.config:
+                raise OSError("interrupted after config removal")
+        with self.execution(True), mock.patch.object(core, "remove_tree", side_effect=remove), self.assertRaises(OSError):
+            session.run()
+        self.assertFalse(self.f.env.exists())
+        runner = self.f.backup / "runner/node_uninstall.py"
+        result = subprocess.run([sys.executable, str(runner), "--resume", str(self.f.backup), "--plan"], capture_output=True, text=True, cwd=self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("retain Bitcoin data", result.stdout)
+        with self.execution(True):
+            self.assertEqual(uninstall.Session(self.f.backup).run(), 0)
+        for path, content in files.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_keep_bitcoin_still_blocks_active_shared_containers_and_unsafe_plans(self):
+        value = self.plan(True, keep_bitcoin=True)
+        stopped = "LoadState=loaded\nActiveState=inactive\nUnitFileState=disabled\n"
+        container = dict(id="a" * 64, state="running", labels={"com.docker.compose.project": "another-node"},
+                         mounts=[{"Source": str(self.f.paths["BTC_NODE_DATA_HOST_DIR"])}])
+        with mock.patch.object(core, "command", return_value=stopped), mock.patch.object(core, "containers", return_value=[container]), \
+                self.assertRaisesRegex(ValueError, "still uses this node"):
+            uninstall.check_stopped(value)
+        # An inconsistent saved retention flag must never authorize BTC removal.
+        value = self.plan(True)
+        value["keep_bitcoin"] = True
+        uninstall.stage(value, self.f.backup)
+        with self.assertRaisesRegex(ValueError, "conflicts with retained Bitcoin"):
+            uninstall.Session(self.f.backup)
+
+    def test_old_saved_plan_without_keep_bitcoin_still_purges_bitcoin(self):
+        value = self.plan(True)
+        value.pop("keep_bitcoin")
+        uninstall.stage(value, self.f.backup)
+        with self.execution(True):
+            uninstall.Session(self.f.backup).run()
+        self.assertFalse(self.f.paths["BTC_NODE_DATA_HOST_DIR"].exists())
+        self.assertTrue((self.f.backup / "private/bitcoin/wallet.dat").exists())
 
     def test_cancel_and_noninteractive_execution_never_remove_data(self):
         session = self.session(True)

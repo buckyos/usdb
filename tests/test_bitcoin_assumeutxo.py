@@ -171,6 +171,25 @@ class BitcoinBootstrapTests(unittest.TestCase):
             saved = json.loads((self.state / "activation.json").read_text())
             self.assertTrue(saved["details"]["report"]["snapshot_file_reused"])
 
+    def test_fresh_bootstrap_journal_reuses_retained_core_and_snapshot(self):
+        core, rpc = self.core()
+        core.active = True
+        self.source.write_bytes(self.payload)
+        # Uninstall may remove the network-local activation journal while
+        # retaining both Core chainstates and the raw file needed by fresh BH.
+        for validated in (False, True):
+            core.validated = validated
+            self.state = self.root / ("fresh-validated" if validated else "fresh-background")
+            self.assertFalse(self.state.exists())
+            with self.subTest(history_validated=validated), \
+                    mock.patch.object(BOOT, "download_snapshot", side_effect=AssertionError("Unexpected download or file scan")):
+                report = self.activate(rpc, ensure_snapshot_file=True, reuse_active_snapshot_file=True)
+            self.assertTrue(report["snapshot_file_reused"])
+            self.assertTrue(report["bootstrap_ready"])
+            self.assertEqual(report["history_validated"], validated)
+            self.assertTrue((self.state / "activation.json").exists())
+        self.assertEqual(core.calls["loadtxoutset"], 0)
+
     def test_reuse_policy_never_skips_verification_before_a_new_core_import(self):
         core, rpc = self.core()
         self.source.write_bytes(b"x" * len(self.payload))

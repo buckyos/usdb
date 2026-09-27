@@ -55,6 +55,23 @@ class RebuildFixture:
         self.launcher.parent.mkdir(parents=True)
         self.launcher.symlink_to(tool)
 
+    def add_native_bitcoin_data(self):
+        """Small stand-ins for reusable Core stores and raw bootstrap artifacts."""
+        bitcoin = self.paths["BTC_NODE_DATA_HOST_DIR"]
+        self.artifact = self.data / "artifacts/assumeutxo/mainnet-935000"
+        self.activation = self.data / "networks" / self.bundle / "assumeutxo"
+        files = {bitcoin / "chainstate/000001.ldb": b"validated coins",
+                 bitcoin / "chainstate_snapshot/000001.ldb": b"snapshot coins",
+                 bitcoin / "indexes/txindex/000001.ldb": b"transaction index",
+                 self.artifact / "mainnet-935000-utxos.dat": b"raw UTXO snapshot",
+                 self.activation / "activation.json": b'{"phase":"snapshot_active"}'}
+        for path, content in files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        with self.env.open("a") as output:
+            output.write(f"BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR={self.artifact}\nBTC_ASSUMEUTXO_STATE_HOST_DIR={self.activation}\n")
+        return {path: path.read_bytes() for root in (bitcoin, self.artifact) for path in root.rglob("*") if path.is_file()}
+
     def plan(self, tool):
         return tool.build_plan(self.home, self.bundle, self.backup, self.units)
 

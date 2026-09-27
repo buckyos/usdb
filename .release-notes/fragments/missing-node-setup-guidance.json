@@ -1,0 +1,14 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "missing-node-setup-guidance",
+  "type": "changed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Guide unconfigured nodes through setup before release activation",
+  "details": [
+    "activate-release now explains that it upgrades an already configured node and lists usdb-node setup, doctor and up when configuration is absent after a first install or data purge.",
+    "The activation message reminds operators reusing retained data to select the original Host data root. Other existing missing-configuration diagnostics recommend the full usdb-node setup command instead of the advanced configure entry point."
+  ],
+  "operator_actions": [],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

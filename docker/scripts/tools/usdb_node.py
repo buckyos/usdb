@@ -894,7 +894,7 @@ def _resource_prepare_restart(layout: ReleaseLayout, *services: str) -> None:
 def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) -> None:
     """Opt into automatic transitions, or return to manual tuning, while stopped."""
     if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run configure first")
+        raise ValueError("node is not configured; run 'usdb-node setup' first")
     if any(item.get("state") not in {"exited", "dead", "created"}
            for item in _collect_compose_services(layout).values()):
         raise ValueError("stop the node with usdb-node down before changing its resource policy")
@@ -924,7 +924,7 @@ def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) 
 def set_query_mode(layout: ReleaseLayout, *, state_mode: str | None, tracing: str | None) -> None:
     """Change history retention and private HTTP tracing without changing node identity."""
     if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run configure first")
+        raise ValueError("node is not configured; run 'usdb-node setup' first")
     if state_mode is None and tracing is None:
         raise ValueError("set-query-mode requires --state-mode or --tracing")
     if any(item.get("state") not in {"exited", "dead", "created"}
@@ -1609,7 +1609,7 @@ def set_role(
     miner_threads: int,
 ) -> None:
     if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run configure first")
+        raise ValueError("node is not configured; run 'usdb-node setup' first")
     if role == "miner":
         raise ValueError("Use usdb-node mining enable --address ADDRESS; set-role cannot bypass mining preflight")
     _require_role(role, miner_address, miner_threads)
@@ -1636,7 +1636,7 @@ def set_role(
 
 def set_firewall_mode(layout: ReleaseLayout, mode: str) -> None:
     if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run configure first")
+        raise ValueError("node is not configured; run 'usdb-node setup' first")
     _require_firewall_mode(mode)
     original = layout.node_env.read_text(encoding="utf-8")
     updated = upsert_env(original, {"USDB_FIREWALL_MODE": mode})
@@ -1658,7 +1658,7 @@ def set_bitcoin_resource_profile(
 ) -> tuple[str, dict[str, str]]:
     """Atomically update operator-owned Bitcoin memory settings for the next reconcile."""
     if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run configure first")
+        raise ValueError("node is not configured; run 'usdb-node setup' first")
     if resource_mode(read_env(layout.node_env)) == "auto":
         raise ValueError("automatic resource policy owns Bitcoin tuning; use set-resource-policy --mode manual first")
     services = _collect_compose_services(layout)
@@ -1708,7 +1708,15 @@ def _validate_node_release_images(layout: ReleaseLayout) -> None:
 
 def activate_release(layout: ReleaseLayout) -> None:
     if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run configure first")
+        raise ValueError(
+            "node is not configured; run 'usdb-node setup' first.\n"
+            "activate-release upgrades an already configured node.\n"
+            "For a first installation or after uninstall --purge-data, run:\n"
+            "  usdb-node setup\n"
+            "  usdb-node doctor\n"
+            "  usdb-node up\n"
+            "If reusing retained data, select the original Host data root during setup."
+        )
     original = layout.node_env.read_text(encoding="utf-8")
     _validate_node_config(
         layout,
@@ -1826,7 +1834,7 @@ def _snapshot_env_updates(record: dict[str, Any], record_url: str) -> dict[str, 
 def select_snapshot_release(layout: ReleaseLayout) -> dict[str, Any]:
     """Persist the approved snapshot choice before any long-running download begins."""
     if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run setup or configure first")
+        raise ValueError("node is not configured; run 'usdb-node setup' first")
     env = read_env(layout.node_env)
     balance_history_root = Path(env.get("BH_DATA_HOST_DIR", "")).expanduser().resolve()
     database = balance_history_root / "db"
@@ -1894,7 +1902,7 @@ def install_snapshot_release(
 
 def install_script_registry_release(layout: ReleaseLayout) -> None:
     if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run setup or configure first")
+        raise ValueError("node is not configured; run 'usdb-node setup' first")
     env = read_env(layout.node_env)
     if env.get("BH_SCRIPT_REGISTRY_ENABLED", "0") != "1":
         raise ValueError("the current release selection has no optional script registry")
@@ -1921,7 +1929,7 @@ def install_script_registry_release(layout: ReleaseLayout) -> None:
 
 def gc_snapshot_artifacts(layout: ReleaseLayout, *, confirm: bool) -> dict[str, Any]:
     if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run setup or configure first")
+        raise ValueError("node is not configured; run 'usdb-node setup' first")
     env = read_env(layout.node_env)
     snapshot_root = Path(env.get("BH_SNAPSHOT_HOST_DIR", "")).expanduser().resolve()
     balance_root = Path(env.get("BH_DATA_HOST_DIR", "")).expanduser().resolve()

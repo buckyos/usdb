@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "uninstall-retain-bitcoin",
+  "type": "added",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Allow node data purge to retain Bitcoin data for reinstallation",
+  "details": [
+    "usdb-node uninstall --purge-data --keep-bitcoin preserves the complete Bitcoin data directory and raw AssumeUTXO artifact directory in place, including chainstates, indexes, dataset identity and Bitcoin wallets. USDB datasets, Ord, configuration, software and network-local activation records still follow the purge plan.",
+    "Preview and the independent resumable runner retain the same deletion boundary. Bitcoin must still be stopped, and active containers sharing retained data still block execution. Retained Bitcoin files are not copied into the private backup.",
+    "The handbook explains choosing the original data root during setup, compatible dataset identity checks, fresh RPC credentials and downstream resynchronization. Live Core observations recover baseline activation without relying on the deleted activation journal or loading an already active snapshot again."
+  ],
+  "operator_actions": [
+    "Use a node kit containing the option, preview the exact removal and retention paths, then run down and controller disable before interactive uninstall execution.",
+    "After completion, install a compatible release and select the original Host data root in setup. Existing disk admission and dataset identity checks still apply. Preserve the separate private backup for USDB wallet and node identity recovery."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

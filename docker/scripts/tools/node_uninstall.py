@@ -28,6 +28,9 @@ UNITS = ("usdb-node-bootstrap", "usdb-node-monitor", "usdb-console-monitor")
 # Everything else in these directories is archived, including nonstandard wallets.
 BITCOIN_REBUILDABLE = {"blocks", "chainstate", "chainstate_snapshot", "indexes", "debug.log"}
 CHAIN_REBUILDABLE = {"chaindata", "ancient", "lightchaindata", "triecache"}
+# The raw snapshot is also needed for a fresh native BH import; Core activation
+# journals are network-local observations and must be recreated after setup.
+BITCOIN_RETAINED = {"bitcoin", "utxo-file"}
 
 
 def operator_home():
@@ -47,8 +50,9 @@ def read_env(path):
     return values
 
 
-def plan(home, bundle, backup, purge=False, unit_dir=Path("/etc/systemd/system")):
+def plan(home, bundle, backup, purge=False, unit_dir=Path("/etc/systemd/system"), *, keep_bitcoin=False):
     """Reuse the reviewed v2 path boundary; never select arbitrary roots or glob data."""
+    core.require(not keep_bitcoin or purge, "--keep-bitcoin requires --purge-data; ordinary uninstall already retains all node data")
     # Public uninstall does not need to inspect the private RocksDB child to plan.
     base = core.build_plan(home, bundle, backup, unit_dir, protect_script=False, archive_bh=False)
     env = read_env(base.env_path)
@@ -68,6 +72,8 @@ def plan(home, bundle, backup, purge=False, unit_dir=Path("/etc/systemd/system")
         core.require(not key or key == str(expected), "Unexpected AssumeUTXO path; review before uninstalling")
     software = {"launcher", "controller-unit", *UNITS[1:]}
     selected = [target for target in candidates if purge or target.key in software or target.key.startswith(bundle + "-r")]
+    if keep_bitcoin:
+        selected = [target for target in selected if target.key not in BITCOIN_RETAINED]
     # Remove definitions first and launcher last; an interrupted uninstall stays recoverable.
     selected.sort(key=lambda target: (target.key == "launcher", target.key == "config"))
     for target in candidates:
@@ -77,7 +83,7 @@ def plan(home, bundle, backup, purge=False, unit_dir=Path("/etc/systemd/system")
             core.check_mounts(target.path)
     return dict(schema_version=SCHEMA, hostname=socket.gethostname(), operator_uid=home.stat().st_uid,
                 home=str(home), bundle=bundle, data_root=str(base.root), env_path=str(base.env_path),
-                env_sha256=base.env_sha256, purge_data=purge,
+                env_sha256=base.env_sha256, purge_data=purge, keep_bitcoin=keep_bitcoin,
                 targets=[dict(key=t.key, path=str(t.path), link=t.link, identity=core.stamp(t.path)[:2]
                               if t.path.exists() or t.path.is_symlink() else None) for t in selected],
                 retained=[str(t.path) for t in candidates if t not in selected],
@@ -87,7 +93,10 @@ def plan(home, bundle, backup, purge=False, unit_dir=Path("/etc/systemd/system")
 def show(value, backup):
     """Show exact removal/retention boundaries without exposing config contents."""
     print(f"USDB uninstall | host={value['hostname']} | network={value['bundle']}")
-    print("Mode: remove software and configured node data" if value["purge_data"] else "Mode: remove software; retain configuration and all node data")
+    if value.get("keep_bitcoin"):
+        print("Mode: remove software and USDB data; retain Bitcoin data and raw UTXO snapshot in place")
+    else:
+        print("Mode: remove software and configured node data" if value["purge_data"] else "Mode: remove software; retain configuration and all node data")
     print("\nRemove after execution confirmation:")
     for item in value["targets"]:
         print(f"  {item['key']}: {item['path']}" + (" (not present at planning)" if item["identity"] is None else ""))
@@ -98,7 +107,13 @@ def show(value, backup):
     print(f"\nPrivate backup and resumable record: {backup}")
     if value["purge_data"]:
         print("Before deletion: archive and SHA-256 verify configuration, monitor history, node identities, wallet/private state and service definitions.")
-        print("Bitcoin blocks, BH/indexer/chain databases, Ord index and downloaded snapshots are NOT backed up; synchronization will restart.")
+        if value.get("keep_bitcoin"):
+            print("Bitcoin data (including wallets) and raw UTXO snapshot remain in place, not copied to the private backup.")
+            print("BH/indexer/chain databases, Ord index and legacy BH snapshots are NOT backed up; those services must synchronize again.")
+            print(f"After reinstall, select this Host data root in setup: {value['data_root']}")
+            print("Bitcoin reuse requires compatible dataset identity and Core storage; startup checks the live chain and baseline again.")
+        else:
+            print("Bitcoin blocks, BH/indexer/chain databases, Ord index and downloaded snapshots are NOT backed up; synchronization will restart.")
     print("Docker images/volumes, Docker packages, firewall rules, unrelated networks and unreferenced old datasets remain installed.")
 
 
@@ -192,6 +207,12 @@ class Session:
         for path in self.plan["scope"]:
             core.require(not core.overlap(root, core.absolute(path)), "Uninstall backup overlaps a selected path")
         core.require(all(item["path"] in self.plan["scope"] for item in self.plan["targets"]), "Uninstall target is outside its recorded scope")
+        if self.plan.get("keep_bitcoin"):
+            data_root = core.absolute(self.plan["data_root"])
+            preserved = (data_root / "datasets/bitcoin/btc-mainnet", data_root / "artifacts/assumeutxo/mainnet-935000")
+            core.require(self.plan["purge_data"] and all(not core.overlap(core.absolute(item["path"]), path)
+                         for item in self.plan["targets"] for path in preserved),
+                         "Uninstall plan conflicts with retained Bitcoin data")
 
     def save(self):
         core.atomic_json(self.path, self.state)
@@ -285,6 +306,9 @@ class Session:
         print(f"Uninstall complete. Private backup and operation record: {self.root}")
         if self.plan["purge_data"]:
             print("Install a release and run setup to synchronize again; retain the private backup for wallet/node identity recovery.")
+            if self.plan.get("keep_bitcoin"):
+                print(f"In setup, select Host data root: {self.plan['data_root']}")
+                print("Compatible Bitcoin data and the raw UTXO snapshot can be reused; BH/indexer/chain will synchronize again.")
         else:
             print("Configuration and data retained. Reinstall the same network, activate-release, doctor, then up to resume.")
         return 0
@@ -307,21 +331,23 @@ def stage(value, backup):
 def add_parser(subparsers):
     parser = subparsers.add_parser("uninstall", help="Preview node removal; retain data unless --purge-data is explicit",
         description="Preview exact paths by default. Execution requires a stopped/disabled node and interactive confirmation; private state is verified before any purge.")
-    parser.add_argument("--purge-data", action="store_true", help="Also remove configured datasets and config after private backup; block/index data must be synchronized again")
+    parser.add_argument("--purge-data", action="store_true", help="Also remove configured datasets and config after private backup; use --keep-bitcoin to retain Bitcoin for reuse")
+    parser.add_argument("--keep-bitcoin", action="store_true", help="With --purge-data, retain the complete Bitcoin data directory and raw UTXO snapshot in place; Bitcoin must still be stopped")
     parser.add_argument("--backup-dir", type=Path, help="New private backup/resume directory outside node data and release roots")
     parser.add_argument("--execute", action="store_true", help="Stage a resumable runner and request interactive execution (may use sudo)")
 
 
 def dispatch(args, layout, node):
+    core.require(not args.keep_bitcoin or args.purge_data, "--keep-bitcoin requires --purge-data; ordinary uninstall already retains all node data")
     home = operator_home()
     core.require(layout.node_env == home / ".config/usdb" / layout.bundle_id / "node.env", "Uninstall currently requires the standard bundle-scoped node.env path; custom layouts need manual review")
     backup = args.backup_dir or home / ".local/state/usdb" / ("uninstall-" + layout.bundle_id + "-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     backup = core.absolute(backup)
-    value = plan(home, layout.bundle_id, backup, args.purge_data)
+    value = plan(home, layout.bundle_id, backup, args.purge_data, keep_bitcoin=args.keep_bitcoin)
     show(value, backup)
     if not args.execute:
         print("\nPreview only. Before execution: usdb-node down, then usdb-node controller disable.")
-        print("Repeat with --execute and the desired --backup-dir; use --purge-data only for a clean resynchronization.")
+        print("Repeat with the same options, --execute and the desired --backup-dir. --purge-data removes datasets except explicitly retained Bitcoin data.")
         return 0
     core.require(sys.stdin.isatty() and sys.stdout.isatty(), "Uninstall execution requires an interactive terminal")
     import usdb_sourcedao
