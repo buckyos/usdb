@@ -15,7 +15,7 @@ pub async fn run_native_bootstrap(
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop = cancelled.clone();
     let mut worker = tokio::task::spawn_blocking(move || {
-        let client = crate::btc::create_btc_rpc_client(&config)?;
+        let client = crate::btc::create_native_bootstrap_rpc_client(&config, stop.clone())?;
         crate::bootstrap::prepare_native_bootstrap(config, client, &|| {
             stop.load(std::sync::atomic::Ordering::Relaxed)
         })

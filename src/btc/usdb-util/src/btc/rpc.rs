@@ -2,6 +2,8 @@ use bitcoincore_rpc::bitcoin::{Amount, Block, BlockHash, OutPoint, ScriptBuf, Tr
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use std::sync::{Arc, RwLock};
 
+use super::read_retry::{ReadError, ReadRetry};
+
 struct ClientConfig {
     rpc_url: String,
     auth: Auth,
@@ -11,6 +13,7 @@ struct ClientConfig {
 pub struct BTCRpcClient {
     config: Arc<ClientConfig>,
     client: Arc<RwLock<Option<Arc<Client>>>>,
+    read_retry: Option<ReadRetry>,
 }
 
 impl BTCRpcClient {
@@ -62,9 +65,49 @@ impl BTCRpcClient {
         let ret = Self {
             config: Arc::new(ClientConfig { rpc_url, auth }),
             client: Arc::new(RwLock::new(None)),
+            read_retry: None,
         };
 
         Ok(ret)
+    }
+
+    /// Enable native-bootstrap retries for block count, hash and payload reads only.
+    /// Each read has at most six attempts, with 2/4/8/16/20 second cancellable backoffs.
+    /// In-flight requests retain the transport timeout; normal service clients stay unchanged.
+    pub fn with_native_bootstrap_retries(
+        mut self,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.read_retry = Some(ReadRetry::new(cancelled));
+        self
+    }
+
+    // Retry below all parsing/canonical checks and database writes, so a recovered read
+    // resumes its caller rather than re-running an import, replay batch or origin scan.
+    fn read_rpc<T>(
+        &self,
+        operation: &str,
+        call: impl Fn(&Client) -> Result<T, bitcoincore_rpc::Error>,
+    ) -> Result<T, String> {
+        let attempt = || {
+            let client = self.client().map_err(|message| ReadError {
+                message,
+                transient: false,
+            })?;
+            call(&client).map_err(|error| {
+                self.on_error(&error);
+                ReadError::from(error)
+            })
+        };
+        let result = match &self.read_retry {
+            Some(retry) => retry.run(operation, attempt),
+            None => attempt().map_err(|error| error.message),
+        };
+        result.map_err(|error| {
+            let msg = format!("{operation} failed: {error}");
+            error!("{msg}");
+            msg
+        })
     }
 
     fn update_client(&self) -> Result<(), String> {
@@ -123,61 +166,28 @@ impl BTCRpcClient {
     }
 
     pub fn get_latest_block_height(&self) -> Result<u32, String> {
-        self.client()?
-            .get_block_count()
-            .map_err(|error| {
-                self.on_error(&error);
-
-                let msg = format!("get_block_count failed: {}", error);
-                error!("{}", msg);
-                msg
-            })
+        self.read_rpc("get_block_count", |client| client.get_block_count())
             .map(|count| count as u32)
     }
 
     pub fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {
-        self.client()?
-            .get_block_hash(block_height as u64)
-            .map_err(|error| {
-                self.on_error(&error);
-
-                let msg = format!("get_block_hash failed: {}", error);
-                error!("{}", msg);
-                msg
-            })
+        self.read_rpc(&format!("get_block_hash height={block_height}"), |client| {
+            client.get_block_hash(block_height as u64)
+        })
     }
 
     pub fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block, String> {
-        self.client()?.get_block(block_hash).map_err(|error| {
-            self.on_error(&error);
-
-            let msg = format!("get_block failed: {}", error);
-            error!("{}", msg);
-            msg
+        self.read_rpc(&format!("get_block hash={block_hash}"), |client| {
+            client.get_block(block_hash)
         })
     }
 
     pub fn get_block(&self, block_height: u32) -> Result<Block, String> {
         // First get the block hash for the given height
-        let hash = self
-            .client()?
-            .get_block_hash(block_height as u64)
-            .map_err(|error| {
-                self.on_error(&error);
-
-                let msg = format!("get_block_hash failed: {}", error);
-                error!("{}", msg);
-                msg
-            })?;
+        let hash = self.get_block_hash(block_height)?;
 
         // Now get the block using the hash
-        self.client()?.get_block(&hash).map_err(|error| {
-            self.on_error(&error);
-
-            let msg = format!("get_block failed: {}", error);
-            error!("{}", msg);
-            msg
-        })
+        self.get_block_by_hash(&hash)
     }
 
     pub async fn get_blocks(
@@ -189,15 +199,11 @@ impl BTCRpcClient {
         let count = (end_height - start_height + 1) as usize;
         let mut handles = Vec::with_capacity(count);
 
-        let client = self.client()?;
+        self.client()?;
         for height in start_height..=end_height {
             let handle = tokio::task::spawn_blocking({
-                let client = client.clone();
-                move || {
-                    client
-                        .get_block_hash(height as u64)
-                        .and_then(|hash| client.get_block(&hash))
-                }
+                let client = self.clone();
+                move || client.get_block(height)
             });
             handles.push(handle);
         }
@@ -211,8 +217,6 @@ impl BTCRpcClient {
                     blocks.push(block);
                 }
                 Ok(Err(e)) => {
-                    self.on_error(&e);
-
                     let msg = format!("Failed to get block: {}", e);
                     error!("{}", msg);
                     return Err(msg);

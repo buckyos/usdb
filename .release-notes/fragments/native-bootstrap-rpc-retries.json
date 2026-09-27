@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "native-bootstrap-rpc-retries",
+  "type": "fixed",
+  "scopes": ["balance-history", "node-runtime", "documentation"],
+  "summary": "Retry transient Bitcoin RPC failures during native balance-history bootstrap",
+  "details": [
+    "Opt in only the native-bootstrap client to six attempts per block count, hash or payload read, with cancellable 2/4/8/16/20 second backoffs and retry/recovery/exhaustion diagnostics. Normal service clients retain their existing behavior.",
+    "Classify typed transport failures, Core warmup and temporary HTTP availability errors conservatively. Authentication, malformed responses, invalid parameters and canonical identity violations remain hard failures.",
+    "Recover individual reads without re-running database writes or completed in-process verification scans. Recheck the pinned origin after the final height read before sealing, including after RPC recovery. Preserve resumable staging on cancellation or exhaustion; unsealed verification may still repeat after a process restart."
+  ],
+  "operator_actions": [
+    "Upgrade the matching usdb-services image through the normal release procedure; no configuration change or data rebuild is required.",
+    "For repeated Native bootstrap RPC retries exhausted messages, inspect Bitcoin logs and resource history for persistent RPC, memory or disk pressure."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}

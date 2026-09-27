@@ -451,20 +451,17 @@ fn prepare(
             cancelled,
             &mut observe,
         )?;
-        if client.get_block_hash(origin)? != identity.origin_block_hash {
-            return Err("Native origin changed during verification".to_string());
-        }
-        while client.get_latest_block_height()?.saturating_sub(stable_lag) < origin {
+        loop {
+            let tip = client.get_latest_block_height()?;
+            // Recheck identity after the height read (which may wait for RPC recovery),
+            // including the final successful iteration immediately before sealing.
             if client.get_block_hash(origin)? != identity.origin_block_hash {
                 return Err("Native origin changed during verification".to_string());
             }
-            wait_for_blocks(
-                root,
-                origin,
-                origin,
-                client.get_latest_block_height()?,
-                cancelled,
-            )?;
+            if tip.saturating_sub(stable_lag) >= origin {
+                break;
+            }
+            wait_for_blocks(root, origin, origin, tip, cancelled)?;
         }
         if cancelled() {
             return Err("Native bootstrap cancelled before sealing".to_string());

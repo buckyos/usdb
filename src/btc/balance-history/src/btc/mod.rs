@@ -28,6 +28,16 @@ pub fn create_btc_rpc_client(config: &BalanceHistoryConfigRef) -> Result<BTCClie
     Ok(Arc::new(Box::new(btc_client) as Box<dyn BTCClient>))
 }
 
+/// Use bounded read retries only before the native baseline is sealed and service RPC opens.
+pub(crate) fn create_native_bootstrap_rpc_client(
+    config: &BalanceHistoryConfigRef,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<BTCClientRef, String> {
+    let client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth())?
+        .with_native_bootstrap_retries(cancelled);
+    Ok(Arc::new(Box::new(client)))
+}
+
 pub fn create_local_btc_client(
     rpc_client: BTCClientRef,
     config: &BalanceHistoryConfigRef,
