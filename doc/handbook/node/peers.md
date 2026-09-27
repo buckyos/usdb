@@ -17,6 +17,7 @@
 | 查看地址族、宿主机路由和实际容器端口 | `usdb-node peers network --json` |
 | 查看实际连接、链高度和入网状态 | `usdb-node peers status` 或 `usdb-node peers status --watch` |
 | 查看配置的 Seed 与尚未应用的 Seed | `usdb-node peers list` |
+| 添加前检测一个 enode | `usdb-node peers check 'enode://...'` |
 
 包含本机 enode 展示改进的版本，还会在 `peers status` / `--watch` 中显示 `Local P2P` 和各地址族的 enode，JSON 中对应 `local` 字段。旧版如 r27 需要额外执行 `peers enode`；并不是首节点没有自己的地址。
 
@@ -31,6 +32,50 @@
 发布包新增入口不会自动合并，手动删除的地址也不会在下次启动时被补回。
 已有节点通过 `peers add/remove` 修改，`peers list` 查看保存结果，`peers status --watch` 确认实际连接。
 无 Seed 不会自动获得首节点身份；新网络的首节点仍需显式授权。
+
+## 添加前诊断 Seed
+
+需要同时包含此功能的节点工具和链镜像；旧版发布包不支持。取得 enode 后，建议先检查，
+全部通过再添加：
+
+```bash
+read -r -p 'Seed enode: ' USDB_SEED_ENODE
+usdb-node peers check "$USDB_SEED_ENODE" && usdb-node peers add "$USDB_SEED_ENODE"
+usdb-node peers status --watch
+```
+
+`check` 不会添加 Seed，也不会重启服务。它使用临时身份依次报告以下证据：
+
+| 检查 | 通过说明 |
+| --- | --- |
+| Enode format | 公钥、主机名/IP、TCP 和 discovery 端口合法 |
+| DNS | 取得可探测的 A/AAAA 地址；字面 IP 无须 DNS |
+| TCP | 对应 IP 和 TCP 端口可连接 |
+| UDP discovery | 收到目标身份签名、匹配请求的 discovery Pong |
+| RLPx identity | 加密握手中的身份与 enode 公钥匹配 |
+| P2P protocol | 对端支持当前客户端的 eth 协议 |
+| USDB network | eth 握手中的 network ID、创世块和 fork 与当前发布包兼容 |
+
+链运行时，检测共用链容器的网络环境，显示 `Probe network: chain-container`。
+链尚未启动时，使用宿主机网络并显示 `host` 警告；宿主机通过不证明链容器的路由可用，
+启动链后应再检查一次。探测使用本地缓存的链镜像，不自动拉取镜像或启动链。
+
+域名有多个地址时逐个报告，至少一个地址的全部检查通过才得到 `PASS`；
+`PARTIAL` 表示只有部分层通过，例如 TCP/握手正常但 UDP 被阻断，不能当作完整 Seed 检测通过。
+`FAIL` 表示本次探测失败；`INCOMPLETE` 表示镜像缺少检测工具、Docker 不可用或结果不完整。
+每项失败都会显示原因与处理建议。目标连接槽已满或临时超时，也可能使本次检查失败。
+
+```bash
+usdb-node peers check "$USDB_SEED_ENODE" --json
+usdb-node peers check "$USDB_SEED_ENODE" --timeout-secs 60
+```
+
+默认网络探测预算为 30 秒，可设置为 1–120 秒；镜像启动和本地容器检查有额外的有界开销。
+DNS 查询最多 5 秒，每个地址最多 8 秒；增加总预算主要帮助完成多地址检测。
+退出码：`0` 全部通过，`1` 失败或部分通过，`2` 未完成检测。
+域名最多检查 16 个可用地址，超出会明确提示。检查通过只证明当前探测路径和握手成功，
+不代表对端永远在线、链已同步或具备挖矿资格；添加后仍需观察 `peers status`。
+`peers add` 保留原有用法，不强制依赖先前检查结果。
 
 ## 为什么原始 enode 会显示 127.0.0.1
 
@@ -171,7 +216,7 @@ usdb-node peers status --watch
 
 包含此改进的链镜像会保留域名，在每轮重连时重新解析；TCP 连接失败时，会尝试本次解析得到的其他 A/AAAA 地址。域名种子即使暂时没有其他已连接节点，也会继续尝试连接。DNS 临时失败不会丢掉保存的域名，也不会退回已经缓存的旧地址。
 
-运行中的连接不会仅因 DNS 记录变化而被主动断开；恢复时间取决于连接断开检测、DNS 缓存和重连间隔。链启动时首次解析域名仍须成功。仅支持 IPv6 入站时，建议使用专门的 AAAA 域名，避免无效的 IPv4 记录拖慢连接。
+运行中的连接不会仅因 DNS 记录变化而被主动断开；恢复时间取决于连接断开检测、DNS 缓存和重连间隔。包含 DNS 启动容错改进的链镜像，即使首次解析失败也能启动并继续重试；旧版仍可能被首次解析失败阻断。仅支持 IPv6 入站时，建议使用专门的 AAAA 域名，避免无效的 IPv4 记录拖慢连接。
 
 ### 确认连接与排查
 
@@ -183,7 +228,7 @@ usdb-node peers network --json
 
 在入口节点核对 DNS 的 AAAA 是否对应主机当前公网 IPv6；在连接方核对 `connected[].network.remoteAddress` 是否为更新后的地址。`ping` 成功只证明 ICMP 路径可用，仍需放行 TCP/UDP P2P 端口并确认实际 peer 连接。
 
-若 DNS 已更新但仍连接旧地址，先确认连接方使用的是包含此修复的链镜像，且保存的 Seed 是域名而非旧 IP。查看链日志中的 `DNS peer lookup failed`、`DNS peer has no allowed addresses`、`Dialing DNS peer`（这些为 debug 级日志），并检查域名解析、IPv6 路由和防火墙。地址变化后无需删除链数据或重新下载快照。
+若 DNS 已更新但仍连接旧地址，先确认连接方使用的是包含此修复的链镜像，且保存的 Seed 是域名而非旧 IP。新镜像首次失败记录 `DNS peer lookup failed; will retry` 或 `Bootstrap DNS lookup failed; will retry` 警告，持续失败和拨号细节在 debug 日志，解析恢复记录 `lookup recovered`。也可先用 `peers check` 检查域名、IPv6 路由、UDP 与握手。地址变化后无需删除链数据或重新下载快照。
 
 ## IPv6 诊断与恢复
 

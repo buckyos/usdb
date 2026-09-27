@@ -83,6 +83,7 @@ jobs:
           python3 docker/scripts/tools/test_prepare_release_installer.py
           python3 tests/test_installer_progress.py
           python3 tests/test_node_peers.py
+          python3 tests/test_node_peer_check.py
           python3 tests/test_node_bootnodes.py
           python3 tests/test_node_p2p.py
           python3 tests/test_node_p2p_setup.py

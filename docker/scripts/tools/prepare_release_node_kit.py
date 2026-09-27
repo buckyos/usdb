@@ -73,6 +73,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/usdb_node.py",
     "docker/scripts/tools/usdb_mining.py",
     "docker/scripts/tools/usdb_peers.py",
+    "docker/scripts/tools/usdb_peer_check.py",
     "docker/scripts/tools/peer_sources.py",
     "docker/scripts/tools/usdb_p2p.py",
     "docker/scripts/tools/usdb_sourcedao.py",

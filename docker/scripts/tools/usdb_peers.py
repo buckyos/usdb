@@ -349,7 +349,8 @@ def add_parser(subparsers):
     parser = subparsers.add_parser("peers", help="Manage persistent seeds and inspect network membership")
     actions = parser.add_subparsers(dest="peers_action", required=True)
     descriptions = {"list": "List desired and applied seed configuration without RPC",
-                    "add": "Persist a seed and submit controller application",
+                    "check": "Diagnose an enode before adding it (does not change Seeds)",
+                    "add": "Persist a seed and submit application; use peers check ENODE first for diagnostics",
                     "remove": "Remove a seed endpoint (does not ban a peer)",
                     "status": "Observe local enodes, application, membership and live peers",
                     "apply": "Retry an unfinished seed application",
@@ -358,8 +359,10 @@ def add_parser(subparsers):
                     "network": "Inspect host and container P2P configuration"}
     for name, description in descriptions.items():
         command = actions.add_parser(name, help=description, description=description)
-        if name in {"add", "remove"}:
+        if name in {"add", "remove", "check"}:
             command.add_argument("enode", help="Complete enode URL; quote IPv6 addresses")
+        if name == "check":
+            command.add_argument("--timeout-secs", type=int, default=30, help="Total network probe budget, 1-120 seconds (default: 30)")
         command.add_argument("--json", action="store_true")
         if name == "status":
             command.add_argument("--watch", action="store_true")
@@ -411,6 +414,11 @@ def render_report(report, *, connected):
 
 def execute(layout, args):
     """Submit durable changes or attach a read-only status display."""
+    if args.peers_action == "check":
+        import usdb_peer_check
+        report = usdb_peer_check.check(layout, args.enode, timeout_secs=args.timeout_secs)
+        print(json.dumps(report, indent=2, sort_keys=True) if args.json else usdb_peer_check.render(report))
+        return 0 if report["usable"] else 2 if report["state"] == "INCOMPLETE" else 1
     if args.peers_action == "configure":
         updates, reason = p2p.select(**p2p.options(args))
         report = submit(layout, "configure", transport_updates=updates)

@@ -148,9 +148,12 @@ usdb-node peers status --watch
 
 ```bash
 read -r -p 'Seed enode: ' USDB_SEED_ENODE
-usdb-node peers add "$USDB_SEED_ENODE"
+usdb-node peers check "$USDB_SEED_ENODE" && usdb-node peers add "$USDB_SEED_ENODE"
 usdb-node peers status --watch
 ```
+
+`peers check` 需要配套的新节点工具和链镜像，详情见[添加前诊断 Seed](peers.md#添加前诊断-seed)。
+旧版没有此命令时仍可直接 `peers add`；保存配置成功不代表地址已经可达。
 
 通过 IPv6 入网时，先按[节点地址与连接管理](peers.md)核对双方链容器的 IPv6 能力。首节点使用 `usdb-node peers enode --family ipv6` 导出可分享地址；不要直接复制带 `127.0.0.1` 的原始 enode。
 

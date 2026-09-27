@@ -85,6 +85,7 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertEqual((layout.bundle_dir / "bootnodes.json").read_bytes(),
                          (self.bundle / "bootnodes.json").read_bytes())
         self.assertTrue((output / "docker/scripts/tools/peer_sources.py").is_file())
+        self.assertTrue((output / "docker/scripts/tools/usdb_peer_check.py").is_file())
         self.assertEqual(layout.release_id, "usdb-testnet-v0-r1")
         self.assertTrue((output / "docker/compose.runtime.yml").is_file())
         self.assertTrue((output / "docker/compose.p2p-dual.yml").is_file())
@@ -136,6 +137,10 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
                                   "peers", "status", "--help"], cwd=self.root, capture_output=True, text=True)
         self.assertEqual(command.returncode, 0, command.stderr)
         self.assertIn("--watch", command.stdout)
+        command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
+                                  "peers", "check", "--help"], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(command.returncode, 0, command.stderr)
+        self.assertIn("--timeout-secs", command.stdout)
         command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
                                   "peers", "configure", "--help"], cwd=self.root, capture_output=True, text=True)
         self.assertEqual(command.returncode, 0, command.stderr)
