@@ -447,5 +447,9 @@ mod native_tests;
 mod native_rpc_tests;
 
 #[cfg(test)]
+#[path = "../../../../../tests/assumeutxo_native_logs.rs"]
+mod native_log_tests;
+
+#[cfg(test)]
 #[path = "../../../../../tests/assumeutxo_local_loader.rs"]
 mod local_loader_tests;

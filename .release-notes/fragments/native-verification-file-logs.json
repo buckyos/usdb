@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "native-verification-file-logs",
+  "type": "fixed",
+  "scopes": ["balance-history", "node-runtime", "documentation"],
+  "summary": "Persist native verification milestones and bounded progress in balance-history file logs",
+  "details": [
+    "Record verification and scan boundaries, aggregate comparison results, row counts, digests, durations, average throughput, baseline publication and sealed-baseline reuse through the existing rotating service logger.",
+    "Limit advancing file-log progress to once per minute per stage while retaining existing ten-second monitor observations and container progress. Failed or cancelled verification records the last observed stage and count, and startup failures flush the logger before exit.",
+    "Preserve all canonical scans, digest encodings, cancellation checks and publication gates. No additional database traversal, configuration migration or historical log backfill is introduced."
+  ],
+  "operator_actions": [
+    "Upgrade the matching usdb-services image. Inspect logs/balance-history_rCURRENT.log and rotated files under the balance-history data directory after container recreation.",
+    "Keep INFO logging enabled to retain these milestones; normal log rotation and retention still apply. No data rebuild is required."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}

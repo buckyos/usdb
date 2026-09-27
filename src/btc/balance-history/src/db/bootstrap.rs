@@ -14,7 +14,8 @@ use super::{
 };
 use crate::bootstrap::{
     BOOTSTRAP_COMMIT_PROTOCOL_VERSION, BOOTSTRAP_ORIGIN_SCHEMA, BootstrapOriginIdentity,
-    OriginTableDigest, VerificationProgress, VerificationStage,
+    OriginTableDigest, VerificationLogThrottle, VerificationProgress, VerificationStage,
+    log_bootstrap_milestone,
 };
 
 impl BalanceHistoryDB {
@@ -56,21 +57,39 @@ impl BalanceHistoryDB {
         cancelled: &dyn Fn() -> bool,
         observe: &mut dyn FnMut(VerificationProgress) -> Result<(), String>,
     ) -> Result<BootstrapOriginIdentity, String> {
-        let parent = self
-            .file
-            .parent()
-            .ok_or("Missing native verification parent directory")?;
-        let mut verifier = NativeBalanceVerifier::new(parent, height)?;
-        let origin = self.scan_bootstrap_origin(
-            network,
-            height,
-            block_hash,
-            cancelled,
-            observe,
-            Some(&mut verifier),
-        )?;
-        verifier.verify(&origin, cancelled, observe)?;
-        Ok(origin)
+        let started = Instant::now();
+        let mut latest: Option<VerificationProgress> = None;
+        let result = (|| {
+            let parent = self
+                .file
+                .parent()
+                .ok_or("Missing native verification parent directory")?;
+            let mut verifier = NativeBalanceVerifier::new(parent, height)?;
+            // Track the last real observation for failure diagnostics without changing
+            // cancellation, observation frequency, or the returned error.
+            let mut track = |progress| {
+                latest = Some(progress);
+                observe(progress)
+            };
+            let origin = self.scan_bootstrap_origin(
+                network,
+                height,
+                block_hash,
+                cancelled,
+                &mut track,
+                Some(&mut verifier),
+            )?;
+            verifier.verify(&origin, cancelled, &mut track)?;
+            Ok(origin)
+        })();
+        result.inspect_err(|error| {
+            log::error!(
+                "Native balance verification failed: height={height}, stage={}, last_observed_scanned={}, elapsed_seconds={:.1}, error={error}",
+                latest.map_or("initializing", |p| p.stage.as_str()),
+                latest.map_or(0, |p| p.scanned),
+                started.elapsed().as_secs_f64()
+            );
+        })
     }
 
     /// Keep the canonical descending row encoding shared with the read-only origin inspector.
@@ -152,7 +171,11 @@ impl BalanceHistoryDB {
             })?;
             let begin = Instant::now();
             let mut progress = Instant::now();
-            eprintln!("Bootstrap origin scan started: table={name}, height={height}");
+            let mut file_progress = VerificationLogThrottle::new(begin);
+            log_bootstrap_milestone(format_args!(
+                "Bootstrap origin scan started: table={name}, height={height}, stage={}",
+                stage.as_str()
+            ));
             for item in view.iterator_cf_opt(cf, options, IteratorMode::End) {
                 let (key, value) = item.map_err(|e| format!("Read origin {name}: {e}"))?;
                 scanned += 1;
@@ -171,7 +194,16 @@ impl BalanceHistoryDB {
                         "Bootstrap origin scan progress: table={name}, scanned={scanned}, rows={rows}, elapsed_seconds={:.1}",
                         begin.elapsed().as_secs_f64()
                     );
-                    progress = Instant::now();
+                    let now = Instant::now();
+                    if file_progress.due(scanned, now) {
+                        let elapsed = now.saturating_duration_since(begin).as_secs_f64();
+                        log::info!(
+                            "Bootstrap origin scan progress: table={name}, height={height}, stage={}, scanned={scanned}, rows={rows}, elapsed_seconds={elapsed:.1}, scanned_per_second={:.1}",
+                            stage.as_str(),
+                            scanned as f64 / elapsed.max(f64::EPSILON)
+                        );
+                    }
+                    progress = now;
                 }
                 let amount = if name == "utxos" {
                     if key.len() != 36 || value.len() != 40 {
@@ -216,10 +248,13 @@ impl BalanceHistoryDB {
             {
                 verifier.finish()?;
             }
-            eprintln!(
-                "Bootstrap origin scan finished: table={name}, scanned={scanned}, rows={rows}, total_sats={total_sats}, elapsed_seconds={:.1}",
-                begin.elapsed().as_secs_f64()
-            );
+            let elapsed = begin.elapsed().as_secs_f64();
+            let sha256 = crate::assumeutxo::format::hex(&hash.finalize());
+            log_bootstrap_milestone(format_args!(
+                "Bootstrap origin scan finished: table={name}, height={height}, stage={}, scanned={scanned}, rows={rows}, total_sats={total_sats}, sha256={sha256}, elapsed_seconds={elapsed:.1}, scanned_per_second={:.1}",
+                stage.as_str(),
+                scanned as f64 / elapsed.max(f64::EPSILON)
+            ));
             observe(VerificationProgress {
                 stage,
                 scanned,
@@ -228,7 +263,7 @@ impl BalanceHistoryDB {
             tables.push(OriginTableDigest {
                 rows,
                 total_sats,
-                sha256: crate::assumeutxo::format::hex(&hash.finalize()),
+                sha256,
             });
         }
         let balances = tables.pop().unwrap();

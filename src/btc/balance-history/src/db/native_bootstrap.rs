@@ -18,7 +18,8 @@ use crate::assumeutxo::{SnapshotCoin, SnapshotScan};
 use crate::bootstrap::{
     BOOTSTRAP_COMMIT_PROTOCOL_VERSION, BootstrapOriginIdentity, NATIVE_BOOTSTRAP_SCHEMA,
     NativeBootstrapIdentity, NativeBootstrapPhase, NativeBootstrapState, OriginTableDigest,
-    VerificationProgress, VerificationStage, derive_origin_state_digest,
+    VerificationLogThrottle, VerificationProgress, VerificationStage, derive_origin_state_digest,
+    log_bootstrap_milestone,
 };
 
 const NATIVE_STATE: &str = "native_bootstrap_v1";
@@ -330,7 +331,9 @@ impl NativeBalanceVerifier {
         options.set_max_write_buffer_number(2);
         options.set_max_open_files(64);
         let scratch = DB::open(&options, &scratch_path).map_err(|e| e.to_string())?;
-        eprintln!("Native balance verification started: height={height}, source=origin_utxo_scan");
+        log_bootstrap_milestone(format_args!(
+            "Native balance verification started: height={height}, source=origin_utxo_scan"
+        ));
         Ok(Self {
             scratch,
             _directory: directory,
@@ -370,6 +373,13 @@ impl NativeBalanceVerifier {
         if !self.sums.is_empty() {
             return Err("Native verification aggregate has an unflushed batch".to_string());
         }
+        let begin = Instant::now();
+        let height = origin.origin_height;
+        let mut file_progress = VerificationLogThrottle::new(begin);
+        log_bootstrap_milestone(format_args!(
+            "Native balance comparison started: height={height}, expected_balances={}",
+            origin.balances.rows
+        ));
         let mut progress = Instant::now();
         let mut hash = Sha256::new();
         let mut rows = 0u64;
@@ -402,7 +412,17 @@ impl NativeBalanceVerifier {
                     "Native balance comparison progress: balances={rows}, elapsed_seconds={:.1}",
                     self.started.elapsed().as_secs_f64()
                 );
-                progress = Instant::now();
+                let now = Instant::now();
+                if file_progress.due(rows, now) {
+                    let elapsed = now.saturating_duration_since(begin).as_secs_f64();
+                    log::info!(
+                        "Native balance comparison progress: height={height}, balances={rows}, expected_balances={}, comparison_elapsed_seconds={elapsed:.1}, balances_per_second={:.1}, verification_elapsed_seconds={:.1}",
+                        origin.balances.rows,
+                        rows as f64 / elapsed.max(f64::EPSILON),
+                        self.started.elapsed().as_secs_f64()
+                    );
+                }
+                progress = now;
             }
             total_sats = total_sats
                 .checked_add(u64::from_be_bytes(value.as_ref().try_into().unwrap()))
@@ -424,11 +444,17 @@ impl NativeBalanceVerifier {
                 origin.balances
             ));
         }
-        eprintln!(
-            "Native balance verification finished: utxos={}, balances={rows}, elapsed_seconds={:.1}",
+        let elapsed = begin.elapsed().as_secs_f64();
+        log_bootstrap_milestone(format_args!(
+            "Native balance comparison finished: height={height}, balances={rows}, total_sats={total_sats}, sha256={}, matched=true, comparison_elapsed_seconds={elapsed:.1}, balances_per_second={:.1}",
+            actual.sha256,
+            rows as f64 / elapsed.max(f64::EPSILON)
+        ));
+        log_bootstrap_milestone(format_args!(
+            "Native balance verification finished: height={height}, utxos={}, balances={rows}, elapsed_seconds={:.1}",
             self.scanned,
             self.started.elapsed().as_secs_f64()
-        );
+        ));
         Ok(())
     }
 }

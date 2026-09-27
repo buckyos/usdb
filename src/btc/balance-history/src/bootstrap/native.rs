@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     BOOTSTRAP_COMMIT_PROTOCOL_VERSION, BootstrapCommitCheckpoint, BootstrapOriginIdentity,
     VerificationJournal, derive_origin_state_digest, embedded_bootstrap_checkpoint,
+    log_bootstrap_milestone,
 };
 use crate::assumeutxo::{
     AssumeUtxoWorkspaceLock, SnapshotIdentity, SnapshotScan, scan_snapshot, write_report,
@@ -244,12 +245,14 @@ pub fn prepare_native_bootstrap(
     if config.sync.max_sync_block_height < options.identity.origin_height {
         return Err("Native bootstrap origin exceeds configured maximum sync height".to_string());
     }
+    let started = Instant::now();
     let result = prepare(&config, options, client, cancelled);
     result.map(Some).map_err(|error| {
         let message = format!(
-            "Native bootstrap failed: root_dir={}, origin_height={}, error={error}",
+            "Native bootstrap failed: root_dir={}, origin_height={}, elapsed_seconds={:.1}, error={error}",
             config.root_dir.display(),
-            options.identity.origin_height
+            options.identity.origin_height,
+            started.elapsed().as_secs_f64()
         );
         log::error!("{message}");
         eprintln!("{message}");
@@ -273,9 +276,15 @@ fn prepare(
     if final_db.exists() {
         let db = BalanceHistoryDB::open_read_only(config.clone())?;
         db.validate_native_bootstrap_service()?;
-        return db
+        let state = db
             .get_native_bootstrap_state()?
-            .ok_or("Existing database is not a native bootstrap".to_string());
+            .ok_or("Existing database is not a native bootstrap".to_string())?;
+        log_bootstrap_milestone(format_args!(
+            "Native bootstrap reused: height={origin}, origin_commit={}, elapsed_seconds={:.1}",
+            state.origin_commit.as_deref().unwrap_or("unknown"),
+            started.elapsed().as_secs_f64()
+        ));
+        return Ok(state);
     }
     let stable_lag = usdb_util::embedded_btc_stable_lag_blocks(identity.snapshot.network)
         .map_err(|e| e.to_string())?;
@@ -451,6 +460,9 @@ fn prepare(
             cancelled,
             &mut observe,
         )?;
+        log_bootstrap_milestone(format_args!(
+            "Native bootstrap sealing started: height={origin}, step=canonical_rpc_check"
+        ));
         loop {
             let tip = client.get_latest_block_height()?;
             // Recheck identity after the height read (which may wait for RPC recovery),
@@ -491,10 +503,11 @@ fn prepare(
         &root.join("bootstrap-progress.json"),
         &serde_json::json!({"phase":"sealed","published":true,"height":origin,"origin_commit":state.origin_commit,"elapsed_seconds":started.elapsed().as_secs_f64()}),
     )?;
-    eprintln!(
-        "Native bootstrap published: height={origin}, elapsed_seconds={:.1}",
+    log_bootstrap_milestone(format_args!(
+        "Native bootstrap published: height={origin}, origin_commit={}, elapsed_seconds={:.1}",
+        state.origin_commit.as_deref().unwrap_or("unknown"),
         started.elapsed().as_secs_f64()
-    );
+    ));
     Ok(state)
 }
 

@@ -5,7 +5,10 @@ pub use checkpoint::*;
 mod native;
 pub use native::*;
 mod progress;
-pub(crate) use progress::{VerificationJournal, VerificationProgress, VerificationStage};
+pub(crate) use progress::{
+    VerificationJournal, VerificationLogThrottle, VerificationProgress, VerificationStage,
+    log_bootstrap_milestone,
+};
 
 use std::path::Path;
 use std::sync::Arc;

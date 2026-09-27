@@ -132,6 +132,7 @@ pub async fn run_service(
 
     if let Err(error) = run_native_bootstrap(config.clone()).await {
         output.eprintln(&error);
+        log_handle.shutdown();
         std::process::exit(1);
     }
 
