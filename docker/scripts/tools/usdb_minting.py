@@ -33,6 +33,7 @@ GUIDANCE = {
     "UNAVAILABLE": "Cannot establish current readiness; inspect usdb-node logs ord-server and Bitcoin logs.",
     "FAILED": "Ord exited unexpectedly; inspect its logs and container memory/disk limits.",
     "STOPPED": "Ord is stopped; run usdb-node up to start configured services.",
+    "STOPPING": "Waiting for the current Ord database batch to finish; Bitcoin remains available during node shutdown.",
 }
 
 
@@ -77,6 +78,9 @@ def validate(env, *, require_current=False):
     if limit < 2 * GIB or cache > limit // 2:
         raise ValueError("Ord requires at least 2 GiB RAM and cache no larger than half its memory limit")
     memory_bytes(env.get("ORD_MIN_FREE_BYTES", str(50 * GIB)), "ORD_MIN_FREE_BYTES")
+    interval = env.get("ORD_COMMIT_INTERVAL", "5000")
+    if not interval.isascii() or not interval.isdigit() or not 1 <= int(interval) <= 100000:
+        raise ValueError("ORD_COMMIT_INTERVAL must be between 1 and 100000 blocks")
 
 
 def check_disk_capacity(env):
@@ -171,6 +175,9 @@ def progress(env, *, now_ms=None):
                 raise ValueError("stale or invalid Ord observation")
             result.update({key: value for key, value in report.items()
                            if key in FIELDS and (value is None or type(value) in {int, bool})})
+            from ord_observation import PHASES
+            if report.get("index_phase") in PHASES:
+                result["index_phase"] = report["index_phase"]
             result["state"] = report["state"]
             result["backend_ready"] = (report["state"] == "READY" and report.get("canonical") is True
                                        and report.get("history_validated") is True

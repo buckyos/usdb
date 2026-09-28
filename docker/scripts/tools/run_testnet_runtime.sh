@@ -440,6 +440,15 @@ case "${action}" in
     ;;
   down)
     require_node_env
+    # Keep Core available until Ord finishes its outstanding transaction. The
+    # regular Compose grace period must not kill a long address-index commit.
+    if [[ "$(node_env_value USDB_MINTING_ENABLED)" == "1" ]]; then
+      ord_container="$(compose ps --all --quiet ord-server)"
+      if [[ -n "${ord_container}" ]]; then
+        python3 "${script_dir}/ord_shutdown.py" --container "${ord_container}" \
+          --data-dir "$(node_env_value ORD_DATA_HOST_DIR)"
+      fi
+    fi
     compose down --remove-orphans "$@"
     ;;
   ps)

@@ -14,13 +14,14 @@ import subprocess
 import threading
 import time
 import urllib.request
+from ord_observation import OrdObservation, FIELDS as OBSERVATION_FIELDS
 
 SCHEMA = "usdb-ord-progress:v1"
 STATES = {"WAITING_CORE", "WAITING_HISTORY", "WAITING_TXINDEX", "BLOCKED_DISK",
-          "BLOCKED_CONFIG", "STARTING", "INDEXING", "READY", "UNAVAILABLE", "FAILED", "STOPPED"}
+          "BLOCKED_CONFIG", "STARTING", "INDEXING", "READY", "UNAVAILABLE", "FAILED", "STOPPING", "STOPPED"}
 FIELDS = ("state", "observed_at_ms", "core_height", "history_height", "history_validated",
           "txindex_height", "txindex_synced", "ord_height", "ord_gap", "anchor_height",
-          "canonical", "disk_free_bytes", "disk_required_bytes", "index_file_bytes")
+          "canonical", "disk_free_bytes", "disk_required_bytes", "index_file_bytes", *OBSERVATION_FIELDS)
 
 
 def height(value):
@@ -122,6 +123,7 @@ def ord_command(root):
     """Only inscriptions and addresses are indexed; no redundant transaction/sat index."""
     return ["/opt/ord/bin/ord", "--chain", "mainnet", "--data-dir", str(root),
             "--index-addresses", "--index-cache-size", os.environ.get("ORD_INDEX_CACHE_BYTES", "1073741824"),
+            "--commit-interval", os.environ.get("ORD_COMMIT_INTERVAL", "5000"),
             "server", "--address", "0.0.0.0", "--http", "--http-port", "28030"]
 
 
@@ -133,11 +135,39 @@ def publish(root, report):
     temporary.replace(root / "progress.json")
 
 
-def stop_child(child):
+def stop_child(child, root=None, report=None, observation=None):
     """Allow Ord to flush its database on dependency loss and operator shutdown."""
     if child is not None and child.poll() is None:
-        child.send_signal(signal.SIGINT)
-        child.wait()
+        started = time.monotonic()
+        progress_failed = False
+        if observation:
+            observation.event("shutdown_started", committed_height=(report or {}).get("ord_height"))
+        # A second SIGINT means immediate exit in Ord. Retrying observation or
+        # re-entering cleanup must never escalate the original graceful request.
+        if not getattr(child, "usdb_shutdown_requested", False):
+            child.send_signal(signal.SIGINT)
+            child.usdb_shutdown_requested = True
+        while True:
+            if root is not None:
+                activity = observation.snapshot(child, (report or {}).get("ord_height")) if observation else {}
+                try:
+                    publish(root, dict(report or {}, **activity, state="STOPPING", canonical=False,
+                                       shutdown_elapsed_secs=int(time.monotonic() - started)))
+                except OSError:
+                    if not progress_failed:
+                        print("Ord shutdown progress cannot be saved; still waiting for graceful exit", flush=True)
+                        progress_failed = True
+            try:
+                child.wait(timeout=10)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if observation:
+            if observation.reader is not None:
+                observation.reader.join(timeout=2)
+            observation.event("shutdown_finished", exit_code=child.returncode,
+                              elapsed_secs=int(time.monotonic() - started))
+    return child.poll() if child is not None else 0
 
 
 def supervise():
@@ -150,10 +180,19 @@ def supervise():
     child = None
     previous = None
     failed = False
+    report = {}
+    observation = OrdObservation(root)
     # Credentials stay out of process arguments and progress/log projections.
     child_env = dict(os.environ, ORD_BITCOIN_RPC_URL=os.environ.get("BTC_RPC_URL", "http://btc-node:8332"),
                      ORD_BITCOIN_RPC_USERNAME=os.environ["BTC_RPC_USER"],
                      ORD_BITCOIN_RPC_PASSWORD=os.environ["BTC_RPC_PASSWORD"])
+    # Enable index milestones without verbose HTTP/RPC tracing or credentials.
+    child_env["RUST_LOG"] = "warn,ord::index=info"
+    cache = int(os.environ.get("ORD_INDEX_CACHE_BYTES", "1073741824"))
+    interval = int(os.environ.get("ORD_COMMIT_INTERVAL", "5000"))
+    if cache <= 0 or not 1 <= interval <= 100000:
+        raise ValueError("Ord cache must be positive and commit interval must be between 1 and 100000")
+    observation.event("supervisor_started", index_cache_bytes=cache, commit_interval=interval)
     try:
         while not stopped.is_set():
             report = dict(state="UNAVAILABLE")
@@ -175,15 +214,24 @@ def supervise():
                     return 1
                 if report["state"] == "STARTING":
                     if child is None:
-                        child = subprocess.Popen(ord_command(root), env=child_env)
+                        observation = OrdObservation(root)
+                        observation.event("process_started", index_cache_bytes=cache, commit_interval=interval)
+                        child = subprocess.Popen(ord_command(root), env=child_env,
+                                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                                 text=True, encoding="utf-8", errors="replace")
+                        observation.attach(child)
                     try:
                         report = observe_ord(report)
                     except (OSError, ValueError, KeyError, TypeError):
                         report["state"] = "STARTING"
                 elif report["state"] in {"BLOCKED_DISK", "BLOCKED_CONFIG"}:
                     publish(root, report)
-                    stop_child(child)
+                    code = stop_child(child, root, report, observation)
                     child = None
+                    if code:
+                        failed = True
+                        publish(root, dict(report, state="FAILED", ord_exit_code=code))
+                        return 1
                 elif child is not None:
                     # A new block, transient RPC outage or Core restart must not
                     # repeatedly discard a long-running Ord indexing batch.
@@ -196,13 +244,17 @@ def supervise():
             if report["state"] != previous:
                 print(f"Ord state: {previous or 'INIT'} -> {report['state']}", flush=True)
                 previous = report["state"]
+            report.update(observation.snapshot(child, report.get("ord_height")),
+                          index_cache_bytes=cache, commit_interval=interval)
             publish(root, report)
             stopped.wait(10)
     finally:
+        code = stop_child(child, root, report, observation)
         if not failed:
-            publish(root, dict(state="STOPPED"))
-        stop_child(child)
-    return 0
+            failed = bool(code)
+            publish(root, dict(report, state="FAILED" if failed else "STOPPED",
+                               canonical=False, ord_exit_code=code))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

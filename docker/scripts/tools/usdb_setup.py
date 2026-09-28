@@ -115,10 +115,6 @@ def _collect(env, node, *, input_fn, output, resource_mode, bitcoin_profile, cap
     if active:
         print("Ord waits for Bitcoin historical validation and txindex; existing data is retained. Wallet signing remains disabled.", file=output)
         settings = {**minting.environment(env["USDB_DATA_ROOT"], True), **env, **updates}
-        print("Ord resources (recommended defaults unless previously customized): "
-              f"memory {_display_value('ORD_MEMORY_LIMIT', settings['ORD_MEMORY_LIMIT'], node)}, "
-              f"index cache {_display_value('ORD_INDEX_CACHE_BYTES', settings['ORD_INDEX_CACHE_BYTES'], node)}, "
-              f"free-disk reserve {_display_value('ORD_MIN_FREE_BYTES', settings['ORD_MIN_FREE_BYTES'], node)}.", file=output)
         print("The free-disk reserve is a safety threshold, not the total index size.", file=output)
         capacity = minting.check_disk_capacity(settings)
         if capacity["new_index"]:
@@ -132,6 +128,12 @@ def _collect(env, node, *, input_fn, output, resource_mode, bitcoin_profile, cap
     updates = {key: value for key, value in updates.items() if env.get(key) != value}
     recalculate = _resources(env, updates, node, choice=choice, yes_no=yes_no, prompt=memory_prompt,
                              resource_mode=resource_mode, bitcoin_profile=bitcoin_profile, caps=caps)
+    if active:
+        settings = {**minting.environment(env["USDB_DATA_ROOT"], True), **env, **updates}
+        print("Ord resources (effective configuration): "
+              f"memory {_display_value('ORD_MEMORY_LIMIT', settings['ORD_MEMORY_LIMIT'], node)}, "
+              f"index cache {_display_value('ORD_INDEX_CACHE_BYTES', settings['ORD_INDEX_CACHE_BYTES'], node)}, "
+              f"free-disk reserve {_display_value('ORD_MIN_FREE_BYTES', settings['ORD_MIN_FREE_BYTES'], node)}.", file=output)
     public = yes_no("Accept inbound Bitcoin peers on TCP/" + env.get("BTC_P2P_BIND_PORT", "8333"),
                     env.get("BTC_P2P_BIND_ADDRESS") == "0.0.0.0")
     address = "0.0.0.0" if public else "127.0.0.1"

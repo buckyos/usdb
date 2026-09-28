@@ -40,7 +40,7 @@ def network_status_lines(report: dict[str, Any]) -> list[str]:
 
 
 _COMPLETE = {"READY", "ACTIVE", "VALIDATED", "IDLE", "SKIPPED", "DISABLED"}
-_ACTIVE = {"SYNCING", "INDEXING", "IMPORTING", "VERIFYING", "INSTALLING", "DOWNLOADING", "STARTING", "SWITCHING", "RUNNING"}
+_ACTIVE = {"SYNCING", "INDEXING", "IMPORTING", "VERIFYING", "INSTALLING", "DOWNLOADING", "STARTING", "STOPPING", "SWITCHING", "RUNNING"}
 
 
 @dataclass
@@ -234,12 +234,31 @@ def _minting_rows(minting: dict[str, Any], *, details: bool) -> list[_Row]:
         index.info.append("Index height not reported; check that Core adopted BTC_TXINDEX=1")
     ord_row = _Row("Ord (optional)", state)
     if _height(minting.get("ord_height")):
-        ord_row.summary = f"height {minting['ord_height']:,}"
+        ord_row.summary = f"committed height {minting['ord_height']:,}"
         if _height(minting.get("ord_gap")):
             ord_row.summary += f" | gap {minting['ord_gap']:,}"
     if state == "INDEXING":
         ord_row.percent = _coverage(minting.get("ord_height"), target)
         ord_row.info.append("Height coverage only | ETA=-- (unavailable)")
+        ord_row.info.append("Committed height updates after a database batch; unchanged height alone does not mean indexing has stalled")
+    phase = minting.get("index_phase")
+    if phase == "PROCESSING" and _height(minting.get("processing_height")):
+        ord_row.info.append(f"Processing block {minting['processing_height']:,} (not yet committed)")
+    elif phase == "COMMITTING" and _height(minting.get("commit_target_height")):
+        detail = f"Committing database batch through {minting['commit_target_height']:,}"
+        if _height(minting.get("commit_elapsed_secs")):
+            detail += f" | elapsed {duration_text(minting['commit_elapsed_secs'])}"
+        ord_row.info.append(detail)
+    elif phase == "RECOVERING":
+        ord_row.info.append("Recovering Ord database before indexing resumes")
+    read, written, seconds = (minting.get(key) for key in
+                              ("sample_read_bytes", "sample_write_bytes", "sample_elapsed_secs"))
+    if state in {"INDEXING", "STOPPING", "STARTING"} and all(_height(v) for v in (read, written, seconds)) and seconds:
+        ord_row.info.append(f"Recent I/O: read {human_size(read)}, wrote {human_size(written)} over {seconds}s")
+    if state == "STOPPING" and _height(minting.get("shutdown_elapsed_secs")):
+        ord_row.info.append(f"Shutdown elapsed {duration_text(minting['shutdown_elapsed_secs'])}; waiting for Ord to exit")
+    if details and _height(minting.get("index_cache_bytes")):
+        ord_row.info.append(f"Index cache: {human_size(minting['index_cache_bytes'])} | commit interval: {minting.get('commit_interval', 'unknown')} blocks")
     if details or state != "READY":
         ord_row.info.append(minting.get("guidance", ""))
     if details or state == "BLOCKED_DISK":

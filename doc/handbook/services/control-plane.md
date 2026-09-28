@@ -227,7 +227,8 @@ usdb-node status --watch
 
 ### 资源与网络
 
-- Ord 默认容器上限 **4 GiB 内存、2 个 CPU 核当量**，索引缓存 **1 GiB**，不借用额外 swap。
+- 旧版 Ord 默认容器上限 **4 GiB 内存、2 个 CPU 核当量**，索引缓存 **1 GiB**，不借用额外 swap。
+  包含 Ord 资源改进的新版本在新建或显式重算 auto 策略时采用按主机容量分配的额度，详见 [Ord 资源与诊断](ord.md)。
   自动资源策略在 Bitcoin、overlap、steady 三阶段都预留这笔内存，避免索引就绪后突然超配。
   即使 Ord 正在等待，也保留预算；txindex 位于 Bitcoin 进程内，会增加磁盘与 I/O 开销，不是独立容器。
 - 新版 Ord 0.29.0 数据存放在 `USDB_DATA_ROOT/datasets/ord/btc-mainnet/ord-0.29.0`，包含版本、数据库格式与索引配置标识。
@@ -261,7 +262,7 @@ Ord 随 `usdb-services` 镜像发布，从官方固定 tag/commit 编译，使�
 然后执行 `doctor → up → minting-status`。新版从已有 Bitcoin 数据补建自己的索引，Bitcoin、
 BH 和 USDB 数据无需因此重建；尚未开启 Ord 的节点不会创建索引或启动后台索引任务。
 
-默认仍为 4 GiB 内存、2 核上限和 1 GiB 索引缓存。升级的主要成本是 Ord 重新索引所需的时间、I/O，
+仅进行这个 Ord 版本升级会保留原资源额度；后续资源策略改进需要显式重算 auto 才生效，见 [Ord 手册](ord.md)。升级的主要成本是 Ord 重新索引所需的时间、I/O，
 以及旧新索引并存期间的磁盘空间；具体主网耗时和峰值尚未测量。保留原 Ord 数据，待新版本稳定后再按实际容量安排清理。
 需要回退时，先停机，恢复升级前 release/node kit 和对应的 `node.env.ord-upgrade-backup` 配置，
 核对旧 Ord 目录后再启动；不要让旧二进制直接打开新索引。

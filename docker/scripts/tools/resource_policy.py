@@ -20,6 +20,7 @@ CAP_DEFAULTS = {
     "USDB_BTC_IBD_MEMORY_CAP": "32g",
     "USDB_BTC_OVERLAP_MEMORY_CAP": "16g",
     "USDB_BTC_STEADY_MEMORY_CAP": "8g",
+    "USDB_ORD_MEMORY_CAP": "16g",
 }
 SERVICE_MEMORY_KEYS = {
     "btc-node": "BTC_MEMORY_LIMIT",
@@ -124,6 +125,8 @@ class ResourcePlan:
     utxo_cache_bytes: int
     balance_cache_bytes: int
     external_services_bytes: int = 0
+    ord_cache_bytes: int | None = None
+    ord_memory_cap: int | None = None
 
     @property
     def total_bytes(self) -> int:
@@ -150,6 +153,8 @@ class ResourcePlan:
             "BH_SYNC_BALANCE_MAX_CACHE_BYTES": str(self.balance_cache_bytes),
             "BH_SYNC_MAX_MEMORY_PERCENT": "80",
             "BTC_DBCACHE_MB": str(self.dbcache_mib),
+            **({"ORD_INDEX_CACHE_BYTES": str(self.ord_cache_bytes),
+                "USDB_ORD_MEMORY_CAP": str(self.ord_memory_cap)} if self.ord_cache_bytes is not None else {}),
         }
 
 
@@ -165,7 +170,20 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
     reserve = max(4 * GIB, host_memory * 10 // 64)
     if external and host_memory - external < MIN_HOST_MEMORY_BYTES:
         raise ValueError("external services must leave at least 32 GB for the node and system")
-    ord_memory = memory_bytes(env.get("ORD_MEMORY_LIMIT", "4g"), "ORD_MEMORY_LIMIT") if env.get("USDB_MINTING_ENABLED") == "1" else 0
+    ord_memory = 0
+    ord_cache = None
+    ord_cap = None
+    if env.get("USDB_MINTING_ENABLED") == "1":
+        if "USDB_ORD_MEMORY_CAP" in env:
+            # Opt in at setup or an explicit policy recalculation. Merely loading
+            # an older node.env must preserve its fixed Ord budget and cache.
+            ord_cap = caps["USDB_ORD_MEMORY_CAP"]
+            ord_memory = min(max(4 * GIB, (host_memory - external) // 4), ord_cap) // MIB * MIB
+            if ord_memory < 2 * GIB:
+                raise ValueError("Ord memory cap must allow at least 2 GiB")
+            ord_cache = ord_memory // 2
+        else:
+            ord_memory = memory_bytes(env.get("ORD_MEMORY_LIMIT", "4g"), "ORD_MEMORY_LIMIT")
     available = host_memory - reserve - external - ord_memory
     if available <= 0:
         raise ValueError("optional Ord memory budget leaves no memory for node services")
@@ -222,7 +240,7 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
                   bitcoin_cache_limit * (5 if phase == "bitcoin" else 4) // 8 // MIB)
     plan = ResourcePlan(
         host_memory, phase, reserve, limits,
-        dbcache, cache // 4, cache - cache // 4, external,
+        dbcache, cache // 4, cache - cache // 4, external, ord_cache, ord_cap,
     )
     if plan.total_bytes > host_memory:
         raise ValueError(f"{phase} resource budget exceeds effective host memory")

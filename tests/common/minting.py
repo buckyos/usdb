@@ -23,6 +23,11 @@ class Child:
     def __init__(self):
         self.code = None
         self.signals = []
+        self.stdout = None
+
+    @property
+    def returncode(self):
+        return self.code
 
     def poll(self):
         return self.code
@@ -30,8 +35,9 @@ class Child:
     def send_signal(self, value):
         self.signals.append(value)
 
-    def wait(self):
+    def wait(self, timeout=None):
         self.code = 0
+        return self.code
 
 
 class Loop:

@@ -70,6 +70,10 @@ usdb-node status --watch
 
 例如 `Node READY`、`Mining ACTIVE` 与 `Ord (optional) WAITING_TXINDEX` 可以同时出现：核心节点已经工作，额外的本地铸造后端仍在准备。controller 需要更新也单独列出，不据此推断正在运行的服务已停止。
 
+Ord 的 `committed height` 是已提交的高度。包含 Ord 观测改进的版本另外显示当前处理区块、数据库提交阶段、
+提交耗时和最近读写量。一个批次完成前，高度可以保持不变；`Height coverage only` 也不代表已完成相同比例的总工作量。
+判断是否卡住时结合 [Ord 索引进度与持久日志](../services/ord.md)，不要只根据高度不变就重启。
+
 默认收起正常服务的重复说明、完整区块哈希和已跳过的辅助项；错误、等待原因、过期观测和处理命令仍保留。需要完整诊断时使用：
 
 ```bash

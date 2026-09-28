@@ -972,13 +972,19 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
     plans = []
     for phase in RESOURCE_PHASES:
         plan = build_resource_plan(memory, phase, env)
+        ord_cache = None
+        if "ORD_MEMORY_LIMIT" in plan.limits:
+            ord_cache = plan.ord_cache_bytes
+            if ord_cache is None:
+                ord_cache = memory_bytes(env.get("ORD_INDEX_CACHE_BYTES", str(1024**3)), "ORD_INDEX_CACHE_BYTES")
         plans.append({"phase": phase, "limits": plan.limits,
                       "external_services_bytes": plan.external_services_bytes,
                       "system_reserve_bytes": plan.reserve_bytes,
                       "budget_bytes": plan.total_bytes,
                       "dbcache_mib": plan.dbcache_mib,
                       "utxo_cache_bytes": plan.utxo_cache_bytes,
-                      "balance_cache_bytes": plan.balance_cache_bytes})
+                      "balance_cache_bytes": plan.balance_cache_bytes,
+                      "ord_cache_bytes": ord_cache})
     report = {"mode": resource_mode(env), "effective_host_memory_bytes": memory,
               "configured_host_memory_bytes": env.get("USDB_RESOURCE_HOST_MEMORY_BYTES"),
               "configured_phase": env.get("USDB_RESOURCE_PHASE"),
@@ -990,8 +996,11 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
         print(f"Resource policy: {report['mode']}; effective host memory: {_human_bytes(memory)}")
         for item in plans:
             limits = item["limits"]
+            ord_summary = (f"Ord={_human_bytes(limits['ORD_MEMORY_LIMIT'])} "
+                           f"(cache={_human_bytes(item['ord_cache_bytes'])}), " if "ORD_MEMORY_LIMIT" in limits else "")
             print(f"{item['phase']:<10} Bitcoin={_human_bytes(limits['BTC_MEMORY_LIMIT'])}, "
                   f"balance-history={_human_bytes(limits['BH_MEMORY_LIMIT'])}, "
+                  f"{ord_summary}"
                   f"external-services={_human_bytes(item['external_services_bytes'])}, "
                   f"total including reserve={_human_bytes(item['budget_bytes'])}")
 
@@ -1190,6 +1199,8 @@ def configure_node(
         _validate_data_root_capacity(data_root, layout=layout)
     root = data_root.expanduser().resolve()
     minting_updates = usdb_minting.environment(root, minting, legacy_txindex="0" if native else "1")
+    minting_updates.update({key: resource_updates[key] for key in ("ORD_MEMORY_LIMIT", "ORD_INDEX_CACHE_BYTES")
+                            if key in resource_updates})
     usdb_minting.prepare({**minting_updates, "USDB_DATA_ROOT": str(root)})
     secure_dir = network_secure_dir(root, layout.bundle_id)
     snapshot_dir = snapshot_artifact_dir(root)
@@ -5806,7 +5817,8 @@ def _add_resource_cap_arguments(parser: argparse.ArgumentParser) -> None:
     for flag, key in (("bh-memory-cap", "USDB_BH_MEMORY_CAP"),
                       ("bitcoin-ibd-memory-cap", "USDB_BTC_IBD_MEMORY_CAP"),
                       ("bitcoin-overlap-memory-cap", "USDB_BTC_OVERLAP_MEMORY_CAP"),
-                      ("bitcoin-steady-memory-cap", "USDB_BTC_STEADY_MEMORY_CAP")):
+                      ("bitcoin-steady-memory-cap", "USDB_BTC_STEADY_MEMORY_CAP"),
+                      ("ord-memory-cap", "USDB_ORD_MEMORY_CAP")):
         default = "16g for AssumeUTXO, 8g otherwise" if key == "USDB_BTC_STEADY_MEMORY_CAP" else CAP_DEFAULTS[key]
         parser.add_argument(f"--{flag}", dest=key, default=None, metavar="BYTES",
                             help=f"automatic proportional allocation ceiling (default {default})")
@@ -6329,7 +6341,10 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         else:
             print(f"Local minting backend: {report['state']}")
             print(report['guidance'])
-            for key in ("core_height", "history_height", "txindex_height", "ord_height", "ord_gap", "disk_free_bytes", "index_file_bytes"):
+            for key in ("core_height", "history_height", "txindex_height", "ord_height", "ord_gap",
+                        "index_phase", "processing_height", "commit_target_height", "commit_elapsed_secs",
+                        "sample_read_bytes", "sample_write_bytes", "sample_elapsed_secs", "shutdown_elapsed_secs",
+                        "index_cache_bytes", "commit_interval", "disk_free_bytes", "index_file_bytes"):
                 if key in report:
                     print(f"  {key}: {report[key]}")
     elif args.command == "query-mode":

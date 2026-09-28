@@ -261,7 +261,7 @@ class MintingTests(unittest.TestCase):
         start.assert_called_once()
         self.assertNotIn("SECRET", str(start.call_args.args))
         self.assertEqual(child.signals, [signal.SIGINT])
-        self.assertEqual(list(dict.fromkeys(value["state"] for value in reports)), ["WAITING_TXINDEX", "READY", "BLOCKED_DISK", "STOPPED"])
+        self.assertEqual(list(dict.fromkeys(value["state"] for value in reports)), ["WAITING_TXINDEX", "READY", "BLOCKED_DISK", "STOPPING", "STOPPED"])
 
     def test_temporary_upstream_lag_revokes_readiness_without_restarting_ord(self):
         core = runtime.prerequisites(*core_observation(), now=1001)
@@ -279,7 +279,7 @@ class MintingTests(unittest.TestCase):
             self.assertEqual(runtime.supervise(), 0)
         start.assert_called_once()
         self.assertEqual(child.signals, [signal.SIGINT])
-        self.assertEqual([report["state"] for report in reports], ["READY", "WAITING_TXINDEX", "READY", "STOPPED"])
+        self.assertEqual([report["state"] for report in reports], ["READY", "WAITING_TXINDEX", "READY", "STOPPING", "STOPPED"])
 
     def test_native_setup_persists_txindex_before_start_and_toggle_retains_data(self):
         layout = native_kit(self.root)
@@ -377,7 +377,8 @@ class MintingTests(unittest.TestCase):
             else:
                 ord_service = services["ord-server"]
                 self.assertFalse(ord_service.get("ports"))
-                self.assertEqual(int(ord_service["mem_limit"]), 4 * policy.GIB)
+                self.assertEqual(int(ord_service["mem_limit"]), 16 * policy.GIB)
+                self.assertEqual(int(ord_service["environment"]["ORD_INDEX_CACHE_BYTES"]), 8 * policy.GIB)
                 self.assertEqual(float(ord_service["cpus"]), 2)
                 self.assertEqual(ord_service["entrypoint"][-1], "/opt/usdb/docker/scripts/tools/ord_runtime.py")
                 self.assertNotIn("ord-server", services["usdb-chain"].get("depends_on", {}))

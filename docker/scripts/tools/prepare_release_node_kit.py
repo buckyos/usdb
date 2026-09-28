@@ -22,6 +22,8 @@ NODE_KIT_FILES = (
     "docker/compose.runtime.yml",
     "docker/compose.runtime-ord.yml",
     "docker/scripts/tools/ord_runtime.py",
+    "docker/scripts/tools/ord_observation.py",
+    "docker/scripts/tools/ord_shutdown.py",
     "docker/scripts/tools/ord_release.py",
     "docker/scripts/tools/usdb_minting.py",
     "docker/scripts/tools/usdb_setup.py",
