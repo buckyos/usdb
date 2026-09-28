@@ -345,7 +345,7 @@ class MintingTests(unittest.TestCase):
                 mock.patch.object(p2p, "host_capabilities", return_value=HOST):
             node.setup_node(layout, input_fn=answer, output=io.StringIO(), resource_management="auto", p2p_options=p2p.options(args))
         self.assertTrue(any("Enable local minting backend (txindex + private Ord) [y/N]" in item for item in prompts))
-        check_capacity.assert_any_call(self.root / "data", extra_bytes=minting.MIN_NEW_INDEX_FREE_BYTES)
+        check_capacity.assert_any_call(self.root / "data", layout=layout, extra_bytes=minting.MIN_NEW_INDEX_FREE_BYTES)
         env = node.read_env(layout.node_env)
         self.assertEqual(env["BTC_TXINDEX"], "1")
         self.assertEqual(env["USDB_MINTING_ENABLED"], "1")

@@ -76,18 +76,22 @@ usdb-node setup
 
 | 向导项目 | 普通加入节点的选择 |
 | --- | --- |
-| `Host data root` | 填写已准备的数据目录，例如 `/data/usdb`；确认显示的是正确磁盘 |
+| `Host data root` | 先查看默认目录所在文件系统的总容量、剩余空间和要求，再填写数据目录，例如 `/data/usdb`。空间不足会要求重新输入，不能跳过；保留 Bitcoin 后重装填写原数据根目录 |
 | `Node role` | `full` |
 | `Seed enode(s)` | 包含默认 Seed 功能的版本会先显示入口列表，回车或输入 `default` 使用它；也可填写自定义完整地址，多条以逗号分隔。输入 `none` 明确不配置 Seed |
 | `USDB P2P address family`（包含向导改进的版本） | 默认 `auto`；明确需要 IPv6 时选 `dual`（双栈）或 `ipv6`。所选模式不满足主机条件时，按提示修复 |
 | `Provide full Explorer support` | 普通节点选 `n`；专用查询节点应在首次同步前另行规划 |
-| `Enable local minting backend`（包含此改进的版本） | 默认 `n`；选 `y` 使用 Ord 推荐配置并提前开启 Bitcoin txindex，检查基础节点之外至少 **300 GiB** 的额外空间。首次总容量和可用空间均需 **1.5 TiB + 300 GiB**；参见[机器要求](requirements.md#启用-ord-时的额外资源) |
+| `Enable local minting backend`（包含此改进的版本） | 默认 `n`；选 `y` 使用 Ord 推荐配置并提前开启 Bitcoin txindex，检查基础节点之外至少 **300 GiB** 的额外空间。全新数据部署时总容量和可用空间均需 **1.5 TiB + 300 GiB**；参见[机器要求](requirements.md#启用-ord-时的额外资源) |
 | `Accept inbound Bitcoin peers` | 默认 `n`，不影响 Bitcoin 出站同步 |
 | `Manage this host firewall ... UFW` | 已有云或主机规则选 `n`；需要工具管理 UFW 时选 `y`，并确认实际 SSH 服务端口 |
 | 原生启动提示 | 显示 `Native AssumeUTXO bootstrap`，无需选择旧 BH 快照或填写下载地址 |
 | `Write this node configuration` | 核对目录、角色及网络暴露后确认写入 |
 
 工具会生成私有凭据、保存配置，并安装后台启动管理服务。sudo 提示要求当前运维账号的密码。首次部署采用默认后台方式，不使用 `--no-controller`。
+
+目录容量预览、循环重选和保留 Bitcoin 数据的空间折抵适用于包含此改进的新版本。
+空间不足时可以改选已挂载的数据盘，或释放空间后重新输入同一路径；按 `Ctrl+C` 可退出。
+选择启用 Ord 后会再次检查额外空间，不足时也需重选。具体容量与复用规则见[数据盘要求](requirements.md#保留-bitcoin-数据后的空间要求)。
 
 默认 Seed 功能需使用包含此改进的新发布包；旧版本仍需手动填写地址，留空后再用 `peers add` 补充。
 新版本的空输入表示采用提示中的默认选择，明确不配置请填 `none`。配置的入口仍需实际可达；

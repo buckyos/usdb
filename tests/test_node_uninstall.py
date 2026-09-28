@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/tools"))
 import node_rebuild as core
 import node_uninstall as uninstall
+import node_storage as storage
 import usdb_node as node
 from common.native_node import native_kit
 from common.node_rebuild import RebuildFixture
@@ -172,8 +173,15 @@ class UninstallTests(unittest.TestCase):
         self.assertTrue(session.state["plan"]["keep_bitcoin"])
         # The same configuration path used by first setup adopts the retained
         # identity, recreates downstream datasets and regenerates credentials.
-        with mock.patch.object(node, "_validate_data_root_capacity"), \
+        retained, _ = storage.retained_bitcoin_bytes(self.f.data, self.f.paths["BTC_NODE_DATA_HOST_DIR"],
+            node.DATASET_IDENTITY_FILE, node._dataset_marker_content("bitcoin_core", layout))
+        self.assertGreater(retained, 0)
+        free = node.MIN_DATA_ROOT_BYTES - retained
+        with mock.patch.object(node, "_data_root_capacity", return_value=node.DataRootCapacity(
+                self.f.data, 2 * 1024**4, free)), \
                 mock.patch.object(node, "effective_memory_bytes", return_value=32 * 1024**3):
+            admitted = node._validate_data_root_capacity(self.f.data, layout=layout)
+            self.assertEqual(admitted.required_free_bytes, free)
             node.configure_node(layout, data_root=self.f.data, role="full", miner_address="", miner_threads=1,
                 bootnodes="", nat="none", bitcoin_rpc_user=None, bitcoin_p2p="private", resource_management="auto")
         env = node.read_env(self.f.env)

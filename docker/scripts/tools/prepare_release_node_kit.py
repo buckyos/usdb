@@ -25,6 +25,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/ord_release.py",
     "docker/scripts/tools/usdb_minting.py",
     "docker/scripts/tools/usdb_setup.py",
+    "docker/scripts/tools/node_storage.py",
     "docker/compose.p2p-dual.yml",
     "docker/compose.p2p-ipv6.yml",
     "docker/scripts/tools/check_json_rpc_readiness.py",

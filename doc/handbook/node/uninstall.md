@@ -147,7 +147,10 @@ sudo python3 "$HOME/usdb-uninstall-backup/runner/node_uninstall.py" \
 4. 运行 `usdb-node doctor`、`usdb-node up`，再用 `status --watch` 和 `monitor resources` 观察启动。
 
 `setup` 会核对保留目录的数据身份标记；Bitcoin 网络及存储契约不匹配、标记缺失或异常时会拒绝复用，
-不会自动抹除目录。仍需满足 setup 的磁盘容量和可用空间要求，保留数据不会跳过该检查。
+不会自动抹除目录。包含空间折抵改进的新版本会统计同一文件系统上的兼容 Bitcoin 区块和 chainstate 实际占用，
+从首次部署的可用空间要求中扣除，但至少保留 512 GiB 空闲；总容量门槛不变，Ord 仍需额外 300 GiB。
+向导会显示具体计算，空间不足时要求重新选择目录，不能跳过。详见[重装空间要求](requirements.md#保留-bitcoin-数据后的空间要求)。
+旧版本仍要求完整的 1.5 TiB 空闲，不包含此折抵逻辑。
 
 Core 从原数据目录启动，继续前台追块和尚未完成的后台历史验证。新的启动记录根据实时 RPC 重建，
 已激活且匹配的基线不会重复 `loadtxoutset`；保留的原始快照可供 BH 重新导入，BH 仍执行自己的完整核验。

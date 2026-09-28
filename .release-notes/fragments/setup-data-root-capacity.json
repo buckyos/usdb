@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "setup-data-root-capacity",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime", "documentation"],
+  "summary": "Preview data disk capacity and retry invalid setup paths with bounded Bitcoin reuse accounting",
+  "details": [
+    "First setup displays default-directory filesystem capacity and free space before prompting, and keeps requesting a directory when capacity or path checks fail. There is no admission bypass; EOF or interruption cancels before configuration is written.",
+    "Compatible retained Bitcoin blocks and chainstate on the selected filesystem reduce the free-space requirement from 1.5 TiB, with a 512 GiB rebuild floor. Count allocated regular-file bytes only; exclude optional indexes, logs, wallets, raw snapshots, links and other filesystems. Unknown or unreadable data receives no allowance.",
+    "The total-capacity minimum remains 1.5 TiB. Optional Ord adds 300 GiB to both total-capacity and adjusted free-space requirements and can trigger directory reselection. Configure rechecks before creating node configuration and data directories.",
+    "Document capacity calculations and retained-data reinstall behavior, and include the accounting helper in immutable release kits."
+  ],
+  "operator_actions": [
+    "Install a node kit containing this change. To reuse Bitcoin after uninstall --purge-data --keep-bitcoin, select the original Host data root during setup and review the measured capacity and allowance."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

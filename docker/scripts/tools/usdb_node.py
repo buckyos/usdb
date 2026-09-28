@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager, nullcontext, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
@@ -194,6 +194,10 @@ class DataRootCapacity:
     filesystem_path: Path
     total_bytes: int
     free_bytes: int
+    retained_bitcoin_bytes: int = 0
+    required_free_bytes: int = MIN_DATA_ROOT_BYTES
+    recommended_free_bytes: int = RECOMMENDED_DATA_ROOT_BYTES
+    reuse_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -1181,9 +1185,9 @@ def configure_node(
                      "USDB_CHAIN_TRACING": "1" if explorer_queries else "0"}
     import usdb_minting
     if minting:
-        _validate_data_root_capacity(data_root, extra_bytes=usdb_minting.MIN_NEW_INDEX_FREE_BYTES)
+        _validate_data_root_capacity(data_root, layout=layout, extra_bytes=usdb_minting.MIN_NEW_INDEX_FREE_BYTES)
     else:
-        _validate_data_root_capacity(data_root)
+        _validate_data_root_capacity(data_root, layout=layout)
     root = data_root.expanduser().resolve()
     minting_updates = usdb_minting.environment(root, minting, legacy_txindex="0" if native else "1")
     usdb_minting.prepare({**minting_updates, "USDB_DATA_ROOT": str(root)})
@@ -1327,6 +1331,8 @@ def _data_root_capacity(path: Path) -> DataRootCapacity:
     candidate = path.expanduser().resolve()
     while not candidate.exists() and candidate != candidate.parent:
         candidate = candidate.parent
+    if not candidate.is_dir():
+        raise ValueError(f"data root must be a directory: {candidate}")
     usage = shutil.disk_usage(candidate)
     return DataRootCapacity(
         filesystem_path=candidate,
@@ -1335,9 +1341,49 @@ def _data_root_capacity(path: Path) -> DataRootCapacity:
     )
 
 
-def _validate_data_root_capacity(path: Path, *, extra_bytes: int = 0) -> DataRootCapacity:
-    """Keep optional index admission capacity additional to the base node budget."""
+def _inspect_data_root_capacity(path: Path, *, layout: ReleaseLayout | None = None,
+                                extra_bytes: int = 0) -> DataRootCapacity:
+    """Apply only measurable, compatible Core reuse to the free-space budget."""
+    from node_storage import MIN_REBUILD_FREE_BYTES, retained_bitcoin_bytes
     capacity = _data_root_capacity(path)
+    retained, note = 0, ""
+    root = path.expanduser().resolve()
+    if layout is not None and (root / "datasets/bitcoin").exists():
+        bitcoin = _data_directories(layout, root)["BTC_NODE_DATA_HOST_DIR"]
+        retained, note = retained_bitcoin_bytes(root, bitcoin, DATASET_IDENTITY_FILE,
+                                              _dataset_marker_content("bitcoin_core", layout))
+    credit = min(retained, MIN_DATA_ROOT_BYTES - MIN_REBUILD_FREE_BYTES)
+    return replace(capacity, retained_bitcoin_bytes=retained, reuse_note=note,
+                   required_free_bytes=MIN_DATA_ROOT_BYTES - credit + extra_bytes,
+                   recommended_free_bytes=RECOMMENDED_DATA_ROOT_BYTES - credit + extra_bytes)
+
+
+def _print_data_root_capacity(path: Path, capacity: DataRootCapacity, *, extra_bytes: int, output: Any) -> None:
+    """Show actual filesystem figures and the admission budget before accepting a path."""
+    print(f"Data root: {path.expanduser().resolve()}", file=output)
+    print(f"  Filesystem measured at: {capacity.filesystem_path}", file=output)
+    print(f"  Total capacity: {_human_bytes(capacity.total_bytes)}", file=output)
+    print(f"  Available now: {_human_bytes(capacity.free_bytes)}", file=output)
+    print(f"  Required total capacity: {_human_bytes(MIN_DATA_ROOT_BYTES + extra_bytes)}", file=output)
+    if capacity.retained_bitcoin_bytes:
+        credit = MIN_DATA_ROOT_BYTES + extra_bytes - capacity.required_free_bytes
+        print(f"  Retained Bitcoin stores: {_human_bytes(capacity.retained_bitcoin_bytes)}; "
+              f"capacity allowance: {_human_bytes(credit)}", file=output)
+        print("  Rebuild free-space floor: 512 GiB for BH/indexer, bootstrap work and growth; Ord is additional.", file=output)
+    if extra_bytes:
+        print(f"  Additional Ord budget: {_human_bytes(extra_bytes)}", file=output)
+    print(f"  Required/recommended free: {_human_bytes(capacity.required_free_bytes)} / "
+          f"{_human_bytes(capacity.recommended_free_bytes)}", file=output)
+    if capacity.reuse_note:
+        print(f"  Warning: {capacity.reuse_note}", file=output)
+
+
+def _validate_data_root_capacity(path: Path, *, layout: ReleaseLayout | None = None,
+                                 extra_bytes: int = 0, output: Any = None) -> DataRootCapacity:
+    """Keep total capacity, rebuilding headroom and optional Ord admission mandatory."""
+    capacity = _inspect_data_root_capacity(path, layout=layout, extra_bytes=extra_bytes)
+    if output is not None:
+        _print_data_root_capacity(path, capacity, extra_bytes=extra_bytes, output=output)
     required = MIN_DATA_ROOT_BYTES + extra_bytes
     detail = f" ({_human_bytes(MIN_DATA_ROOT_BYTES)} base node + {_human_bytes(extra_bytes)} for Ord)" if extra_bytes else ""
     if capacity.total_bytes < required:
@@ -1346,13 +1392,41 @@ def _validate_data_root_capacity(path: Path, *, extra_bytes: int = 0) -> DataRoo
             f"{_human_bytes(capacity.total_bytes)} total; at least "
             f"{_human_bytes(required)}{detail} is required"
         )
-    if capacity.free_bytes < required:
+    if capacity.free_bytes < capacity.required_free_bytes:
         raise ValueError(
             f"data root filesystem has insufficient available space: "
             f"{capacity.filesystem_path} has {_human_bytes(capacity.free_bytes)} free; "
-            f"at least {_human_bytes(required)}{detail} is required before setup"
+            f"at least {_human_bytes(capacity.required_free_bytes)} is required before setup "
+            f"({_human_bytes(capacity.required_free_bytes - capacity.free_bytes)} short){detail}"
         )
+    if output is not None and (capacity.total_bytes < RECOMMENDED_DATA_ROOT_BYTES + extra_bytes
+                              or capacity.free_bytes < capacity.recommended_free_bytes):
+        print("  Warning: filesystem meets the hard minimum but is below the recommended long-running headroom.", file=output)
     return capacity
+
+
+def _select_data_root(layout: ReleaseLayout, *, default: Path, input_fn: Any, output: Any,
+                      extra_bytes: int = 0) -> Path:
+    """Keep prompting until a measured directory passes; never offer a bypass."""
+    print("Default data directory capacity:", file=output)
+    try:
+        capacity = _inspect_data_root_capacity(default, layout=layout, extra_bytes=extra_bytes)
+        _print_data_root_capacity(default, capacity, extra_bytes=extra_bytes, output=output)
+    except (OSError, ValueError) as error:
+        print(f"  Cannot inspect default directory: {error}", file=output)
+    while True:
+        try:
+            selected = Path(_prompt("Host data root", default=str(default), input_fn=input_fn))
+        except EOFError as error:
+            raise ValueError("setup cancelled; no configuration was written") from error
+        try:
+            _validate_data_root_capacity(selected, layout=layout, extra_bytes=extra_bytes, output=output)
+            return selected
+        except (OSError, ValueError) as error:
+            print(f"Cannot use this data directory: {error}", file=output)
+            print("Enter another directory on a mounted data disk, or free space and retry. "
+                  "This check cannot be skipped; press Ctrl+C to exit without saving.", file=output)
+            default = selected
 
 
 def _disk_free_bytes(path: Path) -> int:
@@ -1378,14 +1452,7 @@ def setup_node(
     bitcoin_resource_profile = bitcoin_resource_profile or DEFAULT_BITCOIN_RESOURCE_PROFILE
     resource_management = resource_management or "manual"
     print(f"USDB node setup for immutable release {layout.release_id}", file=output)
-    data_root = Path(
-        _prompt(
-            "Host data root",
-            default=str(Path.home() / ".usdb"),
-            input_fn=input_fn,
-        )
-    )
-    capacity = _validate_data_root_capacity(data_root)
+    data_root = _select_data_root(layout, default=Path.home() / ".usdb", input_fn=input_fn, output=output)
     host_memory_bytes = _host_memory_bytes()
     bitcoin_profile, bitcoin_resources = resolve_bitcoin_resource_profile(
         bitcoin_resource_profile if resource_management == "manual" else DEFAULT_BITCOIN_RESOURCE_PROFILE,
@@ -1400,24 +1467,6 @@ def setup_node(
                              "dbcache_mb": managed["BTC_DBCACHE_MB"]}
         print("Automatic whole-node resources: bitcoin -> overlap -> steady.", file=output)
         print(f"Balance-history memory cap: {managed['USDB_BH_MEMORY_CAP']}", file=output)
-    print("Data root filesystem:", file=output)
-    print(f"  Resolved through: {capacity.filesystem_path}", file=output)
-    print(f"  Total capacity: {_human_bytes(capacity.total_bytes)}", file=output)
-    print(f"  Available now: {_human_bytes(capacity.free_bytes)}", file=output)
-    print(
-        f"  Required/recommended: {_human_bytes(MIN_DATA_ROOT_BYTES)} / "
-        f"{_human_bytes(RECOMMENDED_DATA_ROOT_BYTES)}",
-        file=output,
-    )
-    if (
-        capacity.total_bytes < RECOMMENDED_DATA_ROOT_BYTES
-        or capacity.free_bytes < RECOMMENDED_DATA_ROOT_BYTES
-    ):
-        print(
-            "  Warning: filesystem meets the hard minimum but total capacity or "
-            "current free space is below the recommended long-running headroom.",
-            file=output,
-        )
     print("Bitcoin resource profile:", file=output)
     print(f"  Selected: {bitcoin_profile}", file=output)
     print(f"  Host memory: {_human_bytes(host_memory_bytes)}", file=output)
@@ -1488,9 +1537,14 @@ def setup_node(
         print("Ord uses the recommended 4 GiB RAM budget and requires 300 GiB additional free disk for a new index.", file=output)
         print("The 300 GiB admission budget includes headroom; the separate runtime free-space floor is 50 GiB. "
               "Bitcoin txindex and other service growth need additional capacity.", file=output)
-        capacity = _validate_data_root_capacity(data_root, extra_bytes=usdb_minting.MIN_NEW_INDEX_FREE_BYTES)
-        print(f"Data-disk capacity check passed: {_human_bytes(capacity.free_bytes)} free; "
-              "required: 1.5 TiB base node + 300 GiB Ord. Bitcoin history and txindex must finish before Ord starts.", file=output)
+        try:
+            _validate_data_root_capacity(data_root, layout=layout,
+                                        extra_bytes=usdb_minting.MIN_NEW_INDEX_FREE_BYTES, output=output)
+        except (OSError, ValueError) as error:
+            print(f"Cannot enable Ord at this data directory: {error}", file=output)
+            data_root = _select_data_root(layout, default=data_root, input_fn=input_fn, output=output,
+                                          extra_bytes=usdb_minting.MIN_NEW_INDEX_FREE_BYTES)
+        print("Data-disk capacity check passed. Bitcoin history and txindex must finish before Ord starts.", file=output)
         print("Node synchronization remains independent; production wallet signing is not enabled by this option.", file=output)
         if resource_management == "auto":
             preview = _resource_policy_updates("auto", {**(resource_caps or {}), "USDB_MINTING_ENABLED": "1",
@@ -5805,6 +5859,8 @@ def build_parser() -> argparse.ArgumentParser:
         "setup",
         help="Create or edit node configuration; install the controller on first setup only",
         description=("Create a new node, or edit current settings after usdb-node down. "
+                     "First setup previews data-disk capacity and requires a qualifying directory; "
+                     "compatible retained Bitcoin stores reduce the required free space. "
                      "Edits preserve identity, data, release images and controller units. "
                      "P2P flags apply to first setup; use peers configure for existing nodes."),
     )

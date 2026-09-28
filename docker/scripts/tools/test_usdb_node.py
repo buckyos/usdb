@@ -271,7 +271,7 @@ class UsdbNodeTests(unittest.TestCase):
         )
         self.assertIn("USDB P2P: public TCP/UDP 31303", output.getvalue())
         self.assertIn("Release-approved balance-history snapshot", output.getvalue())
-        self.assertIn("Required/recommended: 1.5 TiB / 2.0 TiB", output.getvalue())
+        self.assertIn("Required/recommended free: 1.5 TiB / 2.0 TiB", output.getvalue())
         self.assertIn("Selected: balanced-32g", output.getvalue())
 
     def test_setup_enables_full_explorer_support_in_initial_configuration(self) -> None:
@@ -452,10 +452,19 @@ class UsdbNodeTests(unittest.TestCase):
                 self.assertFalse(layout.node_env.exists())
                 self.assertFalse(data_root.exists())
 
-    def test_setup_rejects_insufficient_data_root_before_other_prompts(self) -> None:
+    def test_setup_reprompts_insufficient_data_root_before_other_prompts(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "small-setup-data-root"
-        answers = iter([str(data_root)])
+        prompts = []
+        output = io.StringIO()
+
+        def answer(prompt):
+            prompts.append(prompt)
+            self.assertTrue(prompt.startswith("Host data root"))
+            if len(prompts) == 1:
+                self.assertIn("Available now:", output.getvalue())
+                return str(data_root)
+            raise EOFError()
         with mock.patch.object(
             NODE,
             "_data_root_capacity",
@@ -465,12 +474,15 @@ class UsdbNodeTests(unittest.TestCase):
                 free_bytes=NODE.MIN_DATA_ROOT_BYTES - 1,
             ),
         ):
-            with self.assertRaisesRegex(ValueError, "insufficient available space"):
+            with self.assertRaisesRegex(ValueError, "setup cancelled"):
                 NODE.setup_node(
                     layout,
-                    input_fn=lambda prompt: "" if prompt.startswith("Enable node monitor") else "n" if prompt.startswith("Enable local minting backend") else next(answers),
-                    output=io.StringIO(),
+                    input_fn=answer,
+                    output=output,
                 )
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("insufficient available space", output.getvalue())
+        self.assertIn("cannot be skipped", output.getvalue())
         self.assertFalse(layout.node_env.exists())
         self.assertFalse(data_root.exists())
 
