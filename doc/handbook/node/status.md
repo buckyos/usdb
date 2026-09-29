@@ -126,7 +126,21 @@ USDB chain WAITING
   Waiting for Bitcoin foreground: 8 blocks remaining (967953/967961)
 ```
 
-其他等待条件包括快照准备、Bitcoin RPC、前台就绪检查、BH 或 indexer 就绪。全部上游检查通过后，短暂显示 `Upstream ready; waiting for controller to start USDB chain`；链初始化失败等明确错误仍优先显示。
+其他等待条件包括快照准备、Bitcoin RPC、前台就绪检查、BH 或 indexer 就绪。包含等待提示改进的版本会并列列出本轮尚未满足的条件，避免只显示第一个错误。
+这里的 `Bitcoin Core` 专指 bitcoind；chain 启动还要求 BH 和 USDB indexer 的共识就绪检查通过。
+`Bitcoin Core readiness unknown: ... (timeout)` 表示本轮无法确认 Core 是否就绪，并不表示已经确认它停止同步，也不泛指整个 Bitcoin 侧服务。
+全部上游检查通过后，短暂显示 `Upstream ready; waiting for controller to start USDB chain`；链初始化失败等明确错误仍优先显示。
+
+indexer 等待首次 BH 基线时，包含此改进的版本会显示具体目标及可确认的 BH 重放进度，例如：
+
+```text
+USDB indexer WAITING
+  Waiting for balance-history queryable baseline 963,800; indexing has not started
+  BH replay: 936,340 / 963,800; 27,460 blocks remaining
+```
+
+这里的计数属于 BH，不是 indexer 已索引的区块数。剩余 0 块后还需完成基线校验、发布；不能仅凭到达高度判断就绪。
+进度来自 BH 当前进程的近期记录；旧进程记录、过期记录或服务失败时不推算当前剩余数量。
 
 BH 首次构建基线时，RPC 要等导入、重放、校验及基线发布完成后才启动。包含提示改进的版本在确认 BH 当前进程仍处于这些阶段时，会把连接拒绝或重置解释为：
 
@@ -202,6 +216,7 @@ r28 及更早的工具可能只显示 `phase=bootstrap-controller`、快照 `wai
 - `UTXO snapshot READY` 表示快照准备任务已完成。对应基线的完成记录仍有效、准备任务以成功状态退出时，即使 Core RPC 暂不可用，该行也保持完成状态；当前 Bitcoin 是否就绪看下一行。正在重新导入、准备任务失败或基线不匹配时，不沿用这个完成结论。
 - `Bitcoin STALE` 表示本轮未取得新的 RPC 状态，面板暂时保留上次成功查询的前台和后台高度。`Last observed` 显示观测时间、距今秒数及上次状态，`Latest probe` 单独显示本次查询失败原因；这些旧高度不能证明现在仍在追块。
 - `Core background history: STALE 844060/935000` 表示上次查到后台验证高度为 `844060`、目标为 `935000`。它与 Bitcoin 主行使用同一次旧观测，不会一处显示旧高度、另一处直接丢掉该高度。恢复查询后才显示新的 `SYNCING` 或 `VALIDATED`。
+- 包含共享错误提示改进的版本会在后台行补充 `Latest probe (shared with foreground): ... (timeout)`，明确前后台因同一次 Core RPC 查询失败而暂时无法更新，并非两个独立故障。
 - 连续观察只保留 **60 秒以内**的旧高度；超过时限或检测到进程重启、服务失败、基线错误后，旧值会清除。没有可用历史观测时显示 `UNAVAILABLE`，不再把一次 RPC 查询失败直接显示成 Bitcoin 正在启动。重新打开 `--watch` 不保留上一个观察窗口的高度缓存。
 
 工具确认 Core 容器尚未创建或尚未启动时，Bitcoin 显示 `WAITING`，后台历史行显示 `WAITING for Core startup`。如果 Docker 容器查询失败，或运行中的 Core 探测失败，仍展示观测异常；如果容器启动失败，则显示 `FAILED`，不能作为正常等待忽略。

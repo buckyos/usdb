@@ -322,29 +322,40 @@ def _balance_history_progress(item, readiness, bootstrap, core, activation, *, b
     return item
 
 
-def _chain_wait_detail(core, loader, readiness):
-    """Explain the first unmet native startup gate using this observation only."""
+def _chain_wait_details(core, loader, readiness):
+    """Describe every unmet startup gate; an unknown Core probe must not hide data waits."""
+    details = []
     if core.get("error") or core.get("rpc_available") is False:
-        return "Waiting for Bitcoin readiness: " + (core.get("error") or "Core RPC unavailable")
-    if core.get("bootstrap_ready") is not True:
-        return "Waiting for Bitcoin snapshot baseline activation"
+        label = ("Bitcoin Core readiness check failed" if core.get("error_kind") == "identity_or_configuration"
+                 else "Bitcoin Core readiness unknown")
+        details.append(label + ": " + (core.get("error") or "Core RPC unavailable"))
+    elif core.get("bootstrap_ready") is not True:
+        details.append("Waiting for Bitcoin snapshot baseline activation")
     if loader.get("state") != "exited" or loader.get("exit_code") != 0:
-        return "Waiting for UTXO snapshot preparation to complete"
-    if core.get("tip_ready") is not True:
+        details.append("Waiting for UTXO snapshot preparation to complete")
+    if (not core.get("error") and core.get("rpc_available") is not False
+            and core.get("bootstrap_ready") is True and core.get("tip_ready") is not True):
         current, target = _height(core.get("active_height")), _height(core.get("headers"))
         if current is not None and target is not None and current < target:
             remaining = target - current
             unit = "block" if remaining == 1 else "blocks"
-            return f"Waiting for Bitcoin foreground: {remaining} {unit} remaining ({current}/{target})"
-        return "Waiting for Bitcoin foreground readiness: checking minimum height, tip freshness and peer connections"
+            details.append(f"Waiting for Bitcoin foreground: {remaining} {unit} remaining ({current}/{target})")
+        else:
+            details.append("Waiting for Bitcoin foreground readiness: checking minimum height, tip freshness and peer connections")
     for service in ("balance-history", "usdb-indexer"):
         report, error = readiness[service]
         if report is None:
-            return f"Waiting for {service} readiness: {error or 'RPC unavailable'}"
-        if report.get("consensus_ready") is not True:
+            details.append(f"Waiting for {service} readiness: {error or 'RPC unavailable'}")
+        elif report.get("consensus_ready") is not True:
             blockers = ", ".join(str(value) for value in (report.get("blockers") or []))
-            return f"Waiting for {service} readiness: {blockers or report.get('message') or 'synchronization in progress'}"
-    return "Upstream ready; waiting for controller to start USDB chain"
+            details.append(f"Waiting for {service} readiness: {blockers or report.get('message') or 'synchronization in progress'}")
+    return details
+
+
+def _chain_wait_detail(core, loader, readiness):
+    """Keep the first-gate summary for existing consumers of the detail field."""
+    details = _chain_wait_details(core, loader, readiness)
+    return details[0] if details else "Upstream ready; waiting for controller to start USDB chain"
 
 
 def collect_native_progress(layout, *, controller_state: str | None = None) -> dict:
@@ -448,6 +459,8 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
         readiness, error = node._read_service_readiness(layout, "run_testnet_runtime.sh", [action], service)
         readiness_reports[service] = (readiness, error)
         item = node._indexed_service_component(component, services.get(service), readiness, error, "waiting for native service startup")
+        if component == "usdb_indexer" and item.get("progress_phase") == "waiting_for_upstream":
+            item["upstream_baseline_height"] = int(env["USDB_GENESIS_BLOCK_HEIGHT"])
         if component == "balance_history" and not readiness and services.get(service, {}).get("state") == "running":
             phase = bootstrap.get("phase", "starting")
             height, target = bootstrap.get("height"), bootstrap.get("target", int(env["USDB_GENESIS_BLOCK_HEIGHT"]))
@@ -474,17 +487,19 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
         item["readiness"] = node.node_observation.readiness(readiness)
         components.append(item)
     chain = node._chain_component(layout, env, services.get("usdb-chain"))
-    waiting_detail = (_chain_wait_detail(core, loader, readiness_reports)
-                      if chain["state"] == "WAITING" and services.get("usdb-chain") is None else None)
+    waiting_details = (_chain_wait_details(core, loader, readiness_reports)
+                       if chain["state"] == "WAITING" and services.get("usdb-chain") is None else None)
     gate = node._chain_startup_gate_component(services)
     if gate and (gate["state"] == "FAILED" or chain["state"] not in {"FAILED", "BLOCKED"}):
         chain.update(gate)
     components.append(chain)
     resources, resource_waiting = node._resource_progress(layout, env, services, components)
-    if waiting_detail and gate is None and chain["state"] in {"WAITING", "STARTING"}:
+    if waiting_details is not None and gate is None and chain["state"] in {"WAITING", "STARTING"}:
         # Managed restart annotations must not hide the upstream gate still pending.
         prefix = chain["detail"] + "; " if chain["state"] == "STARTING" else ""
-        chain["detail"] = prefix + waiting_detail
+        chain["detail"] = prefix + (waiting_details[0] if waiting_details else "Upstream ready; waiting for controller to start USDB chain")
+        if waiting_details:
+            chain["startup_wait_details"] = [prefix + waiting_details[0], *waiting_details[1:]]
     overall = node._overall_progress_state(components)
     if resources.get("error"):
         overall = "BLOCKED"

@@ -287,7 +287,8 @@ class NativeBundleTests(unittest.TestCase):
         loader = dict(state="exited", exit_code=0)
         readiness = {name: (dict(consensus_ready=True), None) for name in ("balance-history", "usdb-indexer")}
         cases = [
-            ({**core, "error": "RPC timeout", "rpc_available": False}, loader, readiness, "Bitcoin readiness: RPC timeout"),
+            ({**core, "error": "RPC timeout", "rpc_available": False}, loader, readiness, "Bitcoin Core readiness unknown: RPC timeout"),
+            ({**core, "error": "baseline mismatch", "error_kind": "identity_or_configuration"}, loader, readiness, "Bitcoin Core readiness check failed: baseline mismatch"),
             ({**core, "bootstrap_ready": False}, loader, readiness, "snapshot baseline activation"),
             (core, dict(state="running"), readiness, "snapshot preparation"),
             ({**core, "tip_ready": False, "active_height": 967960}, loader, readiness, "1 block remaining (967960/967961)"),
@@ -300,6 +301,55 @@ class NativeBundleTests(unittest.TestCase):
         for observed_core, observed_loader, observed_readiness, expected in cases:
             with self.subTest(expected=expected):
                 self.assertIn(expected, native._chain_wait_detail(observed_core, observed_loader, observed_readiness))
+
+    def test_rpc_timeout_keeps_shared_reason_and_all_startup_dependencies_visible(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        env = node.read_env(layout.node_env)
+        services = {name: dict(state="running", started_at="2026-01-01T00:00:00+00:00")
+                    for name in ("btc-node", "balance-history", "usdb-indexer")}
+        services["btc-snapshot-bootstrap"] = dict(state="exited", exit_code=0)
+        journal = Path(env["BH_DATA_HOST_DIR"]) / "bootstrap-progress.json"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text(json.dumps(dict(phase="replaying", height=936340, target=963800)))
+        core = dict(bootstrap_ready=True, tip_ready=False, active_height=947197, headers=969095,
+                    history_validated=False, background_height=201660)
+        indexer = dict(consensus_ready=False, current=0, total=0, blockers=["UpstreamReadinessUnknown"])
+        with mock.patch.object(node, "_collect_compose_services", return_value=services), \
+             mock.patch.object(native, "core_progress", return_value=core) as probe, \
+             mock.patch.object(node, "_read_service_readiness", side_effect=lambda *args:
+                 (None, "Connection reset by peer") if args[-1] == "balance-history" else (indexer, None)), \
+             mock.patch("usdb_peers.read_state", return_value=None), \
+             mock.patch.object(node, "_resource_progress", return_value=({}, False)):
+            tracker = node.NodeProgressHistory()
+            tracker.apply(native.collect_native_progress(layout, controller_state="active"), observed_monotonic=0)
+            core.clear()
+            core.update(rpc_available=False, error="Bitcoin RPC getblockchaininfo failed (timeout)")
+            report = native.collect_native_progress(layout, controller_state="active")
+            observed = tracker.apply(report, observed_monotonic=18)
+            self.assertEqual(probe.call_count, 2)
+            components = {item["id"]: item for item in report["components"]}
+            self.assertEqual(components["usdb_indexer"]["upstream_baseline_height"], 963800)
+            self.assertIsNone(components["usdb_indexer"]["current"])
+            self.assertEqual(len(components["usdb_chain"]["startup_wait_details"]), 3)
+            for details in (False, True):
+                rendered = " ".join(node.render_node_progress(observed, width=160, details=details).split())
+                self.assertIn("Bitcoin foreground STALE", rendered)
+                self.assertIn("Bitcoin background STALE", rendered)
+                self.assertIn("Latest probe (shared with foreground): Bitcoin RPC getblockchaininfo failed (timeout)", rendered)
+                self.assertIn("BH replay: 936,340 / 963,800; 27,460 blocks remaining", rendered)
+                self.assertIn("Bitcoin Core readiness unknown:", rendered)
+                self.assertIn("Waiting for balance-history baseline 963,800", rendered)
+                self.assertIn("Waiting for usdb-indexer readiness: UpstreamReadinessUnknown", rendered)
+            # Fresh probes clear the shared timeout without changing any readiness gate.
+            core.clear()
+            core.update(bootstrap_ready=True, tip_ready=True, active_height=969095, headers=969095,
+                        history_validated=False, background_height=201670)
+            recovered = tracker.apply(native.collect_native_progress(layout, controller_state="active"), observed_monotonic=25)
+            rendered = " ".join(node.render_node_progress(recovered, width=160).split())
+            self.assertNotIn("timeout", rendered)
+            self.assertIn("Bitcoin background SYNCING", rendered)
+            self.assertIn("USDB chain WAITING", rendered)
 
     def test_installer_setup_and_doctor_accept_native_release_before_download(self):
         layout = native_kit(self.root)

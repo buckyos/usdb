@@ -53,6 +53,7 @@ def native_bootstrap_progress():
         service_started_at="2026-09-24T11:09:19.592226+00:00", service_elapsed_secs=2078,
         genesis_milestone=dict(height=963800, state="replaying", remaining_blocks=9400))
     components["usdb_indexer"].update(state="WAITING", current=None, total=None, service_elapsed_secs=5331,
+        progress_phase="waiting_for_upstream", upstream_baseline_height=963800,
         detail="Waiting for balance-history queryable baseline; indexing has not started")
     components["usdb_chain"].update(state="WAITING", current=None,
         detail="Waiting for balance-history readiness: balance-history readiness check failed: [Errno 104] Connection reset by peer")

@@ -117,6 +117,79 @@ class ProgressDisplayTests(unittest.TestCase):
                 self.assertIn("Connection reset by peer", expanded)
                 self.assertEqual(report, original)
 
+    def test_chain_lists_core_observation_and_both_data_gates(self):
+        import assumeutxo_node
+        report = native_bootstrap_progress()
+        chain = report["components"][-1]
+        core = dict(error="Bitcoin RPC getblockchaininfo failed (timeout)", rpc_available=False)
+        loader = dict(state="exited", exit_code=0)
+        readiness = {"balance-history": (None, "Connection reset by peer"),
+                     "usdb-indexer": (dict(consensus_ready=False, blockers=["UpstreamReadinessUnknown"]), None)}
+        waits = assumeutxo_node._chain_wait_details(core, loader, readiness)
+        self.assertEqual(len(waits), 3)
+        chain.update(detail=waits[0], startup_wait_details=waits)
+        original = copy.deepcopy(report)
+        for details in (False, True):
+            rendered = " ".join(render_node_progress(report, details=details).split())
+            self.assertIn("Bitcoin Core readiness unknown: Bitcoin RPC getblockchaininfo failed (timeout)", rendered)
+            self.assertIn("Waiting for balance-history baseline 963,800", rendered)
+            self.assertIn("Waiting for usdb-indexer readiness: UpstreamReadinessUnknown", rendered)
+            self.assertEqual("Connection reset by peer" in rendered, details)
+        self.assertEqual(report, original)
+        # A real chain failure must not be replaced by old startup explanations.
+        chain.update(state="FAILED", detail="chain initialization failed")
+        rendered = " ".join(render_node_progress(report).split())
+        self.assertIn("chain initialization failed", rendered)
+        self.assertNotIn("Startup requires", rendered)
+
+    def test_indexer_wait_shows_upstream_baseline_and_remaining_blocks(self):
+        report = native_bootstrap_progress()
+        bootstrap = report["native_bootstrap"]["balance_history"]
+        bootstrap["height"] = 936340
+        original = copy.deepcopy(report)
+        for width in (40, 80, 120):
+            rendered = render_node_progress(report, width=width)
+            self.assertTrue(all(len(line) <= width for line in rendered.splitlines()))
+            compact = " ".join(rendered.split())
+            self.assertIn("queryable baseline 963,800; indexing has not started", compact)
+            self.assertIn("BH replay: 936,340 / 963,800; 27,460 blocks remaining", compact)
+        self.assertEqual(report, original)
+        bh = next(item for item in report["components"] if item["id"] == "balance_history")
+        bootstrap.update(phase="verifying", height=963800)
+        bh.update(state="VERIFYING", progress_phase="verifying")
+        rendered = " ".join(render_node_progress(report).split())
+        self.assertIn("0 blocks remaining", rendered)
+        self.assertIn("BH baseline verification and publication are still required", rendered)
+        self.assertIn("USDB indexer WAITING", rendered)
+
+    def test_indexer_wait_does_not_reuse_stale_failed_or_prior_process_bh_heights(self):
+        for change in ("failed", "stale", "expired", "old_process", "no_timestamp", "importing", "sealed"):
+            with self.subTest(change=change):
+                report = native_bootstrap_progress()
+                bootstrap = report["native_bootstrap"]["balance_history"]
+                bh = next(item for item in report["components"] if item["id"] == "balance_history")
+                if change == "failed":
+                    bh["state"] = "FAILED"
+                elif change == "stale":
+                    bh["last_observed_at"] = report["observed_at"]
+                    bh.update(stale_age_secs=18, last_observed_state="SYNCING", latest_probe_detail="timeout")
+                elif change == "expired":
+                    bootstrap["observed_file_mtime"] -= 121
+                elif change == "old_process":
+                    bh["service_started_at"] = report["observed_at"]
+                elif change == "no_timestamp":
+                    bootstrap.pop("observed_file_mtime")
+                elif change == "importing":
+                    bh.update(state="IMPORTING", progress_phase="importing")
+                    bootstrap["phase"] = "importing"
+                else:
+                    bootstrap["phase"] = "sealed"
+                rendered = " ".join(render_node_progress(report).split())
+                self.assertIn("queryable baseline 963,800", rendered)
+                self.assertNotIn("BH replay:", rendered)
+                if change == "importing":
+                    self.assertIn("BH is importing the UTXO snapshot", rendered)
+
     def test_bootstrap_hint_never_masks_failed_stale_completed_or_unknown_observations(self):
         for change in ("failed", "unavailable", "old_process", "missing_timestamp", "sealed", "other_error", "other_gate", "chain_failed"):
             with self.subTest(change=change):

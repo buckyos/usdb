@@ -185,7 +185,7 @@ def _component_row(component: dict[str, Any], *, details: bool) -> _Row:
     return row
 
 
-def _history_row(background: dict[str, Any], *, details: bool) -> _Row:
+def _history_row(background: dict[str, Any], *, details: bool, probe_detail: str | None = None) -> _Row:
     if background.get("stale"):
         state = "STALE"
         if background.get("validated"):
@@ -204,9 +204,12 @@ def _history_row(background: dict[str, Any], *, details: bool) -> _Row:
         state, summary = "SYNCING", f"SYNCING {background['height']}/{background['target']}"
     else:
         state, summary = "WAITING", "WAITING for snapshot activation"
+    info = ["Core background history: " + summary] if details or state != "VALIDATED" else []
+    if state in {"STALE", "UNAVAILABLE"} and probe_detail:
+        info.append("Latest probe (shared with foreground): " + probe_detail)
     return _Row("Bitcoin background", state, preparation=True,
                 summary=f"baseline {background['target']:,}" if state == "VALIDATED" and not details else "",
-                info=["Core background history: " + summary] if details or state != "VALIDATED" else [],
+                info=info,
                 percent=_coverage(background.get("height"), background.get("target")) if state == "SYNCING" else None)
 
 
@@ -270,6 +273,57 @@ def _minting_rows(minting: dict[str, Any], *, details: bool) -> list[_Row]:
     return [index, ord_row]
 
 
+def _bh_bootstrap_context(report: dict[str, Any]) -> tuple[dict, dict] | None:
+    """Use recent progress from this BH process, never an old bootstrap journal."""
+    bh = next((item for item in report.get("components", []) if item["id"] == "balance_history"), {})
+    if (bh.get("state") not in {"IMPORTING", "SYNCING", "VERIFYING"}
+            or bh.get("last_observed_at") or bh.get("observation_unavailable")
+            or str(bh.get("detail", "")).startswith("STALE")
+            or bh.get("display_state", bh.get("state")) not in {"IMPORTING", "SYNCING", "VERIFYING"}):
+        return None
+    bootstrap = report.get("native_bootstrap", {}).get("balance_history", {})
+    phase = bootstrap.get("phase")
+    if phase not in {"importing", "replaying", "waiting_for_blocks", "verifying"} or phase != bh.get("progress_phase"):
+        return None
+    updated = bootstrap.get("observed_file_mtime")
+    try:
+        started = datetime.fromisoformat(bh["service_started_at"].replace("Z", "+00:00"))
+        observed = datetime.fromisoformat(report["observed_at"].replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    # A journal left by a previous process cannot explain the current RPC failure.
+    if (started.tzinfo is None or observed.tzinfo is None or type(updated) not in (int, float)
+            or not math.isfinite(updated) or updated < started.timestamp()
+            or not -5 <= observed.timestamp() - updated <= 120):
+        return None
+    return bh, bootstrap
+
+
+def _indexer_baseline_details(report: dict[str, Any], component: dict[str, Any]) -> list[str] | None:
+    """Label upstream replay counts as BH work, not indexer progress or readiness."""
+    if (component["state"] != "WAITING" or component.get("progress_phase") != "waiting_for_upstream"
+            or component.get("display_state", "WAITING") != "WAITING"
+            or component.get("last_observed_at") or component.get("observation_unavailable")):
+        return None
+    baseline = component.get("upstream_baseline_height")
+    if not _height(baseline):
+        return None
+    lines = [f"Waiting for balance-history queryable baseline {baseline:,}; indexing has not started"]
+    context = _bh_bootstrap_context(report)
+    if context is None:
+        return lines + ["Current BH replay height unavailable; see Balance history"]
+    bh, bootstrap = context
+    if bootstrap["phase"] == "importing":
+        return lines + ["BH is importing the UTXO snapshot before replay begins"]
+    height = bootstrap.get("height")
+    start = bh.get("sync_start_height")
+    if _height(height) and (not _height(start) or height >= start):
+        lines.append(f"BH replay: {height:,} / {baseline:,}; {max(0, baseline - height):,} blocks remaining")
+    if bootstrap["phase"] == "verifying" or (_height(height) and height >= baseline):
+        lines.append("BH baseline verification and publication are still required")
+    return lines
+
+
 def _chain_bootstrap_detail(report: dict[str, Any], chain: dict[str, Any]) -> str | None:
     """Explain expected pre-RPC bootstrap waits using evidence from the current BH process."""
     detail = chain.get("detail", "")
@@ -280,30 +334,15 @@ def _chain_bootstrap_detail(report: dict[str, Any], chain: dict[str, Any]) -> st
             or chain.get("observation_unavailable") or marker not in detail
             or not any(error in detail.lower() for error in ("connection reset by peer", "connection refused"))):
         return None
-    bh = next((item for item in report.get("components", []) if item["id"] == "balance_history"), {})
-    if (bh.get("state") not in {"IMPORTING", "SYNCING", "VERIFYING"}
-            or bh.get("last_observed_at") or bh.get("observation_unavailable")
-            or str(bh.get("detail", "")).startswith("STALE")
-            or bh.get("display_state", bh.get("state")) not in {"IMPORTING", "SYNCING", "VERIFYING"}):
+    context = _bh_bootstrap_context(report)
+    if context is None:
         return None
-    bootstrap = report.get("native_bootstrap", {}).get("balance_history", {})
-    phase = bootstrap.get("phase")
+    bh, bootstrap = context
     stages = {"importing": "importing the UTXO snapshot", "replaying": "replaying blocks",
               "waiting_for_blocks": "waiting for Bitcoin blocks or undo data", "verifying": "verifying the baseline"}
-    if phase not in stages or phase != bh.get("progress_phase"):
-        return None
-    updated = bootstrap.get("observed_file_mtime")
-    try:
-        started = datetime.fromisoformat(bh["service_started_at"].replace("Z", "+00:00"))
-    except (KeyError, TypeError, ValueError, AttributeError):
-        return None
-    # A journal left by a previous process cannot explain the current RPC failure.
-    if (started.tzinfo is None or type(updated) not in (int, float)
-            or not math.isfinite(updated) or updated < started.timestamp()):
-        return None
     baseline = bh.get("genesis_milestone", {}).get("height")
     target = f" {baseline:,}" if _height(baseline) else ""
-    return (detail.partition(marker)[0] + f"Waiting for balance-history baseline{target}: {stages[phase]}; "
+    return (detail.partition(marker)[0] + f"Waiting for balance-history baseline{target}: {stages[bootstrap['phase']]}; "
             "RPC starts after baseline verification and publication")
 
 
@@ -344,14 +383,35 @@ def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
                          info=["Waiting for managed service restart / resource adoption"]))
     for component in report.get("components", []):
         if details or component["state"] != "SKIPPED":
-            explanation = _chain_bootstrap_detail(report, component) if component["id"] == "usdb_chain" else None
-            displayed = {**component, "detail": explanation} if explanation else component
-            row = _component_row(displayed, details=details)
-            if explanation and details:
-                row.info.append("Readiness probe: " + component["detail"])
+            explanations = None
+            probes = []
+            if component["id"] == "usdb_chain":
+                waits = component.get("startup_wait_details")
+                if (isinstance(waits, list) and component["state"] in {"WAITING", "STARTING"}
+                        and component.get("display_state", component["state"]) in {"WAITING", "STARTING"}
+                        and not component.get("last_observed_at") and not component.get("observation_unavailable")):
+                    explanations = ["Startup requires Bitcoin Core foreground, balance-history and USDB indexer readiness"]
+                    for wait in waits:
+                        explanation = _chain_bootstrap_detail(report, {**component, "detail": wait})
+                        explanations.append(explanation or wait)
+                        if explanation:
+                            probes.append("Readiness probe: " + wait)
+                else:
+                    explanation = _chain_bootstrap_detail(report, component)
+                    if explanation:
+                        explanations = [explanation]
+                        probes.append("Readiness probe: " + component["detail"])
+            elif component["id"] == "usdb_indexer":
+                explanations = _indexer_baseline_details(report, component)
+            row = _component_row({**component, "detail": ""} if explanations else component, details=details)
+            if explanations:
+                row.info = explanations + row.info
+            if details:
+                row.info += probes
             rows.append(row)
         if isinstance(component.get("background_validation"), dict):
-            rows.append(_history_row(component["background_validation"], details=details))
+            probe = component.get("latest_probe_detail") or (component.get("detail") if component.get("observation_unavailable") else None)
+            rows.append(_history_row(component["background_validation"], details=details, probe_detail=probe))
     rows += _minting_rows(report.get("minting", {}), details=details)
     mining = report.get("mining")
     if isinstance(mining, dict):
