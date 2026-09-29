@@ -84,7 +84,11 @@ run_root() {
   if [[ "${USDB_FIREWALL_SKIP_ROOT:-0}" == "1" || "${EUID}" -eq 0 ]]; then
     "$@"
   elif command -v sudo >/dev/null 2>&1; then
-    sudo "$@"
+    if [[ -t 0 ]]; then
+      sudo "$@"
+    else
+      sudo -n -- "$@"
+    fi
   else
     fail "this action requires root privileges or sudo"
   fi
@@ -164,7 +168,14 @@ validate_node_bindings() {
 
 ufw_status() {
   local ufw_bin="$1"
-  run_root "${ufw_bin}" status verbose
+  if run_root "${ufw_bin}" status verbose; then
+    return 0
+  fi
+  if [[ "${EUID}" -ne 0 && "${USDB_FIREWALL_SKIP_ROOT:-0}" != "1" && ! -t 0 ]]; then
+    echo "ERROR: FIREWALL_INSPECTION_REQUIRED: cannot read UFW status without a terminal. With the updated node kit, run usdb-node up from the original operator terminal to prepare read-only sudo access; then run usdb-node firewall check. Firewall validation was not skipped." >&2
+    return 78
+  fi
+  return 1
 }
 
 has_allow_rule() {
@@ -251,7 +262,11 @@ check_firewall() {
   local ufw_bin
   ufw_bin="$(resolve_command ufw)" || fail "ufw is not installed"
   local status
-  status="$(ufw_status "${ufw_bin}")" || fail "failed to read UFW status"
+  status="$(ufw_status "${ufw_bin}")" || {
+    local status_code=$?
+    [[ "${status_code}" -ne 78 ]] || exit 78
+    fail "failed to read UFW status; run usdb-node firewall check from the operator terminal"
+  }
   validate_ufw_status "${status}" || fail "firewall check failed"
 
   echo "Firewall check passed. Verify equivalent ingress rules in any upstream cloud firewall."

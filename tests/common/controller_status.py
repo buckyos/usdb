@@ -21,7 +21,7 @@ class ControllerStatusFixture:
         self.root = Path(self.stack.enter_context(TemporaryDirectory(prefix="usdb-controller-status-")))
         self.layout = SimpleNamespace(node_env=self.root / "private/node.env", bundle_id="usdb-testnet-v0", release_id="r26")
         self.layout.node_env.parent.mkdir()
-        self.layout.node_env.write_text("USDB_NODE_ROLE=full\n")
+        self.layout.node_env.write_text("USDB_NODE_ROLE=full\nUSDB_FIREWALL_MODE=external\n")
         self.launcher = self.root / "bin/usdb-node"
         self.launcher.parent.mkdir()
         self.launcher.write_text("#!/bin/sh\n")

@@ -86,7 +86,7 @@ class BackgroundServicesTests(unittest.TestCase):
 
     def test_disabled_monitor_is_not_started_by_up_or_upgrade(self):
         with BackgroundServicesFixture() as f:
-            f.layout.node_env.write_text("USDB_MONITOR_ENABLED=0\n")
+            f.layout.node_env.write_text("USDB_MONITOR_ENABLED=0\nUSDB_FIREWALL_MODE=external\n")
             f.layout.release_id = "r27"
             result = NODE.ensure_background_services(f.layout)
             self.assertEqual(result["monitor"], "disabled")

@@ -85,7 +85,7 @@ class PrepareUsdbFirewallTests(unittest.TestCase):
                   cat "${USDB_TEST_UFW_STATUS_FILE}"
                   exit 0
                 fi
-                printf '%s\n' "$*" >>"${USDB_TEST_UFW_CALL_LOG}"
+                printf '%s\\n' "$*" >>"${USDB_TEST_UFW_CALL_LOG}"
                 if [[ "$*" == "--force delete allow 8333/tcp" ]]; then
                   grep -v '^8333/tcp' "${USDB_TEST_UFW_STATUS_FILE}" >"${USDB_TEST_UFW_STATUS_FILE}.tmp"
                   mv "${USDB_TEST_UFW_STATUS_FILE}.tmp" "${USDB_TEST_UFW_STATUS_FILE}"
@@ -104,6 +104,7 @@ class PrepareUsdbFirewallTests(unittest.TestCase):
         confirm: bool = False,
         use_command_dir: bool = True,
         system_command_dirs: Path | None = None,
+        unprivileged: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         args = [
             "bash",
@@ -121,7 +122,7 @@ class PrepareUsdbFirewallTests(unittest.TestCase):
         env = os.environ.copy()
         env.update(
             {
-                "USDB_FIREWALL_SKIP_ROOT": "1",
+                "USDB_FIREWALL_SKIP_ROOT": "0" if unprivileged else "1",
                 "USDB_TEST_UFW_STATUS_FILE": str(self.status_file),
                 "USDB_TEST_UFW_CALL_LOG": str(self.call_log),
             }
@@ -133,13 +134,41 @@ class PrepareUsdbFirewallTests(unittest.TestCase):
         if system_command_dirs is not None:
             env["USDB_FIREWALL_SYSTEM_COMMAND_DIRS"] = str(system_command_dirs)
             env["PATH"] = "/usr/bin:/bin"
+        if unprivileged:
+            env["PATH"] = str(self.command_dir) + ":/usr/bin:/bin"
         return subprocess.run(
             args,
             env=env,
             text=True,
             capture_output=True,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
+
+    @unittest.skipIf(os.geteuid() == 0, "requires a non-root operator to exercise sudo")
+    def test_unattended_check_uses_noninteractive_sudo_and_still_checks_policy(self):
+        sudo = self.command_dir / "sudo"
+        sudo.write_text('#!/bin/sh\n[ "$1" = "-n" ] && [ "$2" = "--" ] || exit 99\nshift 2\nexec "$@"\n')
+        sudo.chmod(0o755)
+        result = self.run_script("check", unprivileged=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Firewall check passed", result.stdout)
+        self.assertFalse(self.call_log.exists())
+        self.write_status(bitcoin_public=False, active=False)
+        result = self.run_script("check", unprivileged=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("expected active", result.stderr)
+
+    @unittest.skipIf(os.geteuid() == 0, "requires a non-root operator to exercise sudo")
+    def test_unattended_sudo_denial_is_an_actionable_distinct_error(self):
+        sudo = self.command_dir / "sudo"
+        sudo.write_text('#!/bin/sh\n[ "$1" = "-n" ] && [ "$2" = "--" ] || exit 99\nexit 1\n')
+        sudo.chmod(0o755)
+        result = self.run_script("check", unprivileged=True)
+        self.assertEqual(result.returncode, 78, result.stderr)
+        self.assertIn("FIREWALL_INSPECTION_REQUIRED", result.stderr)
+        self.assertIn("usdb-node up", result.stderr)
+        self.assertNotIn("Firewall check passed", result.stdout)
 
     def test_check_accepts_private_bitcoin_profile(self) -> None:
         result = self.run_script("check")

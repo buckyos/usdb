@@ -8,6 +8,7 @@ import sys
 import time
 
 import node_monitor as monitor
+import node_firewall
 from node_controller_status import _command_options, _directives, PROBE_TIMEOUT_SECS, UNIT_MAX_BYTES
 
 
@@ -236,6 +237,7 @@ def ensure(layout, *, node) -> dict:
             plan = _plan(layout, node, context)
             legacy = legacy_monitor_plan(layout, node, context)
         try:
+            node_firewall.ensure(layout, node, context)
             if retire_legacy_monitor(legacy, node):
                 actions.append("disable:" + legacy["unit"].name)
             for item in plan:

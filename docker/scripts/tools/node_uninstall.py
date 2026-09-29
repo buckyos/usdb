@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Operator uninstall: preview first, preserve data by default, archive private state before purge.
 
-The execution copy lives outside release/data roots and only depends on node_rebuild.py.
+The execution copy lives outside release/data roots with its small helper modules.
 It can resume after the launcher, release kits or node.env have been removed.
 """
 from __future__ import annotations
@@ -22,6 +22,7 @@ import subprocess
 import sys
 
 import node_rebuild as core
+import node_firewall
 
 SCHEMA = "usdb-node-uninstall:v1"
 UNITS = ("usdb-node-bootstrap", "usdb-node-monitor", "usdb-console-monitor")
@@ -82,6 +83,7 @@ def plan(home, bundle, backup, purge=False, unit_dir=Path("/etc/systemd/system")
         if target in selected and target.path.exists() and not target.link:
             core.check_mounts(target.path)
     return dict(schema_version=SCHEMA, hostname=socket.gethostname(), operator_uid=home.stat().st_uid,
+                firewall_permission=str(node_firewall.rule_path(bundle, home.stat().st_uid)),
                 home=str(home), bundle=bundle, data_root=str(base.root), env_path=str(base.env_path),
                 env_sha256=base.env_sha256, purge_data=purge, keep_bitcoin=keep_bitcoin,
                 targets=[dict(key=t.key, path=str(t.path), link=t.link, identity=core.stamp(t.path)[:2]
@@ -100,6 +102,8 @@ def show(value, backup):
     print("\nRemove after execution confirmation:")
     for item in value["targets"]:
         print(f"  {item['key']}: {item['path']}" + (" (not present at planning)" if item["identity"] is None else ""))
+    if value.get("firewall_permission"):
+        print(f"  firewall-inspection-permission: {value['firewall_permission']} (if present; verified during privileged execution)")
     if value["retained"]:
         print("\nRetain:")
         for path in value["retained"]:
@@ -153,6 +157,10 @@ def check_stopped(value, *, deleting=None):
 def private_sources(value):
     """Keep unknown files, wallets and identities; exclude only known large rebuildable DBs."""
     sources = []
+    if value.get("firewall_permission"):
+        permission = node_firewall.installed_rule(value["bundle"], value["operator_uid"])
+        if permission:
+            sources.append(("firewall-permission", permission))
     for item in value["targets"]:
         root = Path(item["path"])
         key = item["key"]
@@ -204,6 +212,11 @@ class Session:
         self.plan = self.state["plan"]
         core.require(self.plan["schema_version"] == SCHEMA and self.plan["hostname"] == socket.gethostname(), "Uninstall session belongs to a different host or version")
         core.require(os.geteuid() in {0, self.plan["operator_uid"]}, "Run uninstall as the original operator")
+        permission = self.plan.get("firewall_permission")
+        if permission:
+            core.require(permission == str(node_firewall.rule_path(self.plan["bundle"], self.plan["operator_uid"])),
+                         "Unexpected firewall permission path in uninstall plan")
+            core.require(not core.overlap(root, Path(permission)), "Uninstall backup overlaps firewall permission")
         for path in self.plan["scope"]:
             core.require(not core.overlap(root, core.absolute(path)), "Uninstall backup overlaps a selected path")
         core.require(all(item["path"] in self.plan["scope"] for item in self.plan["targets"]), "Uninstall target is outside its recorded scope")
@@ -255,6 +268,8 @@ class Session:
         core.require(sys.stdin.isatty() and sys.stdout.isatty(), "Uninstall execution requires an interactive terminal; no --yes or piped confirmation is supported")
         check_targets(self.plan)
         check_stopped(self.plan)
+        if self.plan.get("firewall_permission"):
+            node_firewall.installed_rule(self.plan["bundle"], self.plan["operator_uid"])
         show(self.plan, self.root)
         phrase = ("PURGE " if self.plan["purge_data"] else "UNINSTALL ") + self.plan["bundle"] + " " + self.plan["hostname"]
         print(f"\nType exactly '{phrase}' to execute; anything else cancels:", flush=True)
@@ -276,6 +291,14 @@ class Session:
             for item in self.plan["targets"]:
                 core.acquire_locks(Path(item["path"]), locks)
             self.backup()
+            if self.plan.get("firewall_permission"):
+                permission = node_firewall.installed_rule(self.plan["bundle"], self.plan["operator_uid"])
+                if permission:
+                    self.backup(only=permission)
+                    self.event("delete_started", permission)
+                    permission.unlink()
+                    core.sync_dir(permission.parent)
+                    self.event("deleted", permission)
             for item in core.containers():
                 if core.selected_container(runtime_plan(self.plan), item):
                     check_stopped(self.plan)
@@ -321,7 +344,7 @@ def stage(value, backup):
     backup.mkdir(parents=True, mode=0o700)
     runner = backup / "runner"
     runner.mkdir(mode=0o700)
-    for source in (Path(__file__).resolve(), Path(core.__file__).resolve()):
+    for source in (Path(__file__).resolve(), Path(core.__file__).resolve(), Path(node_firewall.__file__).resolve()):
         shutil.copyfile(source, runner / source.name)
         (runner / source.name).chmod(0o600)
     core.atomic_json(backup / "uninstall.json", dict(plan=value, backups={}, events=[], complete=False))

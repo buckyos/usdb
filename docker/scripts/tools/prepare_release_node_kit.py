@@ -36,6 +36,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/generate_bitcoin_rpcauth.py",
     "docker/scripts/tools/install_usdb_node.sh",
     "docker/scripts/tools/prepare_usdb_firewall.sh",
+    "docker/scripts/tools/node_firewall.py",
     "docker/scripts/tools/prepare_usdb_host.sh",
     "docker/scripts/tools/release_manifest.py",
     "docker/scripts/tools/runtime_compatibility.py",

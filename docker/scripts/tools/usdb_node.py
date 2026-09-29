@@ -389,6 +389,8 @@ def install_controller_unit(
     import node_background_services
     legacy = node_background_services.legacy_monitor_plan(layout, sys.modules[__name__], context)
     _install_service_unit(destination, content, context.service_user)
+    import node_firewall
+    node_firewall.ensure(layout, sys.modules[__name__], context)
     node_monitor.install(layout, sys.modules[__name__], context)
     node_background_services.retire_legacy_monitor(legacy, sys.modules[__name__])
     _privileged_command(["systemctl", "daemon-reload"])
@@ -2297,13 +2299,23 @@ def run_firewall_action(
     ]
     if confirm:
         arguments.append("--confirm")
-    return run_helper(
-        layout,
-        "prepare_usdb_firewall.sh",
-        arguments,
-        output_to_stderr=output_to_stderr,
-        **({"capture_output": True} if capture_output else {}),
-    )
+    try:
+        return run_helper(
+            layout,
+            "prepare_usdb_firewall.sh",
+            arguments,
+            output_to_stderr=output_to_stderr,
+            **({"capture_output": True} if capture_output else {}),
+        )
+    except subprocess.CalledProcessError as error:
+        import node_firewall
+        if error.returncode != node_firewall.INSPECTION_REQUIRED:
+            raise
+        raise node_firewall.FirewallInspectionRequired(
+            "FIREWALL_INSPECTION_REQUIRED: background UFW status inspection needs read-only sudo access. "
+            "With the updated node kit, run usdb-node up from the original operator's terminal "
+            "to prepare that permission; use usdb-node firewall check to inspect the policy."
+        ) from error
 
 
 def _pending_bootstrap_snapshot(layout: ReleaseLayout, env: dict[str, str]) -> bool:
@@ -6539,6 +6551,9 @@ def main() -> int:
                 else "USDB node operation failed"
             )
             print(f"{label}: {error}", file=sys.stderr)
+        import node_firewall
+        if args.command == "controller" and isinstance(error, node_firewall.FirewallInspectionRequired):
+            return CONTROLLER_MANUAL_EXIT_CODE
         return 1
 
 

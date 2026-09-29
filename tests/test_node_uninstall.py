@@ -17,9 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/too
 import node_rebuild as core
 import node_uninstall as uninstall
 import node_storage as storage
+import node_firewall
 import usdb_node as node
 from common.native_node import native_kit
 from common.node_rebuild import RebuildFixture
+from common.firewall import FirewallFixture
 
 
 class UninstallTests(unittest.TestCase):
@@ -27,6 +29,9 @@ class UninstallTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="usdb-uninstall-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        self.permission_probe = mock.patch.object(node_firewall, "installed_rule", return_value=None)
+        self.permission_probe.start()
+        self.addCleanup(self.permission_probe.stop)
         self.f = RebuildFixture(self.root)
         self.f.units.mkdir()
         for prefix in uninstall.UNITS:
@@ -90,6 +95,33 @@ class UninstallTests(unittest.TestCase):
         for path, content in files.items():
             self.assertEqual(path.read_bytes(), content)
         self.assertTrue(self.f.activation.exists())
+
+    def test_uninstall_archives_only_its_exact_firewall_permission(self):
+        self.permission_probe.stop()
+        with FirewallFixture() as firewall:
+            path = firewall.write_rule()
+            original = path.read_bytes()
+            foreign = firewall.directory / "unrelated-rule"
+            foreign.write_text("preserve")
+            session = self.session()
+            with self.execution():
+                session.run()
+            self.assertFalse(path.exists())
+            self.assertEqual(foreign.read_text(), "preserve")
+            self.assertEqual((self.f.backup / "private/firewall-permission").read_bytes(), original)
+            self.assertTrue(self.f.env.exists())
+
+    def test_customized_firewall_permission_blocks_uninstall_before_any_deletion(self):
+        self.permission_probe.stop()
+        with FirewallFixture() as firewall:
+            path = firewall.write_rule()
+            path.chmod(0o600)
+            path.write_text("customized by administrator")
+            session = self.session()
+            with self.execution(), self.assertRaisesRegex(ValueError, "manual review"):
+                session.run()
+            self.assertTrue(self.f.release.exists())
+            self.assertTrue(path.exists())
 
     def test_purge_verifies_private_backup_and_preserves_unrelated_data(self):
         self.f.add_native_bitcoin_data()

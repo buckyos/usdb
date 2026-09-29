@@ -12,6 +12,7 @@
 | 404、下载失败、校验不通过、拉取镜像被拒绝 | [下载问题](#下载失败或校验不通过) |
 | `node.env template is missing keys`，包含 P2P 字段 | [r25 首次配置问题](#首次配置缺少-p2p-字段) |
 | Docker 无权限、版本太低、sudo 失败 | [主机和权限](#docker-权限或主机检查失败) |
+| managed UFW 下后台启动报 sudo 无终端、无法读取 UFW | [后台防火墙检查](#后台防火墙检查失败) |
 | `doctor` 显示 `ACTION REQUIRED`、`PASSED WITH NOTES` 或 `Not checked` | [阅读诊断报告](#如何阅读-doctor-报告) |
 | `node is already configured` | [已有配置](#提示已有配置) |
 | 磁盘不足、目录容量不符合要求 | [磁盘问题](#磁盘空间不足) |
@@ -161,6 +162,38 @@ usdb-node doctor
 不需要再次 `setup`。不支持 systemd 的主机不属于本批默认后台部署路径。
 
 **恢复标志**：原运维账号的主机检查通过；已有配置的节点 `doctor` 通过。仍失败时提供主机系统、内核、Docker/Compose 版本及第一项失败信息。
+
+## 后台防火墙检查失败
+
+**适用范围**：`setup` 选择 managed UFW 后，后台 controller 报 `sudo: A terminal is required to authenticate`、
+`failed to read UFW status` 或 `FIREWALL_INSPECTION_REQUIRED`。交互终端执行 `firewall check` 可能正常。
+
+旧版后台预检需要读取 UFW 状态，但 systemd 没有终端输入 sudo 密码。重新登录或在 SSH 中执行 `sudo -v`
+不能给后台服务提供持续的认证。此错误本身不代表端口规则配置错误。
+
+安装包含此修复的新版本，完成同网络的 `activate-release` 后，以原运维账号执行：
+
+```bash
+usdb-node up
+```
+
+工具会准备仅限 `/usr/sbin/ufw status verbose` 的非交互读取权限，并检查该权限确实生效，再提交后台启动。
+按提示在当前终端输入 sudo 密码即可；无需重复 `setup` 或单独运行 `controller install`。
+若存在自行编辑的规则，工具保留它并给出具体文件路径，需管理员检查。
+
+仍失败时执行以下只读检查：
+
+```bash
+usdb-node firewall check
+sudo -k -n -- /usr/sbin/ufw status verbose
+sudo visudo -c
+```
+
+第二条忽略缓存认证，验证后台实际可用的免密码权限；失败时检查 sudo 规则目录是否被加载、是否存在覆盖规则。
+若输出 UFW 未启用、缺少端口或公开了敏感端口，应处理这些实际规则问题，不能仅靠修复 sudo 权限解决。
+
+**恢复标志**：非交互读取成功、`firewall check` 通过，controller 越过 preflight 并开始后续启动阶段。
+修复完成前确需继续启动，可在保持连接的 SSH 终端使用 `usdb-node up --foreground`；它不能修复重启后的自动启动。
 
 ## 提示已有配置
 

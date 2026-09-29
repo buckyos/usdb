@@ -89,6 +89,11 @@ usdb-node setup
 
 工具会生成私有凭据、保存配置，并安装后台启动管理服务。sudo 提示要求当前运维账号的密码。首次部署采用默认后台方式，不使用 `--no-controller`。
 
+包含后台防火墙修复的版本在选择 managed UFW 时，还会为当前账号和网络安装一条只允许读取 UFW 状态的 sudo 规则。
+因此 controller 可以在 SSH 断开或机器重启后继续校验防火墙；修改防火墙仍需要正常 sudo 认证。
+旧版本升级后，`usdb-node up` 会自动补齐这项权限，可能提示输入一次密码，无需额外执行 `controller install`。
+遇到 `FIREWALL_INSPECTION_REQUIRED` 时参见[后台防火墙检查失败](../troubleshooting/README.md#后台防火墙检查失败)。
+
 目录容量预览、循环重选和保留 Bitcoin 数据的空间折抵适用于包含此改进的新版本。
 空间不足时可以改选已挂载的数据盘，或释放空间后重新输入同一路径；按 `Ctrl+C` 可退出。
 选择启用 Ord 后会再次检查额外空间，不足时也需重选。具体容量与复用规则见[数据盘要求](requirements.md#保留-bitcoin-数据后的空间要求)。

@@ -98,6 +98,14 @@ usdb-node firewall check
 `doctor` 仅在 managed 模式调用该只读检查。external 模式会明确报告跳过 UFW，但仍检查全部容器端口绑定。
 读取 UFW 状态可能请求 sudo；`--ssh-port` 只用于紧急或自动化场景下覆盖已保存值。
 
+包含后台检查修复的 node kit 由 `setup` / `controller install` 及后台 `up` 在原运维终端调用受认证的安装 helper，
+为 managed 节点生成 `/etc/sudoers.d/usdb-ufw-<bundle>-u<uid>`。授权命令严格限定为
+`/usr/sbin/ufw status verbose`，使用 `NOPASSWD: NOSETENV`，不授予发布包脚本、Python 或其他 UFW 命令权限。
+安装前后执行 `visudo` 校验，并用忽略缓存认证的非交互查询验证权限生效；规则文件按账号/网络隔离。
+后台无法读取状态时返回明确的操作提示和 controller 手动处理退出码，避免反复等待不存在的认证终端。
+external 模式不安装此授权；切换 external 不修改现有 UFW 规则，生成的只读授权在卸载时备份并清理。
+卸载不依赖发行目录继续存在；sudo 规则目录不可读时，预览列出确切候选路径，提权执行后核验内容再处理。
+
 ## 5. 可选公开 Bitcoin P2P
 
 只有明确希望该机器向 Bitcoin 网络提供入站 full-node 容量时，才将：
