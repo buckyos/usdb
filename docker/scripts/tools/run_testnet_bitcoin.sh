@@ -150,7 +150,8 @@ stop_bitcoin() {
   local finished_at
   local elapsed
   local next_heartbeat=15
-  local shutdown_phase
+  local shutdown_observation
+  local data_dir
   local final_state
   local exit_code
   local oom_killed
@@ -209,18 +210,15 @@ stop_bitcoin() {
       sleep 1
       elapsed="$(( $(date +%s) - started_at ))"
       if ((elapsed >= next_heartbeat)); then
-        shutdown_phase="$(
-          data_dir="$(env_value BTC_NODE_DATA_HOST_DIR "${node_env}")"
-          if [[ -r "${data_dir}/debug.log" ]]; then
-            tail -n 256 "${data_dir}/debug.log" 2>/dev/null \
-              | grep -E 'Shutdown:|Dumped mempool|Flushed fee estimates|thread exit' \
-              | tail -n 1 || true
-          fi
-        )"
-        printf '[%s] [usdb-node] Bitcoin Core shutdown in progress: elapsed=%s, phase=%s\n' \
+        data_dir="$(env_value BTC_NODE_DATA_HOST_DIR "${node_env}")"
+        # Display failures must never interrupt waiting for a safe Core exit.
+        shutdown_observation="$(python3 "${script_dir}/bitcoin_shutdown_progress.py" \
+          --log-file "${data_dir}/debug.log" --since "${started_at}" 2>/dev/null)" \
+          || shutdown_observation='  Last observed stage: unavailable (shutdown log observation failed)'
+        printf '[%s] [usdb-node] Bitcoin Core shutdown in progress: elapsed=%s; waiting for safe process exit\n%s\n' \
           "$(timestamp_utc)" \
           "$(duration_text "${elapsed}")" \
-          "${shutdown_phase:-waiting for database flush}" >&2
+          "${shutdown_observation}" >&2
         next_heartbeat="$((next_heartbeat + 15))"
       fi
     done

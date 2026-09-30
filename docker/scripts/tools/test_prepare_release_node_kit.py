@@ -98,6 +98,13 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
                                   "status", "--help"], cwd=self.root, capture_output=True, text=True)
         self.assertEqual(command.returncode, 0, command.stderr)
         self.assertIn("--details", command.stdout)
+        command = subprocess.run(
+            [sys.executable, str(output / "docker/scripts/tools/bitcoin_shutdown_progress.py"),
+             "--log-file", str(self.root / "missing-debug.log"), "--since", "0"],
+            cwd=self.root, capture_output=True, text=True,
+        )
+        self.assertEqual(command.returncode, 0, command.stderr)
+        self.assertIn("Last observed stage: unavailable", command.stdout)
         self.assertTrue((output / "docker/scripts/tools/control_plane_monitor.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/node_observation.py").is_file())
         for name in ("node_monitor.py", "node_monitor_rules.py", "node_monitor_store.py", "node_notification_config.py", "node_notification_queue.py", "node_notification_transport.py", "node_notifications.py"):

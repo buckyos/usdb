@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -26,14 +28,22 @@ def read_env(path: Path) -> dict[str, str]:
 
 class TestnetBitcoinReleaseTests(unittest.TestCase):
     def run_fake_bitcoin_down(
-        self, exit_code: int, *, rpc_stop_succeeds: bool = True
+        self, exit_code: int, *, rpc_stop_succeeds: bool = True,
+        slow_shutdown: bool = False, observer_fails: bool = False,
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             bundle = root / "bundle"
             bundle.mkdir()
             node_env = bundle / "node.env"
-            node_env.write_text("", encoding="utf-8")
+            node_env.write_text(f"BTC_NODE_DATA_HOST_DIR={root}\n", encoding="utf-8")
+            clock_start = int(time.time()) - 120
+            stamp = datetime.fromtimestamp(clock_start + 1, timezone.utc).isoformat().replace("+00:00", "Z")
+            (root / "debug.log").write_text(
+                f"{stamp} Dumped mempool: 0.000s to copy, 0.329s to dump, 27 bytes dumped to file\n"
+                f"{stamp} [warning] Flushing large (37582620 entries) UTXO set to disk, it may take several minutes\n",
+                encoding="utf-8",
+            )
             (bundle / "network.env").write_text("", encoding="utf-8")
             state = root / "state"
             state.write_text("running\n", encoding="utf-8")
@@ -52,6 +62,7 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
                       elif [[ " $* " == *" exec -T btc-node "* && " $* " == *"/opt/bitcoin/bin/bitcoin-cli "* && " $* " == *" stop "* ]]; then
                         printf 'rpc-stop\\n' >>"${FAKE_DOCKER_CALLS}"
                         if [[ "${FAKE_RPC_STOP_SUCCEEDS}" == "true" ]]; then
+                          if [[ "${FAKE_SLOW_SHUTDOWN}" == "true" ]]; then exit 0; fi
                           printf 'exited\\n' >"${FAKE_DOCKER_STATE}"
                         else
                           exit 1
@@ -83,6 +94,19 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
                 encoding="utf-8",
             )
             docker.chmod(0o755)
+            if slow_shutdown:
+                (root / "clock").write_text(str(clock_start), encoding="utf-8")
+                # Advance a simulated clock, exercising heartbeats without a real wait.
+                scripts = {
+                    "date": '#!/usr/bin/env bash\nif [[ "$1" == "+%s" ]]; then cat "${FAKE_CLOCK}"; else /bin/date "$@"; fi\n',
+                    "sleep": '#!/usr/bin/env bash\nnow=$(cat "${FAKE_CLOCK}")\necho "$((now + 15))" >"${FAKE_CLOCK}"\nif ((now + 15 >= FAKE_FINISH)); then echo exited >"${FAKE_DOCKER_STATE}"; fi\n',
+                }
+                if observer_fails:
+                    scripts["python3"] = "#!/usr/bin/env bash\nexit 1\n"
+                for name, script in scripts.items():
+                    executable = fake_bin / name
+                    executable.write_text(script, encoding="utf-8")
+                    executable.chmod(0o755)
             environment = os.environ.copy()
             environment.update(
                 {
@@ -93,6 +117,9 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
                     "FAKE_DOCKER_CALLS": str(calls),
                     "FAKE_DOCKER_EXIT_CODE": str(exit_code),
                     "FAKE_RPC_STOP_SUCCEEDS": str(rpc_stop_succeeds).lower(),
+                    "FAKE_SLOW_SHUTDOWN": str(slow_shutdown).lower(),
+                    "FAKE_CLOCK": str(root / "clock"),
+                    "FAKE_FINISH": str(clock_start + 30),
                 }
             )
             result = subprocess.run(
