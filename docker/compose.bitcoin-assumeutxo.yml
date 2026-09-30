@@ -50,8 +50,9 @@ services:
       - ${BTC_ASSUMEUTXO_STATE_HOST_DIR:?BTC_ASSUMEUTXO_STATE_HOST_DIR is required}:/data/assumeutxo-state
       - ${BTC_BOOTSTRAP_BUNDLE_ARTIFACTS_DIR:-../docker/networks/testnet-v0/artifacts}:/network:ro
       - ${BTC_BOOTSTRAP_TRUST_DIR:-../docker/trust}:/run/usdb/keys:ro
-    mem_limit: 128m
-    memswap_limit: 128m
+    # Download writeback is charged to this cgroup, in addition to Python's RSS.
+    mem_limit: ${BTC_BOOTSTRAP_MEMORY_LIMIT:-512m}
+    memswap_limit: ${BTC_BOOTSTRAP_MEMORY_LIMIT:-512m}
     stop_grace_period: 1m
     logging:
       driver: json-file

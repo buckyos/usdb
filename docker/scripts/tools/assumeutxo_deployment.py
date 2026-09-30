@@ -152,8 +152,10 @@ def validate_node(contract: dict, env: dict, network: dict) -> None:
         if key not in {"BH_SYNC_LOCAL_LOADER_THRESHOLD", "BTC_TXINDEX"}:
             require(env.get(key, "") == value, f"{key} differs from the release native bootstrap contract")
     require(env.get("BTC_TXINDEX") in {"0", "1"}, "Native BTC_TXINDEX must be explicit")
-    require(memory_bytes(env.get("BTC_BOOTSTRAP_MEMORY_LIMIT", "128m"), "BTC_BOOTSTRAP_MEMORY_LIMIT") == 128 * MIB,
-            "Native Core observer requires its fixed 128 MiB budget")
+    # Accept legacy 128 MiB configurations so activate-release can migrate them.
+    # The resource policy separately checks the complete host budget.
+    require(memory_bytes(env.get("BTC_BOOTSTRAP_MEMORY_LIMIT", "512m"), "BTC_BOOTSTRAP_MEMORY_LIMIT") >= 128 * MIB,
+            "Native Core preparation requires at least 128 MiB; the default budget is 512 MiB")
     validate_environment(env)
     for key in ("BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR", "BTC_ASSUMEUTXO_STATE_HOST_DIR"):
         path = Path(env[key])

@@ -116,6 +116,7 @@ def _component_row(component: dict[str, Any], *, details: bool) -> _Row:
     if type(component.get("baseline_header_height")) is int and component["state"] == "WAITING":
         row.info.append(f"Next: Core import after baseline block header {component['baseline_header_height']} is available")
     progress_phase = component.get("progress_phase")
+    row.info.extend(component.get("preparation_details", []))
     if file and str(progress_phase).startswith("core_"):
         row.info.append("Progress above: Core import stage; file download is complete")
     if component.get("last_observed_at"):

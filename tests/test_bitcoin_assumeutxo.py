@@ -57,7 +57,7 @@ class BitcoinBootstrapTests(unittest.TestCase):
         origin.required_user_agent = "usdb-snapshot-verifier/1"
         url = origin.url.rsplit("/", 1)[0] + "/redirect"
         origin.plans[0] = deque(["cut-valid"])
-        with self.assertRaises(ValueError):
+        with mock.patch.object(BOOT, "DOWNLOAD_ATTEMPTS", 1), self.assertRaises(ValueError):
             BOOT.download_snapshot(self.snapshot, self.source, url, reserve_bytes=0)
         part = self.source.with_name("snapshot.dat.download") / "snapshot.part"
         offset = part.stat().st_size
@@ -71,6 +71,67 @@ class BitcoinBootstrapTests(unittest.TestCase):
         # A restart verifies the local file and does not require a download URL.
         BOOT.download_snapshot(self.snapshot, self.source, "", reserve_bytes=0)
         self.assertEqual(len(origin.requests), 2)
+
+    def test_download_automatically_resumes_transport_failure(self):
+        origin = self.origin()
+        origin.plans[0] = deque(["cut-valid"])
+        with mock.patch.object(BOOT.time, "sleep") as sleep:
+            BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
+        self.assertEqual(self.source.read_bytes(), self.payload)
+        self.assertEqual(origin.requests, [(0, len(self.payload) - 1), (len(self.payload) // 2, len(self.payload) - 1)])
+        sleep.assert_called_once_with(2)
+        self.assertIn('"phase": "download_retry"', self.log.getvalue())
+
+    def test_transport_retries_stop_and_preserve_failure_record(self):
+        origin = self.origin()
+        for offset in (0, 4096, 6144):
+            origin.plans[offset] = deque(["cut-valid"])
+        with mock.patch.object(BOOT.time, "sleep"), self.assertRaises(BOOT.DownloadInterrupted):
+            BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
+        work = self.source.with_name("snapshot.dat.download")
+        record = json.loads((work / "progress.json").read_text())
+        self.assertEqual(len(origin.requests), 3)
+        self.assertEqual(record["phase"], "download_failed")
+        self.assertTrue(record["details"]["retryable"])
+        self.assertEqual(record["details"]["bytes"], (work / "snapshot.part").stat().st_size)
+        self.assertEqual((work / "snapshot.part").read_bytes(), self.payload[:7168])
+        self.assertFalse(self.source.exists())
+
+    def test_writeback_is_bounded_by_bytes_even_without_elapsed_time(self):
+        origin = self.origin()
+        windows = []
+        flush = BOOT.flush_download
+
+        def observe(output, start, end):
+            windows.append(end - start)
+            flush(output, start, end)
+
+        with mock.patch.object(BOOT, "DOWNLOAD_FLUSH_BYTES", 2048), \
+             mock.patch.object(BOOT, "CHUNK_BYTES", 1024), \
+             mock.patch.object(BOOT, "flush_download", side_effect=observe), \
+             mock.patch.object(BOOT.time, "monotonic", return_value=1):
+            BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
+        self.assertEqual(self.source.read_bytes(), self.payload)
+        self.assertEqual(sum(windows), len(self.payload))
+        self.assertLessEqual(max(windows), 2048)
+
+    def test_disk_errors_do_not_trigger_transport_retries(self):
+        origin = self.origin()
+        with mock.patch.object(BOOT, "flush_download", side_effect=OSError(28, "disk full")), \
+             mock.patch.object(BOOT.time, "sleep") as sleep, self.assertRaises(OSError):
+            BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
+        sleep.assert_not_called()
+        record = json.loads((self.source.with_name("snapshot.dat.download") / "progress.json").read_text())
+        self.assertFalse(record["details"]["retryable"])
+        self.assertIn("errno 28", record["details"]["error"])
+
+    def test_permanent_http_and_tls_failures_are_not_retryable(self):
+        for error in (BOOT.urllib.error.HTTPError("https://secret", 403, "secret", {}, None),
+                      BOOT.urllib.error.URLError(BOOT.ssl.SSLCertVerificationError("secret"))):
+            with self.subTest(error=type(error).__name__):
+                failure = BOOT.download_transport_error(error)
+                self.assertNotIsInstance(failure, BOOT.DownloadInterrupted)
+                self.assertNotIn("secret", str(failure))
 
     def test_wrong_ranges_encodings_and_download_hash_never_publish(self):
         origin = self.origin()

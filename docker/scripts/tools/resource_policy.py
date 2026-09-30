@@ -36,7 +36,7 @@ SERVICE_MEMORY_KEYS = {
     "usdb-control-plane": "CONTROL_PLANE_MEMORY_LIMIT",
 }
 MANUAL_DEFAULTS = {
-    "BTC_BOOTSTRAP_MEMORY_LIMIT": "128m",
+    "BTC_BOOTSTRAP_MEMORY_LIMIT": "512m",
     "ORD_MEMORY_LIMIT": "4g",
     "BH_MEMORY_LIMIT": "20g",
     "BH_SYNC_UTXO_MAX_CACHE_BYTES": str(4 * GIB),
@@ -209,7 +209,8 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
     if ord_memory:
         limits["ORD_MEMORY_LIMIT"] = ord_memory
     if env.get("SNAPSHOT_MODE") == "assumeutxo":
-        limits["BTC_BOOTSTRAP_MEMORY_LIMIT"] = 128 * MIB
+        # Include HTTPS buffers and bounded file writeback, not only Python RSS.
+        limits["BTC_BOOTSTRAP_MEMORY_LIMIT"] = 512 * MIB
     # Keep the previous dbcache allowance: the IBD boost is headroom for file
     # cache and other allocations, not an equal increase in application cache.
     bitcoin_cache_limit = limits["BTC_MEMORY_LIMIT"]
@@ -242,6 +243,14 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
         host_memory, phase, reserve, limits,
         dbcache, cache // 4, cache - cache // 4, external, ord_cache, ord_cap,
     )
+    excess = plan.total_bytes - host_memory
+    if 0 < excess <= limits.get("BTC_BOOTSTRAP_MEMORY_LIMIT", 0):
+        # On small hosts with Ord/external reservations, fund preparation from
+        # Core's headroom; never take BH's minimum or the system reserve.
+        reduction = (excess + MIB - 1) // MIB * MIB
+        minimum = max(2 * GIB, (dbcache + 512) * MIB)
+        if limits["BTC_MEMORY_LIMIT"] - reduction >= minimum:
+            limits["BTC_MEMORY_LIMIT"] -= reduction
     if plan.total_bytes > host_memory:
         raise ValueError(f"{phase} resource budget exceeds effective host memory")
     return plan

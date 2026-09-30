@@ -263,6 +263,32 @@ usdb-node controller logs --follow
 
 **恢复标志**：组件进入后续阶段、处理量继续增长，最后通过整体状态和入网检查。仍失败时提供两次带时间的观察结果、阶段及同一时间段日志。
 
+## 快照下载 FAILED，但 Bitcoin 仍在同步
+
+**适用范围**：原生 AssumeUTXO 启动；状态中的 UTXO snapshot 与 controller 失败，而 Bitcoin (IBD) 仍在同步历史区块。
+
+快照准备任务与 bitcoind 是独立容器。下载任务退出后，bitcoind 可以继续普通同步，但 BH、indexer 和 chain 的启动会等待快照准备完成。
+
+```bash
+usdb-node status --details
+usdb-node logs --bitcoin btc-snapshot-bootstrap
+```
+
+重点看快照行的退出码、中断阶段和具体原因。`OOM killed` 表示触及**下载容器**的内存限制；即使整机还有空闲内存也会发生，文件缓存和磁盘回写同样计入限制。
+旧版可能只显示 `FAILED / Downloading snapshot` 和最后一次记录的下载量。新版同时显示实际保留的断点大小，但保留字节尚不代表通过 SHA-256 校验。
+
+包含本次修复的版本默认给准备任务 512 MiB，并限制每批待刷盘数据。使用自动资源策略的旧节点按正常流程 `down → activate-release → doctor → up` 升级时，会更新原来的 128 MiB 预算；保留数据目录和下载文件。手动资源策略保留自定义配置，应核对并调整 `BTC_BOOTSTRAP_MEMORY_LIMIT`，再用 `doctor` 检查整机预算。
+
+网络暂时中断会在下载进程内最多尝试 3 次，每次从已保留字节续传。controller 每轮启动最多再恢复一次确认处于文件准备阶段的中断任务；持续失败转为需要处理，停止重复自动启动。排除原因后，面板明确提示可以恢复的任务使用 `usdb-node up` 重试。磁盘错误、错误的文件身份、SHA-256 不匹配及结果不明的 Core 导入，不会被当作网络错误盲目重试；保留日志并先排查具体原因。
+
+**已有 Bitcoin 数据会怎样？** 使用相同数据目录、网络和快照基线时：
+
+- 快照尚未导入：续传并校验快照，导入后前台从基线高度 935000 追新块；原有链状态在后台从已有验证进度继续，已有区块文件复用。
+- 快照已激活：先查询 Core 确认已有状态，复用它，不重复导入。
+- 普通同步已验证到基线及以上：确认基线区块哈希后，复用现有链状态，不再向 Core 导入快照；BH 若仍需原始 UTXO 文件，仍会准备该文件。
+
+无需清空 Bitcoin 数据或执行 reindex。修复成功后，断点下载继续增长、完成 SHA-256 校验，随后快照导入或复用成功，BH/indexer 开始启动。
+
 ## Bitcoin 反复 RPC 超时但主机很空闲
 
 **适用范围**：Bitcoin 前台已追平、后台仍在验证历史区块，反复出现 `getblockchaininfo failed (timeout)`、

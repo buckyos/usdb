@@ -57,7 +57,7 @@ def main():
         assert all(v["target"] != "/data/bitcoin" for v in loader["volumes"])
         assert all(int(port["target"]) != 8332 for port in core.get("ports", []))
         assert loader["depends_on"]["btc-node"]["condition"] == "service_started"
-        assert loader["restart"] == "no" and int(loader["mem_limit"]) == 128 * 1024 * 1024
+        assert loader["restart"] == "no" and int(loader["mem_limit"]) == 512 * 1024 * 1024
         assert "status" in core["healthcheck"]["test"]
         report["compose_overlay"] = "pass"
         tool = "docker/scripts/tools/bitcoin_assumeutxo.py"

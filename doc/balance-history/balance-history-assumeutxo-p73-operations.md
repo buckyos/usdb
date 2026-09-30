@@ -16,7 +16,7 @@
 
 | 阶段 | 启动条件与行为 | 资源 |
 | --- | --- | --- |
-| `bitcoin` | Core `prune=0` 启动；observer 下载/校验原始 UTXO，等待 headers，执行或恢复 `loadtxoutset` | Core 启动期额度 + 128 MiB observer；下游保持停止 |
+| `bitcoin` | Core `prune=0` 启动；observer 下载/校验原始 UTXO，等待 headers，执行或恢复 `loadtxoutset` | Core 启动期额度 + 512 MiB observer（含文件回写预算）；下游保持停止 |
 | `overlap` | Core canonical B/hash 匹配且 UTXO 文件准备成功后，先安全停止 Core、提交新额度，再启动 Core、BH、indexer | Core/BH/indexer 并行预算；BH 导入和 B+1…G 重放可在前台未到 G 时开始 |
 | `steady` | Core 前台追平、G/hash 匹配、tip 时间和 peers 合格，且 BH/indexer 实际 `consensus_ready=true` | 安全切换稳定额度，恢复服务，重新核对 readiness 后执行 chain-init 并启动 chain/control-plane |
 

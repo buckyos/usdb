@@ -19,6 +19,52 @@ class CoreProbeError(ValueError):
     """The helper response cannot be interpreted as a native readiness report."""
 
 
+class BootstrapPreparationRequired(ValueError):
+    """A stopped preparation job needs operator action, not a systemd restart loop."""
+
+
+def _download_identity_matches(download, expected):
+    """Only the release-pinned journal can authorize resuming a stopped download job."""
+    identity = download.get("identity", {})
+    snapshot = identity.get("snapshot", {}) if isinstance(identity, dict) else {}
+    return (download.get("schema_version") == "usdb-bitcoin-assumeutxo:v1"
+            and isinstance(snapshot, dict) and bool(expected)
+            and all(snapshot.get(key) == expected.get(key) for key in ("base_height", "base_hash", "file_sha256"))
+            and snapshot.get("chain") == "main"
+            and snapshot.get("size_bytes") == UTXO_SIZE)
+
+
+def _preparation_retryable(layout, env, loader):
+    """Resume file preparation only; never automatically repeat an uncertain Core load."""
+    if loader.get("state") != "exited":
+        return False
+    artifact_dir, state_dir = env.get("BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR"), env.get("BTC_ASSUMEUTXO_STATE_HOST_DIR")
+    if not artifact_dir or not state_dir:
+        return False
+    activation = read_progress(Path(state_dir) / "activation.json")
+    if activation and activation.get("phase") not in {"new", "waiting_for_core", "waiting_for_rpc", "waiting_for_headers"}:
+        return False
+    download = read_progress(Path(artifact_dir) / "mainnet-935000-utxos.dat.download" / "progress.json")
+    expected = layout.snapshot["contract"]["snapshot"]
+    if not _download_identity_matches(download, expected):
+        return False
+    phase, details = download.get("phase"), download.get("details", {})
+    if phase == "download_failed":
+        return isinstance(details, dict) and details.get("retryable") is True
+    return (phase in {"checking_file", "downloading", "download_retry", "verifying_file"}
+            and (loader.get("oom_killed") is True or loader.get("exit_code") in {137, 143}))
+
+
+def _preparation_failure(loader):
+    """Explain the observed container failure without confusing it with Core's state."""
+    code = loader.get("exit_code")
+    if loader.get("oom_killed") is True:
+        memory = loader.get("memory", loader.get("memory_limit_bytes"))
+        limit = f" ({memory // 1024**2} MiB)" if type(memory) is int and memory > 0 else ""
+        return f"Snapshot preparation exceeded its container memory limit{limit}; OOM killed (exit {code})"
+    return f"Snapshot preparation container stopped: state={loader.get('state', 'unknown')}, exit={code}"
+
+
 def core_progress(layout, *, command_timeout_secs: float = 20) -> dict:
     """An unsuccessful probe is pending; a reported identity error is a hard failure."""
     # The native helper shares a 12s RPC budget; include Docker/process overhead
@@ -52,6 +98,7 @@ def start_native_node(layout, *, sync_timeout_secs: int, output_to_stderr: bool,
         node.run_helper(layout, "run_testnet_bitcoin.sh", ["start"], output_to_stderr=output_to_stderr)
     deadline, heartbeat = time.monotonic() + sync_timeout_secs, 0.0
     started = set()
+    preparation_retries = 0
     while time.monotonic() < deadline:
         env = node.read_env(layout.node_env)
         containers = node._resource_containers(layout)
@@ -64,7 +111,18 @@ def start_native_node(layout, *, sync_timeout_secs: int, output_to_stderr: bool,
             node.run_helper(layout, "run_testnet_bitcoin.sh", ["bootstrap-start"], output_to_stderr=output_to_stderr)
             started.add("btc-snapshot-bootstrap")
         elif loader["state"] in {"dead", "restarting", "paused"} or (loader["state"] == "exited" and loader["exit_code"] != 0):
-            raise ValueError("Core bootstrap preparation failed; inspect its download/load journal before an explicit retry")
+            if preparation_retries < 1 and _preparation_retryable(layout, env, loader):
+                preparation_retries += 1
+                node._print_startup_phase("snapshot-resume", _preparation_failure(loader) +
+                    "; resuming retained file, preparation retry=1/1; Core data preserved",
+                    output_to_stderr=output_to_stderr)
+                node.run_helper(layout, "run_testnet_bitcoin.sh", ["bootstrap-start"], output_to_stderr=output_to_stderr)
+                started.add("btc-snapshot-bootstrap")
+                continue
+            raise BootstrapPreparationRequired("Core bootstrap preparation failed: " + _preparation_failure(loader) +
+                ". Automatic preparation retries stopped; inspect usdb-node controller logs --follow and "
+                "usdb-node logs --bitcoin btc-snapshot-bootstrap. After correcting the cause, run usdb-node up; "
+                "an uncertain Core import requires explicit recovery, not another load request.")
         try:
             core = core_progress(layout)
         except (OSError, subprocess.TimeoutExpired):
@@ -153,14 +211,17 @@ def _snapshot_component(phase, latest, imported, *, failed, complete, activated,
     """Show phase-specific work; reading all coins is not snapshot activation."""
     details = latest.get("details", {})
     details = details if isinstance(details, dict) else {}
-    state = {"downloading": "INSTALLING", "verifying_file": "VERIFYING", "loading": "IMPORTING",
+    state = {"downloading": "INSTALLING", "download_retry": "INSTALLING", "download_failed": "FAILED",
+             "verifying_file": "VERIFYING", "loading": "IMPORTING",
              "load_requested": "IMPORTING", "load_uncertain": "BLOCKED", "load_failed": "FAILED"}.get(phase, "WAITING")
     current = total = percent = None
     unit = "bytes"
     detail = f"Core UTXO preparation: {phase}"
-    if phase in {"downloading", "verifying_file"}:
+    if phase in {"downloading", "download_retry", "download_failed", "verifying_file"}:
         current, total = details.get("bytes"), details.get("total_bytes")
-        detail = "Downloading snapshot" if phase == "downloading" else "Verifying downloaded file SHA-256"
+        detail = {"downloading": "Downloading snapshot", "verifying_file": "Verifying downloaded file SHA-256",
+                  "download_retry": "Download interrupted; waiting to resume retained partial file",
+                  "download_failed": "Snapshot file preparation failed"}[phase]
     elif phase in {"loading", "load_requested"}:
         unit = "utxos"
         stage = imported.get("phase", "loading")
@@ -406,6 +467,39 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
     expected = layout.snapshot["contract"]["snapshot"]
     snapshot = _snapshot_component(phase, latest, imported, failed=failed, complete=complete, activated=activated,
                                    base_height=expected["base_height"])
+    download_details = download.get("details", {})
+    if not isinstance(download_details, dict):
+        download_details = {}
+    if phase in {"downloading", "download_retry"} and not failed:
+        attempt = download_details.get("attempt")
+        if type(attempt) is int:
+            snapshot["preparation_details"] = [f"Download attempt: {attempt}/{download_details.get('max_attempts', '?')}"]
+        if phase == "download_retry" and download_details.get("error"):
+            snapshot.setdefault("preparation_details", []).append("Last download error: " + str(download_details["error"]))
+    if failed:
+        snapshot["detail"] = _preparation_failure(loader)
+        lines = [f"Interrupted phase: {phase}"]
+        if phase == "download_failed" and download_details.get("error"):
+            lines.append("Last file preparation error: " + str(download_details["error"]))
+        # The last progress journal can lag SIGKILL. File length is resumable bytes,
+        # never proof that the contents have passed the pinned SHA-256 check.
+        if _download_identity_matches(download, expected):
+            part = artifact.with_name(artifact.name + ".download") / "snapshot.part"
+            try:
+                size = part.stat().st_size if part.is_file() and not part.is_symlink() else None
+            except OSError:
+                size = None
+            if type(size) is int and 0 <= size <= UTXO_SIZE:
+                lines.append(f"Retained partial file: {node._human_bytes(size)}; SHA-256 not yet verified")
+                if phase in {"checking_file", "downloading", "download_retry", "download_failed"}:
+                    snapshot.update(current=size, total=UTXO_SIZE, unit="bytes", progress_percent=None)
+        lines.append("Logs: usdb-node logs --bitcoin btc-snapshot-bootstrap")
+        lines.append("Action: correct the failure, then usdb-node up to resume file preparation; preserve Bitcoin data"
+                     if _preparation_retryable(layout, env, loader) else
+                     "Action: inspect the failure before explicit recovery; automatic retry is disabled")
+        if phase in {"loading", "load_requested", "load_uncertain", "load_failed"}:
+            lines[-1] = "Action: inspect Core import before explicit recovery; automatic load retry is disabled"
+        snapshot["preparation_details"] = lines
     file_milestone = _snapshot_file_milestone(download, artifact, expected)
     if file_milestone:
         snapshot["file_preparation"] = file_milestone

@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import fcntl
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -34,6 +35,9 @@ from bitcoin_release import UTXO_SIZE, default_trust_path, validate_utxo
 
 SCHEMA = "usdb-bitcoin-assumeutxo:v1"
 CHUNK_BYTES = 4 * 1024 * 1024
+# Bound dirty pages even when a fast source fills the disk writeback queue.
+DOWNLOAD_FLUSH_BYTES = 32 * 1024 * 1024
+DOWNLOAD_ATTEMPTS = 3
 # Leave time for Docker and the remaining services within the monitor's 25s sample.
 STATUS_RPC_BUDGET_SECS = 12
 STATUS_RPC_TIMEOUT_SECS = 8
@@ -165,6 +169,84 @@ class HttpsRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, message, headers, newurl)
 
 
+class DownloadInterrupted(ValueError):
+    """Only transport failures may retry; invalid identities and local IO errors may not."""
+
+
+def download_transport_error(error: Exception) -> Exception:
+    """Do not expose request URLs, credentials or server-controlled response bodies."""
+    if isinstance(error, urllib.error.HTTPError):
+        retryable = error.code in {408, 429, 500, 502, 503, 504}
+        message = f"Snapshot HTTP request failed (status {error.code})"
+    else:
+        reason = error.reason if isinstance(error, urllib.error.URLError) else error
+        retryable = not isinstance(reason, ssl.SSLError)
+        message = "Snapshot transport interrupted" if retryable else "Snapshot TLS validation failed"
+    return (DownloadInterrupted if retryable else ValueError)(message)
+
+
+def flush_download(output, start: int, end: int) -> None:
+    """Finish writeback before dropping clean cache pages; bytes remain on disk for resume."""
+    output.flush()
+    os.fsync(output.fileno())
+    if end > start and hasattr(os, "posix_fadvise"):
+        try:
+            os.posix_fadvise(output.fileno(), start, end - start, os.POSIX_FADV_DONTNEED)
+        except OSError:
+            # Cache advice is optional; fsync and the bounded dirty-byte window are not.
+            pass
+
+
+def download_range(snapshot: Snapshot, part: Path, url: str, journal: Journal, attempt: int) -> None:
+    """Append one strictly checked range; leave durable partial bytes on any failure."""
+    offset = part.stat().st_size if part.exists() else 0
+    remaining = snapshot.size_bytes - offset
+    if not remaining:
+        return
+    request = urllib.request.Request(url, headers={"Range": f"bytes={offset}-{snapshot.size_bytes - 1}",
+                                     "Accept-Encoding": "identity", "User-Agent": artifact_signing.HTTP_USER_AGENT})
+    opener = urllib.request.build_opener(HttpsRedirect())
+    journal.phase("downloading", bytes=offset, total_bytes=snapshot.size_bytes, attempt=attempt,
+                  max_attempts=DOWNLOAD_ATTEMPTS)
+    try:
+        response = opener.open(request, timeout=30)
+    except (OSError, urllib.error.URLError) as error:
+        raise download_transport_error(error) from error
+    with response:
+        source_url(response.url)
+        expected_range = f"bytes {offset}-{snapshot.size_bytes - 1}/{snapshot.size_bytes}"
+        ranges = response.headers.get_all("Content-Range", [])
+        if response.status == 206:
+            if ranges != [expected_range]:
+                raise ValueError("Snapshot server returned a mismatched Content-Range")
+        elif response.status != 200 or offset != 0 or ranges:
+            raise ValueError("Snapshot server did not honor the resume range")
+        lengths = response.headers.get_all("Content-Length", [])
+        if lengths != [str(remaining)] or response.headers.get("Content-Encoding", "identity") != "identity":
+            raise ValueError("Snapshot server returned a mismatched length or encoded body")
+        with part.open("ab") as output:
+            flushed, last = offset, time.monotonic()
+            try:
+                while offset < snapshot.size_bytes:
+                    try:
+                        chunk = response.read(min(CHUNK_BYTES, snapshot.size_bytes - offset))
+                    except (OSError, http.client.HTTPException) as error:
+                        raise download_transport_error(error) from error
+                    if not chunk:
+                        raise DownloadInterrupted("Snapshot download interrupted before the expected end")
+                    output.write(chunk)
+                    offset += len(chunk)
+                    if offset - flushed >= DOWNLOAD_FLUSH_BYTES or time.monotonic() - last >= 10:
+                        flush_download(output, flushed, offset)
+                        flushed = offset
+                    if time.monotonic() - last >= 10:
+                        journal.phase("downloading", bytes=offset, total_bytes=snapshot.size_bytes,
+                                      attempt=attempt, max_attempts=DOWNLOAD_ATTEMPTS)
+                        last = time.monotonic()
+            finally:
+                flush_download(output, flushed, offset)
+
+
 def download_snapshot(snapshot: Snapshot, destination: Path, url: str, *, reserve_bytes: int = 1024**3) -> None:
     """Resume only an identity-bound partial file, and publish only after a full SHA-256 scan."""
     if not destination.is_absolute():
@@ -187,45 +269,27 @@ def download_snapshot(snapshot: Snapshot, destination: Path, url: str, *, reserv
         remaining = snapshot.size_bytes - offset
         if shutil.disk_usage(destination.parent).free < remaining + reserve_bytes:
             raise ValueError("Insufficient snapshot filesystem space for the remaining bytes and reserve")
-        if remaining:
-            request = urllib.request.Request(url, headers={"Range": f"bytes={offset}-{snapshot.size_bytes - 1}",
-                                             "Accept-Encoding": "identity", "User-Agent": artifact_signing.HTTP_USER_AGENT})
-            opener = urllib.request.build_opener(HttpsRedirect())
-            journal.phase("downloading", bytes=offset, total_bytes=snapshot.size_bytes)
-            try:
-                with opener.open(request, timeout=30) as response:
-                    source_url(response.url)
-                    expected_range = f"bytes {offset}-{snapshot.size_bytes - 1}/{snapshot.size_bytes}"
-                    ranges = response.headers.get_all("Content-Range", [])
-                    if response.status == 206:
-                        if ranges != [expected_range]:
-                            raise ValueError("Snapshot server returned a mismatched Content-Range")
-                    elif response.status != 200 or offset != 0 or ranges:
-                        raise ValueError("Snapshot server did not honor the resume range")
-                    lengths = response.headers.get_all("Content-Length", [])
-                    if lengths != [str(remaining)] or response.headers.get("Content-Encoding", "identity") != "identity":
-                        raise ValueError("Snapshot server returned a mismatched length or encoded body")
-                    with part.open("ab") as output:
-                        last = time.monotonic()
-                        try:
-                            while offset < snapshot.size_bytes:
-                                chunk = response.read(min(CHUNK_BYTES, snapshot.size_bytes - offset))
-                                if not chunk:
-                                    raise ValueError("Snapshot download interrupted; rerun to resume the retained partial file")
-                                output.write(chunk)
-                                offset += len(chunk)
-                                if time.monotonic() - last >= 10:
-                                    output.flush()
-                                    os.fsync(output.fileno())
-                                    journal.phase("downloading", bytes=offset, total_bytes=snapshot.size_bytes)
-                                    last = time.monotonic()
-                        finally:
-                            output.flush()
-                            os.fsync(output.fileno())
-            except (OSError, urllib.error.URLError) as error:
-                # Do not echo request URLs or server bodies in operator diagnostics.
-                raise ValueError("Snapshot transport failed; rerun to resume the retained partial file") from error
-        verify_snapshot(part, snapshot, journal)
+        try:
+            for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+                try:
+                    download_range(snapshot, part, url, journal, attempt)
+                    break
+                except DownloadInterrupted as error:
+                    if attempt == DOWNLOAD_ATTEMPTS:
+                        raise
+                    journal.phase("download_retry", bytes=part.stat().st_size if part.exists() else 0,
+                                  total_bytes=snapshot.size_bytes, attempt=attempt, max_attempts=DOWNLOAD_ATTEMPTS,
+                                  retry_delay_seconds=attempt * 2, error=str(error), retryable=True)
+                    time.sleep(attempt * 2)
+            verify_snapshot(part, snapshot, journal)
+        except (OSError, ValueError) as error:
+            phase = journal.value["phase"]
+            # Local IO errors never become network retries; retain errno, not private paths.
+            message = f"Snapshot file IO failed (errno {error.errno})" if isinstance(error, OSError) else str(error)
+            journal.phase("download_failed", bytes=part.stat().st_size if part.exists() else 0,
+                          total_bytes=snapshot.size_bytes, failed_phase=phase,
+                          retryable=isinstance(error, DownloadInterrupted), error=message)
+            raise
         if destination.exists() or destination.is_symlink():
             raise ValueError("Snapshot destination appeared during download; refusing to replace it")
         os.replace(part, destination)

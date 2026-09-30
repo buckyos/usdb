@@ -79,7 +79,7 @@ class NativeBundleTests(unittest.TestCase):
         self.assertEqual(env["SNAPSHOT_MODE"], "assumeutxo")
         self.assertEqual(env["BTC_TXINDEX"], "0")
         self.assertEqual(env["BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH"], ORIGIN)
-        self.assertEqual(env["BTC_BOOTSTRAP_MEMORY_LIMIT"], str(128 * policy.MIB))
+        self.assertEqual(env["BTC_BOOTSTRAP_MEMORY_LIMIT"], str(512 * policy.MIB))
         node._validate_node_config(layout, require_runtime=True, require_bitcoin_runtime=True)
         self.assertEqual(node._snapshot_lifecycle_status(layout, env)["state"], "native")
         tool_dir = layout.kit_root / "docker/scripts/tools"
@@ -110,7 +110,47 @@ class NativeBundleTests(unittest.TestCase):
         with mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB), \
              mock.patch.object(node, "_collect_compose_services", return_value={}):
             node.set_resource_policy(layout, "auto", {})
-        self.assertEqual(node.read_env(layout.node_env)["BTC_BOOTSTRAP_MEMORY_LIMIT"], str(128 * policy.MIB))
+        self.assertEqual(node.read_env(layout.node_env)["BTC_BOOTSTRAP_MEMORY_LIMIT"], str(512 * policy.MIB))
+
+    def test_activation_upgrades_legacy_preparation_budget_without_changing_data(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        env = node.read_env(layout.node_env)
+        old = node.upsert_env(layout.node_env.read_text(), {"BTC_BOOTSTRAP_MEMORY_LIMIT": str(128 * policy.MIB)})
+        layout.node_env.write_text(old)
+        block_file = Path(env["BTC_NODE_DATA_HOST_DIR"]) / "retained-blocks-test"
+        block_file.write_bytes(b"existing Bitcoin blocks")
+        with mock.patch.object(node, "_collect_compose_services", return_value={"btc-node": dict(state="running")}):
+            with self.assertRaisesRegex(ValueError, "Stop the node"):
+                node.activate_release(layout)
+        self.assertEqual(layout.node_env.read_text(), old)
+        with mock.patch.object(node, "_collect_compose_services", return_value={}), \
+             mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB):
+            with mock.patch.object(node, "_validate_node_release_images", side_effect=ValueError("test invalid release")):
+                with self.assertRaisesRegex(ValueError, "test invalid release"):
+                    node.activate_release(layout)
+            self.assertEqual(layout.node_env.read_text(), old)
+            node.activate_release(layout)
+            node.validate_resource_environment(node.read_env(layout.node_env), 64 * policy.GIB)
+        updated = node.read_env(layout.node_env)
+        self.assertEqual(updated["BTC_BOOTSTRAP_MEMORY_LIMIT"], str(512 * policy.MIB))
+        self.assertEqual(updated["USDB_RESOURCE_PHASE"], env["USDB_RESOURCE_PHASE"])
+        self.assertEqual(updated["BTC_NODE_DATA_HOST_DIR"], env["BTC_NODE_DATA_HOST_DIR"])
+        self.assertEqual(block_file.read_bytes(), b"existing Bitcoin blocks")
+
+    def test_budget_migration_still_rejects_changed_snapshot_identity(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        old = node.upsert_env(layout.node_env.read_text(), {
+            "BTC_BOOTSTRAP_MEMORY_LIMIT": str(128 * policy.MIB),
+            "BH_ASSUMEUTXO_ORIGIN_BLOCK_HASH": "f" * 64})
+        layout.node_env.write_text(old)
+        with mock.patch.object(node, "_collect_compose_services", return_value={}), \
+             mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB):
+            with self.assertRaisesRegex(ValueError, "bootstrap contract"):
+                node.activate_release(layout)
+        self.assertEqual(layout.node_env.read_text(), old)
+        self.assertEqual(list(layout.node_env.parent.glob(".activate-resources-*")), [])
 
     def test_invalid_origin_never_creates_candidate(self):
         output = self.root / "candidate"
@@ -401,6 +441,38 @@ class NativeBundleTests(unittest.TestCase):
         })
         self.assertEqual(template_path.read_bytes(), original_template)
         self.assertEqual(list(Path(env["BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR"]).iterdir()), [])
+
+    def test_snapshot_oom_reports_limit_and_actual_retained_bytes(self):
+        layout = native_kit(self.root)
+        self.configure(layout)
+        env = node.read_env(layout.node_env)
+        work = Path(env["BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR"]) / "mainnet-935000-utxos.dat.download"
+        work.mkdir()
+        record = dict(schema_version="usdb-bitcoin-assumeutxo:v1", phase="downloading", updated_at=1,
+                      identity=dict(snapshot={**layout.snapshot["contract"]["snapshot"],
+                                              "chain": "main", "size_bytes": artifacts.UTXO_SIZE}),
+                      details=dict(bytes=268 * policy.MIB, total_bytes=artifacts.UTXO_SIZE))
+        (work / "progress.json").write_text(json.dumps(record))
+        with (work / "snapshot.part").open("wb") as output:
+            output.truncate(784 * policy.MIB)
+        services = {"btc-node": dict(state="running"), "btc-snapshot-bootstrap":
+                    dict(state="exited", exit_code=137, oom_killed=True, memory_limit_bytes=128 * policy.MIB)}
+        core = dict(bootstrap_ready=False, tip_ready=False, active_height=313467, headers=969190)
+        with mock.patch.object(node, "_collect_compose_services", return_value=services), \
+             mock.patch.object(native, "core_progress", return_value=core), \
+             mock.patch.object(node, "_read_service_readiness", return_value=(None, "not started")), \
+             mock.patch.object(node, "_chain_component", return_value=node._component_progress("usdb_chain", "WAITING", "starting")):
+            report = node.collect_node_progress(layout)
+        snapshot = report["components"][0]
+        self.assertEqual(snapshot["state"], "FAILED")
+        self.assertEqual(snapshot["current"], 784 * policy.MIB)
+        self.assertIn("128 MiB", snapshot["detail"])
+        self.assertIn("OOM killed (exit 137)", snapshot["detail"])
+        rendered = node.render_node_progress(report, width=120)
+        self.assertIn("Interrupted phase: downloading", rendered)
+        self.assertIn("SHA-256 not yet verified", rendered)
+        self.assertNotIn("Downloading snapshot", rendered)
+        self.assertEqual(report["components"][2]["state"], "SYNCING")
 
     def test_watch_separates_download_import_replay_and_background_validation(self):
         layout = native_kit(self.root)
@@ -771,7 +843,7 @@ class NativeBundleTests(unittest.TestCase):
                 self.assertEqual(console["ports"][0]["host_ip"], "127.0.0.1")
             else:
                 self.assertEqual(services["btc-node"]["environment"]["BTC_TXINDEX"], "0")
-                self.assertEqual(int(services["btc-snapshot-bootstrap"]["mem_limit"]), 128 * policy.MIB)
+                self.assertEqual(int(services["btc-snapshot-bootstrap"]["mem_limit"]), 512 * policy.MIB)
                 self.assertIn("--ensure-snapshot-file", services["btc-snapshot-bootstrap"]["command"])
                 self.assertIn("--reuse-active-snapshot-file", services["btc-snapshot-bootstrap"]["command"])
 
@@ -893,6 +965,85 @@ class NativeControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "canonical baseline"):
             self.start()
         self.assertFalse(any(action == "native-start-data" for action, _ in r.events))
+
+    def preparation_journals(self):
+        """Model a pre-import r42 OOM with a signed-release-bound download journal."""
+        r = self.runtime
+        root = r.layout.node_env.parent
+        env = node.read_env(r.layout.node_env)
+        env.update(BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR=str(root / "utxo"),
+                   BTC_ASSUMEUTXO_STATE_HOST_DIR=str(root / "activation"))
+        r.layout.node_env.write_text(node.upsert_env("", env))
+        expected = dict(base_height=935000, base_hash="a" * 64, file_sha256="b" * 64,
+                        size_bytes=artifacts.UTXO_SIZE, chain="main")
+        r.layout.snapshot = dict(contract=dict(snapshot=expected))
+        work = root / "utxo/mainnet-935000-utxos.dat.download"
+        work.mkdir(parents=True)
+        activation = root / "activation/activation.json"
+        activation.parent.mkdir()
+        record = dict(schema_version="usdb-bitcoin-assumeutxo:v1", phase="downloading",
+                      identity=dict(snapshot=expected), details=dict(bytes=100, total_bytes=artifacts.UTXO_SIZE))
+        path = work / "progress.json"
+        path.write_text(json.dumps(record))
+        r.containers["btc-node"] = r.container("btc-node")
+        r.containers["btc-snapshot-bootstrap"] = {
+            **r.container("btc-snapshot-bootstrap"), "state": "exited", "exit_code": 137,
+            "oom_killed": True, "memory": 128 * policy.MIB}
+        return path, record, activation
+
+    def test_old_download_oom_resumes_once_with_new_budget_without_stopping_core(self):
+        r = self.runtime
+        self.preparation_journals()
+        r.core["bootstrap_ready"] = False
+        with self.assertRaisesRegex(ValueError, "timed out"):
+            self.start()
+        self.assertEqual(r.events.count(("bootstrap-start", "bitcoin")), 1)
+        self.assertEqual(r.containers["btc-snapshot-bootstrap"]["memory"], 512 * policy.MIB)
+        self.assertNotIn(("down", "bitcoin"), r.events)
+        self.assertNotIn("balance-history", r.containers)
+
+    def test_repeated_preparation_failure_stops_for_operator_instead_of_systemd_loop(self):
+        r = self.runtime
+        self.preparation_journals()
+        r.core["bootstrap_ready"] = False
+        r.advance = lambda: r.containers["btc-snapshot-bootstrap"].update(state="exited", exit_code=137, oom_killed=True)
+        with self.assertRaises(native.BootstrapPreparationRequired):
+            self.start()
+        self.assertEqual(r.events.count(("bootstrap-start", "bitcoin")), 1)
+
+    def test_load_uncertainty_or_invalid_download_never_authorizes_automatic_resume(self):
+        r = self.runtime
+        path, record, activation = self.preparation_journals()
+        for phase in ("load_requested", "loading", "load_uncertain", "load_failed"):
+            with self.subTest(phase=phase):
+                activation.write_text(json.dumps(dict(phase=phase)))
+                with self.assertRaises(native.BootstrapPreparationRequired):
+                    self.start()
+        activation.unlink()
+        record["identity"]["snapshot"] = {**record["identity"]["snapshot"], "base_hash": "c" * 64}
+        path.write_text(json.dumps(record))
+        with self.assertRaises(native.BootstrapPreparationRequired):
+            self.start()
+        self.assertFalse(any(action == "bootstrap-start" for action, _ in r.events))
+
+    def test_download_failure_retries_only_when_marked_transient(self):
+        r = self.runtime
+        path, record, _ = self.preparation_journals()
+        loader = r.containers["btc-snapshot-bootstrap"]
+        loader.update(exit_code=1, oom_killed=False)
+        record.update(phase="download_failed", details=dict(retryable=False))
+        path.write_text(json.dumps(record))
+        env = node.read_env(r.layout.node_env)
+        self.assertFalse(native._preparation_retryable(r.layout, env, loader))
+        record["details"]["retryable"] = True
+        path.write_text(json.dumps(record))
+        self.assertTrue(native._preparation_retryable(r.layout, env, loader))
+
+    def test_controller_preparation_error_uses_manual_exit_code(self):
+        with mock.patch.object(node.sys, "argv", ["usdb-node", "controller", "run"]), \
+             mock.patch.object(node, "load_release_layout", return_value=self.runtime.layout), \
+             mock.patch.object(node, "_execute_command", side_effect=native.BootstrapPreparationRequired("test")):
+            self.assertEqual(node.main(), node.CONTROLLER_MANUAL_EXIT_CODE)
 
     def test_no_baseline_keeps_services_stopped_and_observer_has_a_budget(self):
         r = self.runtime

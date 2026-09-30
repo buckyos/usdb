@@ -1785,17 +1785,30 @@ def activate_release(layout: ReleaseLayout) -> None:
             "If reusing retained data, select the original Host data root during setup."
         )
     original = layout.node_env.read_text(encoding="utf-8")
-    _validate_node_config(
-        layout,
-        require_runtime=False,
-        require_bitcoin_runtime=True,
-    )
     updates = {
         **layout.images,
         "USDB_FIREWALL_MODE": configured_firewall_mode(layout),
     }
     import usdb_minting
     env = read_env(layout.node_env)
+    if (env.get("SNAPSHOT_MODE") == "assumeutxo" and resource_mode(env) == "auto"
+            and env.get("BTC_BOOTSTRAP_MEMORY_LIMIT") in {"128m", str(128 * 1024**2)}):
+        if any(item.get("state") not in {"exited", "dead", "created"}
+               for item in _collect_compose_services(layout).values()):
+            raise ValueError("Stop the node with usdb-node down before upgrading the snapshot preparation memory budget")
+        plan = build_resource_plan(int(env["USDB_RESOURCE_HOST_MEMORY_BYTES"]), env["USDB_RESOURCE_PHASE"], env)
+        validate_resource_environment({**env, **plan.environment()}, effective_memory_bytes())
+        updates.update(plan.environment())
+        # Validate the migrated candidate before writing configuration or preparing
+        # optional datasets. The original is intentionally incompatible with the
+        # new automatic plan; all identity/path checks must still run.
+        with tempfile.NamedTemporaryFile(mode="w", dir=layout.node_env.parent, prefix=".activate-resources-") as candidate:
+            candidate.write(upsert_env(original, updates))
+            candidate.flush()
+            _validate_node_config(replace(layout, node_env=Path(candidate.name)),
+                                  require_runtime=False, require_bitcoin_runtime=True)
+    else:
+        _validate_node_config(layout, require_runtime=False, require_bitcoin_runtime=True)
     ord_updates = usdb_minting.activation_updates(env)
     if ord_updates:
         if any(item.get("state") not in {"exited", "dead", "created"}
@@ -2488,6 +2501,7 @@ def _resource_containers(layout: ReleaseLayout) -> dict[str, dict[str, Any]]:
         containers[service] = {
             "state": item["State"]["Status"],
             "exit_code": item["State"]["ExitCode"],
+            "oom_killed": item["State"].get("OOMKilled"),
             "memory": item["HostConfig"]["Memory"],
             "swap": item["HostConfig"].get("MemorySwap"),
             "image": item["Config"]["Image"],
@@ -3705,7 +3719,8 @@ def _collect_compose_services(
             result = subprocess.run(
                 ["docker", "inspect", "--format",
                  '{"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},'
-                 '"restart_count":{{json .RestartCount}},"oom_killed":{{json .State.OOMKilled}}}', *timing_ids],
+                 '"restart_count":{{json .RestartCount}},"oom_killed":{{json .State.OOMKilled}},'
+                 '"memory_limit_bytes":{{json .HostConfig.Memory}}}', *timing_ids],
                 check=True, capture_output=True, text=True,
                 timeout=command_timeout_secs if command_timeout_secs is not None else 8,
             )
@@ -3716,6 +3731,7 @@ def _collect_compose_services(
                         evidence = node_observation.runtime(observation)
                         services[service].update({key: evidence[key] for key in
                             ("started_at", "finished_at", "restart_count", "oom_killed")})
+                        services[service]["memory_limit_bytes"] = node_observation.quantity(observation.get("memory_limit_bytes"))
                         if evidence["started_at"] is not None:
                             services[service]["started_at"] = observation["started_at"]
                         services[service]["details_available"] = (
@@ -6552,7 +6568,9 @@ def main() -> int:
             )
             print(f"{label}: {error}", file=sys.stderr)
         import node_firewall
-        if args.command == "controller" and isinstance(error, node_firewall.FirewallInspectionRequired):
+        import assumeutxo_node
+        if args.command == "controller" and isinstance(error, (node_firewall.FirewallInspectionRequired,
+                                                               assumeutxo_node.BootstrapPreparationRequired)):
             return CONTROLLER_MANUAL_EXIT_CODE
         return 1
 
