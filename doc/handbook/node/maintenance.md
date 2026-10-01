@@ -4,6 +4,30 @@
 
 适用范围：已经配置的节点。始终使用原安装账号和原数据目录。普通重启、补充 Seed 和同契约升级均不需要重新执行 `setup`。
 
+## 查看安装版本
+
+包含版本查询功能的新版工具支持以下命令；旧版若提示不认识 `version`，先使用 `status` 查看发布号。
+
+```bash
+usdb-node version
+usdb-node --version
+usdb-node -V
+```
+
+三种写法显示相同内容：当前命令对应的 release、网络及 Chain ID、发布生成时间、USDB 源码版本和安装路径。
+查询只读取本地文件，不要求完成 `setup`、启动 Docker 或连接节点 RPC，也不会触发下载或快照校验。
+自动采集可使用 `usdb-node version --json`。
+
+`Configured images` 比较节点配置中的服务镜像与当前工具包：
+
+- `UNCONFIGURED`：尚未配置节点，执行 `usdb-node setup`。
+- `MATCHES_RELEASE`：配置的镜像与工具包一致；这不能证明正在运行的容器已更新。
+- `ACTIVATION_REQUIRED`：配置仍选择其他镜像，按[升级节点](#升级节点)完成停机、激活和启动。
+- `UNAVAILABLE`：无法读取配置，仍显示工具版本；使用 `usdb-node doctor` 进一步检查。
+
+安装器会切换 `usdb-node` 入口，所以安装新 release 后，这里立即显示新工具版本。`activate-release` 更新配置，
+服务在后续 `up` 时使用该配置。多个 release 可能复用相同镜像，因此工具不根据镜像反推“已激活发布号”；运行状态仍用 `status` 核对。
+
 ## 日常检查
 
 ```bash

@@ -14,6 +14,7 @@ import pwd
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -619,11 +620,8 @@ def _require_image(manifest: dict[str, Any], key: str, name: str) -> str:
     return reference
 
 
-def load_release_layout(
-    kit_root: Path = KIT_ROOT,
-    node_env: Path | None = None,
-) -> ReleaseLayout:
-    root = kit_root.expanduser().resolve()
+def _load_release_manifest(root: Path) -> dict[str, Any]:
+    """Read checksummed package identity without probing services or snapshot artifacts."""
     manifest_path = root / "release/usdb-release-manifest.json"
     if not manifest_path.is_file():
         raise ValueError(f"release node kit is missing its manifest: {manifest_path}")
@@ -640,6 +638,19 @@ def load_release_layout(
     bundle_id = network_identity.get("bundle_id")
     if not isinstance(bundle_id, str) or not release_id.startswith(f"{bundle_id}-r"):
         raise ValueError("release ID does not belong to the manifest network bundle")
+    return manifest
+
+
+def load_release_layout(
+    kit_root: Path = KIT_ROOT,
+    node_env: Path | None = None,
+) -> ReleaseLayout:
+    root = kit_root.expanduser().resolve()
+    manifest_path = root / "release/usdb-release-manifest.json"
+    manifest = _load_release_manifest(root)
+    release_id = manifest["release_id"]
+    network_identity = manifest["network_bundle"]
+    bundle_id = network_identity["bundle_id"]
     bundle_dir = root / "docker/networks" / bundle_id
     network = validate_network_bundle(bundle_dir)
     if network_identity != build_network_identity(bundle_dir):
@@ -677,6 +688,81 @@ def load_release_layout(
         images=images,
         snapshot=snapshot,
     )
+
+
+def collect_node_version(kit_root: Path, node_env: Path | None = None) -> dict[str, Any]:
+    """Report the selected tool package and configured image agreement, never runtime health."""
+    root = kit_root.expanduser().resolve()
+    manifest = _load_release_manifest(root)
+    network = manifest["network_bundle"]
+    config_path = (node_env or Path.home() / ".config/usdb" / network["bundle_id"] / "node.env").expanduser().absolute()
+    images = {
+        "USDB_SERVICES_IMAGE": _require_image(manifest, "usdb_services", "usdb-services"),
+        "USDB_CHAIN_IMAGE": _require_image(manifest, "usdb_chain", "usdb-chain"),
+        "USDB_BITCOIN_IMAGE": _require_image(manifest, "bitcoin_core", "usdb-bitcoin-core"),
+    }
+    config = {"state": "UNAVAILABLE", "mismatched_images": [],
+              "next_actions": ["usdb-node doctor"]}
+    try:
+        if not stat.S_ISREG(config_path.stat().st_mode):
+            raise ValueError("node configuration is not a regular file")
+        env = read_env(config_path)
+        mismatches = [key for key, expected in images.items() if env.get(key) != expected]
+        config = {
+            "state": "ACTIVATION_REQUIRED" if mismatches else "MATCHES_RELEASE",
+            "mismatched_images": mismatches,
+            "next_actions": ["usdb-node down", "usdb-node activate-release", "usdb-node up"] if mismatches else [],
+        }
+    except FileNotFoundError:
+        if not config_path.is_symlink():
+            config = {"state": "UNCONFIGURED", "mismatched_images": [],
+                      "next_actions": ["usdb-node setup"]}
+    except (OSError, ValueError):
+        # Config can contain RPC secrets: neither raw values nor parser errors belong here.
+        # Keep the visible UNAVAILABLE state; version lookup itself still succeeds.
+        pass
+    repositories = manifest.get("repositories", {})
+    source = repositories.get("usdb", {}) if isinstance(repositories, dict) else {}
+    revision = source.get("revision") if isinstance(source, dict) else None
+    return {
+        "schema_version": "usdb-node-version:v1",
+        "release_id": manifest["release_id"],
+        "created_at_utc": manifest.get("created_at_utc"),
+        "source_revision": revision,
+        "network": {key: network.get(key) for key in ("bundle_id", "chain_id", "network_id", "btc_network_id")},
+        "kit_root": str(root),
+        "node_env": str(config_path),
+        "images": images,
+        "configured_images": config,
+        "runtime_observed": False,
+    }
+
+
+def print_node_version(kit_root: Path, node_env: Path | None = None, *, json_output: bool = False) -> int:
+    """Provide an offline version command, including before the first setup."""
+    report = collect_node_version(kit_root, node_env)
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    network, config = report["network"], report["configured_images"]
+    print(f"USDB node | {report['release_id']}")
+    print(f"Network: {network['bundle_id']} | Chain ID: {network['chain_id']}")
+    print(f"Release created: {report['created_at_utc'] or 'unknown'}")
+    print(f"USDB source revision: {report['source_revision'] or 'unknown'}")
+    print(f"Installed kit: {report['kit_root']}")
+    print(f"Node config: {report['node_env']}")
+    print(f"Configured images: {config['state']}")
+    notes = {
+        "UNCONFIGURED": "Node setup has not been completed.",
+        "MATCHES_RELEASE": "Configured service images match this tool release.",
+        "ACTIVATION_REQUIRED": "Configured service images differ from this tool release; follow the upgrade sequence:",
+        "UNAVAILABLE": "Node configuration could not be read; installed tool version is shown above.",
+    }
+    print(f"  {notes[config['state']]}")
+    for command in config["next_actions"]:
+        print(f"  {command}")
+    print("Running services were not queried; use 'usdb-node status' to check runtime state.")
+    return 0
 
 
 def _validate_env_value(key: str, value: str) -> None:
@@ -5864,7 +5950,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="override the bundle-scoped private node.env path",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--version", "-V", action="store_true", dest="show_version",
+                        help="show installed tool release and configured image agreement, then exit")
+    subparsers = parser.add_subparsers(dest="command")
+    version = subparsers.add_parser(
+        "version", help="Show installed release information without contacting services",
+        description="Read installed package metadata and configured image selection. Works before setup and while services are stopped.",
+    )
+    version.add_argument("--json", action="store_true", help="print machine-readable version information")
     import usdb_mining
     usdb_mining.add_parser(subparsers)
     import usdb_peers
@@ -6537,10 +6630,19 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.show_version:
+        if args.command not in {None, "version"}:
+            parser.error("--version cannot be combined with another command")
+        args.command = "version"
+    if args.command is None:
+        parser.error("the following arguments are required: command")
     if args.command == "doctor":
         return print_doctor_report(lambda: load_release_layout(args.kit_root, args.node_env))
     try:
+        if args.command == "version":
+            return print_node_version(args.kit_root, args.node_env, json_output=getattr(args, "json", False))
         layout = load_release_layout(args.kit_root, args.node_env)
         operation = _operation_name(args)
         operation_context = (
@@ -6549,7 +6651,7 @@ def main() -> int:
         with operation_context:
             return _execute_command(layout, args)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        if args.command in {"up", "mining", "sourcedao", "peers"} and getattr(args, "json", False):
+        if args.command in {"up", "mining", "sourcedao", "peers", "version"} and getattr(args, "json", False):
             print(
                 json.dumps(
                     {

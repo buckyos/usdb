@@ -41,6 +41,8 @@ usdb-node --help
 
 **完成标志**：能看到 `usdb-node` 命令帮助。此时只安装了节点工具，还没有生成节点配置或启动同步。若新登录终端找不到命令，见[命令找不到](../troubleshooting/README.md#找不到-usdb-node-命令)。
 
+包含版本查询功能的新版工具，安装后还可执行 `usdb-node version` 确认发布号与安装路径，不必先完成 setup。输出含义见[查看安装版本](maintenance.md#查看安装版本)。
+
 ## 3. 准备主机软件
 
 ```bash
