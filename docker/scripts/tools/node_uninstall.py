@@ -26,6 +26,8 @@ import node_firewall
 
 SCHEMA = "usdb-node-uninstall:v1"
 UNITS = ("usdb-node-bootstrap", "usdb-node-monitor", "usdb-console-monitor")
+DISABLED_STATES = {"disabled", "masked", "masked-runtime", "static"}
+ENABLED_STATES = {"enabled", "enabled-runtime"}
 # Everything else in these directories is archived, including nonstandard wallets.
 BITCOIN_REBUILDABLE = {"blocks", "chainstate", "chainstate_snapshot", "indexes", "debug.log"}
 CHAIN_REBUILDABLE = {"chaindata", "ancient", "lightchaindata", "triecache"}
@@ -118,6 +120,8 @@ def show(value, backup):
             print("Bitcoin reuse requires compatible dataset identity and Core storage; startup checks the live chain and baseline again.")
         else:
             print("Bitcoin blocks, BH/indexer/chain databases, Ord index and downloaded snapshots are NOT backed up; synchronization will restart.")
+    print("After confirmation and verified backup: disable autostart for this node's controller and monitors if enabled, then remove the selected files.")
+    print("Services must already be stopped with usdb-node down; uninstall does not stop running services.")
     print("Docker images/volumes, Docker packages, firewall rules, unrelated networks and unreferenced old datasets remain installed.")
 
 
@@ -128,22 +132,51 @@ def runtime_plan(value):
                      value["env_sha256"], Path(value["data_root"]), {})
 
 
-def check_stopped(value, *, deleting=None):
-    """Require down/disable first; observation failure never authorizes removal."""
-    for path in value["units"]:
-        unit = Path(path).name
-        output = core.command(["systemctl", "show", unit, "--property=LoadState,ActiveState,UnitFileState"], accepted=(0, 1, 4))
+def unit_paths(value):
+    """Only planned definitions for this exact network may have autostart changed."""
+    core.require(re.fullmatch(r"usdb-(testnet|mainnet)-v[0-9]+", value["bundle"]), "Invalid uninstall network")
+    expected = {f"{prefix}-{value['bundle']}.service" for prefix in UNITS}
+    paths = {Path(path).name: Path(path) for path in value["units"]}
+    selected = {item["path"] for item in value["targets"]
+                if item["key"] in {"controller-unit", *UNITS[1:]}}
+    core.require(len(value["units"]) == len(expected) and set(paths) == expected
+                 and all(str(path) in selected and str(path) in value["scope"] for path in paths.values()),
+                 "Uninstall service list is outside this node's planned definitions")
+    return paths
+
+
+def check_stopped(value, *, deleting=None, allow_enabled=False, inspect_install_rules=True):
+    """Require inactive services; return autostart work only before confirmation/disable."""
+    pending = {}
+    for unit, path in unit_paths(value).items():
+        output = core.command(["systemctl", "show", unit, "--property=LoadState,ActiveState,UnitFileState,FragmentPath,DropInPaths"], accepted=(0, 1, 4))
         fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
-        core.require("LoadState" in fields and "ActiveState" in fields, f"Cannot inspect {unit}; no paths will be changed")
-        core.require(fields["LoadState"] == "not-found" or (fields["ActiveState"] in {"inactive", "failed"}
-                     and fields.get("UnitFileState") in {"disabled", "masked", "static"}),
-                     f"{unit} is still active or enabled "
-                     f"(active={fields['ActiveState']}, autostart={fields.get('UnitFileState', 'unknown')}). "
-                     "Run usdb-node down, then usdb-node controller disable. "
-                     f"If this service remains after those commands, inspect it with systemctl status {unit} "
-                     f"and stop/disable it with sudo systemctl disable --now {unit}")
+        core.require("LoadState" in fields and "ActiveState" in fields, f"Cannot inspect {unit}; file removal cannot proceed")
+        core.require(fields["ActiveState"] in {"inactive", "failed"},
+                     f"{unit} is still active (active={fields['ActiveState']}, autostart={fields.get('UnitFileState', 'unknown')}). "
+                     "Run usdb-node down before uninstalling. "
+                     f"If it remains active, inspect systemctl status {unit} and stop it with sudo systemctl stop {unit}")
+        core.require(fields["LoadState"] in {"loaded", "masked", "not-found"},
+                     f"Cannot inspect a valid service definition for {unit}; review systemctl status {unit}")
         # Drop-ins can start another executable or contain private environment values.
-        core.require(not Path(path + ".d").exists(), f"Custom service overrides require manual review: {path}.d")
+        core.require(not Path(str(path) + ".d").exists(), f"Custom service overrides require manual review: {path}.d")
+        if fields["LoadState"] == "not-found":
+            continue
+        autostart = fields.get("UnitFileState", "unknown")
+        core.require(autostart in DISABLED_STATES | ENABLED_STATES,
+                     f"Cannot safely manage autostart for {unit}: UnitFileState={autostart}; inspect systemctl status {unit}")
+        if autostart in ENABLED_STATES:
+            core.require(allow_enabled, f"Autostart remains enabled for {unit}; file removal cannot proceed. "
+                         "Retry the saved uninstall runner to disable it and recheck, or rerun usdb-node uninstall --execute")
+            core.require(fields.get("FragmentPath") == str(path) and fields.get("DropInPaths") == "",
+                         f"Custom or unknown service definition requires manual review before disabling {unit}")
+            # systemctl disable follows [Install] Also= into other units. The
+            # uninstall authorization covers only the planned node definitions.
+            if inspect_install_rules:
+                content = path.read_text(encoding="utf-8").replace("\\\n", " ")
+                core.require(not re.search(r"(?m)^[ \t]*Also[ \t]*=[ \t]*[^ \t\r\n]", content),
+                             f"Service installation dependencies require manual review before disabling {unit}: Also=")
+            pending[unit] = autostart
     paths = [Path(p) for p in value["scope"]]
     for item in core.containers():
         sources = [Path(m["Source"]) for m in item["mounts"] if m.get("Source", "").startswith("/")]
@@ -152,6 +185,7 @@ def check_stopped(value, *, deleting=None):
                      f"Container still uses this node: {item['id'][:12]}; stop it before uninstalling")
         core.require(not deleting or not any(core.overlap(deleting, s) for s in sources),
                      f"Container still references {deleting}; review/remove it before retrying")
+    return pending
 
 
 def private_sources(value):
@@ -220,6 +254,7 @@ class Session:
         for path in self.plan["scope"]:
             core.require(not core.overlap(root, core.absolute(path)), "Uninstall backup overlaps a selected path")
         core.require(all(item["path"] in self.plan["scope"] for item in self.plan["targets"]), "Uninstall target is outside its recorded scope")
+        unit_paths(self.plan)
         if self.plan.get("keep_bitcoin"):
             data_root = core.absolute(self.plan["data_root"])
             preserved = (data_root / "datasets/bitcoin/btc-mainnet", data_root / "artifacts/assumeutxo/mainnet-935000")
@@ -264,17 +299,53 @@ class Session:
             recovering = any(e["action"] == "delete_started" and core.overlap(Path(e["path"]), source) for e in self.state["events"])
             core.check_original(source, records[key]["tree"], recovering=recovering)
 
+    def disable_autostart(self):
+        """Disable only confirmed stopped units, and verify real state before deletion.
+
+        The caller has verified private backups and holds node operation locks.
+        Re-observe rather than trusting journal completion: a prior invocation
+        may have exited immediately after systemctl, or an operator re-enabled it.
+        """
+        pending = check_stopped(self.plan, allow_enabled=True)
+        for unit in pending:
+            for _ in range(2):
+                check_targets(self.plan)
+                current = check_stopped(self.plan, allow_enabled=True).get(unit)
+                if current is None:
+                    break
+                args = ["systemctl", "disable"]
+                if current == "enabled-runtime":
+                    args.append("--runtime")
+                args.extend(["--", unit])
+                print(f"Disabling node service autostart: {unit} ({current})", flush=True)
+                self.event("service_disable_started", unit)
+                try:
+                    core.command(args)
+                    # Persistent and runtime enablement can coexist. If the
+                    # first disable reveals the other, handle that once too.
+                    remaining = check_stopped(self.plan, allow_enabled=True).get(unit)
+                    core.require(remaining != current, f"systemd still reports {current}")
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    self.event("service_disable_failed", unit)
+                    raise ValueError(f"Could not disable autostart for {unit}; file removal will not continue. "
+                                     f"Check sudo/systemctl access and systemctl status {unit}, then resume this uninstall. "
+                                     f"Reason: {error}") from error
+                self.event("service_disabled", unit)
+        check_stopped(self.plan)
+
     def run(self):
         core.require(sys.stdin.isatty() and sys.stdout.isatty(), "Uninstall execution requires an interactive terminal; no --yes or piped confirmation is supported")
         check_targets(self.plan)
-        check_stopped(self.plan)
+        pending = check_stopped(self.plan, allow_enabled=True)
         if self.plan.get("firewall_permission"):
             node_firewall.installed_rule(self.plan["bundle"], self.plan["operator_uid"])
         show(self.plan, self.root)
+        if pending:
+            print("\nAutostart to disable after confirmation: " + ", ".join(pending))
         phrase = ("PURGE " if self.plan["purge_data"] else "UNINSTALL ") + self.plan["bundle"] + " " + self.plan["hostname"]
         print(f"\nType exactly '{phrase}' to execute; anything else cancels:", flush=True)
         if input().strip() != phrase:
-            print("Cancelled; no node files were removed.")
+            print("Cancelled; no service settings or node files were changed.")
             return 0
         with ExitStack() as locks:
             lock_path = self.root / ".lock"
@@ -287,10 +358,11 @@ class Session:
                 if path.exists():
                     core.lock_file(path, locks)
             check_targets(self.plan)
-            check_stopped(self.plan)
+            check_stopped(self.plan, allow_enabled=True)
             for item in self.plan["targets"]:
                 core.acquire_locks(Path(item["path"]), locks)
             self.backup()
+            self.disable_autostart()
             if self.plan.get("firewall_permission"):
                 permission = node_firewall.installed_rule(self.plan["bundle"], self.plan["operator_uid"])
                 if permission:
@@ -353,7 +425,7 @@ def stage(value, backup):
 
 def add_parser(subparsers):
     parser = subparsers.add_parser("uninstall", help="Preview node removal; retain data unless --purge-data is explicit",
-        description="Preview exact paths by default. Execution requires a stopped/disabled node and interactive confirmation; private state is verified before any purge.")
+        description="Preview exact paths by default. Run down first. Execution verifies private backups, disables node service autostart automatically after confirmation (may request sudo), then removes selected files.")
     parser.add_argument("--purge-data", action="store_true", help="Also remove configured datasets and config after private backup; use --keep-bitcoin to retain Bitcoin for reuse")
     parser.add_argument("--keep-bitcoin", action="store_true", help="With --purge-data, retain the complete Bitcoin data directory and raw UTXO snapshot in place; Bitcoin must still be stopped")
     parser.add_argument("--backup-dir", type=Path, help="New private backup/resume directory outside node data and release roots")
@@ -369,16 +441,19 @@ def dispatch(args, layout, node):
     value = plan(home, layout.bundle_id, backup, args.purge_data, keep_bitcoin=args.keep_bitcoin)
     show(value, backup)
     if not args.execute:
-        print("\nPreview only. Before execution: usdb-node down, then usdb-node controller disable.")
+        print("\nPreview only. Before execution: usdb-node down. Uninstall automatically disables node service autostart after confirmation; controller disable is not required separately.")
         print("Repeat with the same options, --execute and the desired --backup-dir. --purge-data removes datasets except explicitly retained Bitcoin data.")
         return 0
     core.require(sys.stdin.isatty() and sys.stdout.isatty(), "Uninstall execution requires an interactive terminal")
     import usdb_sourcedao
     usdb_sourcedao.require_idle(layout)
-    check_stopped(value)
+    # A private root-owned unit may be unreadable to the operator. File-content
+    # checks run again in the privileged runner, before confirmation or changes.
+    check_stopped(value, allow_enabled=True, inspect_install_rules=False)
     script = stage(value, backup)
     command = [sys.executable, str(script), "--resume", str(backup)]
     if os.geteuid() != 0:
+        print("Administrator access is required for service autostart and system-owned files; sudo may request your password.", flush=True)
         command = ["sudo", "--", *command]
     import shlex
     print("Resume after interruption: " + shlex.join(command), flush=True)

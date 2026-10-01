@@ -21,6 +21,7 @@ import node_firewall
 import usdb_node as node
 from common.native_node import native_kit
 from common.node_rebuild import RebuildFixture
+from common.node_uninstall import UninstallUnits
 from common.firewall import FirewallFixture
 
 
@@ -48,12 +49,13 @@ class UninstallTests(unittest.TestCase):
         uninstall.stage(self.plan(purge, keep_bitcoin=keep_bitcoin), self.f.backup)
         return uninstall.Session(self.f.backup)
 
-    def execution(self, purge=False):
+    def execution(self, purge=False, *, units=None):
         stack = ExitStack()
         phrase = ("PURGE " if purge else "UNINSTALL ") + self.f.bundle + " " + socket.gethostname()
-        stack.enter_context(mock.patch.object(uninstall, "check_stopped"))
+        if units is None:
+            stack.enter_context(mock.patch.object(uninstall, "check_stopped", return_value={}))
         stack.enter_context(mock.patch.object(core, "containers", return_value=[]))
-        stack.enter_context(mock.patch.object(core, "command", return_value=""))
+        stack.enter_context(mock.patch.object(core, "command", side_effect=units.command if units else None, return_value=""))
         stack.enter_context(mock.patch.object(sys.stdin, "isatty", return_value=True))
         stack.enter_context(mock.patch.object(sys.stdout, "isatty", return_value=True))
         stack.enter_context(mock.patch("builtins.input", return_value=phrase))
@@ -325,7 +327,7 @@ class UninstallTests(unittest.TestCase):
         value = self.plan(True)
         active = "LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n"
         stopped = "LoadState=loaded\nActiveState=inactive\nUnitFileState=disabled\n"
-        with mock.patch.object(core, "command", side_effect=[stopped, active]), self.assertRaisesRegex(ValueError, "still active or enabled"):
+        with mock.patch.object(core, "command", side_effect=[stopped, active]), self.assertRaisesRegex(ValueError, "still active"):
             uninstall.check_stopped(value)
         container = dict(id="a"*64, state="running", labels={}, mounts=[{"Source": str(self.f.paths["BTC_NODE_DATA_HOST_DIR"])}])
         with mock.patch.object(core, "command", return_value=stopped), mock.patch.object(core, "containers", return_value=[container]), self.assertRaisesRegex(ValueError, "still uses this node"):
@@ -349,20 +351,187 @@ class UninstallTests(unittest.TestCase):
             node._execute_command(layout, args)
         self.assertFalse(self.f.backup.exists())
 
-    def test_legacy_observer_block_names_state_and_specific_recovery_command(self):
+    def test_active_legacy_observer_still_requires_explicit_down(self):
         value = self.plan(True)
         unit = f"usdb-console-monitor-{self.f.bundle}.service"
-        stopped = "LoadState=loaded\nActiveState=inactive\nUnitFileState=disabled\n"
-        for active, autostart in (("active", "enabled"), ("inactive", "enabled"), ("active", "disabled")):
-            with self.subTest(active=active, autostart=autostart):
-                blocked = f"LoadState=loaded\nActiveState={active}\nUnitFileState={autostart}\n"
-                with mock.patch.object(core, "command", side_effect=[stopped, stopped, blocked]), \
+        for active in ("active", "activating", "deactivating", "reloading", "unknown"):
+            with self.subTest(active=active):
+                units = UninstallUnits(value)
+                units.states[unit]["ActiveState"] = active
+                with mock.patch.object(core, "command", side_effect=units.command), \
                         self.assertRaises(ValueError) as raised:
-                    uninstall.check_stopped(value)
-                self.assertIn(f"active={active}, autostart={autostart}", str(raised.exception))
-                self.assertIn(f"sudo systemctl disable --now {unit}", str(raised.exception))
+                    uninstall.check_stopped(value, allow_enabled=True)
+                self.assertIn(f"active={active}, autostart=enabled", str(raised.exception))
+                self.assertIn("usdb-node down", str(raised.exception))
+                self.assertEqual(units.disabled, [])
                 self.assertFalse(self.f.backup.exists())
                 self.assertTrue(self.f.env.exists())
+
+    def test_stopped_enabled_units_are_disabled_after_confirmation_and_verified_backup(self):
+        session = self.session(True)
+        units = UninstallUnits(session.plan)
+        def backed_up(unit):
+            self.assertTrue(session.state["backup_complete"])
+            self.assertTrue((self.f.backup / "private/controller-unit").is_file())
+            self.assertFalse(any(event["action"] == "delete_started" for event in session.state["events"]))
+        units.before_disable = backed_up
+        with self.execution(True, units=units):
+            self.assertEqual(session.run(), 0)
+        self.assertEqual(set(units.disabled), set(units.paths))
+        self.assertEqual(len(units.disabled), 3)
+        self.assertEqual(sum(event["action"] == "service_disabled" for event in session.state["events"]), 3)
+        self.assertIn("Autostart to disable after confirmation", self.output.getvalue())
+        self.assertTrue(session.state["complete"])
+
+    def test_inactive_enabled_is_allowed_only_before_disable(self):
+        value = self.plan()
+        units = UninstallUnits(value)
+        with mock.patch.object(core, "command", side_effect=units.command), mock.patch.object(core, "containers", return_value=[]):
+            pending = uninstall.check_stopped(value, allow_enabled=True)
+            self.assertEqual(set(pending), set(units.paths))
+            with self.assertRaisesRegex(ValueError, "Autostart remains enabled"):
+                uninstall.check_stopped(value)
+        self.assertEqual(units.disabled, [])
+
+    def test_cancel_noninteractive_and_corrupt_backup_never_disable_autostart(self):
+        session = self.session(True)
+        units = UninstallUnits(session.plan)
+        with self.execution(True, units=units), mock.patch("builtins.input", return_value="cancel"):
+            self.assertEqual(session.run(), 0)
+        with self.execution(True, units=units), mock.patch.object(sys.stdin, "isatty", return_value=False), \
+                self.assertRaisesRegex(ValueError, "interactive"):
+            session.run()
+        session.backup()
+        (self.f.backup / "private/bitcoin/wallet.dat").write_bytes(b"corrupt")
+        with self.execution(True, units=units), self.assertRaises(ValueError):
+            session.run()
+        self.assertEqual(units.disabled, [])
+        self.assertTrue(self.f.release.exists())
+        self.assertTrue(self.f.env.exists())
+
+    def test_already_disabled_and_absent_units_do_not_run_disable(self):
+        session = self.session()
+        units = UninstallUnits(session.plan, "disabled")
+        units.states[f"usdb-node-monitor-{self.f.bundle}.service"]["UnitFileState"] = "static"
+        units.states[f"usdb-console-monitor-{self.f.bundle}.service"].update(LoadState="not-found", UnitFileState="")
+        with self.execution(units=units):
+            self.assertEqual(session.run(), 0)
+        self.assertEqual(units.disabled, [])
+
+    def test_runtime_enablement_and_both_scopes_are_disabled_and_rechecked(self):
+        session = self.session()
+        units = UninstallUnits(session.plan, "enabled-runtime")
+        controller = f"usdb-node-bootstrap-{self.f.bundle}.service"
+        units.states[controller]["UnitFileState"] = "enabled"
+        units.runtime_enabled.add(controller)
+        with self.execution(units=units):
+            self.assertEqual(session.run(), 0)
+        self.assertEqual(units.disabled.count(controller), 2)
+        commands = [args for args in units.commands if args[:2] == ["systemctl", "disable"]]
+        self.assertEqual(sum("--runtime" in args for args in commands), 3)
+
+    def test_disable_failure_retains_all_files_and_can_resume(self):
+        session = self.session(True)
+        units = UninstallUnits(session.plan)
+        names = list(units.paths)
+        units.fail_unit = names[1]
+        with self.execution(True, units=units), self.assertRaisesRegex(ValueError, "Could not disable autostart"):
+            session.run()
+        self.assertEqual(units.states[names[0]]["UnitFileState"], "disabled")
+        self.assertFalse(any(event["action"] == "delete_started" for event in session.state["events"]))
+        self.assertTrue(self.f.release.exists())
+        self.assertTrue(self.f.env.exists())
+        units.fail_unit = None
+        with self.execution(True, units=units):
+            self.assertEqual(uninstall.Session(self.f.backup).run(), 0)
+        self.assertEqual(units.disabled.count(names[0]), 1)
+
+    def test_success_exit_without_disabling_does_not_authorize_deletion(self):
+        session = self.session(True)
+        units = UninstallUnits(session.plan)
+        units.no_effect = True
+        with self.execution(True, units=units), self.assertRaisesRegex(ValueError, "systemd still reports enabled"):
+            session.run()
+        self.assertFalse(any(event["action"] == "delete_started" for event in session.state["events"]))
+        self.assertTrue(self.f.env.exists())
+
+    def test_interruption_after_disable_is_recovered_from_live_state(self):
+        session = self.session(True, keep_bitcoin=True)
+        units = UninstallUnits(session.plan)
+        unit = next(iter(units.paths))
+        units.interrupt_after_disable = unit
+        with self.execution(True, units=units), self.assertRaises(KeyboardInterrupt):
+            session.run()
+        self.assertEqual(units.states[unit]["UnitFileState"], "disabled")
+        with self.execution(True, units=units):
+            self.assertEqual(uninstall.Session(self.f.backup).run(), 0)
+        self.assertEqual(units.disabled.count(unit), 1)
+        self.assertTrue(self.f.paths["BTC_NODE_DATA_HOST_DIR"].exists())
+
+    def test_reactivated_service_during_disable_blocks_removal_without_stopping_it(self):
+        session = self.session(True)
+        units = UninstallUnits(session.plan)
+        def activate(unit):
+            units.states[unit]["ActiveState"] = "active"
+        units.before_disable = activate
+        with self.execution(True, units=units), self.assertRaisesRegex(ValueError, "still active"):
+            session.run()
+        self.assertFalse(any(event["action"] == "delete_started" for event in session.state["events"]))
+        self.assertFalse(any("stop" in args or "--now" in args for args in units.commands))
+
+    def test_foreign_or_duplicate_saved_units_cannot_be_disabled(self):
+        value = self.plan()
+        value["units"][0] = str(self.f.units / "usdb-node-bootstrap-usdb-testnet-v9.service")
+        uninstall.stage(value, self.f.backup)
+        with self.assertRaisesRegex(ValueError, "planned definitions"):
+            uninstall.Session(self.f.backup)
+
+    def test_enabled_unit_cannot_disable_foreign_install_dependencies_or_overrides(self):
+        session = self.session()
+        units = UninstallUnits(session.plan)
+        unit = next(iter(units.paths))
+        for property_name, value in (("FragmentPath", "/other/service"), ("DropInPaths", "/run/systemd/system/custom.conf")):
+            with self.subTest(property_name=property_name):
+                original = units.states[unit][property_name]
+                units.states[unit][property_name] = value
+                with self.execution(units=units), self.assertRaisesRegex(ValueError, "manual review"):
+                    session.run()
+                units.states[unit][property_name] = original
+        with units.paths[unit].open("a") as output:
+            output.write("[Install]\nAlso=unrelated.service\n")
+        with self.execution(units=units), self.assertRaisesRegex(ValueError, "Also="):
+            session.run()
+        self.assertEqual(units.disabled, [])
+        self.assertTrue(self.f.release.exists())
+
+    def test_running_shared_container_blocks_before_auto_disable(self):
+        session = self.session(True)
+        units = UninstallUnits(session.plan)
+        container = dict(id="a" * 64, state="running", labels={},
+                         mounts=[{"Source": str(self.f.paths["BTC_NODE_DATA_HOST_DIR"])}])
+        with self.execution(True, units=units), mock.patch.object(core, "containers", return_value=[container]), \
+                self.assertRaisesRegex(ValueError, "still uses this node"):
+            session.run()
+        self.assertEqual(units.disabled, [])
+        self.assertTrue(self.f.env.exists())
+
+    def test_dispatch_accepts_stopped_enabled_units_and_requests_one_sudo_runner(self):
+        import usdb_sourcedao
+        args = node.build_parser().parse_args(["uninstall", "--execute", "--backup-dir", str(self.f.backup)])
+        layout = SimpleNamespace(node_env=self.f.env, bundle_id=self.f.bundle)
+        value = self.plan()
+        units = UninstallUnits(value)
+        with self.execution(units=units), mock.patch.object(uninstall, "operator_home", return_value=self.f.home), \
+                mock.patch.object(uninstall, "plan", return_value=value), \
+                mock.patch.object(usdb_sourcedao, "require_idle"), \
+                mock.patch.object(uninstall.os, "geteuid", return_value=1000), \
+                mock.patch.object(uninstall.subprocess, "run", return_value=SimpleNamespace(returncode=1)) as runner:
+            self.assertEqual(uninstall.dispatch(args, layout, node), 1)
+        runner.assert_called_once()
+        self.assertEqual(runner.call_args.args[0][:2], ["sudo", "--"])
+        self.assertIn("sudo may request your password", self.output.getvalue())
+        self.assertEqual(units.disabled, [])
+        self.assertTrue(self.f.env.exists())
 
     def test_unreadable_state_and_custom_unit_overrides_refuse_cleanup(self):
         value = self.plan(True)
