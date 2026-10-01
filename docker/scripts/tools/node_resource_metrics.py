@@ -284,8 +284,12 @@ class Collector:
 def configuration(env):
     """Explicitly allowlist budgets and caches; never persist environment contents."""
     from resource_policy import SERVICE_MEMORY_KEYS, memory_bytes
+    percent = env.get("USDB_RESOURCE_MEMORY_PERCENT", "")
     result = {"phase": env.get("USDB_RESOURCE_PHASE") if env.get("USDB_RESOURCE_PHASE") in {"bitcoin", "overlap", "steady"} else None,
               "mode": env.get("USDB_RESOURCE_MODE") if env.get("USDB_RESOURCE_MODE") in {"auto", "manual"} else None,
+              "storage_profile": env.get("USDB_STORAGE_PROFILE") if env.get("USDB_STORAGE_PROFILE") in {"balanced", "slow-disk"} else "legacy",
+              "memory_percent": int(percent) if percent.isascii() and percent.isdigit() and len(percent) == 2 and 80 <= int(percent) <= 90 else None,
+              "ord_deferred": env.get("ORD_STARTUP_DEFERRED") == "1",
               "limits": {}, "caches": {}, "invalid": []}
     for service, key in SERVICE_MEMORY_KEYS.items():
         if key in env:

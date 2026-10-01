@@ -30,16 +30,21 @@ usdb-node logs ord-server
 
 ## 资源分配与旧节点升级
 
-新配置使用整机自动预算：Ord 取扣除外部服务预留后主机内存约四分之一，默认最高 16 GiB；缓存为 Ord 额度的一半。
-通常 32 GiB 主机约为 8 GiB 内存 / 4 GiB 缓存，64 GiB 主机约为 16 GiB / 8 GiB。
-剩余预算用于系统、Bitcoin、BH 和其他服务，配置检查拒绝超过整机额度的方案。关闭 Ord 时不预留这份资源。
+包含[磁盘资源档位](../node/resources.md)的新版本，新配置在 `bitcoin` / `overlap` 阶段只给 Ord 监督进程 512 MiB，
+显示 `WAITING_RESOURCES`，不启动索引或探测 Core。进入 steady、主节点采用对应预算后，再分配完整 Ord 额度。
+完整预算在 `balanced` 下约为扣除外部预留后内存的四分之一，`slow-disk` 下约八分之一，默认最低 4 GiB、最高 16 GiB；
+缓存为额度一半。普通档约 32/64 GiB 主机对应约 8/16 GiB，慢盘档约 4/8 GiB。
+其他服务和系统也占用整机内存池，配置检查拒绝超额方案。关闭 Ord 时不预留这份资源。
+
+分配完整预算后仍需通过原有 Bitcoin 历史验证和 txindex 就绪检查。`WAITING_RESOURCES` 是计划中的等待，不是索引失败。
+旧配置没有磁盘档位时，继续按原算法在各阶段预留完整 Ord 额度。
 
 已有配置不会仅因升级而改变。安装包含此改进的版本后，在原运维账号下执行：
 
 ```bash
 usdb-node down
 usdb-node activate-release
-usdb-node set-resource-policy --mode auto
+usdb-node set-resource-policy --mode auto --storage-profile auto --memory-percent 90
 usdb-node resources
 usdb-node doctor
 usdb-node up

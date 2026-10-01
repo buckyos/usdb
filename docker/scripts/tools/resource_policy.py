@@ -14,6 +14,10 @@ MIN_HOST_MEMORY_BYTES = 32_000_000_000
 # Retain the conservative 16 GiB deployment cap across the Core 31.1 upgrade.
 MAX_BITCOIN_DBCACHE_MIB = 16384
 PHASES = ("bitcoin", "overlap", "steady")
+# Absence of these keys keeps released configurations on their original formula.
+POLICY_KEYS = ("USDB_STORAGE_PROFILE", "USDB_RESOURCE_MEMORY_PERCENT")
+STORAGE_PROFILES = ("balanced", "slow-disk")
+DEFAULT_MEMORY_PERCENT = "90"
 CAP_DEFAULTS = {
     "USDB_EXTERNAL_MEMORY_BUDGET": "0",
     "USDB_BH_MEMORY_CAP": "64g",
@@ -52,8 +56,12 @@ MANUAL_DEFAULTS = {
 
 def resource_cap_defaults(env: dict[str, str]) -> dict[str, str]:
     """Native foreground readiness can overlap two active Core chainstates."""
-    return {**CAP_DEFAULTS, **({"USDB_BTC_STEADY_MEMORY_CAP": "16g"}
+    defaults = {**CAP_DEFAULTS, **({"USDB_BTC_STEADY_MEMORY_CAP": "16g"}
                              if env.get("SNAPSHOT_MODE") == "assumeutxo" else {})}
+    if env.get("USDB_STORAGE_PROFILE") == "slow-disk":
+        defaults.update(USDB_BTC_IBD_MEMORY_CAP="64g", USDB_BTC_OVERLAP_MEMORY_CAP="32g",
+                        USDB_BTC_STEADY_MEMORY_CAP="32g")
+    return defaults
 
 
 def memory_bytes(value: str, label: str) -> int:
@@ -127,6 +135,9 @@ class ResourcePlan:
     external_services_bytes: int = 0
     ord_cache_bytes: int | None = None
     ord_memory_cap: int | None = None
+    storage_profile: str | None = None
+    memory_percent: int | None = None
+    ord_deferred: bool = False
 
     @property
     def total_bytes(self) -> int:
@@ -141,6 +152,9 @@ class ResourcePlan:
         bitcoin = self.limits["BTC_MEMORY_LIMIT"]
         return {
             **({"USDB_EXTERNAL_MEMORY_BUDGET": str(self.external_services_bytes)} if self.external_services_bytes else {}),
+            **({"USDB_STORAGE_PROFILE": self.storage_profile,
+                "USDB_RESOURCE_MEMORY_PERCENT": str(self.memory_percent),
+                "ORD_STARTUP_DEFERRED": str(int(self.ord_deferred))} if self.storage_profile else {}),
             "USDB_RESOURCE_MODE": "auto",
             "USDB_RESOURCE_HOST_MEMORY_BYTES": str(self.host_memory_bytes),
             "USDB_RESOURCE_PHASE": self.phase,
@@ -164,6 +178,10 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
         raise ValueError("automatic resources require at least 32 GB of effective host memory")
     if phase not in PHASES:
         raise ValueError(f"invalid USDB_RESOURCE_PHASE: {phase}")
+    if "USDB_STORAGE_PROFILE" in env:
+        return _profile_plan(host_memory, phase, env)
+    if "USDB_RESOURCE_MEMORY_PERCENT" in env:
+        raise ValueError("memory percentage requires a storage profile; use --storage-profile balanced or slow-disk")
     caps = {key: memory_bytes(env.get(key, default), key) for key, default in resource_cap_defaults(env).items()
             if key != "USDB_EXTERNAL_MEMORY_BUDGET"}
     external = external_services_budget(env)
@@ -256,6 +274,82 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
     return plan
 
 
+def _profile_plan(host_memory: int, phase: str, env: dict[str, str]) -> ResourcePlan:
+    """Split a bounded node pool; disk profiles change shares, never host safety.
+
+    MemAvailable includes reclaimable cache and is not an allocation boundary.
+    Persisted host/cgroup capacity and explicit external reservations make this
+    calculation reproducible across restarts and safe to validate offline.
+    """
+    profile = env["USDB_STORAGE_PROFILE"]
+    if profile not in STORAGE_PROFILES:
+        raise ValueError("USDB_STORAGE_PROFILE must be balanced or slow-disk")
+    percentage = env.get("USDB_RESOURCE_MEMORY_PERCENT", DEFAULT_MEMORY_PERCENT)
+    if not percentage.isascii() or not percentage.isdigit() or not 80 <= int(percentage) <= 90:
+        raise ValueError("USDB_RESOURCE_MEMORY_PERCENT must be an integer between 80 and 90")
+    external = external_services_budget(env)
+    usable = host_memory - external
+    if usable < MIN_HOST_MEMORY_BYTES:
+        raise ValueError("external services must leave at least 32 GB for the node and system")
+    pool = min(usable * int(percentage) // 100, usable - 4 * GIB) // MIB * MIB
+    reserve = usable - pool
+    caps = {key: memory_bytes(env.get(key, default), key)
+            for key, default in resource_cap_defaults(env).items() if key != "USDB_EXTERNAL_MEMORY_BUDGET"}
+    slow = profile == "slow-disk"
+    def rounded(value):
+        return value // MIB * MIB
+
+    limits = {key: rounded(min(usable * numerator // 64, cap)) for key, numerator, cap in (
+        ("USDB_INDEXER_MEMORY_LIMIT", 4, 4 * GIB), ("USDB_CHAIN_MEMORY_LIMIT", 5, 5 * GIB),
+        ("CONTROL_PLANE_MEMORY_LIMIT", 1, GIB), ("BH_SCRIPT_REGISTRY_MEMORY_LIMIT", 2, 2 * GIB),
+        ("USDB_CHECKPOINT_VERIFY_MEMORY_LIMIT", 1, GIB))}
+    if env.get("SNAPSHOT_MODE") == "assumeutxo":
+        limits["BTC_BOOTSTRAP_MEMORY_LIMIT"] = 512 * MIB
+    ord_cap = ord_cache = None
+    deferred = env.get("USDB_MINTING_ENABLED") == "1" and phase != "steady"
+    if env.get("USDB_MINTING_ENABLED") == "1":
+        ord_cap = caps["USDB_ORD_MEMORY_CAP"]
+        if ord_cap < 2 * GIB:
+            raise ValueError("Ord memory cap must allow at least 2 GiB")
+        limits["ORD_MEMORY_LIMIT"] = (512 * MIB if deferred else
+            rounded(min(max(4 * GIB, usable // (8 if slow else 4)), ord_cap)))
+        ord_cache = limits["ORD_MEMORY_LIMIT"] // 2
+    auxiliary = sum(value for key, value in limits.items() if phase != "bitcoin" or key in {
+        "CONTROL_PLANE_MEMORY_LIMIT", "BTC_BOOTSTRAP_MEMORY_LIMIT", "ORD_MEMORY_LIMIT"})
+    remaining = pool - auxiliary
+    btc_cap = caps[{"bitcoin": "USDB_BTC_IBD_MEMORY_CAP", "overlap": "USDB_BTC_OVERLAP_MEMORY_CAP",
+                    "steady": "USDB_BTC_STEADY_MEMORY_CAP"}[phase]]
+    bh_floor = (8 if phase != "steady" else 4) * GIB
+    if caps["USDB_BH_MEMORY_CAP"] < bh_floor:
+        raise ValueError("profile resources require a BH cap of at least 8 GiB for bootstrap")
+    if phase == "bitcoin":
+        bitcoin = rounded(min(remaining, btc_cap))
+        # BH is stopped in this phase; this is its future minimum, not concurrent RAM.
+        balance = bh_floor
+    else:
+        if remaining < bh_floor + 2 * GIB:
+            raise ValueError("resource pool cannot fit Bitcoin and BH minimum budgets; reduce Ord/external budgets")
+        bh_percent = (25 if phase == "steady" else 40) if slow else 60
+        balance = rounded(min(caps["USDB_BH_MEMORY_CAP"], max(bh_floor, remaining * bh_percent // 100)))
+        bitcoin = rounded(min(btc_cap, remaining - balance))
+        # A Core cap may leave space for BH, but never spend above its cap.
+        balance = rounded(min(caps["USDB_BH_MEMORY_CAP"], remaining - bitcoin))
+    if bitcoin < 2 * GIB:
+        raise ValueError("resource caps must allow at least 2 GiB for Bitcoin")
+    limits.update(BTC_MEMORY_LIMIT=bitcoin, BH_MEMORY_LIMIT=balance)
+    # Increasing Core's cgroup budget chiefly reserves room for charged file
+    # cache. Application cache has a separate, conservative host-scaled bound.
+    cache_share = {"bitcoin": 20, "overlap": 8, "steady": 4}[phase]
+    dbcache = min(MAX_BITCOIN_DBCACHE_MIB, usable * cache_share // 64 // MIB, bitcoin // 2 // MIB)
+    bh_cache = balance * 5 // 8
+    plan = ResourcePlan(host_memory, phase, reserve, limits, dbcache, bh_cache // 4,
+                        bh_cache - bh_cache // 4, external, ord_cache, ord_cap,
+                        profile, int(percentage), deferred)
+    if plan.total_bytes > host_memory:
+        raise ValueError(f"{phase} resource budget exceeds effective host memory")
+    return plan
+
+
 def external_services_budget(env: dict[str, str]) -> int:
     """Reserve opt-in colocated services outside all node phase allocations."""
     value = env.get("USDB_EXTERNAL_MEMORY_BUDGET", "0")
@@ -284,6 +378,10 @@ def validate_resource_environment(env: dict[str, str], host_memory: int | None =
     """Validate persisted budgets without guessing host RAM inside a service container."""
     if host_memory is not None and host_memory < MIN_HOST_MEMORY_BYTES:
         raise ValueError("USDB node requires at least 32 GB of effective host memory")
+    if env.get("ORD_STARTUP_DEFERRED", "0") not in {"0", "1"}:
+        raise ValueError("ORD_STARTUP_DEFERRED must be 0 or 1")
+    if env.get("ORD_STARTUP_DEFERRED") == "1" and (resource_mode(env) != "auto" or not env.get("USDB_STORAGE_PROFILE")):
+        raise ValueError("deferred Ord requires automatic profile resources")
     validate_cache_budget(env)
     if resource_mode(env) == "auto":
         recorded = env.get("USDB_RESOURCE_HOST_MEMORY_BYTES", "")

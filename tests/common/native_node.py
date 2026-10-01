@@ -75,6 +75,11 @@ class NativeRuntime:
             for name in ("balance-history", "usdb-indexer", "usdb-chain", "usdb-control-plane"):
                 if name in self.containers:
                     self.containers[name]["state"] = "exited"
+        elif action == "quiesce-ord":
+            if "ord-server" in self.containers:
+                self.containers["ord-server"]["state"] = "exited"
+        elif action == "up-ord":
+            self.containers["ord-server"] = self.container("ord-server")
         elif action == "down":
             self.containers.pop("btc-node", None)
             self.containers.pop("btc-snapshot-bootstrap", None)

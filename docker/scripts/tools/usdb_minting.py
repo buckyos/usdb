@@ -22,6 +22,7 @@ class OrdCapacityError(ValueError):
 
 GUIDANCE = {
     "DISABLED": "Run usdb-node down, then set-minting --enabled on and up to enable the local backend.",
+    "WAITING_RESOURCES": "Waiting for steady resource allocation; only the small supervisor is running. Core and BH have priority during bootstrap.",
     "WAITING_CORE": "Waiting for the Bitcoin foreground chain to catch up; USDB startup remains independent.",
     "WAITING_HISTORY": "Waiting for Bitcoin historical validation; do not restart or reload the snapshot.",
     "WAITING_TXINDEX": "Waiting for txindex to cover the foreground tip. If absent, check that Core adopted BTC_TXINDEX=1.",
@@ -75,7 +76,14 @@ def validate(env, *, require_current=False):
         if not env.get(key, str(default)).isascii() or not env.get(key, str(default)).isdigit():
             raise ValueError(f"{key} must be positive decimal bytes")
     cache = memory_bytes(env.get("ORD_INDEX_CACHE_BYTES", str(GIB)), "ORD_INDEX_CACHE_BYTES")
-    if limit < 2 * GIB or cache > limit // 2:
+    deferred = env.get("ORD_STARTUP_DEFERRED", "0")
+    if deferred not in {"0", "1"}:
+        raise ValueError("ORD_STARTUP_DEFERRED must be 0 or 1")
+    if deferred == "1" and (env.get("USDB_RESOURCE_MODE") != "auto" or
+            env.get("USDB_STORAGE_PROFILE") not in {"balanced", "slow-disk"} or
+            env.get("USDB_RESOURCE_PHASE") not in {"bitcoin", "overlap"} or limit != GIB // 2):
+        raise ValueError("deferred Ord requires a 512 MiB automatic bootstrap supervisor")
+    if (limit < 2 * GIB and deferred != "1") or cache > limit // 2:
         raise ValueError("Ord requires at least 2 GiB RAM and cache no larger than half its memory limit")
     memory_bytes(env.get("ORD_MIN_FREE_BYTES", str(50 * GIB)), "ORD_MIN_FREE_BYTES")
     interval = env.get("ORD_COMMIT_INTERVAL", "5000")

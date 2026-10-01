@@ -29,6 +29,7 @@ Actions:
                  Start native BH/indexer after Core baseline and UTXO preparation.
   up-ord         Start the optional Ord supervisor; never wait for its dependencies.
   up-console     Start only the private console, without upstream readiness gates.
+  quiesce-ord    Gracefully stop Ord before changing its memory budget.
   quiesce-data   Gracefully stop dependent services for a managed resource transition.
   container-ids  Print this project's container IDs for resource inspection.
   data-status    Print the current balance-history readiness response.
@@ -288,6 +289,10 @@ case "${action}" in
       compose up -d --no-deps balance-history script-registry-installer
       restore_runtime_restart_policy balance-history
     fi
+    ;;
+  quiesce-ord)
+    require_node_env
+    quiesce_runtime_services ord-server
     ;;
   quiesce-data)
     require_node_env

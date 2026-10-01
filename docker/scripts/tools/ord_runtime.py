@@ -17,7 +17,7 @@ import urllib.request
 from ord_observation import OrdObservation, FIELDS as OBSERVATION_FIELDS
 
 SCHEMA = "usdb-ord-progress:v1"
-STATES = {"WAITING_CORE", "WAITING_HISTORY", "WAITING_TXINDEX", "BLOCKED_DISK",
+STATES = {"WAITING_RESOURCES", "WAITING_CORE", "WAITING_HISTORY", "WAITING_TXINDEX", "BLOCKED_DISK",
           "BLOCKED_CONFIG", "STARTING", "INDEXING", "READY", "UNAVAILABLE", "FAILED", "STOPPING", "STOPPED"}
 FIELDS = ("state", "observed_at_ms", "core_height", "history_height", "history_validated",
           "txindex_height", "txindex_synced", "ord_height", "ord_gap", "anchor_height",
@@ -174,6 +174,9 @@ def supervise():
     root = Path(os.environ.get("ORD_DATA_DIR", "/data/ord"))
     root.mkdir(parents=True, exist_ok=True)
     required = int(os.environ.get("ORD_MIN_FREE_BYTES", str(50 * 1024**3)))
+    deferred = os.environ.get("ORD_STARTUP_DEFERRED", "0")
+    if deferred not in {"0", "1"}:
+        raise ValueError("ORD_STARTUP_DEFERRED must be 0 or 1")
     stopped = threading.Event()
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stopped.set())
@@ -198,7 +201,9 @@ def supervise():
             report = dict(state="UNAVAILABLE")
             try:
                 try:
-                    report = observe_core()
+                    # This container has only the waiting-process budget. The
+                    # controller recreates it after committing steady resources.
+                    report = dict(state="WAITING_RESOURCES") if deferred == "1" else observe_core()
                 except (OSError, ValueError, KeyError, TypeError):
                     pass
                 free = shutil.disk_usage(root).free

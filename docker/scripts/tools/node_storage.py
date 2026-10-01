@@ -56,3 +56,46 @@ def retained_bitcoin_bytes(root: Path, bitcoin: Path, marker_name: str, expected
         return 0, f"Cannot measure retained Bitcoin data ({error.strerror}); no retained-data allowance applied."
     except UnicodeError:
         return 0, "Bitcoin dataset identity is unreadable; no retained-data allowance applied."
+
+
+def storage_hint(path: Path, sys_root: Path = Path("/sys")) -> dict:
+    """Use backing-device hints, including partitions and device-mapper slaves.
+
+    A virtual disk's rotational flag is only a hint, not a performance test.
+    Unknown or mixed topology must not be advertised as a proven fast disk.
+    """
+    requested = path.expanduser().resolve()
+    existing = requested
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    devices, flags, unknown = [], [], False
+    try:
+        device = existing.stat().st_dev
+        pending = [sys_root / "dev/block" / f"{os.major(device)}:{os.minor(device)}"]
+        seen = set()
+        while pending:
+            current = pending.pop().resolve()
+            if current in seen:
+                continue
+            seen.add(current)
+            if len(seen) > 128:
+                raise ValueError("block device topology is too large")
+            if (current / "partition").exists():
+                current = current.parent
+            slaves = list((current / "slaves").iterdir()) if (current / "slaves").is_dir() else []
+            if slaves:
+                pending.extend(slaves)
+                continue
+            devices.append(current.name)
+            try:
+                flag = (current / "queue/rotational").read_text().strip()
+            except OSError:
+                unknown = True
+                continue
+            flags.append(flag)
+            unknown |= flag not in {"0", "1"}
+    except (OSError, ValueError):
+        unknown = True
+    kind = "rotational" if "1" in flags else "unknown" if unknown or not flags else "non-rotational"
+    return dict(path=str(requested), devices=sorted(set(devices)), kind=kind,
+                recommended_profile="slow-disk" if kind == "rotational" else "balanced")

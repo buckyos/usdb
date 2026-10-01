@@ -18,6 +18,7 @@
 | 启用、停止 CPU 挖矿并核对本机产块 | [CPU 挖矿](node/mining.md) |
 | 网络开始出块后初始化 SourceDAO | [SourceDAO 初始化与验证](network-admin/sourcedao.md) |
 | 查看本地监控事件、活动告警及配置 | [核心节点监控](node/monitor.md) |
+| 为 HDD/SSD 选择资源档位和整机内存比例 | [磁盘与内存策略](node/resources.md) |
 | 回看冷启动资源分配、内存压力与 RPC 超时 | [资源历史与内存压力排查](node/resource-history.md) |
 | 卸载程序、清空节点或保留 Bitcoin 重建 USDB | [卸载与清空](node/uninstall.md) |
 | 配置 Webhook、SMTP 并查看通知投递结果 | [通知配置与投递](node/notifications.md) |

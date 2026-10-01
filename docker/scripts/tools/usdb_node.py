@@ -71,6 +71,9 @@ from validate_network_bundle import (  # noqa: E402
 )
 from resource_policy import (  # noqa: E402
     CAP_DEFAULTS,
+    POLICY_KEYS,
+    STORAGE_PROFILES,
+    DEFAULT_MEMORY_PERCENT,
     PHASES as RESOURCE_PHASES,
     SERVICE_MEMORY_KEYS,
     build_resource_plan,
@@ -918,7 +921,17 @@ def configured_firewall_mode(layout: ReleaseLayout) -> str:
 def _resource_policy_updates(mode: str, caps: dict[str, str]) -> dict[str, str]:
     """Rebudget an existing automatic phase; only new policies start Bitcoin-only."""
     resource_mode({"USDB_RESOURCE_MODE": mode})
+    caps = dict(caps)
+    if mode == "auto" and caps.get("USDB_STORAGE_PROFILE") == "auto":
+        from node_storage import storage_hint
+        if not caps.get("USDB_DATA_ROOT"):
+            raise ValueError("automatic disk selection requires a configured data root")
+        caps["USDB_STORAGE_PROFILE"] = storage_hint(Path(caps["USDB_DATA_ROOT"]))["recommended_profile"]
     settings = {**resource_cap_defaults(caps), **caps, "USDB_RESOURCE_MODE": mode}
+    if mode == "manual":
+        settings["ORD_STARTUP_DEFERRED"] = "0"
+        if settings.get("USDB_MINTING_ENABLED") == "1" and memory_bytes(settings.get("ORD_MEMORY_LIMIT", "4g"), "ORD_MEMORY_LIMIT") < 2 * 1024**3:
+            settings.update(ORD_MEMORY_LIMIT=str(4 * 1024**3), ORD_INDEX_CACHE_BYTES=str(1024**3))
     if mode == "auto":
         # Enabling txindex/Ord is not a rollback of completed synchronization.
         current_phase = caps.get("USDB_RESOURCE_PHASE", "bitcoin") if resource_mode(caps) == "auto" else "bitcoin"
@@ -983,6 +996,26 @@ def _resource_prepare_restart(layout: ReleaseLayout, *services: str) -> None:
     _write_resource_state(layout, state)
 
 
+def _resource_cap_settings(env: dict[str, str], selected: dict[str, str]) -> dict[str, str]:
+    """Adopt a new profile's defaults while retaining explicit custom ceilings."""
+    previous = resource_cap_defaults(env)
+    defaults = resource_cap_defaults(selected)
+    changed = selected.get("USDB_STORAGE_PROFILE") != env.get("USDB_STORAGE_PROFILE")
+    settings = {}
+    for key, default in defaults.items():
+        value = env.get(key, previous[key])
+        if changed and key != "USDB_EXTERNAL_MEMORY_BUDGET":
+            try:
+                if memory_bytes(value, key) == memory_bytes(previous[key], key):
+                    value = default
+            except ValueError:
+                # Keep an invalid old value visible, or let an explicit command
+                # override repair it; validation still precedes persistence.
+                pass
+        settings[key] = value
+    return settings
+
+
 def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) -> None:
     """Opt into automatic transitions, or return to manual tuning, while stopped."""
     if not layout.node_env.is_file():
@@ -992,8 +1025,16 @@ def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) 
         raise ValueError("stop the node with usdb-node down before changing its resource policy")
     original = layout.node_env.read_text(encoding="utf-8")
     env = read_env(layout.node_env)
-    settings = {key: env.get(key, default) for key, default in resource_cap_defaults(env).items()}
-    updates = _resource_policy_updates(mode, {**settings, **caps,
+    if mode == "manual" and any(key in caps for key in POLICY_KEYS):
+        raise ValueError("--storage-profile and --memory-percent require --mode auto")
+    selected = {**env, **caps}
+    if selected.get("USDB_STORAGE_PROFILE") == "auto":
+        from node_storage import storage_hint
+        selected["USDB_STORAGE_PROFILE"] = storage_hint(Path(env["USDB_DATA_ROOT"]))["recommended_profile"]
+        caps = {**caps, "USDB_STORAGE_PROFILE": selected["USDB_STORAGE_PROFILE"]}
+    settings = _resource_cap_settings(env, selected)
+    updates = _resource_policy_updates(mode, {**{key: env[key] for key in POLICY_KEYS if key in env},
+        **settings, **caps, "USDB_DATA_ROOT": env["USDB_DATA_ROOT"],
         **{key: env[key] for key in ("USDB_RESOURCE_MODE", "USDB_RESOURCE_PHASE") if key in env},
         "USDB_MINTING_ENABLED": env.get("USDB_MINTING_ENABLED", "0"), "ORD_MEMORY_LIMIT": env.get("ORD_MEMORY_LIMIT", "4g"),
         "SNAPSHOT_MODE": env.get("SNAPSHOT_MODE", "none")})
@@ -1069,11 +1110,16 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
                       "external_services_bytes": plan.external_services_bytes,
                       "system_reserve_bytes": plan.reserve_bytes,
                       "budget_bytes": plan.total_bytes,
+                      "node_pool_bytes": memory - plan.reserve_bytes - plan.external_services_bytes,
+                      "unallocated_bytes": memory - plan.total_bytes,
+                      "ord_deferred": plan.ord_deferred,
                       "dbcache_mib": plan.dbcache_mib,
                       "utxo_cache_bytes": plan.utxo_cache_bytes,
                       "balance_cache_bytes": plan.balance_cache_bytes,
                       "ord_cache_bytes": ord_cache})
     report = {"mode": resource_mode(env), "effective_host_memory_bytes": memory,
+              "storage_profile": env.get("USDB_STORAGE_PROFILE", "legacy"),
+              "memory_percent": env.get("USDB_RESOURCE_MEMORY_PERCENT"),
               "configured_host_memory_bytes": env.get("USDB_RESOURCE_HOST_MEMORY_BYTES"),
               "configured_phase": env.get("USDB_RESOURCE_PHASE"),
               "caps": {key: env.get(key, value) for key, value in resource_cap_defaults(env).items()},
@@ -1082,15 +1128,26 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print(f"Resource policy: {report['mode']}; effective host memory: {_human_bytes(memory)}")
+        print(f"Storage profile: {report['storage_profile']}; node memory percentage: {report['memory_percent'] or 'legacy formula'}")
+        print("Budgets use effective host/cgroup RAM minus external reserve, not fluctuating MemAvailable.")
+        if plans:
+            print(f"Node memory pool: {_human_bytes(plans[0]['node_pool_bytes'])}; shared by active node services.")
         for item in plans:
             limits = item["limits"]
             ord_summary = (f"Ord={_human_bytes(limits['ORD_MEMORY_LIMIT'])} "
                            f"(cache={_human_bytes(item['ord_cache_bytes'])}), " if "ORD_MEMORY_LIMIT" in limits else "")
-            print(f"{item['phase']:<10} Bitcoin={_human_bytes(limits['BTC_MEMORY_LIMIT'])}, "
+            print(f"{item['phase']:<10} Bitcoin={_human_bytes(limits['BTC_MEMORY_LIMIT'])} "
+                  f"(dbcache={_human_bytes(item['dbcache_mib'] * 1024**2)}), "
                   f"balance-history={_human_bytes(limits['BH_MEMORY_LIMIT'])}, "
                   f"{ord_summary}"
                   f"external-services={_human_bytes(item['external_services_bytes'])}, "
+                  f"system reserve={_human_bytes(item['system_reserve_bytes'])}, "
+                  f"unallocated={_human_bytes(item['unallocated_bytes'])}, "
                   f"total including reserve={_human_bytes(item['budget_bytes'])}")
+            if item["phase"] == "bitcoin":
+                print("           BH/indexer/chain are not running or charged to this phase's memory pool.")
+            if item["ord_deferred"]:
+                print("           Ord supervisor only; indexing waits for steady resources.")
 
 
 def detect_ssh_server_port(environment: dict[str, str] | None = None) -> int:
@@ -1277,7 +1334,7 @@ def configure_node(
     native = layout.snapshot.get("contract") if layout.snapshot.get("status") == "native" else None
     if native is not None and select_snapshot:
         raise ValueError("Native releases cannot select a legacy database snapshot")
-    resource_updates = _resource_policy_updates(resource_management, {**(resource_caps or {}), "USDB_MINTING_ENABLED": str(int(minting)), **({"SNAPSHOT_MODE": "assumeutxo"} if native else {})})
+    resource_updates = _resource_policy_updates(resource_management, {**(resource_caps or {}), "USDB_DATA_ROOT": str(data_root.expanduser().resolve()), "USDB_MINTING_ENABLED": str(int(minting)), **({"SNAPSHOT_MODE": "assumeutxo"} if native else {})})
     query_updates = {"USDB_CHAIN_GCMODE": "archive" if explorer_queries else "full",
                      "USDB_CHAIN_TRACING": "1" if explorer_queries else "0"}
     import usdb_minting
@@ -1287,9 +1344,9 @@ def configure_node(
         _validate_data_root_capacity(data_root, layout=layout)
     root = data_root.expanduser().resolve()
     minting_updates = usdb_minting.environment(root, minting, legacy_txindex="0" if native else "1")
-    minting_updates.update({key: resource_updates[key] for key in ("ORD_MEMORY_LIMIT", "ORD_INDEX_CACHE_BYTES")
+    minting_updates.update({key: resource_updates[key] for key in ("ORD_MEMORY_LIMIT", "ORD_INDEX_CACHE_BYTES", "ORD_STARTUP_DEFERRED")
                             if key in resource_updates})
-    usdb_minting.prepare({**minting_updates, "USDB_DATA_ROOT": str(root)})
+    usdb_minting.prepare({**resource_updates, **minting_updates, "USDB_DATA_ROOT": str(root)})
     secure_dir = network_secure_dir(root, layout.bundle_id)
     snapshot_dir = snapshot_artifact_dir(root)
     rpcauth_path = secure_dir / "bitcoin-mainnet-rpcauth"
@@ -1552,6 +1609,25 @@ def setup_node(
     resource_management = resource_management or "manual"
     print(f"USDB node setup for immutable release {layout.release_id}", file=output)
     data_root = _select_data_root(layout, default=Path.home() / ".usdb", input_fn=input_fn, output=output)
+    if resource_management == "auto":
+        from node_storage import storage_hint
+        hint = storage_hint(data_root)
+        print(f"Data disk hint: {hint['kind']}; devices: {', '.join(hint['devices']) or 'unknown'}. "
+              "Virtual/network storage may require an explicit slow-disk choice.", file=output)
+        requested = (resource_caps or {}).get("USDB_STORAGE_PROFILE", "auto")
+        selected = _prompt_choice("Storage resource profile", ("auto", *STORAGE_PROFILES),
+            default=requested, input_fn=input_fn, output=output)
+        resource_caps = {**(resource_caps or {}), "USDB_STORAGE_PROFILE": selected,
+                         "USDB_DATA_ROOT": str(data_root)}
+        while True:
+            percent = _prompt("Node memory budget percent (80-90)",
+                default=resource_caps.get("USDB_RESOURCE_MEMORY_PERCENT", DEFAULT_MEMORY_PERCENT), input_fn=input_fn)
+            if percent.isascii() and percent.isdigit() and 80 <= int(percent) <= 90:
+                resource_caps["USDB_RESOURCE_MEMORY_PERCENT"] = percent
+                break
+            print("Enter an integer from 80 to 90; at least 4 GiB stays reserved for the system.", file=output)
+        print("Memory pool: effective host/cgroup RAM minus external reservation, then the selected percentage; "
+              "system reserve is at least 4 GiB. Dedicated node use is recommended.", file=output)
     host_memory_bytes = _host_memory_bytes()
     bitcoin_profile, bitcoin_resources = resolve_bitcoin_resource_profile(
         bitcoin_resource_profile if resource_management == "manual" else DEFAULT_BITCOIN_RESOURCE_PROFILE,
@@ -1564,7 +1640,7 @@ def setup_node(
         bitcoin_resources = {"memory_limit": managed["BTC_MEMORY_LIMIT"],
                              "memory_swap_limit": managed["BTC_MEMORY_SWAP_LIMIT"],
                              "dbcache_mb": managed["BTC_DBCACHE_MB"]}
-        print("Automatic whole-node resources: bitcoin -> overlap -> steady.", file=output)
+        print(f"Automatic whole-node resources: {managed.get('USDB_STORAGE_PROFILE', 'legacy')}; bitcoin -> overlap -> steady.", file=output)
         print(f"Balance-history memory cap: {managed['USDB_BH_MEMORY_CAP']}", file=output)
     print("Bitcoin resource profile:", file=output)
     print(f"  Selected: {bitcoin_profile}", file=output)
@@ -1633,7 +1709,7 @@ def setup_node(
     )
     if minting:
         import usdb_minting
-        print("Ord uses the recommended 4 GiB RAM budget and requires 300 GiB additional free disk for a new index.", file=output)
+        print("Ord uses the selected resource policy and requires 300 GiB additional free disk for a new index.", file=output)
         print("The 300 GiB admission budget includes headroom; the separate runtime free-space floor is 50 GiB. "
               "Bitcoin txindex and other service growth need additional capacity.", file=output)
         try:
@@ -1643,12 +1719,18 @@ def setup_node(
             print(f"Cannot enable Ord at this data directory: {error}", file=output)
             data_root = _select_data_root(layout, default=data_root, input_fn=input_fn, output=output,
                                           extra_bytes=usdb_minting.MIN_NEW_INDEX_FREE_BYTES)
+            if resource_management == "auto":
+                resource_caps["USDB_DATA_ROOT"] = str(data_root)
+                hint = storage_hint(data_root)
+                print(f"Selected data disk hint: {hint['kind']}; recommended profile: {hint['recommended_profile']}", file=output)
         print("Data-disk capacity check passed. Bitcoin history and txindex must finish before Ord starts.", file=output)
         print("Node synchronization remains independent; production wallet signing is not enabled by this option.", file=output)
         if resource_management == "auto":
             preview = _resource_policy_updates("auto", {**(resource_caps or {}), "USDB_MINTING_ENABLED": "1",
                 "SNAPSHOT_MODE": "assumeutxo" if layout.snapshot.get("status") == "native" else "none"})
-            print(f"Revised Bitcoin startup ceiling: {_human_bytes(int(preview['BTC_MEMORY_LIMIT']))}; Ord: 4 GiB", file=output)
+            print(f"Revised Bitcoin startup ceiling: {_human_bytes(int(preview['BTC_MEMORY_LIMIT']))}; "
+                  f"Ord supervisor: {_human_bytes(int(preview['ORD_MEMORY_LIMIT']))}. "
+                  "Full indexing budget is applied at the steady resource phase.", file=output)
     bitcoin_public = _prompt_yes_no(
         "Accept inbound Bitcoin peers on TCP/8333",
         default=False,
@@ -2594,7 +2676,8 @@ def _resource_containers(layout: ReleaseLayout) -> dict[str, dict[str, Any]]:
             "environment": {key: value for key, value in values.items()
                             if key in {"BTC_DBCACHE_MB", "BTC_RESOURCE_PROFILE",
                                        "BH_SYNC_UTXO_MAX_CACHE_BYTES",
-                                       "BH_SYNC_BALANCE_MAX_CACHE_BYTES", "BH_SYNC_MAX_MEMORY_PERCENT"}},
+                                       "BH_SYNC_BALANCE_MAX_CACHE_BYTES", "BH_SYNC_MAX_MEMORY_PERCENT",
+                                       "ORD_STARTUP_DEFERRED", "ORD_INDEX_CACHE_BYTES"}},
         }
     return containers
 
@@ -2631,6 +2714,9 @@ def _check_running_resource_budget(env: dict[str, str], containers: dict[str, di
                 and not (env.get("SNAPSHOT_MODE") == "assumeutxo" and service == "btc-snapshot-bootstrap")):
             raise ValueError(f"{service} is active during the exclusive Bitcoin memory phase; "
                              "downstream services require overlap or steady resources")
+        if (service == "ord-server" and plan.ord_deferred and
+                container.get("environment", {}).get("ORD_STARTUP_DEFERRED") != "1"):
+            raise ValueError("Ord has not adopted the waiting supervisor budget; resource transition is incomplete")
         limit = container["memory"]
         if limit <= 0 or limit > plan.limits.get(SERVICE_MEMORY_KEYS[service], 0):
             raise ValueError(f"{service} has an unbounded or stale container memory limit; resource transition is incomplete")
@@ -2693,6 +2779,12 @@ def _transition_resources(layout: ReleaseLayout, target: str, *, output_to_stder
         bitcoin_matches = _resource_container_matches(observed.get("btc-node"), desired, "btc-node")
         bh = observed.get("balance-history")
         bh_matches = bh is None or bh["state"] not in {"running", "restarting"} or _resource_container_matches(bh, desired, "balance-history")
+        if env.get("USDB_STORAGE_PROFILE") and env.get("USDB_MINTING_ENABLED") == "1":
+            ord_container = observed.get("ord-server")
+            if ord_container and ord_container["state"] in {"running", "restarting", "paused"} and (
+                    ord_container["memory"] != plan.limits["ORD_MEMORY_LIMIT"] or
+                    ord_container.get("environment", {}).get("ORD_STARTUP_DEFERRED") != desired["ORD_STARTUP_DEFERRED"]):
+                run_helper(layout, "run_testnet_runtime.sh", ["quiesce-ord"], output_to_stderr=output_to_stderr)
         if not bitcoin_matches or not bh_matches:
             # Snapshot import is independent and is deliberately allowed to finish.
             run_helper(layout, "run_testnet_runtime.sh", ["quiesce-data"], output_to_stderr=output_to_stderr)
@@ -2712,6 +2804,10 @@ def _transition_resources(layout: ReleaseLayout, target: str, *, output_to_stder
         record("RESOURCE_TRANSITION_FAILED", error=error)
         raise
     record("RESOURCE_TRANSITION_APPLIED")
+    if env.get("USDB_STORAGE_PROFILE"):
+        # The target budgets are durable and Core has adopted them before Ord
+        # is allowed to graduate from its small waiting supervisor.
+        _start_optional_ord(layout, output_to_stderr=output_to_stderr)
 
 
 def _managed_data_ready(layout: ReleaseLayout, anchor: BitcoinDataStartAnchor) -> bool:
@@ -2899,7 +2995,8 @@ def _start_optional_ord(layout: ReleaseLayout, *, output_to_stderr: bool) -> Non
             containers = _resource_containers(layout)
             _check_running_resource_budget(env, containers)
             # Include the proposed allocation even if the supervisor was never created.
-            containers["ord-server"] = dict(state="running", memory=int(env["ORD_MEMORY_LIMIT"]))
+            containers["ord-server"] = dict(state="running", memory=int(env["ORD_MEMORY_LIMIT"]),
+                environment={"ORD_STARTUP_DEFERRED": env.get("ORD_STARTUP_DEFERRED", "0")})
             _check_running_resource_budget(env, containers)
         run_helper(layout, "run_testnet_runtime.sh", ["up-ord"], output_to_stderr=output_to_stderr)
     except usdb_minting.OrdCapacityError as error:
@@ -4642,6 +4739,8 @@ def _resource_progress(layout, env, services, components) -> tuple[dict[str, Any
         if resources["mode"] == "auto":
             validate_resource_environment(env, effective_memory_bytes())
             resources["phase"] = env["USDB_RESOURCE_PHASE"]
+            resources["storage_profile"] = env.get("USDB_STORAGE_PROFILE", "legacy")
+            resources["memory_percent"] = env.get("USDB_RESOURCE_MEMORY_PERCENT")
             state = _read_resource_state(layout)
             resources["transition_pending"] = bool(state.get("pending"))
             resources["target_phase"] = state.get("phase")
@@ -5926,6 +6025,10 @@ def print_up_result(result: dict[str, Any], *, json_output: bool) -> None:
 
 
 def _add_resource_cap_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--storage-profile", dest="USDB_STORAGE_PROFILE", choices=("auto", *STORAGE_PROFILES),
+                        help="whole-node disk policy; auto resolves the data disk hint at configuration time")
+    parser.add_argument("--memory-percent", dest="USDB_RESOURCE_MEMORY_PERCENT", choices=tuple(str(n) for n in range(80, 91)),
+                        help="aggregate node share after external reservation; default 90, system reserve at least 4 GiB")
     parser.add_argument("--external-memory-budget", dest="USDB_EXTERNAL_MEMORY_BUDGET", default=None,
                         metavar="BYTES", help="reserve RAM for the other host services in every phase (default 0)")
     for flag, key in (("bh-memory-cap", "USDB_BH_MEMORY_CAP"),
@@ -5933,13 +6036,20 @@ def _add_resource_cap_arguments(parser: argparse.ArgumentParser) -> None:
                       ("bitcoin-overlap-memory-cap", "USDB_BTC_OVERLAP_MEMORY_CAP"),
                       ("bitcoin-steady-memory-cap", "USDB_BTC_STEADY_MEMORY_CAP"),
                       ("ord-memory-cap", "USDB_ORD_MEMORY_CAP")):
-        default = "16g for AssumeUTXO, 8g otherwise" if key == "USDB_BTC_STEADY_MEMORY_CAP" else CAP_DEFAULTS[key]
+        default = {"USDB_BTC_IBD_MEMORY_CAP": "32g balanced, 64g slow-disk",
+                   "USDB_BTC_OVERLAP_MEMORY_CAP": "16g balanced, 32g slow-disk",
+                   "USDB_BTC_STEADY_MEMORY_CAP": "16g native balanced, 8g legacy, 32g slow-disk"}.get(key, CAP_DEFAULTS[key])
         parser.add_argument(f"--{flag}", dest=key, default=None, metavar="BYTES",
                             help=f"automatic proportional allocation ceiling (default {default})")
 
 
 def _resource_caps_from_args(args: argparse.Namespace) -> dict[str, str]:
-    return {key: getattr(args, key) for key in CAP_DEFAULTS if getattr(args, key, None) is not None}
+    result = {key: getattr(args, key) for key in (*CAP_DEFAULTS, *POLICY_KEYS) if getattr(args, key, None) is not None}
+    if args.command == "configure" and args.resource_mode == "auto":
+        result.setdefault("USDB_STORAGE_PROFILE", "auto")
+    if getattr(args, "resource_mode", None) == "manual" and any(key in result for key in POLICY_KEYS):
+        raise ValueError("--storage-profile and --memory-percent require automatic resource mode")
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:

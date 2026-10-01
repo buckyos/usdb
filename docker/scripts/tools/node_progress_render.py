@@ -235,7 +235,8 @@ def _minting_rows(minting: dict[str, Any], *, details: bool) -> list[_Row]:
         if minting.get("txindex_synced") is not True and current >= target:
             index.info.append("Waiting for Core to report txindex synced=true")
     elif index_state == "WAITING":
-        index.info.append("Index height not reported; check that Core adopted BTC_TXINDEX=1")
+        index.info.append("txindex observation deferred with the Ord supervisor during bootstrap" if state == "WAITING_RESOURCES"
+                          else "Index height not reported; check that Core adopted BTC_TXINDEX=1")
     ord_row = _Row("Ord (optional)", state)
     if _height(minting.get("ord_height")):
         ord_row.summary = f"committed height {minting['ord_height']:,}"
@@ -441,6 +442,9 @@ def render_node_progress(report: dict[str, Any], *, phase: str = "observe", widt
     append(f"USDB node | {report.get('release_id', 'unknown')} | {report.get('node_role', 'unknown')}")
     mining = report.get("mining") or {}
     append(f"Node {report.get('overall_state', 'unknown')} | Mining {mining.get('state', 'unavailable')} | Resources {report.get('resources', {}).get('phase', 'unknown')}")
+    resources = report.get("resources", {})
+    if resources.get("storage_profile") in {"balanced", "slow-disk"}:
+        append(f"Resource profile: {resources['storage_profile']} | Node memory budget: {resources.get('memory_percent', '?')}% (system reserve applies)")
     observed = f"Observed {report.get('observed_at', 'unknown')}"
     if "observation_elapsed_secs" in report:
         observed += f" | Watching {duration_text(report['observation_elapsed_secs'])}"

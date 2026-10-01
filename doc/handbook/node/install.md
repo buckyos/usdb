@@ -81,6 +81,8 @@ usdb-node setup
 | `Host data root` | 先查看默认目录所在文件系统的总容量、剩余空间和要求，再填写数据目录，例如 `/data/usdb`。空间不足会要求重新输入，不能跳过；保留 Bitcoin 后重装填写原数据根目录 |
 | `Node role` | `full` |
 | `Seed enode(s)` | 包含默认 Seed 功能的版本会先显示入口列表，回车或输入 `default` 使用它；也可填写自定义完整地址，多条以逗号分隔。输入 `none` 明确不配置 Seed |
+| `Storage resource profile`（包含资源档位改进的版本） | 默认 `auto`；HDD 提示采用 `slow-disk`，也可手选。详见[磁盘与内存策略](resources.md) |
+| `Node memory budget percent` | 默认 90%，可选 80%～90%；整套节点共享该预算，系统至少预留 4 GiB |
 | `USDB P2P address family`（包含向导改进的版本） | 默认 `auto`；明确需要 IPv6 时选 `dual`（双栈）或 `ipv6`。所选模式不满足主机条件时，按提示修复 |
 | `Provide full Explorer support` | 普通节点选 `n`；专用查询节点应在首次同步前另行规划 |
 | `Enable local minting backend`（包含此改进的版本） | 默认 `n`；选 `y` 使用 Ord 推荐配置并提前开启 Bitcoin txindex，检查基础节点之外至少 **300 GiB** 的额外空间。全新数据部署时总容量和可用空间均需 **1.5 TiB + 300 GiB**；参见[机器要求](requirements.md#启用-ord-时的额外资源) |

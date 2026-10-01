@@ -40,16 +40,34 @@ def _resources(env, updates, node, *, choice, yes_no, prompt, resource_mode, bit
     mode = choice("Resource management", ("auto", "manual"), resource_mode or current)
     if bitcoin_profile is not None and mode != "manual":
         raise ValueError("--bitcoin-profile requires manual resource mode")
-    defaults = node.resource_cap_defaults(env)
-    settings = {key: env.get(key, default) for key, default in defaults.items()}
-    settings.update(caps or {})
+    policy = {key: env[key] for key in node.POLICY_KEYS if key in env}
+    if mode == "auto":
+        from node_storage import storage_hint
+        hint = storage_hint(Path(env["USDB_DATA_ROOT"]))
+        selected = choice("Storage resource profile (keep retains current policy)",
+                          ("keep", "auto", *node.STORAGE_PROFILES), (caps or {}).get("USDB_STORAGE_PROFILE", "keep"))
+        if selected != "keep":
+            policy["USDB_STORAGE_PROFILE"] = hint["recommended_profile"] if selected == "auto" else selected
+        if policy.get("USDB_STORAGE_PROFILE"):
+            policy["USDB_RESOURCE_MEMORY_PERCENT"] = choice("Node memory budget percent (80-90)",
+                tuple(str(n) for n in range(80, 91)),
+                (caps or {}).get("USDB_RESOURCE_MEMORY_PERCENT", env.get("USDB_RESOURCE_MEMORY_PERCENT", node.DEFAULT_MEMORY_PERCENT)))
+    elif any(key in (caps or {}) for key in node.POLICY_KEYS):
+        raise ValueError("Storage profiles and memory percentages require automatic resource mode")
+    if (caps or {}).get("USDB_RESOURCE_MEMORY_PERCENT") and not policy.get("USDB_STORAGE_PROFILE"):
+        raise ValueError("--memory-percent requires selecting a storage profile first")
+    defaults = node.resource_cap_defaults({**env, **policy})
+    settings = node._resource_cap_settings(env, {**env, **policy})
+    settings.update({key: value for key, value in (caps or {}).items() if key in node.CAP_DEFAULTS})
     if yes_no("Adjust memory budgets (bytes or k/m/g; external reserve may be 0)", bool(caps)):
         for key in node.CAP_DEFAULTS:
             settings[key] = prompt(key, settings[key])
     for key, value in settings.items():
         if key != "USDB_EXTERNAL_MEMORY_BUDGET" or value != "0":
             memory_bytes(value, key)
-    caps_changed = any(value != env.get(key, defaults[key]) for key, value in settings.items())
+    caps_changed = (any(value != env.get(key, defaults[key]) for key, value in settings.items())
+                    or any(value != env.get(key) for key, value in policy.items()))
+    settings.update(policy)
     mint_changed = any(key in updates for key in ("USDB_MINTING_ENABLED", "ORD_MEMORY_LIMIT"))
     recalculate = mode != current or caps_changed or mint_changed
     if mode == "auto" and not recalculate:
@@ -212,6 +230,8 @@ def edit(layout, node, *, input_fn, output, resource_mode=None, bitcoin_profile=
             print(f"  Automatic resource policy: phase={candidate['USDB_RESOURCE_PHASE']}. "
                   "Service limits and caches below are calculated budgets, not manual overrides.", file=output)
             if minting.enabled(candidate):
+                if candidate.get("USDB_STORAGE_PROFILE"):
+                    print("  Ord uses a 512 MiB waiting supervisor before steady; full indexing memory is allocated at steady.", file=output)
                 print("  Ord memory is reserved in every phase; txindex shares Bitcoin's budget. "
                       "Enabling txindex does not restart the Bitcoin-only resource phase.", file=output)
         for key, value in sorted(updates.items()):

@@ -71,7 +71,7 @@ usdb-node status --watch
 | --- | --- | --- |
 | 完整 Explorer 支持 | 同时启用 archive 和私有 tracing；已有独立组合默认保留 | `set-query-mode` |
 | 本机铸造后端 | 开关 txindex + Ord，直接使用推荐资源值，已有自定义值保留 | `set-minting --enabled on/off`、`minting-status` |
-| 整机资源 | 保留当前 auto/manual，按需调整预算或显式重算 | `set-resource-policy`、`set-bitcoin-profile`、`resources` |
+| 整机资源 | 保留当前 auto/manual，按需选择[磁盘档位与比例](resources.md)、调整上限或显式重算 | `set-resource-policy`、`set-bitcoin-profile`、`resources` |
 | Bitcoin 入站连接 | 选择本机访问或公开 P2P 监听，保留已有端口 | 原有配置文件中的 Bitcoin P2P 设置 |
 | 主机防火墙 | 修改 external/managed 策略和运维 SSH 端口 | `set-firewall-mode`、`firewall apply/check` |
 
@@ -79,7 +79,7 @@ usdb-node status --watch
 修改资源输入或明确选择重算时，才重新计算预算并清理旧资源切换记录。已有自动模式节点保留当前
 `bitcoin / overlap / steady` 阶段，不会仅因开启 txindex 回退到 Bitcoin 独占阶段；启动时仍检查实际就绪状态，
 按原策略推进阶段。新建配置或从 manual 切换至 auto 时从 `bitcoin` 阶段开始。已有链数据和索引保留。
-开启 Ord 会在各阶段预留其内存，因此 BTC、BH 等服务的预算可能相应缩小；这些是自动策略的计算结果，
+开启 Ord 会在各阶段预留其内存；新资源档位在冷启动阶段只保留 512 MiB 等待进程，steady 时分配完整额度，因此 BTC、BH 等服务的预算可能相应调整。这些是自动策略的计算结果，
 不是新增的手动配置。修改摘要和容量提示使用 MiB/GiB/TiB（1024 进制），配置文件仍保存精确数值，回车不会按显示精度取整。
 开启 archive 不会恢复已裁剪历史；开启 Ord 后仍需等待历史验证、txindex 和 Ord 索引完成，详见[本机铸造后端](../services/control-plane.md#可选的本机铸造后端)。
 已有节点首次启用 Ord 时，`setup` 和 `set-minting --enabled on` 都要求目标磁盘至少有 **300 GiB 可用空间**。
