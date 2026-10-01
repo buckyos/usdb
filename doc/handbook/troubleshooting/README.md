@@ -93,6 +93,7 @@ usdb-node --help
 | DNS、超时、连接重置 | 检查主机 DNS、出站 HTTPS、代理和网络连通性。不要因为连接重置就关闭 TLS 校验 |
 | Docker 镜像 `denied` / `unauthorized` | 保留具体镜像及错误，确认目标版本所需镜像是否已公开。公共节点流程不应要求自行寻找内部 token |
 | 镜像拉取慢，UTXO 快照一直等待 | 首次启动先准备所有运行镜像，再启动 Core 和快照任务。用 `usdb-node controller logs --follow` 看镜像层下载量是否增长；主机网络正常不代表 Docker daemon 的 DNS、代理和出站连接正常。具体展示见[镜像准备阶段](../node/status.md#镜像下载慢快照还没开始时) |
+| UTXO 快照反复断线或显示 `Automatic download retry paused` | 新版按连续无进展时间退避续传；重试期间不需要重复 `up`。连续 6 小时无进展后检查网络，再运行 `usdb-node up` 从断点继续。r44 仍是有限次数重试，需升级配套工具和 Bitcoin 镜像；见[快照续传说明](../node/status.md#快照下载中断与自动续传) |
 | `sha256sum`、签名或文件完整性错误 | 停止该步骤。核对版本、下载来源及磁盘状态；不跳过校验，也不修改校验值 |
 
 安装脚本的下载失败，可以在网络恢复后重新执行同一安装步骤。后台启动文件下载失败，先看 `usdb-node controller logs --follow`；只有状态允许继续时才重新 `up`。明确 `BLOCKED` 或不确定导入请求按[后台或服务失败](#后台任务或服务失败)处理。

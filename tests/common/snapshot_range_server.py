@@ -23,6 +23,7 @@ class SnapshotRangeServer:
         self.active = 0
         self.max_active = 0
         self.delay = threading.Event()
+        self.stall = threading.Event()
         origin = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -68,6 +69,9 @@ class SnapshotRangeServer:
                 try:
                     # Keep concurrent requests overlapping without relying on network timing.
                     origin.delay.wait(0.03)
+                    if mode.startswith("http-"):
+                        self.send_error(int(mode[5:]))
+                        return
                     data = origin.payload[start:end + 1]
                     self.send_response(200 if mode == "status-200" else 206)
                     actual_start = start + 1 if mode == "wrong-range" else start
@@ -80,7 +84,11 @@ class SnapshotRangeServer:
                     if mode != "oversize":
                         self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
-                    if mode in {"cut", "cut-valid"}:
+                    if mode == "stall-valid":
+                        self.wfile.write(data[:len(data) // 2])
+                        self.wfile.flush()
+                        origin.stall.wait(5)
+                    elif mode in {"cut", "cut-valid"}:
                         self.wfile.write(data[:len(data) // 2] if mode == "cut-valid" else b"X" * (len(data) // 2))
                         self.wfile.flush()
                         self.connection.shutdown(socket.SHUT_WR)
@@ -113,6 +121,7 @@ class SnapshotRangeServer:
 
     def close(self):
         self.delay.set()
+        self.stall.set()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()

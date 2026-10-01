@@ -34,7 +34,7 @@ def _download_identity_matches(download, expected):
             and snapshot.get("size_bytes") == UTXO_SIZE)
 
 
-def _preparation_retryable(layout, env, loader):
+def _preparation_retryable(layout, env, loader, *, allow_exhausted=True):
     """Resume file preparation only; never automatically repeat an uncertain Core load."""
     if loader.get("state") != "exited":
         return False
@@ -50,7 +50,8 @@ def _preparation_retryable(layout, env, loader):
         return False
     phase, details = download.get("phase"), download.get("details", {})
     if phase == "download_failed":
-        return isinstance(details, dict) and details.get("retryable") is True
+        return (isinstance(details, dict) and details.get("retryable") is True
+                and (allow_exhausted or details.get("retry_exhausted") is not True))
     return (phase in {"checking_file", "downloading", "download_retry", "verifying_file"}
             and (loader.get("oom_killed") is True or loader.get("exit_code") in {137, 143}))
 
@@ -107,11 +108,16 @@ def start_native_node(layout, *, sync_timeout_secs: int, output_to_stderr: bool,
         if containers.get("btc-node", {}).get("state") in {"dead", "exited", "restarting", "paused"}:
             raise ValueError("Core stopped during native bootstrap; inspect its persistent log before retrying")
         loader = containers.get("btc-snapshot-bootstrap")
+        if loader and loader["state"] == "running":
+            started.add("btc-snapshot-bootstrap")
         if loader is None or loader["state"] == "created":
             node.run_helper(layout, "run_testnet_bitcoin.sh", ["bootstrap-start"], output_to_stderr=output_to_stderr)
             started.add("btc-snapshot-bootstrap")
         elif loader["state"] in {"dead", "restarting", "paused"} or (loader["state"] == "exited" and loader["exit_code"] != 0):
-            if preparation_retries < 1 and _preparation_retryable(layout, env, loader):
+            # A new explicit up may resume an earlier exhausted job. Do not
+            # multiply its long no-progress budget within this controller run.
+            if preparation_retries < 1 and _preparation_retryable(layout, env, loader,
+                    allow_exhausted="btc-snapshot-bootstrap" not in started):
                 preparation_retries += 1
                 node._print_startup_phase("snapshot-resume", _preparation_failure(loader) +
                     "; resuming retained file, preparation retry=1/1; Core data preserved",
@@ -205,6 +211,38 @@ def read_progress(path: Path) -> dict:
         return value
     except (OSError, ValueError):
         return dict(error="Progress file is unavailable or invalid")
+
+
+def _download_retry_details(details, *, waiting):
+    """Render persisted retry facts; countdowns never authorize another attempt."""
+    lines = []
+    attempt = details.get("attempt")
+    if type(attempt) is int:
+        if "max_attempts" in details:  # Older image journals remain readable.
+            lines.append(f"Download attempt: {attempt}/{details['max_attempts']}")
+        else:
+            lines.append(f"Download attempt: {attempt} | Retries: {details.get('retry_count', max(0, attempt - 1))}")
+    def instant(value):
+        if type(value) in (int, float) and math.isfinite(value):
+            try:
+                return datetime.fromtimestamp(value, timezone.utc).isoformat()
+            except (OverflowError, OSError, ValueError):
+                pass
+        return None
+    next_at = details.get("next_retry_at")
+    formatted = instant(next_at)
+    if waiting and formatted:
+        remaining = max(0, math.ceil(next_at - time.time()))
+        lines.append(f"Next download retry: {formatted} (in {remaining}s)" if remaining else
+                     f"Scheduled download retry: {formatted}; awaiting progress observation")
+    timeout = details.get("no_progress_timeout_seconds")
+    if type(timeout) in (int, float) and math.isfinite(timeout) and timeout > 0:
+        lines.append(f"Automatic retry pauses after {timeout / 3600:g}h without new download bytes")
+    if details.get("last_error") or details.get("error"):
+        when = instant(details.get("last_error_at"))
+        lines.append(f"Last download error{f' ({when})' if when else ''}: " +
+                     str(details.get("last_error") or details["error"]))
+    return lines
 
 
 def _snapshot_component(phase, latest, imported, *, failed, complete, activated, base_height=None):
@@ -471,14 +509,14 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
     if not isinstance(download_details, dict):
         download_details = {}
     if phase in {"downloading", "download_retry"} and not failed:
-        attempt = download_details.get("attempt")
-        if type(attempt) is int:
-            snapshot["preparation_details"] = [f"Download attempt: {attempt}/{download_details.get('max_attempts', '?')}"]
-        if phase == "download_retry" and download_details.get("error"):
-            snapshot.setdefault("preparation_details", []).append("Last download error: " + str(download_details["error"]))
+        snapshot["preparation_details"] = _download_retry_details(download_details, waiting=phase == "download_retry")
     if failed:
         snapshot["detail"] = _preparation_failure(loader)
         lines = [f"Interrupted phase: {phase}"]
+        if phase == "download_failed":
+            lines.extend(_download_retry_details(download_details, waiting=False))
+            if download_details.get("retry_exhausted") is True:
+                lines.append("Automatic download retry paused: no-progress time limit reached")
         if phase == "download_failed" and download_details.get("error"):
             lines.append("Last file preparation error: " + str(download_details["error"]))
         # The last progress journal can lag SIGKILL. File length is resumable bytes,

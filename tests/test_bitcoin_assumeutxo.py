@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / "docker/scripts/tools"))
 import bitcoin_assumeutxo as BOOT
 from common.bitcoin_bootstrap import BootstrapCore
 from common.snapshot_range_server import SnapshotRangeServer
+from common.download_recovery import DownloadClock
 
 
 class BitcoinBootstrapTests(unittest.TestCase):
@@ -57,7 +58,7 @@ class BitcoinBootstrapTests(unittest.TestCase):
         origin.required_user_agent = "usdb-snapshot-verifier/1"
         url = origin.url.rsplit("/", 1)[0] + "/redirect"
         origin.plans[0] = deque(["cut-valid"])
-        with mock.patch.object(BOOT, "DOWNLOAD_ATTEMPTS", 1), self.assertRaises(ValueError):
+        with mock.patch.object(BOOT.time, "sleep", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
             BOOT.download_snapshot(self.snapshot, self.source, url, reserve_bytes=0)
         part = self.source.with_name("snapshot.dat.download") / "snapshot.part"
         offset = part.stat().st_size
@@ -79,23 +80,97 @@ class BitcoinBootstrapTests(unittest.TestCase):
             BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
         self.assertEqual(self.source.read_bytes(), self.payload)
         self.assertEqual(origin.requests, [(0, len(self.payload) - 1), (len(self.payload) // 2, len(self.payload) - 1)])
-        sleep.assert_called_once_with(2)
+        sleep.assert_called_once_with(15)
         self.assertIn('"phase": "download_retry"', self.log.getvalue())
 
-    def test_transport_retries_stop_and_preserve_failure_record(self):
+    def test_transport_retries_pause_only_after_six_hours_without_progress(self):
         origin = self.origin()
-        for offset in (0, 4096, 6144):
-            origin.plans[offset] = deque(["cut-valid"])
-        with mock.patch.object(BOOT.time, "sleep"), self.assertRaises(BOOT.DownloadInterrupted):
+        origin.delay.set()
+        origin.plans[0] = deque(["cut-valid"])
+        origin.plans[4096] = deque(["http-503"] * 100)
+        clock = DownloadClock()
+        with mock.patch.object(BOOT, "time", clock), self.assertRaises(BOOT.DownloadRetryExhausted):
             BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
         work = self.source.with_name("snapshot.dat.download")
         record = json.loads((work / "progress.json").read_text())
-        self.assertEqual(len(origin.requests), 3)
+        self.assertGreater(len(origin.requests), 6)
+        self.assertEqual(clock.elapsed, 6 * 60 * 60)
+        self.assertEqual(clock.sleeps[:6], [15, 30, 60, 120, 240, 300])
+        self.assertLessEqual(max(clock.sleeps), 300)
         self.assertEqual(record["phase"], "download_failed")
         self.assertTrue(record["details"]["retryable"])
-        self.assertEqual(record["details"]["bytes"], (work / "snapshot.part").stat().st_size)
-        self.assertEqual((work / "snapshot.part").read_bytes(), self.payload[:7168])
+        self.assertTrue(record["details"]["retry_exhausted"])
+        self.assertIn("status 503", record["details"]["last_error"])
+        self.assertEqual(record["details"]["bytes"], 4096)
+        self.assertEqual((work / "snapshot.part").read_bytes(), self.payload[:4096])
         self.assertFalse(self.source.exists())
+        # An explicit new invocation reopens the recovery window and resumes.
+        origin.plans.clear()
+        BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
+        self.assertEqual(self.source.read_bytes(), self.payload)
+        self.assertEqual(origin.requests[-1][0], 4096)
+
+    def test_advancing_download_survives_more_than_six_interruptions(self):
+        origin = self.origin()
+        clock = DownloadClock()
+        offset = 0
+        for _ in range(8):
+            origin.plans[offset] = deque(["cut-valid"])
+            offset += (len(self.payload) - offset) // 2
+        with mock.patch.object(BOOT, "time", clock), mock.patch.object(BOOT, "DOWNLOAD_NO_PROGRESS_SECS", 40):
+            BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
+        self.assertEqual(len(origin.requests), 9)
+        self.assertEqual(self.source.read_bytes(), self.payload)
+        self.assertGreater(clock.elapsed, 40)
+        self.assertEqual(clock.sleeps, [15] * 8)
+
+    def test_socket_timeout_retains_received_prefix_smaller_than_read_chunk(self):
+        origin = self.origin()
+        origin.plans[0] = deque(["stall-valid"])
+        with mock.patch.object(BOOT, "time", DownloadClock()), \
+             mock.patch.object(BOOT, "DOWNLOAD_TIMEOUT_SECS", 0.5):
+            BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
+        self.assertEqual(self.source.read_bytes(), self.payload)
+        self.assertEqual(origin.requests, [(0, 8191), (4096, 8191)])
+        self.assertIn("Snapshot transport interrupted (timeout)", self.log.getvalue())
+
+    def test_backoff_and_last_error_remain_observable_during_recovery(self):
+        origin = self.origin()
+        origin.plans[0] = deque(["http-503", "http-503", "http-503", "http-503"])
+        clock, records = DownloadClock(), []
+        progress = self.source.with_name("snapshot.dat.download") / "progress.json"
+        clock.on_sleep = lambda: records.append(json.loads(progress.read_text()))
+        with mock.patch.object(BOOT, "time", clock):
+            BOOT.download_snapshot(self.snapshot, self.source, origin.url, reserve_bytes=0)
+        self.assertEqual(clock.sleeps, [15, 30, 60, 120])
+        for attempt, record in enumerate(records, 1):
+            details = record["details"]
+            self.assertEqual(record["phase"], "download_retry")
+            self.assertEqual(details["attempt"], attempt)
+            self.assertEqual(details["retry_count"], attempt - 1)
+            self.assertEqual(details["next_retry_at"], record["updated_at"] + details["retry_delay_seconds"])
+            self.assertIn("status 503", details["last_error"])
+        events = [json.loads(line.split(": ", 1)[1]) for line in self.log.getvalue().splitlines()
+                  if line.startswith("Bitcoin bootstrap progress: ")]
+        resumed = [event for event in events if event["phase"] == "downloading" and event["attempt"] == 5]
+        self.assertEqual(resumed[0]["retry_count"], 4)
+        self.assertIn("status 503", resumed[0]["last_error"])
+        self.assertNotIn("next_retry_at", resumed[0])
+        self.assertEqual(self.source.read_bytes(), self.payload)
+
+    def test_transport_error_categories_preserve_security_failures(self):
+        cases = [(TimeoutError("secret"), True, "timeout"),
+                 (ConnectionResetError("secret"), True, "connection reset"),
+                 (BOOT.socket.gaierror(-3, "secret"), True, "DNS lookup failed"),
+                 (BOOT.ssl.SSLEOFError("secret"), True, "connection closed"),
+                 (BOOT.ssl.SSLCertVerificationError("secret"), False, "TLS"),
+                 (BOOT.ssl.SSLError("secret"), False, "TLS")]
+        for error, retryable, text in cases:
+            with self.subTest(kind=type(error).__name__):
+                failure = BOOT.download_transport_error(BOOT.urllib.error.URLError(error))
+                self.assertEqual(isinstance(failure, BOOT.DownloadInterrupted), retryable)
+                self.assertIn(text, str(failure))
+                self.assertNotIn("secret", str(failure))
 
     def test_writeback_is_bounded_by_bytes_even_without_elapsed_time(self):
         origin = self.origin()
@@ -139,7 +214,7 @@ class BitcoinBootstrapTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 target = self.root / f"{mode}.dat"
                 origin.plans[0] = deque([mode])
-                with self.assertRaises(ValueError):
+                with mock.patch.object(BOOT, "time", DownloadClock()), self.assertRaises(ValueError):
                     BOOT.download_snapshot(self.snapshot, target, origin.url, reserve_bytes=0)
                 self.assertFalse(target.exists())
         bad = self.root / "bad.dat"

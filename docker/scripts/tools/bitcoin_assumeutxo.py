@@ -18,6 +18,7 @@ import queue
 import re
 import shutil
 import signal
+import socket
 import ssl
 import stat
 import sys
@@ -37,7 +38,12 @@ SCHEMA = "usdb-bitcoin-assumeutxo:v1"
 CHUNK_BYTES = 4 * 1024 * 1024
 # Bound dirty pages even when a fast source fills the disk writeback queue.
 DOWNLOAD_FLUSH_BYTES = 32 * 1024 * 1024
-DOWNLOAD_ATTEMPTS = 3
+# Slow but advancing downloads have no attempt-count limit. Only a continuous
+# network outage exhausts recovery; explicit up starts a new recovery window.
+DOWNLOAD_TIMEOUT_SECS = 60
+DOWNLOAD_NO_PROGRESS_SECS = 6 * 60 * 60
+DOWNLOAD_RETRY_INITIAL_SECS = 15
+DOWNLOAD_RETRY_MAX_SECS = 5 * 60
 # Leave time for Docker and the remaining services within the monitor's 25s sample.
 STATUS_RPC_BUDGET_SECS = 12
 STATUS_RPC_TIMEOUT_SECS = 8
@@ -173,15 +179,69 @@ class DownloadInterrupted(ValueError):
     """Only transport failures may retry; invalid identities and local IO errors may not."""
 
 
+class DownloadRetryExhausted(DownloadInterrupted):
+    """The bounded no-progress window ended; do not restart it automatically."""
+
+
+class DownloadRecovery:
+    """Track this invocation with monotonic deadlines and persistent display metadata."""
+    def __init__(self) -> None:
+        self.attempt = self.failures = 0
+        self.last_progress = time.monotonic()
+        self.last_progress_at = time.time()
+        self.error = ""
+        self.error_at = None
+
+    def progressed(self) -> None:
+        """New bytes reset both the outage timer and consecutive failure backoff."""
+        self.last_progress = time.monotonic()
+        self.last_progress_at = time.time()
+        self.failures = 0
+
+    def details(self) -> dict:
+        """Use wall time only for display; clock corrections cannot extend retries."""
+        result = dict(attempt=self.attempt, retry_count=max(0, self.attempt - 1),
+                      last_progress_at=self.last_progress_at,
+                      no_progress_timeout_seconds=DOWNLOAD_NO_PROGRESS_SECS)
+        if self.error:
+            result.update(last_error=self.error, last_error_at=self.error_at)
+        return result
+
+    def remaining(self) -> float:
+        return max(0, DOWNLOAD_NO_PROGRESS_SECS - (time.monotonic() - self.last_progress))
+
+    def require_time(self) -> None:
+        if self.remaining() <= 0:
+            raise DownloadRetryExhausted(
+                f"Snapshot download made no progress for {DOWNLOAD_NO_PROGRESS_SECS:g}s; "
+                "automatic retry paused; check connectivity, then run usdb-node up to resume")
+
+    def retry_delay(self, error: DownloadInterrupted) -> float:
+        self.error, self.error_at = str(error), time.time()
+        self.failures += 1
+        self.require_time()
+        return min(self.remaining(), DOWNLOAD_RETRY_MAX_SECS,
+                   DOWNLOAD_RETRY_INITIAL_SECS * 2 ** min(self.failures - 1, 10))
+
+
 def download_transport_error(error: Exception) -> Exception:
-    """Do not expose request URLs, credentials or server-controlled response bodies."""
+    """Report safe error categories without request URLs or server-controlled text."""
     if isinstance(error, urllib.error.HTTPError):
         retryable = error.code in {408, 429, 500, 502, 503, 504}
         message = f"Snapshot HTTP request failed (status {error.code})"
     else:
         reason = error.reason if isinstance(error, urllib.error.URLError) else error
-        retryable = not isinstance(reason, ssl.SSLError)
-        message = "Snapshot transport interrupted" if retryable else "Snapshot TLS validation failed"
+        retryable = not isinstance(reason, ssl.SSLError) or isinstance(reason, ssl.SSLEOFError)
+        if not retryable:
+            message = "Snapshot TLS validation or handshake failed"
+        else:
+            kind = ("timeout" if isinstance(reason, TimeoutError) else
+                    "DNS lookup failed" if isinstance(reason, socket.gaierror) else
+                    "connection reset" if isinstance(reason, ConnectionResetError) else
+                    "connection refused" if isinstance(reason, ConnectionRefusedError) else
+                    "connection closed" if isinstance(reason, (ssl.SSLEOFError, http.client.HTTPException)) else
+                    "network IO")
+            message = f"Snapshot transport interrupted ({kind})"
     return (DownloadInterrupted if retryable else ValueError)(message)
 
 
@@ -197,7 +257,7 @@ def flush_download(output, start: int, end: int) -> None:
             pass
 
 
-def download_range(snapshot: Snapshot, part: Path, url: str, journal: Journal, attempt: int) -> None:
+def download_range(snapshot: Snapshot, part: Path, url: str, journal: Journal, recovery: DownloadRecovery) -> None:
     """Append one strictly checked range; leave durable partial bytes on any failure."""
     offset = part.stat().st_size if part.exists() else 0
     remaining = snapshot.size_bytes - offset
@@ -206,10 +266,9 @@ def download_range(snapshot: Snapshot, part: Path, url: str, journal: Journal, a
     request = urllib.request.Request(url, headers={"Range": f"bytes={offset}-{snapshot.size_bytes - 1}",
                                      "Accept-Encoding": "identity", "User-Agent": artifact_signing.HTTP_USER_AGENT})
     opener = urllib.request.build_opener(HttpsRedirect())
-    journal.phase("downloading", bytes=offset, total_bytes=snapshot.size_bytes, attempt=attempt,
-                  max_attempts=DOWNLOAD_ATTEMPTS)
+    journal.phase("downloading", bytes=offset, total_bytes=snapshot.size_bytes, **recovery.details())
     try:
-        response = opener.open(request, timeout=30)
+        response = opener.open(request, timeout=DOWNLOAD_TIMEOUT_SECS)
     except (OSError, urllib.error.URLError) as error:
         raise download_transport_error(error) from error
     with response:
@@ -229,19 +288,22 @@ def download_range(snapshot: Snapshot, part: Path, url: str, journal: Journal, a
             try:
                 while offset < snapshot.size_bytes:
                     try:
-                        chunk = response.read(min(CHUNK_BYTES, snapshot.size_bytes - offset))
+                        # Consume available bytes promptly. read(n) can discard a slow
+                        # partial chunk when a later socket read times out.
+                        chunk = response.read1(min(CHUNK_BYTES, snapshot.size_bytes - offset))
                     except (OSError, http.client.HTTPException) as error:
                         raise download_transport_error(error) from error
                     if not chunk:
                         raise DownloadInterrupted("Snapshot download interrupted before the expected end")
                     output.write(chunk)
                     offset += len(chunk)
+                    recovery.progressed()
                     if offset - flushed >= DOWNLOAD_FLUSH_BYTES or time.monotonic() - last >= 10:
                         flush_download(output, flushed, offset)
                         flushed = offset
                     if time.monotonic() - last >= 10:
                         journal.phase("downloading", bytes=offset, total_bytes=snapshot.size_bytes,
-                                      attempt=attempt, max_attempts=DOWNLOAD_ATTEMPTS)
+                                      **recovery.details())
                         last = time.monotonic()
             finally:
                 flush_download(output, flushed, offset)
@@ -269,18 +331,21 @@ def download_snapshot(snapshot: Snapshot, destination: Path, url: str, *, reserv
         remaining = snapshot.size_bytes - offset
         if shutil.disk_usage(destination.parent).free < remaining + reserve_bytes:
             raise ValueError("Insufficient snapshot filesystem space for the remaining bytes and reserve")
+        recovery = DownloadRecovery()
         try:
-            for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            while True:
+                recovery.require_time()
+                recovery.attempt += 1
                 try:
-                    download_range(snapshot, part, url, journal, attempt)
+                    download_range(snapshot, part, url, journal, recovery)
                     break
                 except DownloadInterrupted as error:
-                    if attempt == DOWNLOAD_ATTEMPTS:
-                        raise
+                    delay = recovery.retry_delay(error)
                     journal.phase("download_retry", bytes=part.stat().st_size if part.exists() else 0,
-                                  total_bytes=snapshot.size_bytes, attempt=attempt, max_attempts=DOWNLOAD_ATTEMPTS,
-                                  retry_delay_seconds=attempt * 2, error=str(error), retryable=True)
-                    time.sleep(attempt * 2)
+                                  total_bytes=snapshot.size_bytes, **recovery.details(),
+                                  retry_delay_seconds=delay, next_retry_at=time.time() + delay,
+                                  error=str(error), retryable=True)
+                    time.sleep(delay)
             verify_snapshot(part, snapshot, journal)
         except (OSError, ValueError) as error:
             phase = journal.value["phase"]
@@ -288,7 +353,8 @@ def download_snapshot(snapshot: Snapshot, destination: Path, url: str, *, reserv
             message = f"Snapshot file IO failed (errno {error.errno})" if isinstance(error, OSError) else str(error)
             journal.phase("download_failed", bytes=part.stat().st_size if part.exists() else 0,
                           total_bytes=snapshot.size_bytes, failed_phase=phase,
-                          retryable=isinstance(error, DownloadInterrupted), error=message)
+                          retryable=isinstance(error, DownloadInterrupted), error=message,
+                          retry_exhausted=isinstance(error, DownloadRetryExhausted), **recovery.details())
             raise
         if destination.exists() or destination.is_symlink():
             raise ValueError("Snapshot destination appeared during download; refusing to replace it")

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -53,6 +54,24 @@ class NativeBundleTests(unittest.TestCase):
         for command in commands:
             self.assertEqual(command[:3], ["compose", "--progress", "json"])
         self.assertIsNone(images.read_image_preparation(layout))
+
+    def test_retry_display_keeps_error_after_resume_and_reads_legacy_journals(self):
+        details = dict(attempt=8, retry_count=7, no_progress_timeout_seconds=21600,
+                       next_retry_at=1300, last_error="Snapshot transport interrupted (timeout)",
+                       last_error_at=999)
+        with mock.patch.object(native.time, "time", return_value=1000):
+            waiting = "\n".join(native._download_retry_details(details, waiting=True))
+            self.assertIn("Download attempt: 8 | Retries: 7", waiting)
+            self.assertIn("in 300s", waiting)
+            self.assertIn("6h without new download bytes", waiting)
+            self.assertIn("timeout", waiting)
+            resumed = "\n".join(native._download_retry_details(details, waiting=False))
+            self.assertNotIn("Next download retry", resumed)
+            self.assertIn("timeout", resumed)
+        legacy = native._download_retry_details(dict(attempt=2, max_attempts=3, error="network"), waiting=True)
+        self.assertIn("Download attempt: 2/3", legacy)
+        self.assertIn("Last download error: network", legacy)
+        self.assertEqual(native._download_retry_details(dict(next_retry_at=float('inf')), waiting=True), [])
 
     def test_reused_snapshot_is_ready_without_displaying_another_hash_scan(self):
         latest = dict(phase="snapshot_active", details=dict(report=dict(snapshot_file_reused=True)))
@@ -496,6 +515,25 @@ class NativeBundleTests(unittest.TestCase):
             download_path.write_text(json.dumps(dict(phase="downloading", updated_at=1, details=dict(bytes=50, total_bytes=100))))
             report = node.collect_node_progress(layout)
             self.assertEqual(report["components"][0]["progress_percent"], 50)
+            # Recovery is active work, not a failed preparation or an import.
+            retry = dict(phase="download_retry", updated_at=1,
+                         details=dict(bytes=50, total_bytes=100, attempt=8, retry_count=7,
+                                      next_retry_at=time.time() + 300, no_progress_timeout_seconds=21600,
+                                      last_error="Snapshot transport interrupted (timeout)", last_error_at=1))
+            download_path.write_text(json.dumps(retry))
+            retry_report = node.collect_node_progress(layout)
+            self.assertEqual(retry_report["components"][0]["state"], "INSTALLING")
+            rendered = node.render_node_progress(retry_report, width=160)
+            self.assertIn("Next download retry:", rendered)
+            self.assertIn("Download attempt: 8 | Retries: 7", rendered)
+            self.assertIn("timeout", rendered)
+            retry.update(phase="download_failed")
+            retry["details"].update(retryable=True, retry_exhausted=True, error="No progress")
+            download_path.write_text(json.dumps(retry))
+            services["btc-snapshot-bootstrap"].update(state="exited", exit_code=1)
+            rendered = node.render_node_progress(node.collect_node_progress(layout), width=160)
+            self.assertIn("Automatic download retry paused: no-progress time limit reached", rendered)
+            services["btc-snapshot-bootstrap"].update(state="running", exit_code=0)
             # The file milestone survives a new observer and later activation journals.
             artifact = download_path.parent.with_name("mainnet-935000-utxos.dat")
             with artifact.open("wb") as output:
@@ -1038,6 +1076,28 @@ class NativeControllerTests(unittest.TestCase):
         record["details"]["retryable"] = True
         path.write_text(json.dumps(record))
         self.assertTrue(native._preparation_retryable(r.layout, env, loader))
+
+    def test_controller_does_not_restart_newly_exhausted_download_window(self):
+        r = self.runtime
+        path, record, _ = self.preparation_journals()
+        loader = r.containers["btc-snapshot-bootstrap"]
+        loader.update(state="running", exit_code=0, oom_killed=False, memory=512 * policy.MIB)
+        r.core["bootstrap_ready"] = False
+        record.update(phase="download_failed", details=dict(retryable=True, retry_exhausted=True))
+        def exhaust():
+            path.write_text(json.dumps(record))
+            loader.update(state="exited", exit_code=1)
+        r.advance = exhaust
+        with self.assertRaises(native.BootstrapPreparationRequired):
+            self.start()
+        self.assertNotIn(("bootstrap-start", "bitcoin"), r.events)
+        self.assertNotIn("balance-history", r.containers)
+        # A later explicit up can resume exactly once, without changing Core data.
+        r.advance = lambda: None
+        with self.assertRaisesRegex(ValueError, "timed out"):
+            self.start()
+        self.assertEqual(r.events.count(("bootstrap-start", "bitcoin")), 1)
+        self.assertNotIn(("down", "bitcoin"), r.events)
 
     def test_controller_preparation_error_uses_manual_exit_code(self):
         with mock.patch.object(node.sys, "argv", ["usdb-node", "controller", "run"]), \
