@@ -21,7 +21,11 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use usdb_util::parse_json_slice_strict;
+use usdb_util::{
+    BtcActivationRegistryCatalog, parse_json_slice_strict, resolve_btc_activation_registry_catalog,
+};
+
+pub(crate) const RULES_CATALOG_FILE: &str = "rules-catalog.json";
 
 /// Inputs required to export one immutable checkpoint from a running indexer.
 #[derive(Clone, Debug)]
@@ -125,6 +129,13 @@ pub async fn export_checkpoint(
     require_consensus_ready(&readiness, options.checkpoint_height, "usdb-indexer")?;
     let indexer_state_ref = client.indexer_state_ref(options.checkpoint_height).await?;
     let state_identity = extract_indexer_state_identity(&indexer_state_ref)?;
+    if state_identity.activation_registry_id
+        != layout.activation_registry_catalog.current_registry_id()
+    {
+        return Err(
+            "Running indexer registry does not match checkpoint export configuration".into(),
+        );
+    }
     validate_paired_state_refs(&state_identity, &bh_manifest.state_ref)?;
 
     client.stop_indexer().await?;
@@ -154,6 +165,20 @@ pub async fn export_checkpoint(
     let temp_data = temp_dir.join("data");
     copy_directory(&layout.data_dir, &temp_data)?;
     finalize_staged_sqlite(&temp_data)?;
+    if layout
+        .activation_registry_catalog
+        .current_registry()
+        .scope
+        .rules_scope()
+        != "legacy"
+    {
+        let catalog_json = layout
+            .activation_registry_catalog
+            .to_json()
+            .map_err(|e| e.to_string())?;
+        std::fs::write(temp_data.join(RULES_CATALOG_FILE), catalog_json)
+            .map_err(|e| format!("Failed to write checkpoint rules catalog: {e}"))?;
+    }
     let files = inventory_files(&temp_data)?;
     let operation_id = build_operation_id(
         &options.network_bundle_id,
@@ -199,6 +224,7 @@ pub async fn export_checkpoint(
         data_dir: temp_data,
         bitcoin_network: layout.bitcoin_network,
         genesis_block_height: layout.genesis_block_height,
+        activation_registry_catalog: layout.activation_registry_catalog.clone(),
     };
     validate_indexer_data(&staged_layout, &manifest)?;
     let manifest_path = temp_dir.join(CHECKPOINT_MANIFEST_FILE);
@@ -300,11 +326,36 @@ pub fn load_and_verify_checkpoint(
                     manifest.btc_network
                 )
             })?;
+        let catalog_path = artifact_dir.join("data").join(RULES_CATALOG_FILE);
+        let catalog_json = if catalog_path.exists() {
+            Some(
+                std::fs::read_to_string(&catalog_path)
+                    .map_err(|e| format!("Failed to read checkpoint rules catalog: {e}"))?,
+            )
+        } else {
+            None
+        };
+        let parsed_catalog = catalog_json
+            .as_deref()
+            .map(BtcActivationRegistryCatalog::from_json)
+            .transpose()
+            .map_err(|e| format!("Invalid checkpoint rules catalog: {e}"))?;
+        let rules_scope = parsed_catalog
+            .as_ref()
+            .map(|catalog| catalog.current_registry().scope.rules_scope());
+        let activation_registry_catalog = resolve_btc_activation_registry_catalog(
+            bitcoin_network,
+            rules_scope,
+            Some(&manifest.state_identity.activation_registry_id),
+            catalog_json.as_deref(),
+        )
+        .map_err(|e| format!("Checkpoint catalog binding mismatch: {e}"))?;
         validate_indexer_data(
             &IndexerDiskLayout {
                 data_dir: artifact_dir.join("data"),
                 bitcoin_network,
                 genesis_block_height: manifest.index_origin_height,
+                activation_registry_catalog,
             },
             &manifest,
         )?;

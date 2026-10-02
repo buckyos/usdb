@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use usdb_util::BtcScriptHash;
+use usdb_util::{BtcScriptHash, INDEXER_RULES_BINDING_KEY, IndexerRulesBinding};
 
 // Key for storing the last synced BTC block height
 const BTC_SYNCED_BLOCK_HEIGHT_KEY: &str = "btc_synced_block_height";
@@ -160,6 +160,90 @@ pub struct SnapshotHistoryProgress {
 }
 
 impl MinerPassStorage {
+    fn check_rules_binding(
+        conn: &Connection,
+        expected: &IndexerRulesBinding,
+        peer_has_indexed_state: bool,
+    ) -> Result<(), String> {
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT value FROM state_text WHERE name = ?1",
+                [INDEXER_RULES_BINDING_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to read pass rules binding: {e}"))?;
+        if stored.is_none() && expected.rules_scope == usdb_util::LEGACY_RULES_SCOPE {
+            let stored_origin: Option<i64> = conn
+                .query_row(
+                    "SELECT value FROM state WHERE name = ?1",
+                    [SNAPSHOT_HISTORY_START_KEY],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("Failed to read legacy index origin: {e}"))?;
+            if stored_origin.is_some_and(|origin| origin != i64::from(expected.index_origin_height))
+            {
+                return Err(format!(
+                    "Legacy index origin mismatch before rules binding: stored={stored_origin:?}, expected={}",
+                    expected.index_origin_height
+                ));
+            }
+        }
+        let has_data = Self::has_indexed_state_with_conn(conn)?;
+        expected.validate_stored(stored.as_deref(), has_data || peer_has_indexed_state)
+    }
+
+    /// Check all durable progress and history while excluding the binding itself.
+    fn has_indexed_state_with_conn(conn: &Connection) -> Result<bool, String> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM miner_passes UNION ALL SELECT 1 FROM state \
+             UNION ALL SELECT 1 FROM state_text WHERE name != ?1 \
+             UNION ALL SELECT 1 FROM pass_block_commits UNION ALL SELECT 1 FROM active_balance_snapshots \
+             UNION ALL SELECT 1 FROM miner_pass_state_history UNION ALL SELECT 1 FROM balance_history_snapshot_history)",
+            [INDEXER_RULES_BINDING_KEY], |row| row.get(0)
+        ).map_err(|e| format!("Failed to check existing pass data: {e}"))
+    }
+
+    /// Reports durable history or progress, including pending metadata, but not a lone binding.
+    pub fn has_indexed_state(&self) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        Self::has_indexed_state_with_conn(&conn).inspect_err(|e| error!("{e}"))
+    }
+
+    /// Reject a different rule domain or unbound scoped data before any state reconciliation.
+    pub fn validate_rules_binding(&self, expected: &IndexerRulesBinding) -> Result<(), String> {
+        self.validate_paired_rules_binding(expected, false)
+    }
+
+    /// Reject a new unbound scoped store if its peer already contains indexed state.
+    pub fn validate_paired_rules_binding(
+        &self,
+        expected: &IndexerRulesBinding,
+        peer_has_indexed_state: bool,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        Self::check_rules_binding(&conn, expected, peer_has_indexed_state)
+            .inspect_err(|e| error!("{e}"))
+    }
+
+    /// Persist one immutable identity outside block rollback state after both stores pass preflight.
+    pub fn bind_rules(&self, expected: &IndexerRulesBinding) -> Result<(), String> {
+        let result = (|| {
+            let mut conn = self.conn.lock().unwrap();
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            Self::check_rules_binding(&tx, expected, false)?;
+            tx.execute(
+                "INSERT INTO state_text(name, value) VALUES (?1, ?2) ON CONFLICT(name) DO NOTHING",
+                (INDEXER_RULES_BINDING_KEY, expected.to_json()?),
+            )
+            .map_err(|e| format!("Failed to persist pass rules binding: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit pass rules binding: {e}"))
+        })();
+        result.inspect_err(|e| error!("{e}"))
+    }
+
     pub fn new(data_dir: &Path) -> Result<Self, String> {
         let open_begin = Instant::now();
         let db_path = data_dir.join(crate::constants::MINER_PASS_DB_FILE);
@@ -5520,6 +5604,106 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{ToBtcScriptHash, embedded_btc_stable_lag_blocks};
+
+    #[test]
+    fn legacy_rules_binding_checks_persisted_origin_before_adoption() {
+        let dir = test_data_dir("legacy_rules_origin");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        storage.reconcile_snapshot_history_coverage(100).unwrap();
+        let registry =
+            usdb_util::embedded_btc_activation_registry(bitcoincore_rpc::bitcoin::Network::Bitcoin)
+                .unwrap();
+        let wrong = usdb_util::IndexerRulesBinding::new(registry, 101);
+        assert!(
+            storage
+                .bind_rules(&wrong)
+                .unwrap_err()
+                .contains("origin mismatch")
+        );
+        {
+            let conn = storage.conn.lock().unwrap();
+            let binding: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM state_text WHERE name=?1",
+                    [INDEXER_RULES_BINDING_KEY],
+                    |row| row.get(0),
+                )
+                .optional()
+                .unwrap();
+            assert!(binding.is_none());
+            assert_eq!(
+                MinerPassStorage::history_number(&conn, SNAPSHOT_HISTORY_START_KEY).unwrap(),
+                Some(100)
+            );
+        }
+        let expected = usdb_util::IndexerRulesBinding::new(registry, 100);
+        storage.bind_rules(&expected).unwrap();
+        storage.validate_rules_binding(&expected).unwrap();
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rules_binding_rejects_wrong_scope_and_survives_reopen() {
+        let dir = test_data_dir("rules_binding");
+        let legacy =
+            usdb_util::embedded_btc_activation_registry(bitcoincore_rpc::bitcoin::Network::Bitcoin)
+                .unwrap();
+        let mut expected = usdb_util::IndexerRulesBinding::new(legacy, 100);
+        expected.rules_scope = "scope-one".into();
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        storage.validate_rules_binding(&expected).unwrap();
+        storage.bind_rules(&expected).unwrap();
+        storage
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO state(name,value) VALUES ('btc_synced_block_height', 100)",
+                [],
+            )
+            .unwrap();
+        let mut wrong = expected.clone();
+        wrong.rules_scope = "scope-two".into();
+        assert!(storage.validate_rules_binding(&wrong).is_err());
+        assert!(storage.bind_rules(&wrong).is_err());
+        drop(storage);
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        storage.validate_rules_binding(&expected).unwrap();
+        assert!(storage.validate_rules_binding(&wrong).is_err());
+        wrong = expected.clone();
+        wrong.activation_registry_id = "11".repeat(32);
+        assert!(storage.validate_rules_binding(&wrong).is_err());
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scoped_rules_cannot_adopt_unbound_nonempty_history() {
+        let dir = test_data_dir("unbound_rules");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        storage
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO state(name,value) VALUES ('btc_synced_block_height', 100)",
+                [],
+            )
+            .unwrap();
+        let registry =
+            usdb_util::embedded_btc_activation_registry(bitcoincore_rpc::bitcoin::Network::Bitcoin)
+                .unwrap();
+        let legacy = usdb_util::IndexerRulesBinding::new(registry, 100);
+        let mut scoped = legacy.clone();
+        scoped.rules_scope = "new-scope".into();
+        assert!(storage.bind_rules(&scoped).is_err());
+        storage.bind_rules(&legacy).unwrap();
+        storage.validate_rules_binding(&legacy).unwrap();
+        assert!(storage.bind_rules(&scoped).is_err());
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn test_data_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()

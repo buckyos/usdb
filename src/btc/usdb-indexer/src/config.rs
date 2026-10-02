@@ -82,6 +82,18 @@ fn default_pass_energy_leaderboard_cache_top_k() -> usize {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
+    /// Immutable USDB rule domain; omitted legacy configurations retain their registry identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_scope: Option<String>,
+
+    /// Frozen registry revision expected by this deployment, never a moving latest selector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_registry_id: Option<String>,
+
+    /// Reviewed catalog artifact, resolved relative to the service root when not absolute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_registry_catalog_file: Option<String>,
+
     // First BTC block height that the indexer should process for USDB protocol data.
     #[serde(default = "default_genesis_block_height")]
     pub genesis_block_height: u32,
@@ -155,6 +167,9 @@ pub struct USDBConfig {
 impl Default for USDBConfig {
     fn default() -> Self {
         USDBConfig {
+            rules_scope: None,
+            activation_registry_id: None,
+            activation_registry_catalog_file: None,
             genesis_block_height: default_genesis_block_height(),
             active_address_page_size: default_active_address_page_size(),
             balance_query_batch_size: default_balance_query_batch_size(),
@@ -287,6 +302,46 @@ impl ConfigManager {
     pub fn config(&self) -> &IndexerConfig {
         &self.config
     }
+
+    /// Resolve the network's exact catalog before opening any index data.
+    pub fn activation_registry_catalog(
+        &self,
+    ) -> Result<usdb_util::BtcActivationRegistryCatalog, String> {
+        let result = (|| {
+            let catalog_json = self
+                .config
+                .usdb
+                .activation_registry_catalog_file
+                .as_ref()
+                .map(|file| {
+                    if file.is_empty() {
+                        return Err(
+                            "activation_registry_catalog_file must not be empty".to_string()
+                        );
+                    }
+                    let path = self.root_dir.join(file);
+                    std::fs::read_to_string(&path).map_err(|error| {
+                        format!(
+                            "Failed to read activation registry catalog: path={}, error={error}",
+                            path.display()
+                        )
+                    })
+                })
+                .transpose()?;
+            usdb_util::resolve_btc_activation_registry_catalog(
+                self.config.bitcoin.network(),
+                self.config.usdb.rules_scope.as_deref(),
+                self.config.usdb.activation_registry_id.as_deref(),
+                catalog_json.as_deref(),
+            )
+            .map_err(|error| error.to_string())
+        })();
+        result.map_err(|error| {
+            let msg = format!("Failed to resolve configured activation registry: rules_scope={:?}, registry_id={:?}, error={error}", self.config.usdb.rules_scope, self.config.usdb.activation_registry_id);
+            error!("{msg}");
+            msg
+        })
+    }
 }
 
 pub type ConfigManagerRef = Arc<ConfigManager>;
@@ -294,6 +349,61 @@ pub type ConfigManagerRef = Arc<ConfigManager>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_selection_is_explicit_pinned_and_resolves_relative_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "usdb_registry_config_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let artifact =
+            include_str!("../../usdb-util/tests/fixtures/btc-mainnet-usdb-mainnet-catalog.json");
+        std::fs::write(root.join("catalog.json"), artifact).unwrap();
+        let catalog = usdb_util::BtcActivationRegistryCatalog::from_json(artifact).unwrap();
+        let mut manager = ConfigManager {
+            root_dir: root.clone(),
+            config: IndexerConfig::default(),
+        };
+        manager.config.bitcoin.network = bitcoincore_rpc::bitcoin::Network::Bitcoin;
+        manager.config.usdb.rules_scope = Some("usdb-mainnet-fixture".into());
+        manager.config.usdb.activation_registry_id = Some(catalog.current_registry_id().into());
+        manager.config.usdb.activation_registry_catalog_file = Some("catalog.json".into());
+        assert_eq!(
+            manager
+                .activation_registry_catalog()
+                .unwrap()
+                .current_registry_id(),
+            catalog.current_registry_id()
+        );
+        manager.config.usdb.rules_scope = Some("usdb-testnet-fixture".into());
+        assert!(manager.activation_registry_catalog().is_err());
+        manager.config.usdb.rules_scope = Some("usdb-mainnet-fixture".into());
+        manager.config.usdb.activation_registry_id = Some("11".repeat(32));
+        assert!(manager.activation_registry_catalog().is_err());
+        manager.config.usdb.activation_registry_id = Some(catalog.current_registry_id().into());
+        manager.config.bitcoin.network = bitcoincore_rpc::bitcoin::Network::Regtest;
+        assert!(manager.activation_registry_catalog().is_err());
+        manager.config.bitcoin.network = bitcoincore_rpc::bitcoin::Network::Bitcoin;
+        manager.config.usdb.activation_registry_catalog_file = None;
+        assert!(manager.activation_registry_catalog().is_err());
+        manager.config.usdb.rules_scope = None;
+        manager.config.usdb.activation_registry_id = None;
+        let legacy = manager.activation_registry_catalog().unwrap();
+        assert_eq!(
+            legacy.current_registry_id(),
+            usdb_util::embedded_btc_activation_registry_catalog(manager.config.bitcoin.network())
+                .unwrap()
+                .current_registry_id()
+        );
+        manager.config.usdb.activation_registry_id = Some(legacy.current_registry_id().into());
+        assert!(manager.activation_registry_catalog().is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn upstream_poll_interval_preserves_legacy_defaults() {

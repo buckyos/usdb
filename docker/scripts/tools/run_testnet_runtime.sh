@@ -117,6 +117,8 @@ compose() {
   export USDB_CONSOLE_STATE_DIR USDB_NOTIFICATION_CONFIG_DIR
   export USDB_NETWORK_ARTIFACTS_DIR="${bundle_dir}/artifacts"
   export BH_SNAPSHOT_TRUST_HOST_DIR="${bundle_dir}/trust"
+  # Consensus selectors come from the frozen bundle, never the caller's shell.
+  unset USDB_RULES_SCOPE BTC_ACTIVATION_REGISTRY_ID BTC_ACTIVATION_REGISTRY_CATALOG_FILE
   local family
   local -a transport_files=()
   local -a native_files=()

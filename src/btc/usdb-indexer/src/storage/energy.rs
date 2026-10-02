@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-use usdb_util::BtcScriptHash;
+use usdb_util::{BtcScriptHash, INDEXER_RULES_BINDING_KEY, IndexerRulesBinding};
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -70,6 +70,80 @@ pub struct PassEnergyStorage {
 }
 
 impl PassEnergyStorage {
+    /// Verify that energy history belongs to the same domain as the pass database.
+    pub fn validate_rules_binding(&self, expected: &IndexerRulesBinding) -> Result<(), String> {
+        self.validate_paired_rules_binding(expected, false)
+    }
+
+    /// Reject a new unbound scoped store if its peer already contains indexed state.
+    pub fn validate_paired_rules_binding(
+        &self,
+        expected: &IndexerRulesBinding,
+        peer_has_indexed_state: bool,
+    ) -> Result<(), String> {
+        let result = (|| {
+            let meta = self
+                .db
+                .cf_handle(META_CF)
+                .ok_or("Missing energy metadata column family")?;
+            let stored = self
+                .db
+                .get_cf(&meta, INDEXER_RULES_BINDING_KEY.as_bytes())
+                .map_err(|e| e.to_string())?;
+            let stored = stored
+                .as_deref()
+                .map(std::str::from_utf8)
+                .transpose()
+                .map_err(|e| e.to_string())?;
+            let has_data = stored.is_none() && self.has_indexed_state()?;
+            expected.validate_stored(stored, has_data || peer_has_indexed_state)
+        })();
+        result.inspect_err(|e| error!("Failed to validate energy rules binding: {e}"))
+    }
+
+    /// Reports energy history or any progress/pending metadata, excluding a lone binding.
+    pub fn has_indexed_state(&self) -> Result<bool, String> {
+        let result = (|| {
+            for name in [PASS_ENERGY_CF, META_CF] {
+                let cf = self
+                    .db
+                    .cf_handle(name)
+                    .ok_or("Missing energy column family")?;
+                for entry in self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start) {
+                    let (key, _) = entry.map_err(|e| e.to_string())?;
+                    if name != META_CF || key.as_ref() != INDEXER_RULES_BINDING_KEY.as_bytes() {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        })();
+        result.inspect_err(|e| error!("Failed to check existing energy data: {e}"))
+    }
+
+    /// Durably pin the energy dataset to the same revision as its paired pass store.
+    pub fn bind_rules(&self, expected: &IndexerRulesBinding) -> Result<(), String> {
+        self.validate_rules_binding(expected)?;
+        let meta = self
+            .db
+            .cf_handle(META_CF)
+            .ok_or("Missing energy metadata column family")?;
+        let mut options = rocksdb::WriteOptions::default();
+        options.set_sync(true);
+        self.db
+            .put_cf_opt(
+                &meta,
+                INDEXER_RULES_BINDING_KEY.as_bytes(),
+                expected.to_json()?.as_bytes(),
+                &options,
+            )
+            .map_err(|e| {
+                let msg = format!("Failed to persist energy rules binding: {e}");
+                error!("{msg}");
+                msg
+            })
+    }
+
     pub fn new(data_dir: &Path) -> Result<Self, String> {
         let open_begin = Instant::now();
         let db_path = data_dir.join(crate::constants::PASS_ENERGY_DB_DIR);
@@ -850,6 +924,52 @@ mod tests {
     use bitcoincore_rpc::bitcoin::ScriptBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::ToBtcScriptHash;
+
+    #[test]
+    fn rules_binding_rejects_wrong_scope_and_survives_reopen() {
+        let dir = test_data_dir("rules_binding");
+        let legacy =
+            usdb_util::embedded_btc_activation_registry(bitcoincore_rpc::bitcoin::Network::Bitcoin)
+                .unwrap();
+        let mut expected = usdb_util::IndexerRulesBinding::new(legacy, 100);
+        expected.rules_scope = "scope-one".into();
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+        storage.validate_rules_binding(&expected).unwrap();
+        storage.bind_rules(&expected).unwrap();
+        storage.set_synced_block_height(100).unwrap();
+        let mut wrong = expected.clone();
+        wrong.rules_scope = "scope-two".into();
+        assert!(storage.validate_rules_binding(&wrong).is_err());
+        assert!(storage.bind_rules(&wrong).is_err());
+        drop(storage);
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+        storage.validate_rules_binding(&expected).unwrap();
+        assert!(storage.validate_rules_binding(&wrong).is_err());
+        wrong = expected.clone();
+        wrong.activation_registry_id = "11".repeat(32);
+        assert!(storage.validate_rules_binding(&wrong).is_err());
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scoped_rules_cannot_adopt_unbound_nonempty_history() {
+        let dir = test_data_dir("unbound_rules");
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+        storage.set_synced_block_height(100).unwrap();
+        let registry =
+            usdb_util::embedded_btc_activation_registry(bitcoincore_rpc::bitcoin::Network::Bitcoin)
+                .unwrap();
+        let legacy = usdb_util::IndexerRulesBinding::new(registry, 100);
+        let mut scoped = legacy.clone();
+        scoped.rules_scope = "new-scope".into();
+        assert!(storage.bind_rules(&scoped).is_err());
+        storage.bind_rules(&legacy).unwrap();
+        storage.validate_rules_binding(&legacy).unwrap();
+        assert!(storage.bind_rules(&scoped).is_err());
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn test_data_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()

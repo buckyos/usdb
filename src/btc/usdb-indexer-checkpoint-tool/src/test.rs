@@ -143,6 +143,60 @@ fn write_indexer_data(root: &Path, height: u32, stable_hash: &str, block_commit:
 }
 
 fn build_fixture(tag: &str) -> Fixture {
+    build_fixture_with_scope(tag, None)
+}
+
+fn scoped_catalog(scope: &str) -> usdb_util::BtcActivationRegistryCatalog {
+    let legacy = embedded_btc_activation_registry_catalog(Network::Regtest).unwrap();
+    let mut registry = serde_json::to_value(legacy.current_registry()).unwrap();
+    registry["schema_version"] = "uip-0008-btc-activation-registry:v3".into();
+    registry["scope"]["rules_scope"] = scope.into();
+    let registry = usdb_util::BtcActivationRegistry::from_json(&registry.to_string()).unwrap();
+    usdb_util::BtcActivationRegistryCatalog::from_revisions(vec![registry]).unwrap()
+}
+
+fn write_scoped_config(
+    root: &Path,
+    height: u32,
+    catalog: &usdb_util::BtcActivationRegistryCatalog,
+) {
+    std::fs::create_dir_all(root).unwrap();
+    std::fs::write(root.join("catalog.json"), catalog.to_json().unwrap()).unwrap();
+    let registry = catalog.current_registry();
+    std::fs::write(
+        root.join("config.json"),
+        serde_json::to_vec_pretty(&json!({
+            "bitcoin": {"network": "regtest"},
+            "usdb": {
+                "genesis_block_height": height,
+                "rules_scope": registry.scope.rules_scope(),
+                "activation_registry_id": registry.activation_registry_id(),
+                "activation_registry_catalog_file": "catalog.json"
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+fn write_energy_binding(data: &Path, binding: &str) {
+    let db = DB::open_cf(
+        &Options::default(),
+        data.join("energy"),
+        ["pass_energy", "meta"],
+    )
+    .unwrap();
+    let meta = db.cf_handle("meta").unwrap();
+    db.put_cf(
+        &meta,
+        usdb_util::INDEXER_RULES_BINDING_KEY.as_bytes(),
+        binding,
+    )
+    .unwrap();
+    db.flush().unwrap();
+}
+
+fn build_fixture_with_scope(tag: &str, scope: Option<&str>) -> Fixture {
     let root = temp_root(tag);
     let source_root = root.join("source-indexer");
     let height = 1;
@@ -173,10 +227,34 @@ fn build_fixture(tag: &str) -> Fixture {
         commit_protocol_version: "1.0.0".to_string(),
         commit_hash_algo: "sha256".to_string(),
     };
-    let catalog =
-        embedded_btc_activation_registry_catalog(bitcoincore_rpc::bitcoin::Network::Regtest)
-            .unwrap();
+    let catalog = match scope {
+        Some(scope) => scoped_catalog(scope),
+        None => embedded_btc_activation_registry_catalog(Network::Regtest)
+            .unwrap()
+            .clone(),
+    };
     let registry = catalog.current_registry();
+    if scope.is_some() {
+        write_scoped_config(&source_root, height, &catalog);
+        let data = source_root.join("data");
+        let binding = usdb_util::IndexerRulesBinding::new(registry, height)
+            .to_json()
+            .unwrap();
+        let conn = Connection::open(data.join("miner_pass.db")).unwrap();
+        conn.execute_batch("CREATE TABLE state_text (name TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO state_text VALUES (?1, ?2)",
+            rusqlite::params![usdb_util::INDEXER_RULES_BINDING_KEY, binding],
+        )
+        .unwrap();
+        write_energy_binding(&data, &binding);
+        std::fs::write(
+            data.join(crate::artifact::RULES_CATALOG_FILE),
+            catalog.to_json().unwrap(),
+        )
+        .unwrap();
+    }
     let active_versions = registry.lookup_active_version_set(height).unwrap();
     let active_version_set_id = active_versions.active_version_set_id();
     let commit_protocol_version = active_versions
@@ -422,6 +500,9 @@ fn staged_wal_checkpoint_keeps_inventory_stable_during_validation() {
             data_dir: staged.clone(),
             bitcoin_network: Network::Regtest,
             genesis_block_height: fixture.manifest.index_origin_height,
+            activation_registry_catalog: embedded_btc_activation_registry_catalog(Network::Regtest)
+                .unwrap()
+                .clone(),
         };
         for _ in 0..2 {
             assert_eq!(
@@ -727,4 +808,99 @@ async fn recovery_recomputes_historical_state_refs_after_services_advance() {
     })
     .await
     .unwrap();
+}
+
+#[test]
+fn scoped_checkpoint_verifies_independently_and_restores_only_to_matching_scope() {
+    let fixture = build_fixture_with_scope("scoped_restore", Some("checkpoint-test"));
+    let verified =
+        load_and_verify_checkpoint(&fixture.manifest_path, &fixture.trusted_keys_path, true)
+            .unwrap();
+    assert_eq!(verified.state_identity, fixture.manifest.state_identity);
+    let options = install_options(&fixture, "scoped-target");
+    // The same BTC source and formulas do not authorize a legacy target.
+    assert!(
+        publish_indexer_data(&options, &fixture.manifest)
+            .unwrap_err()
+            .contains("registry")
+    );
+    assert!(!options.indexer_root.join("data").exists());
+    write_scoped_config(
+        &options.indexer_root,
+        fixture.manifest.index_origin_height,
+        &scoped_catalog("another-test"),
+    );
+    assert!(
+        publish_indexer_data(&options, &fixture.manifest)
+            .unwrap_err()
+            .contains("registry")
+    );
+    assert!(!options.indexer_root.join("data").exists());
+    write_scoped_config(
+        &options.indexer_root,
+        fixture.manifest.index_origin_height,
+        &scoped_catalog("checkpoint-test"),
+    );
+    publish_indexer_data(&options, &fixture.manifest).unwrap();
+    let layout = IndexerDiskLayout::load(&options.indexer_root).unwrap();
+    assert_eq!(
+        validate_indexer_data(&layout, &fixture.manifest).unwrap(),
+        fixture.manifest.state_identity
+    );
+}
+
+#[test]
+fn scoped_checkpoint_requires_both_database_bindings() {
+    let fixture = build_fixture_with_scope("scoped_db_bindings", Some("checkpoint-test"));
+    let layout = IndexerDiskLayout::load(&fixture.source_root).unwrap();
+    validate_indexer_data(&layout, &fixture.manifest).unwrap();
+    let conn = Connection::open(layout.data_dir.join("miner_pass.db")).unwrap();
+    conn.execute(
+        "DELETE FROM state_text WHERE name=?1",
+        [usdb_util::INDEXER_RULES_BINDING_KEY],
+    )
+    .unwrap();
+    assert!(
+        validate_indexer_data(&layout, &fixture.manifest)
+            .unwrap_err()
+            .contains("Unbound nonempty")
+    );
+    let binding = usdb_util::IndexerRulesBinding::new(
+        layout.activation_registry_catalog.current_registry(),
+        layout.genesis_block_height,
+    );
+    conn.execute(
+        "INSERT INTO state_text VALUES (?1, ?2)",
+        rusqlite::params![
+            usdb_util::INDEXER_RULES_BINDING_KEY,
+            binding.to_json().unwrap()
+        ],
+    )
+    .unwrap();
+    let mut wrong = binding;
+    wrong.rules_scope = "another-test".into();
+    write_energy_binding(&layout.data_dir, &wrong.to_json().unwrap());
+    assert!(
+        validate_indexer_data(&layout, &fixture.manifest)
+            .unwrap_err()
+            .contains("rules binding mismatch")
+    );
+}
+
+#[test]
+fn scoped_checkpoint_catalog_is_covered_by_signed_file_inventory() {
+    let fixture = build_fixture_with_scope("scoped_catalog_tamper", Some("checkpoint-test"));
+    std::fs::write(
+        fixture
+            .artifact_dir
+            .join("data")
+            .join(crate::artifact::RULES_CATALOG_FILE),
+        scoped_catalog("another-test").to_json().unwrap(),
+    )
+    .unwrap();
+    assert!(
+        load_and_verify_checkpoint(&fixture.manifest_path, &fixture.trusted_keys_path, true)
+            .unwrap_err()
+            .contains("inventory")
+    );
 }

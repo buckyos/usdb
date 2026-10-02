@@ -100,6 +100,11 @@ def build_runtime_compatibility(network: dict[str, Any]) -> dict[str, Any]:
             "identity": {"network_bundle_id": network["bundle_id"]},
         },
     }
+    scope = network.get("btc_rules_scope", "legacy")
+    from registry_scope import validate_scope
+    validate_scope(scope)
+    if scope != "legacy":
+        services["usdb_indexer"]["identity"]["btc_rules_scope"] = scope
     if "balance_history_bootstrap" in network:
         # Native history has a bounded retention floor and its own import seal.
         # Use a separate BH dataset while preserving Core/indexer/chain contracts.

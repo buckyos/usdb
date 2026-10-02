@@ -207,6 +207,8 @@ def prepare_bundle(source: Path, output: Path, origin_hash: str, source_url: str
     identity = dict(bundle_id=network["network_bundle_id"], chain_id=network["chain_id"], genesis_block_hash=genesis["block_hash"],
                     btc_network_id=network["btc_source"]["network_id"], btc_index_origin_height=contract["origin_height"],
                     btc_activation_registry_id=network["btc_source"]["activation_registry_id"], balance_history_bootstrap=state_identity(contract))
+    from registry_scope import rules_scope_identity
+    identity.update(rules_scope_identity(network["btc_source"]))
     compatibility = build_runtime_compatibility(identity)
     template = output / "node.env.example"
     root = Path(read_env(template)["USDB_DATA_ROOT"])

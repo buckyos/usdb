@@ -9,6 +9,9 @@ if [[ "${SNAPSHOT_MODE:-none}" == "assumeutxo" ]]; then
   exec python3 "${script_dir}/../tools/assumeutxo_bootstrap.py" render-indexer --output "${output_path}"
 fi
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+rule_selection="$(python3 "${script_dir}/../tools/registry_scope.py")"
+
 mkdir -p "${root_dir}" "$(dirname "${output_path}")"
 
 emit_btc_auth_json() {
@@ -59,6 +62,7 @@ cat >>"${output_path}" <<EOF
     "rpc_url": "${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}"
   },
   "usdb": {
+    ${rule_selection},
     "genesis_block_height": ${USDB_GENESIS_BLOCK_HEIGHT:-900000},
     "active_address_page_size": ${ACTIVE_ADDRESS_PAGE_SIZE:-1024},
     "balance_query_batch_size": ${BALANCE_QUERY_BATCH_SIZE:-1024},

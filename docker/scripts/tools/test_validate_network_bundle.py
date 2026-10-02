@@ -243,7 +243,7 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "stable_block_hash": snapshot_manifest["state_ref"]["stable_block_hash"],
             "latest_block_commit": snapshot_manifest["state_ref"]["latest_block_commit"],
             "snapshot_id": snapshot_manifest["state_ref"]["snapshot_id"],
-            "activation_registry_id": "5" * 64,
+            "activation_registry_id": self.network["btc_source"]["activation_registry_id"],
             "active_version_set_id": "6" * 64,
             "local_state_commit": "7" * 64,
             "system_state_id": "8" * 64,
@@ -642,6 +642,31 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             USDB_INDEXER_CHECKPOINT_MANIFEST=checkpoint_manifest,
         )
         self.validate_node_env(path, True)
+
+    def test_node_env_cannot_override_frozen_registry_selection(self) -> None:
+        for key, value in {
+            "USDB_RULES_SCOPE": "usdb-testnet-v1",
+            "BTC_ACTIVATION_REGISTRY_ID": "f" * 64,
+            "BTC_ACTIVATION_REGISTRY_CATALOG_FILE": "/network/other.json",
+        }.items():
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "cannot override frozen registry selector"):
+                self.validate_node_env(self.write_node_env(**{key: value}), False)
+        self.validate_node_env(self.write_node_env(
+            BTC_ACTIVATION_REGISTRY_ID=self.network["btc_source"]["activation_registry_id"]), False)
+
+    def test_runtime_rejects_checkpoint_from_another_registry(self) -> None:
+        snapshot_file, snapshot_manifest = self.write_snapshot_artifacts(963900, "other-registry")
+        checkpoint_manifest = self.write_indexer_checkpoint_artifacts(963900, Path(snapshot_manifest).name)
+        checkpoint_path = self.root / "snapshot" / Path(checkpoint_manifest).parent.name / Path(checkpoint_manifest).name
+        checkpoint = json.loads(checkpoint_path.read_text())
+        checkpoint["state_identity"]["activation_registry_id"] = "f" * 64
+        checkpoint["indexer_state_ref"]["local_state_commit_info"]["activation_registry_id"] = "f" * 64
+        checkpoint_path.write_text(json.dumps(checkpoint))
+        path = self.write_node_env(SNAPSHOT_MODE="paired-checkpoint", BH_SNAPSHOT_FILE=snapshot_file,
+                                   BH_SNAPSHOT_MANIFEST=snapshot_manifest,
+                                   USDB_INDEXER_CHECKPOINT_MANIFEST=checkpoint_manifest)
+        with self.assertRaisesRegex(ValueError, "checkpoint activation registry does not match"):
+            self.validate_node_env(path, True)
 
     def test_runtime_rejects_paired_checkpoint_state_mismatch(self) -> None:
         snapshot_file, snapshot_manifest = self.write_snapshot_artifacts(

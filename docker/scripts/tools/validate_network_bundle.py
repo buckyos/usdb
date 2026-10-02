@@ -29,6 +29,9 @@ from runtime_compatibility import (  # noqa: E402
 from resource_policy import resource_mode, validate_resource_environment  # noqa: E402
 from sourcedao_release import validate_frozen_bundle  # noqa: E402
 from peer_sources import load_bootnodes  # noqa: E402
+from registry_scope import (  # noqa: E402
+    rules_scope_identity, validate_frozen_rule_selection, validate_node_rule_overrides,
+)
 
 EXPECTED_BUNDLE_ID = "usdb-testnet-v0"
 EXPECTED_CHAIN_ID = 202608250
@@ -398,6 +401,10 @@ def validate_runtime_checkpoint(
     require(isinstance(indexer_state_ref, dict), "checkpoint full indexer_state_ref is required")
     require(identity.get("block_height") == checkpoint_height, "checkpoint identity height mismatch")
     require(
+        identity.get("activation_registry_id") == network["btc_source"]["activation_registry_id"],
+        "checkpoint activation registry does not match the selected network",
+    )
+    require(
         identity.get("stable_block_hash") == snapshot_state.get("stable_block_hash")
         and identity.get("latest_block_commit") == snapshot_state.get("latest_block_commit")
         and identity.get("snapshot_id") == snapshot_state.get("snapshot_id"),
@@ -519,6 +526,9 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     index_origin_height = network_index_origin_height(network)
     require(btc_source.get("network_id") == "btc-mainnet", "testnet-v0 must consume BTC mainnet")
     require(btc_source.get("activation_registry_id") == EXPECTED_BTC_REGISTRY, "unexpected BTC registry")
+    require(btc_source.get("rules_scope", "legacy") == "legacy", "testnet-v0 must preserve its legacy rules scope")
+    require("btc_activation_registry_catalog" not in network.get("artifacts", {}), "testnet-v0 must use its frozen embedded registry")
+    validate_frozen_rule_selection(bundle_dir, network, env)
 
     require(env.get("USDB_NETWORK_BUNDLE_ID") == EXPECTED_BUNDLE_ID, "network.env bundle ID mismatch")
     require(env.get("USDB_CHAIN_ID") == str(EXPECTED_CHAIN_ID), "network.env chain ID mismatch")
@@ -649,6 +659,7 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
         "btc_index_origin_height": index_origin_height,
         "btc_activation_registry_id": btc_source["activation_registry_id"],
     }
+    network_identity.update(rules_scope_identity(btc_source))
     if native is not None:
         network_identity["balance_history_bootstrap"] = state_identity(native)
     compatibility = build_runtime_compatibility(network_identity)
@@ -712,6 +723,7 @@ def validate_node_env(
 ) -> None:
     """Validate configuration; only a bootstrap preflight may defer snapshot files."""
     env = read_env(path)
+    validate_node_rule_overrides(network, env)
     index_origin_height = network_index_origin_height(network)
     validate_image_ref(
         "USDB_SERVICES_IMAGE",

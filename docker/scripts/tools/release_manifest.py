@@ -210,6 +210,8 @@ def build_network_identity(bundle_dir: Path) -> dict[str, Any]:
         "btc_activation_registry_id": network["btc_source"]["activation_registry_id"],
         "snapshot_trusted_keys_sha256": artifacts["snapshot_trusted_keys"]["sha256"],
     }
+    from registry_scope import rules_scope_identity
+    identity.update(rules_scope_identity(network["btc_source"]))
     if network.get("_native_bootstrap"):
         from assumeutxo_deployment import state_identity
         identity["balance_history_bootstrap"] = state_identity(network["_native_bootstrap"])
@@ -480,7 +482,8 @@ def validate_manifest(manifest: dict[str, Any], bundle_dir: Path, compatibility_
             "btc_index_origin_height",
             "btc_activation_registry_id",
             "snapshot_trusted_keys_sha256",
-        } | ({"balance_history_bootstrap"} if "balance_history_bootstrap" in network else set()),
+        } | ({"balance_history_bootstrap"} if "balance_history_bootstrap" in network else set())
+        | ({"btc_rules_scope"} if "btc_rules_scope" in network else set()),
         "network_bundle",
     )
     require_sha256(network["network_json_sha256"], "network_bundle.network_json_sha256")

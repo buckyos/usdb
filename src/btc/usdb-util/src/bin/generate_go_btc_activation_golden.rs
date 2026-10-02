@@ -7,10 +7,12 @@ use std::fs;
 use std::io::{Error as IoError, ErrorKind};
 use usdb_util::{
     ACTIVATION_REGISTRY_SCHEMA_VERSION, ActivationStatus, ActiveVersionSet, BtcActivationRegistry,
+    BtcActivationRegistryCatalog, SCOPED_ACTIVATION_REGISTRY_SCHEMA_VERSION,
     embedded_btc_activation_registry_catalog,
 };
 
 const GO_GOLDEN_SCHEMA_VERSION: &str = "uip-0008-go-btc-activation-golden:v3";
+const SCOPED_GO_GOLDEN_SCHEMA_VERSION: &str = "uip-0008-go-btc-activation-golden:v4";
 
 #[derive(Serialize)]
 struct GoActivationGoldenArtifact {
@@ -21,7 +23,9 @@ struct GoActivationGoldenArtifact {
 
 #[derive(Serialize)]
 struct GoRegistryGolden {
-    network_id: &'static str,
+    network_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rules_scope: Option<String>,
     revision: u32,
     current: bool,
     stable_lag_blocks: u32,
@@ -58,7 +62,7 @@ fn registry_goldens(
 
 fn registry_golden(
     registry: &BtcActivationRegistry,
-    network_id: &'static str,
+    network_id: &str,
     revision: u32,
     current: bool,
 ) -> Result<GoRegistryGolden, Box<dyn Error>> {
@@ -77,7 +81,8 @@ fn registry_golden(
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
 
     Ok(GoRegistryGolden {
-        network_id,
+        network_id: network_id.to_string(),
+        rules_scope: registry.scope.rules_scope.clone(),
         revision,
         current,
         stable_lag_blocks: registry.stable_lag_blocks(),
@@ -96,22 +101,90 @@ fn active_heights(registry: &BtcActivationRegistry) -> Result<Vec<u32>, Box<dyn 
     Ok(heights.into_iter().collect())
 }
 
+/// Parses catalogs only on explicit request; the default artifact stays byte compatible.
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut registries = registry_goldens(Network::Bitcoin, "btc-mainnet")?;
-    registries.extend(registry_goldens(Network::Regtest, "btc-regtest")?);
+    let args = env::args_os().skip(1).collect::<Vec<_>>();
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        println!("{}", usage_error());
+        return Ok(());
+    }
+    let mut catalogs = Vec::new();
+    let mut output_path = None;
+    let mut check = false;
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--catalog" {
+            index += 1;
+            catalogs.push(args.get(index).ok_or_else(usage_error)?.clone());
+        } else if args[index] == "--check" {
+            if check {
+                return Err(usage_error().into());
+            }
+            check = true;
+        } else if args[index].to_string_lossy().starts_with('-')
+            || output_path.replace(args[index].clone()).is_some()
+        {
+            return Err(usage_error().into());
+        }
+        index += 1;
+    }
+    if check && output_path.is_none() {
+        return Err(usage_error().into());
+    }
+
+    let scoped = !catalogs.is_empty();
+    let registries = if scoped {
+        let mut registries = Vec::new();
+        let mut scopes = BTreeSet::new();
+        for path in catalogs {
+            let catalog = BtcActivationRegistryCatalog::from_json(&fs::read_to_string(path)?)?;
+            let scope = &catalog.current_registry().scope;
+            if !scopes.insert((scope.network_id.clone(), scope.rules_scope.clone())) {
+                return Err(
+                    IoError::new(ErrorKind::InvalidData, "duplicate scoped catalog").into(),
+                );
+            }
+            for (index, id) in catalog.registry_ids().iter().enumerate() {
+                let registry = catalog.registry_by_id(id)?;
+                if registry.schema_version != SCOPED_ACTIVATION_REGISTRY_SCHEMA_VERSION {
+                    return Err(IoError::new(
+                        ErrorKind::InvalidData,
+                        "external golden catalogs require registry schema v3",
+                    )
+                    .into());
+                }
+                registries.push(registry_golden(
+                    registry,
+                    &scope.network_id,
+                    u32::try_from(index + 1)?,
+                    id == catalog.current_registry_id(),
+                )?);
+            }
+        }
+        registries
+    } else {
+        let mut registries = registry_goldens(Network::Bitcoin, "btc-mainnet")?;
+        registries.extend(registry_goldens(Network::Regtest, "btc-regtest")?);
+        registries
+    };
     let artifact = GoActivationGoldenArtifact {
-        schema_version: GO_GOLDEN_SCHEMA_VERSION,
-        source_registry_schema_version: ACTIVATION_REGISTRY_SCHEMA_VERSION,
+        schema_version: if scoped {
+            SCOPED_GO_GOLDEN_SCHEMA_VERSION
+        } else {
+            GO_GOLDEN_SCHEMA_VERSION
+        },
+        source_registry_schema_version: if scoped {
+            SCOPED_ACTIVATION_REGISTRY_SCHEMA_VERSION
+        } else {
+            ACTIVATION_REGISTRY_SCHEMA_VERSION
+        },
         registries,
     };
     let output = format!("{}\n", serde_json::to_string_pretty(&artifact)?);
-
-    let args = env::args_os().skip(1).collect::<Vec<_>>();
-    match args.as_slice() {
-        [] => print!("{}", output),
-        [path] => fs::write(path, output)?,
-        [flag, path] if flag == "--check" => {
-            let existing = fs::read_to_string(path)?;
+    match output_path {
+        None => print!("{}", output),
+        Some(path) if check => {
+            let existing = fs::read_to_string(&path)?;
             if existing != output {
                 return Err(IoError::new(
                     ErrorKind::InvalidData,
@@ -123,13 +196,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .into());
             }
         }
-        _ => {
-            return Err(IoError::new(
-                ErrorKind::InvalidInput,
-                "usage: generate_go_btc_activation_golden [--check] [output-path]",
-            )
-            .into());
-        }
+        Some(path) => fs::write(path, output)?,
     }
     Ok(())
+}
+
+/// Returns one stable usage error for malformed command-line arguments.
+fn usage_error() -> IoError {
+    IoError::new(
+        ErrorKind::InvalidInput,
+        "usage: generate_go_btc_activation_golden [--catalog catalog.json]... [--check] [output-path]",
+    )
 }

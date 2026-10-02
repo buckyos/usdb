@@ -9,12 +9,25 @@ use std::sync::OnceLock;
 pub const ACTIVATION_REGISTRY_SCHEMA_VERSION: &str = "uip-0008-btc-activation-registry:v2";
 /// Hash domain used by the canonical network-scoped BTC registry encoding.
 pub const ACTIVATION_REGISTRY_HASH_DOMAIN: &str = "usdb-btc-activation-registry:v2";
+/// Schema for registries with an independent USDB rules scope.
+pub const SCOPED_ACTIVATION_REGISTRY_SCHEMA_VERSION: &str = "uip-0008-btc-activation-registry:v3";
+/// Hash domain that binds both the BTC source and the USDB rules scope.
+pub const SCOPED_ACTIVATION_REGISTRY_HASH_DOMAIN: &str = "usdb-btc-activation-registry:v3";
+/// Schema for a reviewed, explicitly pinned catalog supplied by a network bundle.
+pub const ACTIVATION_REGISTRY_CATALOG_SCHEMA_VERSION: &str =
+    "uip-0008-btc-activation-registry-catalog:v1";
+/// Historical implicit scope; its registry and state identifiers must not change.
+pub const LEGACY_RULES_SCOPE: &str = "legacy";
 /// Hash domain used by the canonical active-version-set encoding.
 pub const ACTIVE_VERSION_SET_HASH_DOMAIN: &str = "usdb-active-version-set:v1";
+/// Hash domain for version sets that bind an independent USDB rules scope.
+pub const SCOPED_ACTIVE_VERSION_SET_HASH_DOMAIN: &str = "usdb-active-version-set:v2";
 /// Hash algorithm used by registry and active-version-set identifiers.
 pub const ACTIVATION_ID_HASH_ALGO: &str = "sha256";
 /// Schema identifier for the audit-only cross-chain release manifest.
 pub const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "uip-0008-cross-chain-release-manifest:v3";
+/// Audit manifest schema that groups independent catalogs on the same BTC source.
+pub const SCOPED_RELEASE_MANIFEST_SCHEMA_VERSION: &str = "uip-0008-cross-chain-release-manifest:v4";
 
 /// UIP-0001 inscription schema implemented by the current BTC indexer.
 pub const INSCRIPTION_SCHEMA_VERSION_V1: &str = "uip-0001-miner-pass-inscription:v1";
@@ -220,6 +233,13 @@ pub struct BtcActivationRegistryScope {
     pub network_type: ActivationNetworkType,
     /// Canonical network identifier, such as `btc-mainnet` or `btc-regtest`.
     pub network_id: String,
+    /// Independent USDB rule history; absent only in frozen legacy v2 artifacts.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
+    pub rules_scope: Option<String>,
     /// Number of canonical BTC confirmations excluded from the exposed stable view.
     ///
     /// This is a network protocol value committed by `activation_registry_id`,
@@ -228,6 +248,11 @@ pub struct BtcActivationRegistryScope {
 }
 
 impl BtcActivationRegistryScope {
+    /// Returns the explicit scope, or the immutable legacy compatibility scope.
+    pub fn rules_scope(&self) -> &str {
+        self.rules_scope.as_deref().unwrap_or(LEGACY_RULES_SCOPE)
+    }
+
     fn network_identity(network: Network) -> (ActivationNetworkType, &'static str) {
         match network {
             Network::Bitcoin => (ActivationNetworkType::Mainnet, "btc-mainnet"),
@@ -259,15 +284,70 @@ pub struct BtcActivationRecord {
     pub notes: String,
 }
 
-/// Versions active in one exact chain context.
+/// Scope carried by new active sets so RPC round trips retain their state identity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "ActiveVersionSetScopeDocument")]
+pub struct ActiveVersionSetScope {
+    /// Canonical BTC source identifier.
+    pub network_id: String,
+    /// Independent USDB rules history, never the legacy compatibility scope.
+    pub rules_scope: String,
+}
+
+/// Deserialization validates scope metadata before callers can hash an RPC value.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActiveVersionSetScopeDocument {
+    network_id: String,
+    rules_scope: String,
+}
+
+impl TryFrom<ActiveVersionSetScopeDocument> for ActiveVersionSetScope {
+    type Error = ActivationRegistryError;
+
+    fn try_from(document: ActiveVersionSetScopeDocument) -> Result<Self, Self::Error> {
+        let scope = Self {
+            network_id: document.network_id,
+            rules_scope: document.rules_scope,
+        };
+        scope.validate()?;
+        Ok(scope)
+    }
+}
+
+impl ActiveVersionSetScope {
+    /// Rejects non-canonical source identities and malformed rule scopes.
+    pub fn validate(&self) -> Result<(), ActivationRegistryError> {
+        if !matches!(
+            self.network_id.as_str(),
+            "btc-mainnet" | "btc-testnet3" | "btc-testnet4" | "btc-signet" | "btc-regtest"
+        ) {
+            return Err(ActivationRegistryError::InvalidRecord(format!(
+                "invalid active version set BTC source {}",
+                self.network_id
+            )));
+        }
+        validate_rules_scope(&self.rules_scope)
+    }
+}
+
+/// Versions active in one exact chain context; legacy JSON remains a flat map.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(transparent)]
-pub struct ActiveVersionSet(BTreeMap<VersionFamily, VersionValue>);
+pub struct ActiveVersionSet {
+    #[serde(flatten)]
+    versions: BTreeMap<VersionFamily, VersionValue>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
+    scope: Option<ActiveVersionSetScope>,
+}
 
 impl ActiveVersionSet {
     /// Returns one active value, or `None` when the family is not activated.
     pub fn get(&self, family: VersionFamily) -> Option<&VersionValue> {
-        self.0.get(&family)
+        self.versions.get(&family)
     }
 
     /// Returns the active string value and rejects missing or incorrectly typed families.
@@ -305,7 +385,13 @@ impl ActiveVersionSet {
     /// Computes the canonical SHA-256 identity of this version set.
     pub fn active_version_set_id(&self) -> String {
         let mut hasher = Sha256::new();
-        update_string(&mut hasher, ACTIVE_VERSION_SET_HASH_DOMAIN);
+        if let Some(scope) = &self.scope {
+            update_string(&mut hasher, SCOPED_ACTIVE_VERSION_SET_HASH_DOMAIN);
+            update_string(&mut hasher, &scope.network_id);
+            update_string(&mut hasher, &scope.rules_scope);
+        } else {
+            update_string(&mut hasher, ACTIVE_VERSION_SET_HASH_DOMAIN);
+        }
         for family in VersionFamily::ALL {
             update_string(&mut hasher, family.as_str());
             match self.get(family) {
@@ -321,7 +407,10 @@ impl ActiveVersionSet {
 
     /// Verifies that all BTC indexer families select the currently implemented v1 rules.
     pub fn validate_btc_indexer_v1(&self) -> Result<(), ActivationRegistryError> {
-        for (family, value) in &self.0 {
+        if let Some(scope) = &self.scope {
+            scope.validate()?;
+        }
+        for (family, value) in &self.versions {
             if !BTC_INDEXER_V1_FAMILIES.contains(family) {
                 return Err(ActivationRegistryError::VersionNotSupported {
                     family: *family,
@@ -369,10 +458,18 @@ impl ActiveVersionSet {
 
     /// Verifies the balance-history family without interpreting indexer formulas.
     pub fn validate_balance_history_v1(&self) -> Result<(), ActivationRegistryError> {
+        if let Some(scope) = &self.scope {
+            scope.validate()?;
+        }
         self.require_supported_string(
             VersionFamily::BalanceHistorySemanticsVersion,
             BALANCE_HISTORY_SEMANTICS_VERSION_V1,
         )
+    }
+
+    /// Returns the state-identity scope, absent for unchanged legacy version sets.
+    pub fn scope(&self) -> Option<&ActiveVersionSetScope> {
+        self.scope.as_ref()
     }
 
     fn require_supported_string(
@@ -414,10 +511,30 @@ impl BtcActivationRegistry {
 
     /// Validates schema, network scope, BTC family types, conflicts, and supersedes chains.
     pub fn validate(&self) -> Result<(), ActivationRegistryError> {
-        if self.schema_version != ACTIVATION_REGISTRY_SCHEMA_VERSION {
-            return Err(ActivationRegistryError::UnsupportedSchemaVersion(
-                self.schema_version.clone(),
-            ));
+        match self.schema_version.as_str() {
+            ACTIVATION_REGISTRY_SCHEMA_VERSION if self.scope.rules_scope.is_none() => {}
+            ACTIVATION_REGISTRY_SCHEMA_VERSION => {
+                return Err(ActivationRegistryError::InvalidRecord(
+                    "legacy v2 registry must not declare rules_scope".to_string(),
+                ));
+            }
+            SCOPED_ACTIVATION_REGISTRY_SCHEMA_VERSION => {
+                let rules_scope = self.scope.rules_scope.as_deref().ok_or_else(|| {
+                    ActivationRegistryError::InvalidRecord(
+                        "scoped v3 registry must declare rules_scope".to_string(),
+                    )
+                })?;
+                ActiveVersionSetScope {
+                    network_id: self.scope.network_id.clone(),
+                    rules_scope: rules_scope.to_string(),
+                }
+                .validate()?;
+            }
+            _ => {
+                return Err(ActivationRegistryError::UnsupportedSchemaVersion(
+                    self.schema_version.clone(),
+                ));
+            }
         }
         if self.scope.network_id.is_empty() {
             return Err(ActivationRegistryError::InvalidRecord(
@@ -520,6 +637,18 @@ impl BtcActivationRegistry {
         Ok(())
     }
 
+    /// Verifies that the selected rule history matches this immutable registry.
+    pub fn validate_rules_scope(&self, rules_scope: &str) -> Result<(), ActivationRegistryError> {
+        if self.scope.rules_scope() != rules_scope {
+            return Err(ActivationRegistryError::InvalidRecord(format!(
+                "BTC activation registry rules scope mismatch: expected={}, actual={}",
+                rules_scope,
+                self.scope.rules_scope()
+            )));
+        }
+        Ok(())
+    }
+
     /// Returns the immutable stable-view lag committed by this registry revision.
     pub const fn stable_lag_blocks(&self) -> u32 {
         self.scope.stable_lag_blocks
@@ -553,12 +682,20 @@ impl BtcActivationRegistry {
                 block_height
             )));
         }
-        Ok(ActiveVersionSet(
-            selected
+        Ok(ActiveVersionSet {
+            versions: selected
                 .into_iter()
                 .map(|(family, record)| (family, record.version_value.clone()))
                 .collect(),
-        ))
+            scope: self
+                .scope
+                .rules_scope
+                .as_ref()
+                .map(|rules_scope| ActiveVersionSetScope {
+                    network_id: self.scope.network_id.clone(),
+                    rules_scope: rules_scope.clone(),
+                }),
+        })
     }
 
     /// Computes the network-scoped registry ID from an explicit canonical encoding.
@@ -567,11 +704,22 @@ impl BtcActivationRegistry {
         records.sort_by_key(|record| canonical_record_sort_key(record));
 
         let mut hasher = Sha256::new();
-        update_string(&mut hasher, ACTIVATION_REGISTRY_HASH_DOMAIN);
+        update_string(
+            &mut hasher,
+            if self.schema_version == SCOPED_ACTIVATION_REGISTRY_SCHEMA_VERSION {
+                SCOPED_ACTIVATION_REGISTRY_HASH_DOMAIN
+            } else {
+                ACTIVATION_REGISTRY_HASH_DOMAIN
+            },
+        );
         update_string(&mut hasher, &self.schema_version);
         update_string(&mut hasher, "BTC");
         update_string(&mut hasher, self.scope.network_type.as_str());
         update_string(&mut hasher, &self.scope.network_id);
+        if let Some(rules_scope) = &self.scope.rules_scope {
+            update_string(&mut hasher, "rules_scope");
+            update_string(&mut hasher, rules_scope);
+        }
         update_string(&mut hasher, "stable_lag_blocks");
         hasher.update(self.scope.stable_lag_blocks.to_be_bytes());
         update_string(&mut hasher, "btc_height");
@@ -650,7 +798,43 @@ pub struct BtcActivationRegistryCatalog {
     registries: BTreeMap<String, BtcActivationRegistry>,
 }
 
+/// On-disk catalog envelope; registries remain independently content-addressed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BtcActivationRegistryCatalogDocument {
+    schema_version: String,
+    current_registry_id: String,
+    registries: Vec<BtcActivationRegistry>,
+}
+
 impl BtcActivationRegistryCatalog {
+    /// Parses a catalog while preserving its explicit default and immutable history.
+    pub fn from_json(json: &str) -> Result<Self, ActivationRegistryError> {
+        let document: BtcActivationRegistryCatalogDocument = serde_json::from_str(json)
+            .map_err(|error| ActivationRegistryError::Parse(error.to_string()))?;
+        if document.schema_version != ACTIVATION_REGISTRY_CATALOG_SCHEMA_VERSION {
+            return Err(ActivationRegistryError::UnsupportedSchemaVersion(
+                document.schema_version,
+            ));
+        }
+        Self::from_revisions_with_current(document.registries, &document.current_registry_id)
+    }
+
+    /// Serializes the complete reviewed catalog without changing its current pin.
+    pub fn to_json(&self) -> Result<String, ActivationRegistryError> {
+        let document = BtcActivationRegistryCatalogDocument {
+            schema_version: ACTIVATION_REGISTRY_CATALOG_SCHEMA_VERSION.to_string(),
+            current_registry_id: self.current_registry_id.clone(),
+            registries: self
+                .registry_ids
+                .iter()
+                .map(|id| self.registries[id].clone())
+                .collect(),
+        };
+        serde_json::to_string_pretty(&document)
+            .map_err(|error| ActivationRegistryError::Parse(error.to_string()))
+    }
+
     /// Builds and validates an ordered catalog whose final revision is current.
     pub fn from_revisions(
         revisions: Vec<BtcActivationRegistry>,
@@ -687,8 +871,11 @@ impl BtcActivationRegistryCatalog {
             revision.validate()?;
             if revision.scope != expected_scope {
                 return Err(ActivationRegistryError::InvalidRecord(format!(
-                    "BTC activation registry catalog mixes scopes {} and {}",
-                    expected_scope.network_id, revision.scope.network_id
+                    "BTC activation registry catalog mixes scopes {}/{} and {}/{}",
+                    expected_scope.network_id,
+                    expected_scope.rules_scope(),
+                    revision.scope.network_id,
+                    revision.scope.rules_scope()
                 )));
             }
 
@@ -799,6 +986,13 @@ pub struct BtcRegistryReleaseBinding {
     pub network_type: ActivationNetworkType,
     /// Canonical BTC network identifier of the referenced registry artifact.
     pub network_id: String,
+    /// Independent rules history; absence retains the legacy audit identity.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
+    pub rules_scope: Option<String>,
     /// Repository-relative path of the referenced registry artifact.
     pub artifact: String,
     /// Monotonic immutable revision number within this BTC network catalog.
@@ -896,7 +1090,9 @@ impl CrossChainReleaseManifest {
 
     /// Validates release identities without interpreting USDB-chain activation rules.
     pub fn validate(&self) -> Result<(), ActivationRegistryError> {
-        if self.schema_version != RELEASE_MANIFEST_SCHEMA_VERSION {
+        if self.schema_version != RELEASE_MANIFEST_SCHEMA_VERSION
+            && self.schema_version != SCOPED_RELEASE_MANIFEST_SCHEMA_VERSION
+        {
             return Err(ActivationRegistryError::UnsupportedSchemaVersion(
                 self.schema_version.clone(),
             ));
@@ -913,40 +1109,58 @@ impl CrossChainReleaseManifest {
 
         let mut btc_registry_keys = BTreeSet::new();
         let mut btc_registry_ids = BTreeSet::new();
-        let mut btc_revisions: BTreeMap<&str, BTreeSet<u32>> = BTreeMap::new();
+        let mut btc_revisions: BTreeMap<(&str, &str), BTreeSet<u32>> = BTreeMap::new();
+        let mut btc_registry_scopes = BTreeMap::new();
         let mut btc_current_networks = BTreeSet::new();
         for binding in &self.btc_activation_registries {
+            if let Some(rules_scope) = &binding.rules_scope {
+                if self.schema_version != SCOPED_RELEASE_MANIFEST_SCHEMA_VERSION {
+                    return Err(ActivationRegistryError::InvalidRecord(
+                        "legacy release manifest must not declare rules_scope".to_string(),
+                    ));
+                }
+                ActiveVersionSetScope {
+                    network_id: binding.network_id.clone(),
+                    rules_scope: rules_scope.clone(),
+                }
+                .validate()?;
+            }
+            let scope_key = (
+                binding.network_id.as_str(),
+                binding.rules_scope.as_deref().unwrap_or(LEGACY_RULES_SCOPE),
+            );
             if binding.network_id.is_empty()
                 || binding.artifact.is_empty()
                 || binding.revision == 0
                 || !is_canonical_hex_32(&binding.activation_registry_id)
-                || !btc_registry_keys.insert((binding.network_id.clone(), binding.revision))
+                || !btc_registry_keys.insert((scope_key, binding.revision))
                 || !btc_registry_ids.insert(binding.activation_registry_id.clone())
-                || (binding.current && !btc_current_networks.insert(binding.network_id.as_str()))
+                || (binding.current && !btc_current_networks.insert(scope_key))
             {
                 return Err(ActivationRegistryError::InvalidRecord(format!(
                     "invalid BTC release binding for network {}",
                     binding.network_id
                 )));
             }
+            btc_registry_scopes.insert(binding.activation_registry_id.as_str(), scope_key);
             btc_revisions
-                .entry(binding.network_id.as_str())
+                .entry(scope_key)
                 .or_default()
                 .insert(binding.revision);
         }
-        for (network_id, revisions) in &btc_revisions {
-            if !btc_current_networks.contains(network_id)
+        for ((network_id, rules_scope), revisions) in &btc_revisions {
+            if !btc_current_networks.contains(&(*network_id, *rules_scope))
                 || revisions
                     .iter()
                     .copied()
                     .ne(1..=u32::try_from(revisions.len()).map_err(|_| {
                         ActivationRegistryError::InvalidRecord(format!(
-                            "too many BTC registry revisions for network {network_id}"
+                            "too many BTC registry revisions for network {network_id}/{rules_scope}"
                         ))
                     })?)
             {
                 return Err(ActivationRegistryError::InvalidRecord(format!(
-                    "invalid BTC registry revision sequence for network {network_id}"
+                    "invalid BTC registry revision sequence for network {network_id}/{rules_scope}"
                 )));
             }
         }
@@ -967,6 +1181,7 @@ impl CrossChainReleaseManifest {
                 )));
             }
             let mut previous_block = None;
+            let mut chain_scope = None;
             for activation in &binding.activations {
                 if !btc_registry_ids.contains(&activation.btc_activation_registry_id)
                     || activation.btc_anchor_max_age_blocks == 0
@@ -980,6 +1195,16 @@ impl CrossChainReleaseManifest {
                         binding.network_id, activation.block
                     )));
                 }
+                let scope = btc_registry_scopes[activation.btc_activation_registry_id.as_str()];
+                if self.schema_version == SCOPED_RELEASE_MANIFEST_SCHEMA_VERSION
+                    && chain_scope.is_some_and(|previous| previous != scope)
+                {
+                    return Err(ActivationRegistryError::InvalidRecord(format!(
+                        "USDB-chain release binding {} changes BTC source or rules_scope",
+                        binding.network_id
+                    )));
+                }
+                chain_scope = Some(scope);
                 previous_block = Some(activation.block);
             }
             if binding.activations[0].block != 0 {
@@ -988,6 +1213,52 @@ impl CrossChainReleaseManifest {
                     binding.network_id
                 )));
             }
+        }
+        Ok(())
+    }
+
+    /// Checks an audit manifest against every revision of its supplied catalogs.
+    ///
+    /// This checks identity metadata, not artifact paths or USDB activation authority.
+    /// The caller still verifies the referenced files and chain configurations.
+    pub fn validate_btc_catalog_bindings(
+        &self,
+        catalogs: &[BtcActivationRegistryCatalog],
+    ) -> Result<(), ActivationRegistryError> {
+        self.validate()?;
+        let mut seen = BTreeSet::new();
+        for catalog in catalogs {
+            for (index, id) in catalog.registry_ids().iter().enumerate() {
+                let registry = catalog.registry_by_id(id)?;
+                let binding = self
+                    .btc_activation_registries
+                    .iter()
+                    .find(|binding| binding.activation_registry_id == *id)
+                    .ok_or_else(|| {
+                        ActivationRegistryError::InvalidRecord(format!(
+                            "release manifest is missing BTC registry {}",
+                            id
+                        ))
+                    })?;
+                if !seen.insert(id.as_str())
+                    || binding.network_type != registry.scope.network_type
+                    || binding.network_id != registry.scope.network_id
+                    || binding.rules_scope != registry.scope.rules_scope
+                    || usize::try_from(binding.revision).ok() != Some(index + 1)
+                    || binding.current != (id == catalog.current_registry_id())
+                {
+                    return Err(ActivationRegistryError::InvalidRecord(format!(
+                        "release manifest BTC catalog binding mismatch for {}",
+                        id
+                    )));
+                }
+            }
+        }
+        if seen.len() != self.btc_activation_registries.len() {
+            return Err(ActivationRegistryError::InvalidRecord(
+                "release manifest contains a BTC registry outside the supplied catalogs"
+                    .to_string(),
+            ));
         }
         Ok(())
     }
@@ -1025,6 +1296,7 @@ impl CrossChainReleaseManifest {
                     .iter()
                     .find(|binding| {
                         binding.network_id == registry.scope.network_id
+                            && binding.rules_scope == registry.scope.rules_scope
                             && binding.revision == revision
                     })
                     .ok_or_else(|| {
@@ -1136,6 +1408,58 @@ pub fn embedded_btc_activation_registry_catalog(
     .map_err(Clone::clone)
 }
 
+/// Resolves a network-selected catalog without inferring a rules scope from BTC alone.
+///
+/// Legacy configurations may omit all selection fields or pin the embedded current
+/// revision. Independent scopes require a complete catalog and an exact current pin;
+/// loading a file never silently activates its newest revision.
+pub fn resolve_btc_activation_registry_catalog(
+    network: Network,
+    rules_scope: Option<&str>,
+    registry_id: Option<&str>,
+    catalog_json: Option<&str>,
+) -> Result<BtcActivationRegistryCatalog, ActivationRegistryError> {
+    let rules_scope = rules_scope.unwrap_or(LEGACY_RULES_SCOPE);
+    if rules_scope == LEGACY_RULES_SCOPE && catalog_json.is_none() {
+        let catalog = embedded_btc_activation_registry_catalog(network)?;
+        if let Some(registry_id) = registry_id
+            && registry_id != catalog.current_registry_id()
+        {
+            return Err(ActivationRegistryError::InvalidRecord(format!(
+                "legacy BTC registry pin mismatch: expected={}, actual={}",
+                registry_id,
+                catalog.current_registry_id()
+            )));
+        }
+        return Ok(catalog.clone());
+    }
+    validate_rules_scope(rules_scope)?;
+    let registry_id = registry_id.ok_or_else(|| {
+        ActivationRegistryError::InvalidRecord(
+            "scoped BTC registry selection requires activation_registry_id".to_string(),
+        )
+    })?;
+    let catalog_json = catalog_json.ok_or_else(|| {
+        ActivationRegistryError::InvalidRecord(
+            "scoped BTC registry selection requires a catalog document".to_string(),
+        )
+    })?;
+    let catalog = BtcActivationRegistryCatalog::from_json(catalog_json)?;
+    for id in catalog.registry_ids() {
+        let registry = catalog.registry_by_id(id)?;
+        registry.validate_network(network)?;
+        registry.validate_rules_scope(rules_scope)?;
+    }
+    if catalog.current_registry_id() != registry_id {
+        return Err(ActivationRegistryError::InvalidRecord(format!(
+            "scoped BTC registry current pin mismatch: expected={}, actual={}",
+            registry_id,
+            catalog.current_registry_id()
+        )));
+    }
+    Ok(catalog)
+}
+
 /// Returns the current embedded registry revision for the selected network.
 pub fn embedded_btc_activation_registry(
     network: Network,
@@ -1162,6 +1486,35 @@ pub fn embedded_cross_chain_release_manifest()
         })
         .as_ref()
         .map_err(Clone::clone)
+}
+
+/// Enforces the canonical scope token shared with the Go validator and bundle tools.
+fn validate_rules_scope(value: &str) -> Result<(), ActivationRegistryError> {
+    let valid = !value.is_empty()
+        && value.len() <= 64
+        && value != LEGACY_RULES_SCOPE
+        && value.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        });
+    if !valid {
+        return Err(ActivationRegistryError::InvalidRecord(format!(
+            "invalid independent rules_scope {:?}",
+            value
+        )));
+    }
+    Ok(())
+}
+
+/// Optional metadata must be omitted, not null, to retain its canonical meaning.
+fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 type CanonicalRecordSortKey = (
@@ -1230,6 +1583,7 @@ mod tests {
             scope: BtcActivationRegistryScope {
                 network_type: ActivationNetworkType::Regtest,
                 network_id: "btc-regtest".to_string(),
+                rules_scope: None,
                 stable_lag_blocks: 10,
             },
             records,
@@ -1456,7 +1810,7 @@ mod tests {
         let registry = embedded_btc_activation_registry(Network::Regtest).unwrap();
         let mut versions = registry.lookup_active_version_set(0).unwrap();
         versions
-            .0
+            .versions
             .insert(VersionFamily::PayloadVersion, VersionValue::Integer(1));
 
         assert!(matches!(
@@ -1724,6 +2078,7 @@ mod tests {
         mainnet.scope = BtcActivationRegistryScope {
             network_type: ActivationNetworkType::Mainnet,
             network_id: "btc-mainnet".to_string(),
+            rules_scope: None,
             stable_lag_blocks: 10,
         };
         assert_ne!(
@@ -1809,5 +2164,344 @@ mod tests {
             invalid_versions.validate(),
             Err(ActivationRegistryError::InvalidRecord(_))
         ));
+    }
+
+    const SCOPED_MAINNET_CATALOG: &str =
+        include_str!("../tests/fixtures/btc-mainnet-usdb-mainnet-catalog.json");
+    const SCOPED_TESTNET_CATALOG: &str =
+        include_str!("../tests/fixtures/btc-mainnet-usdb-testnet-catalog.json");
+
+    #[test]
+    fn independent_rules_scopes_isolate_activation_and_local_state_identity() {
+        let mainnet = BtcActivationRegistryCatalog::from_json(SCOPED_MAINNET_CATALOG).unwrap();
+        let testnet = BtcActivationRegistryCatalog::from_json(SCOPED_TESTNET_CATALOG).unwrap();
+        let main_versions = mainnet
+            .current_registry()
+            .lookup_active_version_set(99)
+            .unwrap();
+        let test_versions = testnet
+            .current_registry()
+            .lookup_active_version_set(99)
+            .unwrap();
+        assert_eq!(main_versions.versions, test_versions.versions);
+        assert_ne!(
+            main_versions.active_version_set_id(),
+            test_versions.active_version_set_id()
+        );
+        assert_ne!(mainnet.current_registry_id(), testnet.current_registry_id());
+        // Equal BTC balances, pass state, and height must not hide a scope mismatch.
+        let mut identity = crate::LocalStateCommitIdentity {
+            commit_protocol_version: COMMIT_PROTOCOL_VERSION_V1.to_string(),
+            upstream_snapshot_id: "11".repeat(32),
+            active_version_set_id: main_versions.active_version_set_id(),
+            local_synced_block_height: 99,
+            latest_pass_block_commit: None,
+            latest_active_balance_snapshot: None,
+        };
+        let main_commit = crate::build_local_state_commit(&identity);
+        identity.active_version_set_id = test_versions.active_version_set_id();
+        assert_ne!(main_commit, crate::build_local_state_commit(&identity));
+
+        mainnet
+            .current_registry()
+            .lookup_active_version_set(100)
+            .unwrap()
+            .validate_btc_indexer_v1()
+            .unwrap();
+        assert!(matches!(
+            testnet
+                .current_registry()
+                .lookup_active_version_set(100)
+                .unwrap()
+                .validate_btc_indexer_v1(),
+            Err(ActivationRegistryError::VersionNotSupported {
+                family: VersionFamily::EnergyFormulaVersion,
+                ..
+            })
+        ));
+        let legacy = embedded_btc_activation_registry(Network::Bitcoin).unwrap();
+        legacy
+            .lookup_active_version_set(100)
+            .unwrap()
+            .validate_btc_indexer_v1()
+            .unwrap();
+        assert_eq!(
+            legacy.activation_registry_id(),
+            "a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224"
+        );
+    }
+
+    #[test]
+    fn scoped_catalog_rpc_roundtrip_and_rollback_preserve_identity() {
+        let catalog = BtcActivationRegistryCatalog::from_json(SCOPED_TESTNET_CATALOG).unwrap();
+        let reloaded =
+            BtcActivationRegistryCatalog::from_json(&catalog.to_json().unwrap()).unwrap();
+        assert_eq!(catalog.registry_ids(), reloaded.registry_ids());
+        assert_eq!(
+            catalog.current_registry_id(),
+            reloaded.current_registry_id()
+        );
+        for height in [99, 100, 101, 99, 100] {
+            let versions = reloaded
+                .current_registry()
+                .lookup_active_version_set(height)
+                .unwrap();
+            let encoded = serde_json::to_string(&versions).unwrap();
+            let from_rpc: ActiveVersionSet = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(from_rpc, versions);
+            assert_eq!(
+                from_rpc.active_version_set_id(),
+                versions.active_version_set_id()
+            );
+            assert_eq!(
+                versions.scope().unwrap().rules_scope,
+                "usdb-testnet-fixture"
+            );
+        }
+        let first = reloaded
+            .registry_by_id(&reloaded.registry_ids()[0])
+            .unwrap();
+        first
+            .lookup_active_version_set(100)
+            .unwrap()
+            .validate_btc_indexer_v1()
+            .unwrap();
+        let mut mixed = vec![first.clone()];
+        mixed.push(
+            BtcActivationRegistryCatalog::from_json(SCOPED_MAINNET_CATALOG)
+                .unwrap()
+                .current_registry()
+                .clone(),
+        );
+        assert!(BtcActivationRegistryCatalog::from_revisions(mixed).is_err());
+        let mut rewritten = reloaded.current_registry().clone();
+        rewritten.records[0].notes = "rewrite".to_string();
+        assert!(
+            BtcActivationRegistryCatalog::from_revisions(vec![first.clone(), rewritten]).is_err()
+        );
+    }
+
+    #[test]
+    fn scoped_selection_requires_matching_source_scope_and_current_pin() {
+        let catalog = BtcActivationRegistryCatalog::from_json(SCOPED_TESTNET_CATALOG).unwrap();
+        let id = catalog.current_registry_id();
+        let scope = Some("usdb-testnet-fixture");
+        let resolved = resolve_btc_activation_registry_catalog(
+            Network::Bitcoin,
+            scope,
+            Some(id),
+            Some(SCOPED_TESTNET_CATALOG),
+        )
+        .unwrap();
+        assert_eq!(resolved.current_registry_id(), id);
+        for (network, requested_scope, pin, json) in [
+            (
+                Network::Regtest,
+                scope,
+                Some(id),
+                Some(SCOPED_TESTNET_CATALOG),
+            ),
+            (
+                Network::Bitcoin,
+                Some("usdb-mainnet-fixture"),
+                Some(id),
+                Some(SCOPED_TESTNET_CATALOG),
+            ),
+            (
+                Network::Bitcoin,
+                scope,
+                Some(catalog.registry_ids()[0].as_str()),
+                Some(SCOPED_TESTNET_CATALOG),
+            ),
+            (Network::Bitcoin, scope, None, Some(SCOPED_TESTNET_CATALOG)),
+            (Network::Bitcoin, scope, Some(id), None),
+            (
+                Network::Bitcoin,
+                None,
+                Some(id),
+                Some(SCOPED_TESTNET_CATALOG),
+            ),
+        ] {
+            assert!(
+                resolve_btc_activation_registry_catalog(network, requested_scope, pin, json)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_selection_keeps_default_and_checks_optional_pin() {
+        let embedded = embedded_btc_activation_registry_catalog(Network::Regtest).unwrap();
+        for scope in [None, Some(LEGACY_RULES_SCOPE)] {
+            for pin in [None, Some(embedded.current_registry_id())] {
+                let selected =
+                    resolve_btc_activation_registry_catalog(Network::Regtest, scope, pin, None)
+                        .unwrap();
+                assert_eq!(
+                    selected.current_registry_id(),
+                    embedded.current_registry_id()
+                );
+                assert_eq!(
+                    selected.current_registry().scope.rules_scope(),
+                    LEGACY_RULES_SCOPE
+                );
+            }
+        }
+        assert!(
+            resolve_btc_activation_registry_catalog(
+                Network::Regtest,
+                None,
+                Some(&embedded.registry_ids()[1]),
+                None
+            )
+            .is_err()
+        );
+        let versions = embedded
+            .current_registry()
+            .lookup_active_version_set(0)
+            .unwrap();
+        assert!(versions.scope().is_none());
+        assert!(!serde_json::to_string(&versions).unwrap().contains("scope"));
+        assert_eq!(
+            versions.active_version_set_id(),
+            "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
+        );
+    }
+
+    #[test]
+    fn registry_scope_schema_and_token_are_strict() {
+        let legacy = embedded_btc_activation_registry(Network::Bitcoin)
+            .unwrap()
+            .clone();
+        let mut registry = legacy.clone();
+        registry.scope.rules_scope = Some("usdb-testnet-fixture".to_string());
+        assert!(registry.validate().is_err());
+        registry.schema_version = SCOPED_ACTIVATION_REGISTRY_SCHEMA_VERSION.to_string();
+        registry.validate().unwrap();
+        registry.scope.rules_scope = None;
+        assert!(registry.validate().is_err());
+        for scope in [
+            "",
+            "legacy",
+            "Mainnet",
+            "with space",
+            "-prefix",
+            "suffix-",
+            "two--hyphens",
+            "测试",
+        ] {
+            registry.scope.rules_scope = Some(scope.to_string());
+            assert!(registry.validate().is_err(), "accepted scope {scope}");
+        }
+        registry.scope.rules_scope = Some("a".repeat(65));
+        assert!(registry.validate().is_err());
+        for scope in ["a", "1", "usdb-mainnet", &"a".repeat(64)] {
+            registry.scope.rules_scope = Some(scope.to_string());
+            registry.validate().unwrap();
+        }
+        let mut legacy_json = serde_json::to_value(&legacy).unwrap();
+        legacy_json["scope"]["rules_scope"] = serde_json::Value::Null;
+        assert!(BtcActivationRegistry::from_json(&legacy_json.to_string()).is_err());
+    }
+
+    #[test]
+    fn active_set_scope_rejects_invalid_rpc_metadata_and_binds_btc_source() {
+        let registry = BtcActivationRegistryCatalog::from_json(SCOPED_MAINNET_CATALOG).unwrap();
+        let versions = registry
+            .current_registry()
+            .lookup_active_version_set(0)
+            .unwrap();
+        let mut regtest_versions = versions.clone();
+        regtest_versions.scope.as_mut().unwrap().network_id = "btc-regtest".to_string();
+        assert_ne!(
+            versions.active_version_set_id(),
+            regtest_versions.active_version_set_id()
+        );
+        for scope in [
+            serde_json::json!(null),
+            serde_json::json!({"network_id":"btc-mainnet","rules_scope":"legacy"}),
+            serde_json::json!({"network_id":"unknown","rules_scope":"usdb-testnet"}),
+            serde_json::json!({"network_id":"btc-mainnet","rules_scope":"usdb-testnet","extra":true}),
+        ] {
+            let mut json = serde_json::to_value(&versions).unwrap();
+            json["scope"] = scope;
+            assert!(serde_json::from_value::<ActiveVersionSet>(json).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_release_manifest_groups_same_source_catalogs_independently() {
+        let manifest = CrossChainReleaseManifest::from_json(include_str!(
+            "../tests/fixtures/scoped-release-manifest.json"
+        ))
+        .unwrap();
+        let mainnet = BtcActivationRegistryCatalog::from_json(SCOPED_MAINNET_CATALOG).unwrap();
+        let testnet = BtcActivationRegistryCatalog::from_json(SCOPED_TESTNET_CATALOG).unwrap();
+        manifest
+            .validate_btc_catalog_bindings(&[mainnet.clone(), testnet.clone()])
+            .unwrap();
+        assert_eq!(manifest.btc_activation_registries.len(), 3);
+        assert_eq!(manifest.usdb_chain_configs.len(), 2);
+        assert!(manifest.validate_btc_catalog_bindings(&[mainnet]).is_err());
+        let mut no_scope = manifest.clone();
+        no_scope.btc_activation_registries[0].rules_scope = None;
+        no_scope.validate().unwrap();
+        assert!(
+            no_scope
+                .validate_btc_catalog_bindings(&[
+                    BtcActivationRegistryCatalog::from_json(SCOPED_MAINNET_CATALOG).unwrap(),
+                    testnet
+                ])
+                .is_err()
+        );
+        let mut legacy_schema = manifest.clone();
+        legacy_schema.schema_version = RELEASE_MANIFEST_SCHEMA_VERSION.to_string();
+        assert!(legacy_schema.validate().is_err());
+        let mut duplicate_current = manifest.clone();
+        duplicate_current.btc_activation_registries[1].current = true;
+        assert!(duplicate_current.validate().is_err());
+        let mut revision_gap = manifest.clone();
+        revision_gap.btc_activation_registries[2].revision = 3;
+        assert!(revision_gap.validate().is_err());
+        let mut cross_scope = manifest;
+        let main_id = cross_scope.btc_activation_registries[0]
+            .activation_registry_id
+            .clone();
+        cross_scope.usdb_chain_configs[1].activations[1].btc_activation_registry_id = main_id;
+        assert!(cross_scope.validate().is_err());
+    }
+
+    #[test]
+    fn scoped_release_manifest_can_audit_legacy_and_scoped_chains_together() {
+        let mut manifest = CrossChainReleaseManifest::from_json(include_str!(
+            "../tests/fixtures/scoped-release-manifest.json"
+        ))
+        .unwrap();
+        let legacy = embedded_cross_chain_release_manifest().unwrap();
+        manifest
+            .btc_activation_registries
+            .extend(legacy.btc_activation_registries.clone());
+        manifest
+            .usdb_chain_configs
+            .extend(legacy.usdb_chain_configs.clone());
+        manifest
+            .validate_btc_catalog_bindings(&[
+                BtcActivationRegistryCatalog::from_json(SCOPED_MAINNET_CATALOG).unwrap(),
+                BtcActivationRegistryCatalog::from_json(SCOPED_TESTNET_CATALOG).unwrap(),
+                embedded_btc_activation_registry_catalog(Network::Bitcoin)
+                    .unwrap()
+                    .clone(),
+                embedded_btc_activation_registry_catalog(Network::Regtest)
+                    .unwrap()
+                    .clone(),
+            ])
+            .unwrap();
+        let roundtrip =
+            CrossChainReleaseManifest::from_json(&serde_json::to_string(&manifest).unwrap())
+                .unwrap();
+        assert_eq!(manifest, roundtrip);
+        let mut explicit_null = serde_json::to_value(legacy).unwrap();
+        explicit_null["btc_activation_registries"][0]["rules_scope"] = serde_json::Value::Null;
+        assert!(CrossChainReleaseManifest::from_json(&explicit_null.to_string()).is_err());
     }
 }

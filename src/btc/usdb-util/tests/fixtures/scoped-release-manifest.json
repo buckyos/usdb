@@ -1,0 +1,107 @@
+{
+  "schema_version": "uip-0008-cross-chain-release-manifest:v4",
+  "release_id": "isolated-rules-scope-fixture",
+  "btc_activation_registries": [
+    {
+      "network_type": "mainnet",
+      "network_id": "btc-mainnet",
+      "rules_scope": "usdb-mainnet-fixture",
+      "artifact": "tests/fixtures/btc-mainnet-usdb-mainnet-catalog.json",
+      "revision": 1,
+      "current": true,
+      "activation_registry_id": "406d48feb81caf45c72806de81972c3a9d95fa756ad30ed71f4d88b809d9336e"
+    },
+    {
+      "network_type": "mainnet",
+      "network_id": "btc-mainnet",
+      "rules_scope": "usdb-testnet-fixture",
+      "artifact": "tests/fixtures/btc-mainnet-usdb-testnet-catalog.json",
+      "revision": 1,
+      "current": false,
+      "activation_registry_id": "98ee05478e8699fcfd620afa041d99e7244e9e968b8e2aa29cd9842835eee0c3"
+    },
+    {
+      "network_type": "mainnet",
+      "network_id": "btc-mainnet",
+      "rules_scope": "usdb-testnet-fixture",
+      "artifact": "tests/fixtures/btc-mainnet-usdb-testnet-catalog.json",
+      "revision": 2,
+      "current": true,
+      "activation_registry_id": "e0d969f7b9431d900fe9a6c6db009e9399f4a47ae5b407d285e47b6251902d06"
+    }
+  ],
+  "usdb_chain_configs": [
+    {
+      "network_type": "local",
+      "network_id": "usdb-mainnet-fixture",
+      "chain_id": 123451,
+      "genesis_hash": "0101010101010101010101010101010101010101010101010101010101010101",
+      "activations": [
+        {
+          "block": 0,
+          "btc_activation_registry_id": "406d48feb81caf45c72806de81972c3a9d95fa756ad30ed71f4d88b809d9336e",
+          "btc_anchor_max_age_blocks": 6650,
+          "versions": {
+            "payload_version": 1,
+            "btc_anchor_policy_version": 1,
+            "difficulty_policy_version": 1,
+            "reward_rule_version": 1,
+            "coinbase_emission_policy_version": 1,
+            "fee_split_policy_version": 0,
+            "collaboration_efficiency_policy_version": 1,
+            "price_policy_version": 1,
+            "quote_policy_version": 0,
+            "aux_pool_policy_version": 0
+          }
+        }
+      ],
+      "source": "tests/fixtures/isolated-chain-config",
+      "activation_authority": "chain_config.usdb.activations"
+    },
+    {
+      "network_type": "local",
+      "network_id": "usdb-testnet-fixture",
+      "chain_id": 123452,
+      "genesis_hash": "0202020202020202020202020202020202020202020202020202020202020202",
+      "activations": [
+        {
+          "block": 0,
+          "btc_activation_registry_id": "98ee05478e8699fcfd620afa041d99e7244e9e968b8e2aa29cd9842835eee0c3",
+          "btc_anchor_max_age_blocks": 6650,
+          "versions": {
+            "payload_version": 1,
+            "btc_anchor_policy_version": 1,
+            "difficulty_policy_version": 1,
+            "reward_rule_version": 1,
+            "coinbase_emission_policy_version": 1,
+            "fee_split_policy_version": 0,
+            "collaboration_efficiency_policy_version": 1,
+            "price_policy_version": 1,
+            "quote_policy_version": 0,
+            "aux_pool_policy_version": 0
+          }
+        },
+        {
+          "block": 20,
+          "btc_activation_registry_id": "e0d969f7b9431d900fe9a6c6db009e9399f4a47ae5b407d285e47b6251902d06",
+          "btc_anchor_max_age_blocks": 6650,
+          "versions": {
+            "payload_version": 1,
+            "btc_anchor_policy_version": 1,
+            "difficulty_policy_version": 1,
+            "reward_rule_version": 1,
+            "coinbase_emission_policy_version": 1,
+            "fee_split_policy_version": 0,
+            "collaboration_efficiency_policy_version": 1,
+            "price_policy_version": 1,
+            "quote_policy_version": 0,
+            "aux_pool_policy_version": 0
+          }
+        }
+      ],
+      "source": "tests/fixtures/isolated-chain-config",
+      "activation_authority": "chain_config.usdb.activations"
+    }
+  ],
+  "notes": "Isolated audit fixture only. The two USDB rule scopes share BTC mainnet input but have independent revision and activation histories; no public network activation."
+}

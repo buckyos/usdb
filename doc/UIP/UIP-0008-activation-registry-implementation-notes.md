@@ -18,7 +18,7 @@ Created: 2026-04-26
 | 实现对象 | 规范术语 | 含义 |
 | --- | --- | --- |
 | BTC JSON `records[]` item | BTC activation record | 一个 BTC-side version family 在指定 BTC 高度的记录。 |
-| `BtcActivationRegistryCatalog` 中一个 revision | BTC registry revision | 单个 BTC network registry 的完整不可变快照；numeric revision 只表示 catalog 顺序。 |
+| `BtcActivationRegistryCatalog` 中一个 revision | BTC registry revision | 单个 BTC source / rules scope registry 的完整不可变快照；numeric revision 只表示 catalog 顺序。 |
 | `activation_registry_id` | BTC registry identity | 完整 registry revision canonical encoding 的哈希，也是 USDB checkpoint 实际绑定的值。 |
 | `ChainConfig.usdb.activations[]` item / `USDBConsensusActivation` | USDB activation checkpoint | 一个 USDB block 起生效的完整 USDB version set、BTC registry binding 和 BTC anchor max age。 |
 | `ChainConfig.usdb.activations[]` | USDB activation schedule | 同一 USDB network 按 block 严格排序的全部 checkpoints。 |
@@ -29,13 +29,14 @@ Created: 2026-04-26
 
 | 配置 | 权威来源 | Lookup context | 消费方 |
 | --- | --- | --- | --- |
-| BTC pass / energy / state-view versions | network-scoped BTC registry | BTC network + `btc_height` | balance-history、usdb-indexer |
+| BTC pass / energy / state-view versions | source / rules-scope registry | BTC source + rules scope + pinned registry ID + `btc_height` | usdb-indexer |
+| BTC 余额历史与 stable frontier | source-scoped registry / bootstrap contract | BTC source + `btc_height` | balance-history；语义和 lag 必须满足 indexer 消费契约 |
 | USDB chain payload / difficulty / reward policy versions | USDB chain genesis / activation schedule | USDB chain + `usdb_block` | miner、header validator、reward transition |
 | 跨链 release 关联 | audit-only release manifest | release artifact identity | CI、部署工具、reviewer |
 
 核心约束：
 
-- BTC 服务加载配置 network 对应的 immutable revision catalog，并显式选择 current revision；历史查询可以按 ID 读取旧 revision。
+- indexer 加载配置 BTC source / rules scope 对应的 immutable revision catalog，并 pin 精确 current ID；历史查询可以按 ID 读取同一 catalog 的旧 revision。BTC source 相同不再隐含同一 USDB 规则域。
 - USDB chain 节点只从本地 chain config 取得 expected USDB chain versions。
 - USDB chain config 的每个 activation checkpoint 固定一个
   `btcActivationRegistryId` 和正数 `btcAnchorMaxAgeBlocks`；前者约束 payload
@@ -76,13 +77,63 @@ btc-regtest revision 1 (current) = bfd8c7e41ab4035db64e52eb9ea55050c08211c2ae4c2
 btc-regtest revision 2 (staged)  = adcca18bb4eccd4715bb0d6ec69c7b3d5e09065fac0cb33b145db7b621f59fba
 ```
 
-两个 registry 当前激活相同的九个 BTC v1 family，所以 `active_version_set_id` 相同：
+两个 legacy registry 当前激活相同的九个 BTC v1 family，所以旧格式 `active_version_set_id` 相同；新 scoped set 不沿用这一跨域共享身份：
 
 ```text
 01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691
 ```
 
 testnet3、testnet4 和 signet 尚无独立 artifact，配置这些 network 时必须 fail closed，不能回退到 mainnet 或 regtest。
+
+# 独立规则域与显式配置
+
+新增 registry schema `uip-0008-btc-activation-registry:v3` 在原 scope 内增加 `rules_scope`。token 为 1 至 64 个 ASCII 字符，匹配 `[a-z0-9]+(?:-[a-z0-9]+)*`；`legacy` 只用于解释旧配置，不能声明为 v3 scope。这里的 source 仍然可以是 `btc-mainnet`，并不需要另建一条 Bitcoin 测试链。
+
+外部 catalog 的结构如下，`registries` 内必须放完整且按历史顺序排列的 registry 文档：
+
+```text
+{
+  "schema_version": "uip-0008-btc-activation-registry-catalog:v1",
+  "current_registry_id": "<由指定 revision 规范编码计算的 64 位十六进制 ID>",
+  "registries": [<完整 v3 registry revision 1>, <完整 v3 registry revision 2>]
+}
+```
+
+catalog 必须保持 scope、source、schema、stable lag 一致，保留原历史记录，禁止重复 identity 和不连续的 revision 历史。文件追加 revision 不会自动切换 current；`current_registry_id` 也必须等于配置 pin。
+
+以下是 indexer `config.json` 的 `usdb` 节选，示例 scope 仅为说明，不代表已发布网络：
+
+```text
+"usdb": {
+  "genesis_block_height": 963800,
+  "rules_scope": "isolated-upgrade-test",
+  "activation_registry_id": "<与 catalog current_registry_id 完全相同的 ID>",
+  "activation_registry_catalog_file": "/network/btc-rules-catalog.json"
+}
+```
+
+- 三项都是兼容性的 optional 字段；独立 scope 必须同时提供三项，不能只设置 scope 后回退到 embedded registry。
+- 未设置 scope 或设置 `legacy` 且不设置 catalog 文件时，沿用旧 embedded catalog；可以同时 pin 旧 current ID，错误 pin 必须失败。
+- Rust 服务中的 catalog 相对路径按服务 root 解析。部署 renderer 要求绝对且存在的文件；发布容器通过 `/network` 只读挂载冻结 artifact。
+- resolver 在打开索引数据前校验 source、scope、catalog 和 current pin；未知公式版本仍在处理对应高度前失败关闭。
+- 暴露给 RPC 的新 active set 带 `scope: {network_id, rules_scope}`，使用 `usdb-active-version-set:v2` hash domain；旧 flat JSON 和 `usdb-active-version-set:v1` hash 保持不变。
+- v3 registry 使用 `usdb-btc-activation-registry:v3` hash domain，scope token 参与 registry 哈希。仅区分配置目录却不区分 state identity 不满足隔离要求。
+
+当前未新增正式 scoped catalog 或修改旧 Go golden。`generate_go_btc_activation_golden --catalog <文件> [--catalog <文件> ...] [--check] [输出路径]` 支持显式生成 scoped golden；无 `--catalog` 时保持原 legacy 输出。发布一个新 scope 仍需冻结 Go 本地支持 artifact、chain-config binding 和网络包，不能只把 JSON 放进 indexer 就声称链节点已支持它。
+
+# 索引库与 Checkpoint 绑定
+
+部署层的 dataset marker 之外，indexer 在 pass SQLite `state_text` 和 energy RocksDB `meta` 分别以 `indexer_rules_binding` 键持久化同一 `IndexerRulesBinding`（`usdb-indexer-rules-binding:v1`），包含 BTC source、rules scope、index origin 与精确 current registry ID。启动必须先核对两库再完成绑定；scope 正确但配入另一 revision、另一 origin 或混合两库，也必须拒绝继续运行。
+
+- 新的空 dataset 可以首次绑定所选 scope。scoped 启动在绑定前合并两库的索引历史与持久进度检查；任一库已有索引状态而另一库缺少 binding 时必须拒绝，不能把误删 pass/energy 库解释成可自动补空或截断的恢复场景。两库都没有索引历史、仅一侧已完成首次 binding 写入时，允许重试完成初始化。
+- 非空且未绑定的旧 dataset 只允许 legacy 兼容接管；已有 `snapshot_history_start_height` 时必须先核对配置 origin。缺少该旧字段时仍依赖原部署可信的 origin 配置，旧 metadata 也不能单独证明 BTC source；首次写入绑定本身不是数据来源的追溯证明。新 scope 必须使用独立数据集重建，不能借兼容接管绕过隔离。
+- 已绑定数据要求全部字段匹配。只改配置、复制到新目录或改部署 marker 不能解除 DB 内部绑定。
+- 同 scope catalog 可追加 revision，但本批没有实现 current ID 切换的在线 DB migration；current pin 变化须重建独立 dataset。这是持久化实现限制，与 catalog 的历史追加规则分别验收。
+- checkpoint 完整复制 SQLite/RocksDB，绑定随文件库存哈希和签名进入 artifact。恢复前必须验证目标配置 pin 等于 manifest ID，双库绑定与配置相符，并离线重算 state-ref；新 scope 不接受缺少绑定的历史 checkpoint。
+- scoped checkpoint 导出时在 artifact 的 `data/` 内写入 `rules-catalog.json`，该文件纳入已有 file inventory、operation ID 和 manifest 签名。standalone verify 从它恢复 catalog，并核对 manifest registry ID 与 BTC source，因此不依赖导出主机上的 catalog 路径。恢复目标仍使用本地冻结配置和双库 binding 校验，artifact 中的 catalog 不得覆盖目标 scope 或 current pin。
+- legacy checkpoint 不新增 `rules-catalog.json`；checkpoint manifest schema 保持不变。旧 legacy checkpoint 可兼容缺少绑定的旧格式，恢复后由 indexer 执行 legacy 首次绑定。已存在但错误的绑定不得被覆盖。
+
+数据源复用仅限 Bitcoin Core、满足消费者语义/lag/保留范围的 balance-history 等兼容上游。两个可写 indexer 实例不能共享同一 SQLite/RocksDB 目录。
 
 # USDB Chain Config
 
@@ -111,7 +162,7 @@ USDB chain 不读取 Rust BTC registry JSON，也不通过 RPC 查询 expected `
 # State Identity
 
 ```text
-activation_registry_id = hash(network-scoped BTC registry)
+activation_registry_id = hash(BTC source / rules-scope registry)
 active_version_set_id  = hash(BTC active version set at target height)
 local_state_commit     = hash(commit_protocol_version, snapshot_id, active_version_set_id, derived_state_root)
 system_state_id        = hash(snapshot_id, local_state_commit)
@@ -122,8 +173,8 @@ system_state_id        = hash(snapshot_id, local_state_commit)
 - `snapshot_id` 只承诺 upstream balance-history state。
 - `snapshot_id` 的 canonical input 包含 `stable_lag`；UIP-0006 external state 显式返回
   该值，Go validator 再与本地 BTC registry scope 交叉校验。
-- `activation_registry_id` 是 BTC source-network registry revision identity；BTC service current query 使用 catalog current，historical query 和 USDB chain config 可以固定具体旧/新 revision。
-- `active_version_set_id` 进入 local state commit，承诺目标 BTC 高度实际使用的规则。
+- `activation_registry_id` 是 BTC source / rules scope registry revision identity；indexer current query 使用已 pin 的 catalog current，historical query 和 USDB chain config 可以固定同域的具体旧/新 revision。
+- `active_version_set_id` 进入 local state commit，承诺目标 BTC 高度实际使用的规则；scoped set 同时承诺 source 与 rules scope，因此不同域即使公式版本相同也不会共享 local/system state identity。
 - USDB activation schedule/checkpoint identity 由 USDB chain genesis / chain config 自己承诺，不合并进 BTC registry ID。
 
 # Cross-chain Release Manifest
@@ -136,10 +187,20 @@ src/btc/usdb-util/release-manifest.json
 
 它记录：
 
-- BTC registry artifact path、network scope、revision/current 和 canonical ID。
+- BTC registry artifact path、source/rules scope、revision/current 和 canonical ID；既有 legacy manifest 的字节和含义保持不变。
 - USDB-chain network ID、chain ID、genesis hash、chain-config source、activation authority
   和按高度排序的完整 activation checkpoints，包括 registry binding、anchor max age 和
   全部 policy versions。
+
+默认 embedded artifact 与 Go golden 继续使用旧 v3 schema，字节不变。新增 `uip-0008-cross-chain-release-manifest:v4` 在 BTC binding 上携带 optional `rules_scope`：legacy 省略，scoped binding 必填。它按 `(network_id, rules_scope)` 分组验证连续 revision 和唯一 current，允许同一审计文件包含 legacy 及多个独立 scope 的 catalog。同一 USDB chain 的 checkpoint 序列不能跨 source/scope；必须在结构验证阶段拒绝这种绑定。
+
+`CrossChainReleaseManifest::validate_btc_catalog_bindings` 对 manifest 与所提供 catalogs 执行双向完整核对，拒绝缺项、额外 revision、scope/source 不匹配以及 current/revision/ID 漂移。生成工具支持：
+
+```text
+generate_go_release_manifest_golden [--manifest path] [--catalog path]... [--check] [output-path]
+```
+
+`--catalog` 要求同时指定 `--manifest`；`--check` 要求 `output-path`。默认无参数仍输出 legacy embedded artifact。只指定外部 `--manifest` 时仅执行 manifest 自身校验；需要完整 artifact 审计时必须提供该 manifest 涵盖的全部 catalogs。工具输出是审计材料，不为链节点安装 registry 或激活规则。
 
 manifest 用于 release review、CI 和部署审计。它不得：
 
@@ -159,7 +220,7 @@ manifest 用于 release review、CI 和部署审计。它不得：
 
 ## usdb-indexer
 
-- 启动时校验配置 genesis height 和 durable synced height。
+- 启动时校验配置 source/scope/current ID、双库存储绑定、genesis height 和 durable synced height。
 - 每个 block mutation 前按目标 BTC height 解析并校验完整 BTC v1 set。
 - UIP-0006 external state 返回
   `stable_lag + activation_registry_id + active_version_set + active_version_set_id`。
@@ -181,7 +242,11 @@ manifest 用于 release review、CI 和部署审计。它不得：
 Rust registry tests 覆盖：
 
 - per-network embedded lookup 与 v1 family surface。
-- registry scope mismatch。
+- registry source / rules scope mismatch、current pin mismatch、外部 catalog 缺项与未知字段。
+- 相同 BTC 输入和公式版本在不同 scope 中的 registry/active-set/state identity 隔离。
+- 一个测试 scope 追加独立升级日程不改变另一个 scope 的 lookup 结果。
+- legacy JSON、registry hash、active set hash 与默认 Go golden 不变。
+- 双库绑定、未绑定旧库接管限制、跨 scope/origin/revision 重开拒绝，以及 checkpoint 配置/manifest/双库一致性。
 - 未配置 network fail closed。
 - BTC registry 拒绝 USDB chain family。
 - activation boundary、duplicate height、supersedes、planned record。
@@ -196,6 +261,12 @@ unknown/tampered registry、active-version-set codec、per-checkpoint binding / 
 miner/validator version guard 和 RPC failure mapping。`usdb_activation_conformance`
 build tag 额外提供保留 policy `65535`，只用于验证真实第二版本分派、restart/reorg
 和旧二进制 fail closed，不定义未来 production v2 公式。
+
+# 本批验收边界
+
+本批实现规则域、显式 catalog pin、RPC/state identity、持久化和 checkpoint 隔离，以及部署配置传递；部署 renderer、冻结 selector、catalog 只读挂载和 v0 identity 兼容由隔离测试覆盖。
+
+本批不激活新的 MinerPass schema、开户/来源检查/继承规则，不修改 USDB P2P fork ID 收集逻辑，不发布或重置 testnet-v1，不执行在线 DB migration，也不自动迁移现有节点。真实多节点升级和新业务规则验收仍属于后续批次。已有 v0 bundle、registry artifact、激活高度和历史解释保持不变。
 
 # 后续事项
 

@@ -6,9 +6,10 @@ use rust_rocksdb::{self as rocksdb};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use usdb_util::{
-    BTCConfig, LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity,
-    LocalStatePassCommitIdentity, SystemStateIdentity, VersionFamily, build_local_state_commit,
-    build_system_state_id, embedded_btc_activation_registry_catalog,
+    BTCConfig, BtcActivationRegistryCatalog, INDEXER_RULES_BINDING_KEY, IndexerRulesBinding,
+    LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity, LocalStatePassCommitIdentity,
+    SystemStateIdentity, VersionFamily, build_local_state_commit, build_system_state_id,
+    resolve_btc_activation_registry_catalog,
 };
 
 const MINER_PASS_DB_FILE: &str = "miner_pass.db";
@@ -23,6 +24,12 @@ const PASS_RECOVERY_PENDING_KEY: &str = "upstream_reorg_recovery_pending_height"
 #[derive(Debug, Deserialize)]
 struct DiskUsdbConfig {
     genesis_block_height: u32,
+    #[serde(default)]
+    rules_scope: Option<String>,
+    #[serde(default)]
+    activation_registry_id: Option<String>,
+    #[serde(default)]
+    activation_registry_catalog_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +49,8 @@ pub struct IndexerDiskLayout {
     pub bitcoin_network: Network,
     /// First BTC height interpreted by the USDB indexer.
     pub genesis_block_height: u32,
+    /// Frozen catalog selected by the deployment, not a BTC-network-wide latest revision.
+    pub activation_registry_catalog: BtcActivationRegistryCatalog,
 }
 
 impl IndexerDiskLayout {
@@ -64,10 +73,31 @@ impl IndexerDiskLayout {
             Some(isolate) => root_dir.join(isolate).join("data"),
             None => root_dir.join("data"),
         };
+        let catalog_json = config
+            .usdb
+            .activation_registry_catalog_file
+            .as_ref()
+            .map(|file| {
+                if file.is_empty() {
+                    return Err("activation_registry_catalog_file must not be empty".to_string());
+                }
+                let path = root_dir.join(file);
+                std::fs::read_to_string(&path)
+                    .map_err(|error| format!("Failed to read catalog {}: {error}", path.display()))
+            })
+            .transpose()?;
+        let activation_registry_catalog = resolve_btc_activation_registry_catalog(
+            config.bitcoin.network(),
+            config.usdb.rules_scope.as_deref(),
+            config.usdb.activation_registry_id.as_deref(),
+            catalog_json.as_deref(),
+        )
+        .map_err(|error| format!("Invalid checkpoint target registry configuration: {error}"))?;
         Ok(Self {
             data_dir,
             bitcoin_network: config.bitcoin.network(),
             genesis_block_height: config.usdb.genesis_block_height,
+            activation_registry_catalog,
         })
     }
 }
@@ -141,6 +171,16 @@ pub fn validate_indexer_data(
         ));
     }
 
+    let catalog = &layout.activation_registry_catalog;
+    let registry = catalog.current_registry();
+    if registry.activation_registry_id() != manifest.state_identity.activation_registry_id {
+        return Err(format!(
+            "Checkpoint registry does not match configured target: expected={}, actual={}",
+            registry.activation_registry_id(),
+            manifest.state_identity.activation_registry_id
+        ));
+    }
+    let rules_binding = IndexerRulesBinding::new(registry, layout.genesis_block_height);
     let db_path = layout.data_dir.join(MINER_PASS_DB_FILE);
     if !db_path.is_file() {
         return Err(format!(
@@ -155,6 +195,26 @@ pub fn validate_indexer_data(
             db_path.display()
         )
     })?;
+    // Older legacy checkpoints did not contain state_text or a binding; scoped checkpoints must.
+    let has_state_text: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='state_text')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let stored_binding: Option<String> = if has_state_text {
+        conn.query_row(
+            "SELECT value FROM state_text WHERE name=?1",
+            [INDEXER_RULES_BINDING_KEY],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+    } else {
+        None
+    };
+    rules_binding.validate_stored(stored_binding.as_deref(), true)?;
     let integrity: String = conn
         .query_row("PRAGMA integrity_check;", [], |row| row.get(0))
         .map_err(|error| format!("Failed to run indexer SQLite integrity check: {error}"))?;
@@ -200,13 +260,7 @@ pub fn validate_indexer_data(
         });
     let active_balance = load_active_balance_snapshot(&conn, height, layout.genesis_block_height)?;
 
-    validate_energy_store(&layout.data_dir.join(ENERGY_DB_DIR), height)?;
-
-    let catalog = embedded_btc_activation_registry_catalog(layout.bitcoin_network)
-        .map_err(|error| format!("Failed to load embedded BTC activation catalog: {error}"))?;
-    let registry = catalog
-        .registry_by_id(&manifest.state_identity.activation_registry_id)
-        .map_err(|error| format!("Checkpoint activation registry is unavailable: {error}"))?;
+    validate_energy_store(&layout.data_dir.join(ENERGY_DB_DIR), height, &rules_binding)?;
     let active_versions = registry
         .lookup_active_version_set(height)
         .map_err(|error| format!("Failed to resolve checkpoint active versions: {error}"))?;
@@ -357,7 +411,11 @@ fn load_active_balance_snapshot(
     }))
 }
 
-fn validate_energy_store(path: &Path, expected_height: u32) -> Result<(), String> {
+fn validate_energy_store(
+    path: &Path,
+    expected_height: u32,
+    rules_binding: &IndexerRulesBinding,
+) -> Result<(), String> {
     if !path.is_dir() {
         return Err(format!(
             "Indexer energy database is missing: {}",
@@ -376,6 +434,15 @@ fn validate_energy_store(path: &Path, expected_height: u32) -> Result<(), String
     let meta = db
         .cf_handle(META_CF)
         .ok_or_else(|| "Indexer energy metadata column family is missing".to_string())?;
+    let stored_binding = db
+        .get_cf(&meta, INDEXER_RULES_BINDING_KEY.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let stored_binding = stored_binding
+        .as_deref()
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    rules_binding.validate_stored(stored_binding, true)?;
     let synced_height = read_u32_meta(&db, &meta, ENERGY_SYNCED_HEIGHT_KEY)?;
     if synced_height != Some(expected_height) {
         return Err(format!(

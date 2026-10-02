@@ -40,6 +40,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/prepare_usdb_host.sh",
     "docker/scripts/tools/release_manifest.py",
     "docker/scripts/tools/runtime_compatibility.py",
+    "docker/scripts/tools/registry_scope.py",
     "docker/scripts/tools/resource_policy.py",
     "docker/scripts/tools/assumeutxo_bootstrap.py",
     "docker/scripts/tools/assumeutxo_deployment.py",

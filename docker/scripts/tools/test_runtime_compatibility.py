@@ -69,6 +69,23 @@ class RuntimeCompatibilityTests(unittest.TestCase):
         for key in ("USDB_CHAIN_DATA_HOST_DIR", "CONTROL_PLANE_DATA_HOST_DIR"):
             self.assertNotEqual(first_paths[key], second_paths[key])
 
+    def test_scope_separates_only_indexer_while_legacy_keeps_identity(self) -> None:
+        first = network_identity()
+        legacy = {**first, "btc_rules_scope": "legacy"}
+        scoped = {**first, "btc_rules_scope": "usdb-testnet-v1"}
+        original = RUNTIME.build_runtime_compatibility(first)
+        self.assertEqual(original, RUNTIME.build_runtime_compatibility(legacy))
+        isolated = RUNTIME.build_runtime_compatibility(scoped)
+        for service in original["services"]:
+            if service == "usdb_indexer":
+                self.assertNotEqual(RUNTIME.service_contract_id(service, original),
+                                    RUNTIME.service_contract_id(service, isolated))
+            else:
+                self.assertEqual(original["services"][service], isolated["services"][service])
+        root = Path("/data/usdb")
+        self.assertNotEqual(RUNTIME.build_persistent_data_paths(root, first, original)["USDB_INDEXER_DATA_HOST_DIR"],
+                            RUNTIME.build_persistent_data_paths(root, scoped, isolated)["USDB_INDEXER_DATA_HOST_DIR"])
+
     def test_derivation_change_gets_a_distinct_indexer_dataset(self) -> None:
         first = network_identity()
         second = copy.deepcopy(first)

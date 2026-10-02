@@ -378,6 +378,7 @@ pub(crate) fn publish_indexer_data(
         data_dir: staging.clone(),
         bitcoin_network: layout.bitcoin_network,
         genesis_block_height: layout.genesis_block_height,
+        activation_registry_catalog: layout.activation_registry_catalog.clone(),
     };
     validate_indexer_data(&staged_layout, checkpoint)?;
     maybe_fail("indexer_staged")?;

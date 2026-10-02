@@ -25,7 +25,6 @@ use std::time::Instant;
 use usdb_util::{
     ActivationRegistryError, ActiveVersionSet, BTCRpcClient, BTCRpcClientRef,
     BtcActivationRegistry, BtcActivationRegistryCatalog, ConsecutiveFailureTracker,
-    embedded_btc_activation_registry_catalog,
 };
 
 #[path = "indexer/block_events.rs"]
@@ -205,10 +204,7 @@ impl Drop for BlockMutationCollectionGuard<'_> {
 
 impl InscriptionIndexer {
     pub fn new(config: ConfigManagerRef, status: StatusManagerRef) -> Result<Self, String> {
-        let activation_registry_catalog =
-            embedded_btc_activation_registry_catalog(config.config().bitcoin.network())
-                .map_err(|error| error.to_string())?
-                .clone();
+        let activation_registry_catalog = config.activation_registry_catalog()?;
         let activation_registry = activation_registry_catalog.current_registry();
         let startup_versions = activation_registry
             .lookup_active_version_set(config.config().usdb.genesis_block_height)
@@ -242,6 +238,19 @@ impl InscriptionIndexer {
         // Init pass storage
         let miner_pass_storage = MinerPassStorage::new(&config.data_dir())?;
         let miner_pass_storage = Arc::new(miner_pass_storage);
+        let rules_binding = usdb_util::IndexerRulesBinding::new(
+            activation_registry,
+            config.config().usdb.genesis_block_height,
+        );
+        // Preflight both stores before writing either identity. No automatic cross-domain migration.
+        let pass_has_indexed_state = miner_pass_storage.has_indexed_state()?;
+        let energy_has_indexed_state = pass_energy_manager.has_indexed_state()?;
+        miner_pass_storage
+            .validate_paired_rules_binding(&rules_binding, energy_has_indexed_state)?;
+        pass_energy_manager
+            .validate_paired_rules_binding(&rules_binding, pass_has_indexed_state)?;
+        miner_pass_storage.bind_rules(&rules_binding)?;
+        pass_energy_manager.bind_rules(&rules_binding)?;
         miner_pass_storage
             .reconcile_snapshot_history_coverage(config.config().usdb.genesis_block_height)?;
         if let Some(persisted_height) = miner_pass_storage.get_synced_btc_block_height()? {
@@ -326,10 +335,9 @@ impl InscriptionIndexer {
             config.config().bitcoin.network(),
             config.config().usdb.active_address_page_size,
         ));
-        let activation_registry_catalog =
-            embedded_btc_activation_registry_catalog(config.config().bitcoin.network())
-                .expect("embedded activation registry must be valid")
-                .clone();
+        let activation_registry_catalog = config
+            .activation_registry_catalog()
+            .expect("configured activation registry must be valid");
         Self {
             config,
             activation_registry_catalog,
@@ -2217,5 +2225,136 @@ impl InscriptionIndexer {
         }
 
         Ok(transfer_items)
+    }
+}
+
+#[cfg(test)]
+mod rules_binding_tests {
+    use super::*;
+    use crate::config::{ConfigManager, IndexerConfig};
+    use crate::output::IndexOutput;
+    use crate::status::StatusManager;
+    use crate::storage::PassEnergyStorage;
+    use std::path::PathBuf;
+    use usdb_util::{BTCAuth, IndexerRulesBinding};
+
+    // Only client objects are created; no request is sent to a BTC or balance service.
+    fn scoped_config(tag: &str) -> (PathBuf, ConfigManagerRef, IndexerRulesBinding) {
+        let root = std::env::temp_dir().join(format!(
+            "usdb_paired_rules_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let json =
+            include_str!("../../../usdb-util/tests/fixtures/btc-mainnet-usdb-mainnet-catalog.json");
+        let catalog = BtcActivationRegistryCatalog::from_json(json).unwrap();
+        std::fs::write(root.join("catalog.json"), json).unwrap();
+        let mut config = IndexerConfig::default();
+        config.bitcoin.auth = Some(BTCAuth::None);
+        config.bitcoin.rpc_url = Some("http://127.0.0.1:1".into());
+        config.balance_history.rpc_url = "http://127.0.0.1:1".into();
+        config.usdb.inscription_source = "bitcoind".into();
+        config.usdb.genesis_block_height = 1;
+        config.usdb.rules_scope = Some("usdb-mainnet-fixture".into());
+        config.usdb.activation_registry_id = Some(catalog.current_registry_id().into());
+        config.usdb.activation_registry_catalog_file = Some("catalog.json".into());
+        std::fs::write(
+            root.join("config.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        let binding = IndexerRulesBinding::new(catalog.current_registry(), 1);
+        let config = Arc::new(ConfigManager::load(Some(root.clone())).unwrap());
+        (root, config, binding)
+    }
+
+    fn open_indexer(config: ConfigManagerRef) -> Result<InscriptionIndexer, String> {
+        let status = Arc::new(StatusManager::new(
+            config.clone(),
+            Arc::new(IndexOutput::new()),
+        )?);
+        InscriptionIndexer::new(config, status)
+    }
+
+    #[test]
+    fn startup_rejects_missing_scoped_energy_store_before_binding() {
+        let (root, config, binding) = scoped_config("missing_energy");
+        let data = config.data_dir();
+        let pass = MinerPassStorage::new(&data).unwrap();
+        pass.bind_rules(&binding).unwrap();
+        pass.update_synced_btc_block_height(100).unwrap();
+        drop(pass);
+        let error = open_indexer(config)
+            .err()
+            .expect("missing energy must fail");
+        assert!(error.contains("Unbound nonempty"), "{error}");
+        let energy = PassEnergyStorage::new(&data).unwrap();
+        assert!(!energy.has_indexed_state().unwrap());
+        let mut other = binding.clone();
+        other.rules_scope = "other-scope".into();
+        energy.validate_rules_binding(&other).unwrap();
+        drop(energy);
+        let pass = MinerPassStorage::new(&data).unwrap();
+        assert_eq!(pass.get_synced_btc_block_height().unwrap(), Some(100));
+        pass.validate_rules_binding(&binding).unwrap();
+        drop(pass);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_rejects_missing_scoped_pass_store_even_with_only_energy_pending_state() {
+        let (root, config, binding) = scoped_config("missing_pass");
+        let data = config.data_dir();
+        let energy = PassEnergyStorage::new(&data).unwrap();
+        energy.bind_rules(&binding).unwrap();
+        energy.set_pending_block_height(101).unwrap();
+        drop(energy);
+        let error = open_indexer(config).err().expect("missing pass must fail");
+        assert!(error.contains("Unbound nonempty"), "{error}");
+        let pass = MinerPassStorage::new(&data).unwrap();
+        assert!(!pass.has_indexed_state().unwrap());
+        let mut other = binding.clone();
+        other.rules_scope = "other-scope".into();
+        pass.validate_rules_binding(&other).unwrap();
+        drop(pass);
+        let energy = PassEnergyStorage::new(&data).unwrap();
+        assert_eq!(energy.get_pending_block_height().unwrap(), Some(101));
+        assert_eq!(energy.get_synced_block_height().unwrap(), None);
+        energy.validate_rules_binding(&binding).unwrap();
+        drop(energy);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_retries_interrupted_first_binding_without_indexed_state() {
+        for pass_first in [true, false] {
+            let (root, config, binding) = scoped_config(if pass_first {
+                "pass_first"
+            } else {
+                "energy_first"
+            });
+            let data = config.data_dir();
+            if pass_first {
+                let pass = MinerPassStorage::new(&data).unwrap();
+                pass.bind_rules(&binding).unwrap();
+                assert!(!pass.has_indexed_state().unwrap());
+            } else {
+                let energy = PassEnergyStorage::new(&data).unwrap();
+                energy.bind_rules(&binding).unwrap();
+                assert!(!energy.has_indexed_state().unwrap());
+            }
+            drop(open_indexer(config.clone()).unwrap());
+            drop(open_indexer(config).unwrap());
+            let pass = MinerPassStorage::new(&data).unwrap();
+            let energy = PassEnergyStorage::new(&data).unwrap();
+            pass.validate_rules_binding(&binding).unwrap();
+            energy.validate_rules_binding(&binding).unwrap();
+            drop((pass, energy));
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 }

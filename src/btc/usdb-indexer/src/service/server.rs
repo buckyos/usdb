@@ -6359,6 +6359,152 @@ mod tests {
     }
 
     #[test]
+    fn test_scoped_rpc_state_identity_and_context_isolation() {
+        let fixtures = [
+            include_str!("../../../usdb-util/tests/fixtures/btc-mainnet-usdb-mainnet-catalog.json"),
+            include_str!("../../../usdb-util/tests/fixtures/btc-mainnet-usdb-testnet-catalog.json"),
+        ];
+        let mut servers = Vec::new();
+        let pass = make_active_pass(149, 229, 90);
+        for (index, document) in fixtures.iter().enumerate() {
+            let catalog = BtcActivationRegistryCatalog::from_json(document).unwrap();
+            let root = test_root_dir(&format!("scoped_rpc_{index}"));
+            std::fs::write(root.join("catalog.json"), document).unwrap();
+            let mut config = IndexerConfig::default();
+            config.bitcoin.network = Network::Bitcoin;
+            config.usdb.genesis_block_height = 0;
+            config.usdb.rules_scope = Some(catalog.current_registry().scope.rules_scope().into());
+            config.usdb.activation_registry_id = Some(catalog.current_registry_id().into());
+            config.usdb.activation_registry_catalog_file = Some("catalog.json".into());
+            std::fs::write(
+                root.join("config.json"),
+                serde_json::to_vec(&config).unwrap(),
+            )
+            .unwrap();
+            // Exercise real config selection and durable database binding, not the
+            // test-only catalog replacement used by older revision fixtures.
+            let server = open_server_from_root(&root, None);
+            server
+                .indexer
+                .miner_pass_storage()
+                .update_synced_btc_block_height(99)
+                .unwrap();
+            seed_state_ref_context(&server, 99);
+            server
+                .indexer
+                .miner_pass_storage()
+                .add_new_mint_pass_at_height(&pass, 90)
+                .unwrap();
+            seed_energy_record(&server, &pass, 99, LEVEL_E0);
+            servers.push((server, root));
+        }
+        let profiles = servers
+            .iter()
+            .map(|(server, _)| get_pass_economic_profile_for_test(server, &pass, 99))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            serde_json::to_value(&profiles[0].pass).unwrap(),
+            serde_json::to_value(&profiles[1].pass).unwrap()
+        );
+        assert_eq!(
+            profiles[0].external_state.snapshot_id,
+            profiles[1].external_state.snapshot_id
+        );
+        assert_ne!(
+            profiles[0].external_state.active_version_set_id,
+            profiles[1].external_state.active_version_set_id
+        );
+        assert_ne!(
+            profiles[0].external_state.local_state_commit,
+            profiles[1].external_state.local_state_commit
+        );
+        assert_ne!(
+            profiles[0].external_state.system_state_id,
+            profiles[1].external_state.system_state_id
+        );
+
+        for (index, (server, _)) in servers.iter().enumerate() {
+            let own = &profiles[index].external_state;
+            let foreign = &profiles[1 - index].external_state;
+            let own_context = ConsensusQueryContext::from(own);
+            let state_ref = server
+                .get_state_ref_at_height(GetStateRefAtHeightParams {
+                    block_height: 99,
+                    context: Some(own_context.clone()),
+                })
+                .unwrap();
+            let versions = &state_ref.local_state_commit_info.active_version_set;
+            assert_eq!(versions.scope().unwrap().network_id, "btc-mainnet");
+            assert_eq!(
+                versions.scope().unwrap().rules_scope,
+                server.config.config().usdb.rules_scope.as_deref().unwrap()
+            );
+            assert_eq!(versions.active_version_set_id(), own.active_version_set_id);
+            let encoded = serde_json::to_string(versions).unwrap();
+            let decoded: usdb_util::ActiveVersionSet = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, *versions);
+            assert_eq!(decoded.active_version_set_id(), own.active_version_set_id);
+
+            let mut foreign_registry = own_context.clone();
+            foreign_registry.expected_state.activation_registry_id =
+                Some(foreign.activation_registry_id.clone());
+            for context in [foreign_registry, ConsensusQueryContext::from(foreign)] {
+                let error = server
+                    .get_pass_economic_profile(GetPassEconomicProfileParams {
+                        view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.into(),
+                        pass_id: pass.inscription_id.to_string(),
+                        block_height: Some(99),
+                        context: Some(context.clone()),
+                    })
+                    .unwrap_err();
+                assert_eq!(
+                    error.code,
+                    ErrorCode::ServerError(ConsensusRpcErrorCode::ActivationRecordNotFound.code())
+                );
+                let error = server
+                    .get_state_ref_at_height(GetStateRefAtHeightParams {
+                        block_height: 99,
+                        context: Some(context),
+                    })
+                    .unwrap_err();
+                assert_eq!(
+                    error.code,
+                    ErrorCode::ServerError(ConsensusRpcErrorCode::ActivationRecordNotFound.code())
+                );
+            }
+            let mut relabeled = own_context;
+            relabeled.expected_state.active_version_set_id =
+                Some(foreign.active_version_set_id.clone());
+            let error = server
+                .get_state_ref_at_height(GetStateRefAtHeightParams {
+                    block_height: 99,
+                    context: Some(relabeled),
+                })
+                .unwrap_err();
+            assert_eq!(
+                error.code,
+                ErrorCode::ServerError(ConsensusRpcErrorCode::ActiveVersionSetMismatch.code())
+            );
+        }
+        for (index, (server, root)) in servers.into_iter().enumerate() {
+            drop(server);
+            let reopened = open_server_from_root(&root, None);
+            seed_upstream_anchor(&reopened, 99);
+            let replay = get_pass_economic_profile_for_test(&reopened, &pass, 99);
+            assert_eq!(
+                replay.external_state.active_version_set_id,
+                profiles[index].external_state.active_version_set_id
+            );
+            assert_eq!(
+                replay.external_state.system_state_id,
+                profiles[index].external_state.system_state_id
+            );
+            drop(reopened);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn test_get_pass_economic_profile_applies_state_and_invalid_zero_boundaries() {
         let (server, root_dir) = build_server("economic_profile_state_boundaries", 130);
         seed_state_ref_context(&server, 120);

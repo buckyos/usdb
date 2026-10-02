@@ -28,11 +28,12 @@ runtime compatibility contract 和数据目录内的 service marker 决定。
 | `chain_id` / `network_id` | EVM 交易签名域与 devp2p 网络标识 | 由 network bundle 冻结；当前通常取相同数值，但语义不同 | 任一变化都按新 network generation 处理 |
 | `genesis_block_hash` | USDB 链 block 0 的确定性身份 | 由完整 genesis 内容计算 | 不同 hash 的节点不属于同一条链 |
 | `btc-network-id` | 上游 Bitcoin 网络身份 | 例如 `btc-mainnet` 或隔离测试使用的 regtest identity | 不同 BTC 网络的数据绝不能复用 |
+| `btc_rules_scope` / `rules_scope` | USDB 对 BTC 数据的独立规则域 | 不同 USDB 网络可以共享 `btc-mainnet` source，但分别冻结 catalog 和激活日程；旧格式隐式 `legacy` | 不同 scope 使用独立 indexer dataset 与 state identity |
 | `storage-schema` | 单个服务持久化格式的显式版本 | 由该服务维护，例如 RocksDB column/layout 或 geth DB version | 不兼容变化必须升级 contract 并重建或执行已审核 migration |
-| `source identity` | 生成 dataset 所依赖的不可忽略来源参数 | 例如 BTC network；indexer 还包括 index origin 和 activation registry ID | 任一字段变化均不得静默复用旧 dataset |
+| `source identity` | 生成 dataset 所依赖的不可忽略来源参数 | 例如 BTC network；indexer 还包括 rules scope、index origin 和精确 activation registry ID | 任一字段变化均不得静默复用旧 dataset |
 | `service-contract-id` | 单个服务完整数据兼容契约的 SHA-256 | 规范化哈希 `service name + storage schema + optional data model + source/network identity` | ID 相同才允许该服务复用既有可写目录 |
 | `balance-history-contract-id` | balance-history 的 `service-contract-id` | BTC network、RocksDB schema 与 balance-history data model | 用于 balance-history 数据目录和 marker |
-| `indexer-contract-id` | usdb-indexer 的 `service-contract-id` | BTC network、index origin、activation registry ID 与 indexer storage schema | 用于 indexer 数据目录和 marker；它不只是 derivation/source ID |
+| `indexer-contract-id` | usdb-indexer 的 `service-contract-id` | BTC network、rules scope、index origin、activation registry ID 与 indexer storage schema | 用于 indexer 数据目录和 marker；它不只是 derivation/source ID |
 | `runtime-compatibility-id` | 一次 release 的全局运行时数据兼容契约 SHA-256 | data layout、全部 service contracts、mismatch/migration policy | `activate-release` 只有在该 ID 与各 marker 一致时才允许原地切换 image |
 | `dataset identity marker` | 数据目录内的公开身份声明 | service、service contract ID 及完整 contract，文件名为 `.usdb-dataset-identity.json` | `doctor`、`up` 和 release 激活时用于拒绝错目录或错数据 |
 | `snapshot-release-id` | 一份不可变 balance-history snapshot artifact 的发布标识 | snapshot manifest、目标 BTC state、格式和签名共同约束 | 只用于 artifact 缓存目录；安装前仍必须验证 record、签名和消费者 contract |
@@ -44,7 +45,7 @@ runtime compatibility contract 和数据目录内的 service marker 决定。
 “USDB chain protocol ID”。它通过所对应的冻结 network bundle 和 release manifest 间接绑定初始链规则：
 
 - `chain_id`、`network_id`、genesis block/hash 及 genesis 内冻结的初始 chain config；
-- BTC network、`index_origin_height` 和 BTC activation registry ID；
+- BTC network、USDB rules scope、`index_origin_height` 和 BTC activation registry ID；
 - SourceDAO/bootstrap、snapshot trust keys、network environment 与其他 bundle artifacts；
 - 上述文件的 SHA-256，以及 release 的 runtime compatibility contract。
 
@@ -58,7 +59,7 @@ block-0 identity 或采用需要重置整条网络的不兼容规则，则创建
 | --- | --- | --- | --- | --- |
 | Bitcoin Core datadir | BTC source | 是 | 可 | BTC network 与 storage contract 相同，且只有一个 writer |
 | balance-history | BTC source + service model | 是 | 可 | RocksDB schema、data model、BTC network 相同 |
-| usdb-indexer | BTC derivation | 是 | 条件可 | BTC network、index origin、activation registry history、schema 全相同 |
+| usdb-indexer | BTC source + USDB rules scope | 条件可 | 条件可 | source、scope、index origin、精确 current registry ID、schema 全相同 |
 | USDB chain DB | genesis | 是 | 否 | chain ID、genesis hash、geth DB contract 必须相同 |
 | control-plane state | network bundle | 是 | 否 | bundle identity 必须相同 |
 | snapshot/checkpoint | immutable artifact | 是 | 条件可 | signature、manifest 和消费者 contract 均通过校验 |
@@ -103,7 +104,7 @@ v8 还绑定一次性 SourceDAO 工具镜像的 digest、源码 revision 和 pro
 Compose 常驻服务，也不改变既有数据目录身份。
 
 - 每个服务的 storage schema；
-- 影响数据语义的 BTC network、index origin、registry、chain ID 和 genesis hash；
+- 影响数据语义的 BTC network、rules scope、index origin、精确 registry ID、chain ID 和 genesis hash；
 - 默认 data layout version；
 - `compatibility_id`，即上述规范化内容的 SHA-256；
 - 当前开发阶段固定 `migration_support=none`、`mismatch_action=rebuild`。
@@ -122,6 +123,34 @@ Compose 常驻服务，也不改变既有数据目录身份。
 任一项不一致均失败关闭。`activate-release` 只允许 contract ID 不变的同 bundle 更新，只替换 image digest；
 它不执行 DB migration、不移动目录、不启动服务。
 
+### 4.1 规则域与冻结 Catalog
+
+新 scope 使用 `btc_source.rules_scope` 与 `btc_source.activation_registry_id` 绑定规则历史；release identity 以 `btc_rules_scope` 记录非 legacy scope。对应的 indexer service contract 也纳入该字段。旧 bundle 缺省 scope 按 `legacy` 解释，序列化时不补入新字段，因此旧 runtime compatibility ID、dataset 路径和冻结文件哈希保持不变。
+
+发布容器的选择参数是：
+
+| 冻结来源 | 环境变量 | indexer `usdb` 配置 |
+| --- | --- | --- |
+| `btc_source.rules_scope` | `USDB_RULES_SCOPE` | `rules_scope` |
+| `btc_source.activation_registry_id` | `BTC_ACTIVATION_REGISTRY_ID` | `activation_registry_id` |
+| `artifacts.btc_activation_registry_catalog` | `BTC_ACTIVATION_REGISTRY_CATALOG_FILE` | `activation_registry_catalog_file` |
+
+新 scope 的三项必须齐备。catalog artifact 声明 `path: artifacts/<名称>.json` 和完整 `sha256`；冻结 `network.env` 使用容器路径 `/network/<名称>.json`，由 indexer、snapshot loader 与 checkpoint recovery 只读挂载同一 bundle artifacts 目录。宿主机路径不能写入冻结容器配置。catalog 文件内的 `current_registry_id` 必须与网络 pin 精确一致；文件内容完整性哈希是发布约束，不额外成为 dataset 语义身份。
+
+两个配置 renderer 在写入前验证选择条件。`node.env` 不得覆盖冻结的 scope、ID 或 catalog 路径，官方 launcher 清除调用者 shell 对这三个变量的覆盖。开发 Compose 使用外部 catalog 时需在开发 overlay 显式提供只读挂载；未挂载文件必须拒绝启动。
+
+本批仅提供选择和隔离能力，发布 validator 仍固定现有 `testnet-v0` 的 legacy binding；未新增可发布的 v1 bundle。不得修改 v0 的冻结文件来试用新 scope。
+
+### 4.2 DB 内部绑定与升级限制
+
+indexer 除 host marker 外，在 pass SQLite `state_text` 和 energy RocksDB `meta` 内绑定 BTC source、rules scope、index origin 和精确 current registry ID。两库都必须与配置一致；只修改目录名、host marker 或配置不能授权复用另一 scope 的状态。
+
+空数据集可首次绑定。非空且无绑定的旧数据只允许 legacy 兼容接管，该路径依赖旧部署可信的 source/origin provenance，不能把首次写入绑定当作旧数据来源的追溯证明。新 scope 必须重建独立数据集。若 current registry ID 变化，本批采取保守的独立 dataset / rebuild 策略；即便新 catalog 只追加未来记录，也没有因此获得在线 DB migration 能力。catalog 历史追加校验与已有数据可否复用是两项不同的检查。
+
+scoped checkpoint 在 `data/rules-catalog.json` 携带导出时的完整 catalog，文件受现有 inventory、operation ID 和 manifest 签名保护。standalone verify 使用该文件复原 catalog，并验证 manifest registry ID 与 BTC source；恢复目标仍以本地冻结配置和双库绑定为准，不接受 artifact 替目标选择 scope。legacy checkpoint 不新增此文件，manifest schema 不变。
+
+checkpoint 预检要求 manifest registry ID 与目标网络 pin 一致，安装与离线验证继续校验双库绑定和重算 state-ref。旧 legacy checkpoint 允许按兼容规则读取缺少绑定的旧数据，新 scoped checkpoint 必须带有完整绑定。未通过验证时不得把恢复结果当作可用索引状态。
+
 ## 5. Reset、重建与恢复
 
 从空机器部署在数据可用性上是成立的，但恢复来源不同：
@@ -139,7 +168,7 @@ reflink/copy，并在切换前后复核 marker、权限、大小和服务 state-
 
 - balance-history 已在 DB 内部校验 schema、data model、BTC network 和 genesis；geth 校验 chain DB version
   与 genesis；Bitcoin Core 仍由自身 network/datadir 检查负责。
-- usdb-indexer 当前由 host marker、确定性路径和 checkpoint schema 共同约束，后续应把同一 derivation
-  identity 写入其 DB 内部，形成与 balance-history 等价的双层校验。
+- usdb-indexer 由 host marker、确定性路径、双库 rules binding 和 checkpoint 验证共同约束；
+  本批未实现 registry current revision 的在线数据迁移，也未重置或升级运行中的网络。
 - 若未来支持在线 DB migration，必须增加独立 migration version、前后 state-ref、可中断恢复和 rollback
   矩阵；不能把 `migration_support=none` 直接改成宽松兼容。

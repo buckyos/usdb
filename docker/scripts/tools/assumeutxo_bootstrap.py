@@ -160,12 +160,14 @@ def render_indexer_config(env: Mapping[str, str]) -> str:
     auth = btc_auth(env)
     if auth is not None:
         btc["auth"] = auth
+    from registry_scope import indexer_rule_selection
     config = dict(
         isolate=None,
         bitcoin=btc,
         ordinals=dict(rpc_url=env.get("ORD_RPC_URL", "http://ord-server:28030")),
         balance_history=dict(rpc_url=env.get("BALANCE_HISTORY_RPC_URL", "http://balance-history:28010")),
         usdb=dict(
+            **indexer_rule_selection(env),
             genesis_block_height=identity["origin_height"],
             active_address_page_size=unsigned(env, "ACTIVE_ADDRESS_PAGE_SIZE", 1024, minimum=1),
             balance_query_batch_size=unsigned(env, "BALANCE_QUERY_BATCH_SIZE", 1024, minimum=1),

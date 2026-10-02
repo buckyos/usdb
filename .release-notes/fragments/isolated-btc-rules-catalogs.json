@@ -1,0 +1,30 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "isolated-btc-rules-catalogs",
+  "type": "added",
+  "scopes": [
+    "consensus",
+    "deployment",
+    "documentation",
+    "indexer",
+    "testing"
+  ],
+  "summary": "Isolate USDB rule catalogs on a shared Bitcoin source",
+  "details": [
+    "Explicit rule scopes and pinned external catalogs bind registry and active-version identities across Rust indexing, RPC state commitments, and Go verification while retaining legacy hashes.",
+    "Pass and energy databases enforce the selected source, scope, origin, and registry revision; scoped checkpoints carry a signed catalog and reject incompatible restore targets.",
+    "Deployment renderers preserve frozen rule selectors, and audit manifest v4 groups independent catalogs by source and scope. Existing testnet-v0 artifacts and activation rules are unchanged."
+  ],
+  "operator_actions": [
+    "Keep the existing legacy configuration for v0. A future scoped deployment requires a reviewed catalog, an exact registry pin, matching Go artifacts, and a separate dataset; current-registry changes do not support in-place data migration."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/issues/51"
+  ]
+}

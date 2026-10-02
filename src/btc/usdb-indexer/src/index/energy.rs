@@ -129,6 +129,34 @@ pub struct PassEnergyManager {
 }
 
 impl PassEnergyManager {
+    /// Check the energy dataset before either paired store is adopted.
+    pub fn validate_rules_binding(
+        &self,
+        expected: &usdb_util::IndexerRulesBinding,
+    ) -> Result<(), String> {
+        self.storage.validate_rules_binding(expected)
+    }
+
+    /// Reports indexed state before the paired pass and energy stores can be adopted.
+    pub fn has_indexed_state(&self) -> Result<bool, String> {
+        self.storage.has_indexed_state()
+    }
+
+    /// Validate an energy store against both its binding and its peer's existing history.
+    pub fn validate_paired_rules_binding(
+        &self,
+        expected: &usdb_util::IndexerRulesBinding,
+        peer_has_indexed_state: bool,
+    ) -> Result<(), String> {
+        self.storage
+            .validate_paired_rules_binding(expected, peer_has_indexed_state)
+    }
+
+    /// Persist the approved dataset identity before indexing begins.
+    pub fn bind_rules(&self, expected: &usdb_util::IndexerRulesBinding) -> Result<(), String> {
+        self.storage.bind_rules(expected)
+    }
+
     pub fn new(config: ConfigManagerRef) -> Result<Self, String> {
         let storage = PassEnergyStorage::new(&config.data_dir())?;
         let balance_provider = Arc::new(RpcBalanceProvider::new(
