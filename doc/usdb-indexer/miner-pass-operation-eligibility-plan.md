@@ -4,15 +4,15 @@
 
 本计划落实 [issue #51 收敛方案](https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579)，协议草案为 [UIP-0016](../UIP/UIP-0016-miner-pass-operation-eligibility.md)。用户已同意按该方案推进；草案、代码合并、委员会状态和网络激活是不同事项。
 
-本文件区分当前事实与后续实现任务。规范草案已提交为 usdb `c0f362b`，Go 兼容锁同步提交为 `beb9a3b2e`。当前已完成下一批独立来源证据与交易前余额上下文，并通过下述验收；尚未将它们接入 mint 状态机，也未改变现网规则。下列任务不能仅因有文档或测试名称就标记完成。
+本文件区分当前事实与后续实现任务。规范草案已提交为 usdb `c0f362b`，Go 兼容锁同步提交为 `beb9a3b2e`；来源证据与交易前余额层已提交为 usdb `cacdcd3`，对应 Go 兼容锁为 `ba631d72b`。本批在工作区实现一次性开户资格与独立 v2 状态机入口，并完成下述核心验收；生产 parser、按高度分派及 block executor 尚未接入新入口，现网规则仍为 v1。下列任务不能仅因有文档或测试名称就标记完成。
 
-## 本批已实现：来源证据与交易前余额
+## 前批已提交：来源证据与交易前余额
 
 - `usdb-util::BTCRpcClient::get_block_prevouts` 返回完整 `BlockPrevouts`：精确块/交易字节、金额、脚本、创建高度、coinbase 标志。同块 prevout 与真实创建输出交叉检查；旧金额 API 保持原要求。
 - `btc/mint_evidence.rs` 定位受支持 Ord envelope 的实际 sat 和接收 owner；按 spent prevout 创建高度查询历史 commit，覆盖早于 index origin/base 的位置。历史缓存最多保留 4 个块，按规范链锚校验后复用；不使用 txindex、当前 gettxout 或浏览器数据。
 - `usdb-util::prove_commit_source` 使用左闭右开输入区间反查来源，并实际验证允许的 ECDSA/Schnorr 签名。确定不支持的脚本/sighash、coinbase 来源与数据不可用分开返回。
 - `btc/transaction_balance.rs` 按所有 BTC 交易建立精确 sat 余额。RPC 路径固定读取同锚 H 的区块后余额，反推块前余额，支持 query floor 为 H；读取前后复核 snapshot identity 与 Core hash。空/不完整响应不能当作零。
-- 本批没有新持有历史索引、三路径状态机写入、JSON v2 parser/activation dispatch、RPC 对外审计字段或钱包流程。因此不能据此声称现有强制赠予问题已修复。
+- 该提交只提供独立证据层，不改变生产规则。下述状态机批次继续使用这些上下文；JSON v2 parser/activation dispatch、RPC 对外审计字段和钱包流程仍待后续完成。
 
 验收入口：
 
@@ -23,8 +23,28 @@ python3 tests/run_miner_pass_evidence_live.py --bitcoind /path/to/bitcoind
 
 独立证据测试覆盖 11 组场景：来源签名/annex/篡改、sat 区间及零值输入、同块和历史 commit、缺失 undo 恢复与 reorg、严格 prevout、pointer/歧义/unbound/burn、coinbase、交易前余额以及 snapshot floor RPC 的错误响应。真实 Core 28.1 在全新 `txindex=0`、不裁剪 regtest 中接受 8 类真实交易：P2PKH ALL、P2WPKH ALL、P2TR DEFAULT、P2TR ALL+annex，以及不支持的 ANYONECANPAY/NONE/SINGLE/script-path；正确定位第 3 个来源输入，包含真实零值前置输入、同块/历史 commit、重开一致性及旧分支拒绝。runner 保存原始 commit/reveal 交易和结果到独立临时目录。
 
-测试只在隔离环境运行。query floor 边界已通过 RPC 夹具验收；**完整 AssumeUTXO 装载、后台验证及历史 undo 可用性的服务级验收仍属于阶段 6**。本批的独立上下文重开不等于数据库/快照恢复验收；后者随阶段 3/6 完成。
+上述真实 Core 测试是前批证据层的验收记录，本批状态机验收不重复声明为新的真实节点测试。query floor 边界已通过 RPC 夹具验收；**完整 AssumeUTXO 装载、后台验证及历史 undo 可用性的服务级验收仍属于阶段 6**。独立上下文重开不等于数据库/快照恢复验收。
 
+
+## 本批已实现：一次性资格与状态机核心
+
+- `storage/pass.rs::has_ever_valid_owner` 从既有规范持有历史派生资格，包含激活前有效 mint 和成功 owner transfer。读取 writer 视图，能看到同块已执行事件；Invalid、终态 pass 的无效转移不占用，消费/烧毁/转出不清除旧 owner 的历史。没有新增资格表、缓存或数据库编码。
+- `index/pass/eligibility.rs::on_mint_pass_v2` 统一首次开户、同地址操作和单来源跨地址继承。仅零余额、无有效持有历史、空 prev 可豁免来源授权；带 prev 始终按真实来源 owner 验证。入口接收已经过 schema 校验、由真实铭文解析得到的字段，尚不承担生产 JSON 分派。
+- 所有 prev 和 Leader 绑定先校验，再执行休眠和消费；跨地址只处理列出的源 pass，同地址保留旧 Active 休眠语义。消费前再次核对同一来源 owner，能量结算沿用已有整块余额和逐 prev 继承损耗公式。
+- 新入口要求 SQLite writer 事务、同高度 energy pending 与 mutation collector，以及同块链证据/余额上下文。协议 Invalid 只记录新证失败；运行时错误由调用方中止并恢复整块，不承诺单次 mint 自动跨库回滚。v1 仅抽出共用的创建/消费步骤，执行顺序与 mutation 编码保持不变。
+- 运行时错误与对应日志统一带铭文 ID、高度、交易 ID、owner 和 satpoint；不一致分支同时报告预期与实际高度/区块哈希/owner/satpoint，未初始化状态明确显示 `None`。诊断补充不改变参与 mutation root 的 `InvalidMint.error_reason`。
+
+验收新增于 `tests/miner_pass_eligibility.rs`，共 20 个测试，使用 `tests/common/miner_pass_state.rs` 的隔离 SQLite/RocksDB 与签名链证据夹具：
+
+- 首次开户的 0/1 sat 边界、历史占用、空余额不重置资格、第三方不能替换既有 Active 或消费其 prev、同地址修改收益地址及跨地址多 prev 继承。
+- 同 reveal 多 mint 共用交易前余额但按顺序观察资格；先转入有效 pass 再出现无效 mint 时保留真实 transfer；重复竞争只能消费一次。
+- 缺少来源证据返回运行错误、恢复后重试；在第二个 prev 消费和新 pass 能量写入处注入失败，验证块恢复撤销部分消费。
+- 能量已 finalize 而 SQLite 未提交时重开恢复；关闭后复制双库、重开、回滚和重放得到相同 mutation/root 与能量，旧 owner 历史仍保留。
+- standard/collab 共用资格规则，Leader 轮换后固定 ID 与地址引用均不自动跟随；同块先清空源余额可能在继承前触发能量损耗，不能承诺迁移总共只损失 5%。
+
+本批回归：`usdb-indexer` 368 passed / 10 ignored，`usdb-util` 75 passed / 2 ignored；workspace check、格式检查、indexer Clippy 与文档构建通过。测试只使用临时目录，无在线节点操作。
+
+验收边界：上述事件顺序测试直接调用状态机，还不是生产 event planner/tracker 联合验收；双库复制恢复也不是签名 checkpoint 导出/安装验收。M16 的 H-1/H/H+1 激活、生产 block executor 的整块失败恢复、来源审计接口及完整服务级重放继续在阶段 4/6 完成，不能将 M01–M18 全部标为已完成。历史资格依赖自本作用域 index origin 起的完整规范历史；后续激活/导入校验不能把只含当前 Active 或缺历史的旧数据集视为合格。
 
 ## 已完成的前置条件
 
@@ -35,9 +55,9 @@ python3 tests/run_miner_pass_evidence_live.py --bitcoind /path/to/bitcoind
 
 现有 v0 规则及数据继续按旧语义解释。第三批首先在独立数据目录和隔离测试 catalog 中实现。测试网重置、v1 网络包和真实部署位于最后发布阶段。
 
-## 方案启动时的实现差距（本批证据层进展见上）
+## 方案启动时的实现差距（后续批次进展见上）
 
-| 范围 | 当前源码 | 差距与实现方向 |
+| 范围 | 启动时源码入口 | 当时差距与实现方向 |
 | --- | --- | --- |
 | schema 分类 | `src/btc/usdb-indexer/src/index/content.rs` | 当前只接受 v1，尚未按目标 BTC 高度选择 v1/v2 parser；禁止给用户一个可选择旧执行器的 v 字段 |
 | sat 位置 | `index/transfer.rs::calc_create_satpoint` | 能定位 reveal 输入和 commit outpoint，但仍写死输入 offset 0；须显式限定 Ord envelope 支持范围并验证真实 sat |
@@ -49,13 +69,13 @@ python3 tests/run_miner_pass_evidence_live.py --bitcoind /path/to/bitcoind
 | 控制面 | `usdb-control-plane/src/server.rs::prepare_btc_mint_context`、`models.rs` | 当前只有 owner_address，按目标查询 Active/prev；需拆 source/recipient 和最终核验；execute 仍仅 development |
 | Go 版本支持 | `internal/usdb/activation.go`、registry/profile 验证 | 当前 BTC profile 只接受 v1 集合；须与实际受支持的新组合和 golden 一起改，不先扩大白名单 |
 
-路径如未带 crate 前缀，默认位于 `src/btc/usdb-indexer/src/`。这些代码位置由当前工作区核查，不沿用 issue 中旧 revision 的行号。
+路径如未带 crate 前缀，默认位于 `src/btc/usdb-indexer/src/`。这些代码位置来自方案启动时的源码核查，不沿用 issue 中旧 revision 的行号；已实现部分以上方分批验收记录为准。
 
 ## 实施顺序与退出条件
 
 ### 1. 规范与向量基线
 
-当前已建立 UIP-0016 Draft 和 M01–M18 期望表；Ord 子集与来源签名形式已落实到本批证据层测试。v2 分派与业务 canonical 编码仍待后续状态机实现：
+当前已建立 UIP-0016 Draft 和 M01–M18 期望表；Ord 子集与来源签名形式已落实到已提交的证据层测试。v2 分派与业务 canonical 编码评审仍待阶段 4：
 
 - 候选 JSON `v=2` 与 schema/state-machine v2 成对启用，H 前旧规则、H 后不能用 v1 绕过。
 - Ord 当前锁定依赖是 0.24.2；固定支持的 envelope 子集与 satpoint 向量，尤其 pointer、unbound、非首输入及歧义输入。不得把 envelope offset 当 sat offset。
@@ -76,7 +96,7 @@ python3 tests/run_miner_pass_evidence_live.py --bitcoind /path/to/bitcoind
 
 退出条件：多输入多输出和 sat 边界向量通过；同块/历史 commit、1 sat、零值输入、无效铭文前转账通过；RPC 失败/reorg 后能重新加载；真实 `txindex=0` 的隔离 Core 可完成证明。
 
-### 3. 一次性资格与原子状态机
+### 3. 一次性资格与原子状态机（核心已实现并验收）
 
 - 资格读取覆盖有效 mint、成功 owner transfer 和激活前历史；Invalid 不占用，消费/烧毁/转出不重置原 owner。
 - 按 UIP-0002 的事件顺序更新资格；同一 reveal 多 mint 共用交易前余额，但资格观察顺序不同。
@@ -87,9 +107,11 @@ python3 tests/run_miner_pass_evidence_live.py --bitcoind /path/to/bitcoind
 
 退出条件：M01–M18 对 standard/collab 的适用场景通过；失败没有部分消费；重复竞争只成功一次；同块/跨块余额迁移能量结果明确；block rollback、重开、快照恢复和完整重放一致。
 
-### 4. 版本、状态身份和查询
+当前核心测试通过，生产联调退出条件尚未全部满足。阶段 4 将接入 active-set 分派、真实 ordered block executor 和 tracker 恢复，再验收激活边界；签名 checkpoint 与完整服务级重放在阶段 6 收尾。
 
-- 按 registry 的 active set 选择规则；混合 v1/v2 组合必须拒绝，旧高度仍有旧 parser/状态机。
+### 4. 版本、状态身份和查询（下一批）
+
+- 按 registry 的 active set 选择规则；混合 v1/v2 组合必须拒绝，旧高度仍有旧 parser/状态机。将 JSON v2 解析和独立状态机接入 ordered block executor，同块共享完整链证据与交易前余额，运行时错误必须恢复 energy、SQLite 与 tracker staging。
 - 新 scope 的 v2 测试 catalog 显式 pin；现有 embedded registry 和 v0 发布包保持旧规则。
 - 来源、操作路径、资格拒绝原因通过审计接口提供；缺少链上证据与确定的协议 Invalid 使用不同错误分类。
 - state commitment 若新增编码，先定义向量，再同步 Rust、Go、checkpoint 与黄金文件；不能只更新版本字符串。

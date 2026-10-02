@@ -1,3 +1,5 @@
+mod eligibility;
+
 use super::content::{MinerPassKind, MinerPassState, MintValidationErrorCode};
 use super::energy::PassEnergyManagerRef;
 use super::energy_formula::{Energy, calc_inheritable_energy};
@@ -10,6 +12,17 @@ use ordinals::SatPoint;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use usdb_util::{BtcScriptHash, address_string_to_script_hash};
+
+/// The successful operation selected by v2; this is not yet a published RPC encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MintOperationPath {
+    /// Empty prev, exact zero balance, and no prior valid acquisition by the destination.
+    FirstOpening,
+    /// The sat source owner is also the destination; supersede its current Active pass.
+    SameOwner,
+    /// A single source owner consumes only listed prev into an eligible new destination.
+    CrossOwner,
+}
 
 pub struct PassMintInscriptionInfo {
     pub inscription_id: InscriptionId,
@@ -276,6 +289,18 @@ impl MinerPassManager {
 
         // Insert the new pass as active
         let leader_btc_owner = self.resolve_leader_btc_owner_for_mint(mint_info)?;
+        self.create_pass_and_consume_prev(mint_info, &mint_info.mint_owner, leader_btc_owner)
+            .await
+    }
+
+    // Share the durable mutation encoding with v1; eligibility and supersession are selected
+    // before this function. Consumption must recheck the validated source owner, not recipient.
+    async fn create_pass_and_consume_prev(
+        &self,
+        mint_info: &PassMintInscriptionInfo,
+        source_owner: &BtcScriptHash,
+        leader_btc_owner: Option<BtcScriptHash>,
+    ) -> Result<(), String> {
         let info = MinerPassInfo {
             inscription_id: mint_info.inscription_id,
             inscription_number: mint_info.inscription_number,
@@ -333,8 +358,7 @@ impl MinerPassManager {
                     error!("{}", msg);
                     msg
                 })?;
-            if prev_pass.owner != mint_info.mint_owner || prev_pass.state != MinerPassState::Dormant
-            {
+            if prev_pass.owner != *source_owner || prev_pass.state != MinerPassState::Dormant {
                 let msg = format!(
                     "Previous miner pass {} became ineligible after validation for mint {}: owner={}, state={}",
                     prev_inscription_id,

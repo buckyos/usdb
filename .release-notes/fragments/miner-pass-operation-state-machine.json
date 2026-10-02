@@ -1,0 +1,28 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-operation-state-machine",
+  "type": "internal",
+  "scopes": [
+    "indexer",
+    "consensus",
+    "testing"
+  ],
+  "summary": "Implement the isolated MinerPass v2 eligibility and cross-owner inheritance state machine",
+  "details": [
+    "Derive one-time recipient eligibility from existing canonical valid mint and successful owner-transfer history, including earlier events in the pending block and pre-activation history; burn, consumption and later transfer do not reset eligibility.",
+    "Add an explicit v2 entrypoint for first opening, same-owner remint and single-source cross-owner inheritance. Validate chain evidence, all prev references and Leader bindings before modifying existing passes, and recheck the verified source owner at consumption.",
+    "Require enclosing block recovery contexts and verify partial-consumption rollback, finalized-energy crash recovery, closed-store restore and deterministic reorg replay with isolated SQLite/RocksDB tests. Full production tracker and signed-checkpoint qualification remain pending.",
+    "Runtime guard failures report expected and actual heights, block hashes, owners and satpoints; the v2 entrypoint propagates the same operation context it logs, without changing canonical InvalidMint reasons.",
+    "Keep production parser, activation dispatch and v1 behavior unchanged. The v2 core is not yet selected by production block execution and does not activate or deploy the new authorization rules."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579"
+  ]
+}

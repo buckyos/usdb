@@ -120,6 +120,12 @@ pub enum MintValidationErrorCode {
     InvalidLeaderBtcAddr,
     InvalidPrevId,
     AmbiguousRevealInput,
+    /// The reveal uses a sat/envelope form outside the supported v2 subset.
+    UnsupportedInscription,
+    /// The actual commit sat has no supported owner-spend authorization.
+    UnauthorizedSource,
+    /// The destination cannot open a new account and is not authorized as the source owner.
+    IneligibleRecipient,
 }
 
 impl MintValidationErrorCode {
@@ -132,6 +138,9 @@ impl MintValidationErrorCode {
             MintValidationErrorCode::InvalidLeaderBtcAddr => "INVALID_LEADER_BTC_ADDR",
             MintValidationErrorCode::InvalidPrevId => "INVALID_PREV_ID",
             MintValidationErrorCode::AmbiguousRevealInput => "AMBIGUOUS_REVEAL_INPUT",
+            MintValidationErrorCode::UnsupportedInscription => "UNSUPPORTED_INSCRIPTION",
+            MintValidationErrorCode::UnauthorizedSource => "UNAUTHORIZED_SOURCE",
+            MintValidationErrorCode::IneligibleRecipient => "INELIGIBLE_RECIPIENT",
         }
     }
 }

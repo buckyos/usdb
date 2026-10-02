@@ -213,6 +213,25 @@ impl PassEnergyManager {
         self.storage.set_synced_block_height(block_height)
     }
 
+    /// Reject v2 writes outside the pending energy block so errors remain recoverable.
+    pub(crate) fn require_pending_block(&self, block_height: u32) -> Result<(), String> {
+        let pending = self.storage.get_pending_block_height().map_err(|err| {
+            let msg = format!(
+                "Failed to read pending energy block for MinerPass v2: expected_height={block_height}, error={err}"
+            );
+            error!("{msg}");
+            msg
+        })?;
+        if pending != Some(block_height) {
+            let msg = format!(
+                "MinerPass v2 requires matching pending energy block: expected={block_height}, pending={pending:?}"
+            );
+            error!("{msg}");
+            return Err(msg);
+        }
+        Ok(())
+    }
+
     pub fn begin_block_sync(&self, block_height: u32) -> Result<(), String> {
         // Mark this block as pending before any energy writes.
         // If process crashes mid-block, startup reconcile will roll back from this height.

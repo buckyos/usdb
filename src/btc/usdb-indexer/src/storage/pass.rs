@@ -571,6 +571,46 @@ impl MinerPassStorage {
         }
     }
 
+    /// Require an enclosing writer transaction before v2 mutates pass and ownership history.
+    /// Cross-store recovery remains the responsibility of the ordered block executor.
+    pub(crate) fn require_block_savepoint(&self) -> Result<(), String> {
+        if self.conn.lock().unwrap().is_autocommit() {
+            let msg = format!(
+                "MinerPass v2 requires an enclosing block savepoint: db_path={}, autocommit=true",
+                self.db_path.display()
+            );
+            error!("{msg}");
+            return Err(msg);
+        }
+        Ok(())
+    }
+
+    /// Derive one-time enrollment occupancy from canonical mint/owner-transfer history.
+    /// Reads the writer view, including earlier events in the pending block. Invalid events and
+    /// terminal transfers that never changed consensus ownership do not occupy a new owner.
+    /// Consumption, burn and later transfer do not erase an earlier valid acquisition.
+    pub fn has_ever_valid_owner(&self, owner: &BtcScriptHash, height: u32) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM miner_pass_state_history
+                WHERE new_owner = ?1 AND block_height <= ?2
+                  AND new_state IN ('active', 'dormant')
+                  AND ((event_type = 'mint' AND new_state = 'active')
+                       OR (event_type = 'owner_transfer' AND prev_state IN ('active', 'dormant')))
+            )",
+            rusqlite::params![owner.to_string(), i64::from(height)],
+            |row| row.get(0),
+        )
+        .map_err(|err| {
+            let msg = format!(
+                "Failed to derive valid owner history: owner={owner}, height={height}, error={err}"
+            );
+            error!("{msg}");
+            msg
+        })
+    }
+
     pub fn savepoint_begin(&self) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(&format!("SAVEPOINT {}", SAVEPOINT_MINER_PASS_OPS), [])

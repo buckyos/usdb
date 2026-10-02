@@ -30,3 +30,11 @@ mod miner_pass_evidence;
 #[cfg(test)]
 #[path = "../../../../../tests/common/http_rpc.rs"]
 pub(crate) mod test_http_rpc;
+
+#[cfg(test)]
+#[path = "../../../../../tests/common/miner_pass_evidence.rs"]
+pub(crate) mod test_miner_evidence;
+
+#[cfg(test)]
+#[path = "../../../../../tests/miner_pass_eligibility.rs"]
+mod miner_pass_eligibility;

@@ -1,7 +1,6 @@
 //! UIP-0016 evidence acceptance before connecting the new pass state machine.
 
-#[path = "common/miner_pass_evidence.rs"]
-mod fixtures;
+use crate::index::test_miner_evidence as fixtures;
 
 use crate::btc::{
     UTXOValueManager,

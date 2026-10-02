@@ -195,6 +195,21 @@ impl TransactionBalanceContext {
         })
     }
 
+    /// Require the same canonical block as the mint evidence, reporting both anchors on mismatch.
+    pub fn require_matching_block(&self, inputs: &BlockPrevouts) -> Result<(), String> {
+        let evidence_height = inputs.height();
+        let evidence_block_hash = inputs.block().block_hash();
+        if self.height != evidence_height || self.block_hash != evidence_block_hash {
+            let msg = format!(
+                "Transaction balance context disagrees with evidence block: balance_height={}, balance_block_hash={}, evidence_height={evidence_height}, evidence_block_hash={evidence_block_hash}",
+                self.height, self.block_hash
+            );
+            error!("{msg}");
+            return Err(msg);
+        }
+        Ok(())
+    }
+
     /// Read the exact balance before transaction `position`; unrequested owners are errors.
     pub fn balance_before(&self, owner: &BtcScriptHash, position: usize) -> Result<u64, String> {
         self.before.get(owner).and_then(|values| values.get(position)).copied().ok_or_else(|| {
