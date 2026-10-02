@@ -1,0 +1,109 @@
+# MinerPass 操作资格改造计划
+
+更新时间：2026-10-02。
+
+本计划落实 [issue #51 收敛方案](https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579)，协议草案为 [UIP-0016](../UIP/UIP-0016-miner-pass-operation-eligibility.md)。用户已同意按该方案推进；草案、代码合并、委员会状态和网络激活是不同事项。
+
+本文件区分当前事实与后续实现任务。本文新增时只完成规范草案、代码入口核对和验收拆分，尚未改变 MinerPass 运行时规则。下列任务不能仅因有文档或测试名称就标记完成。
+
+## 已完成的前置条件
+
+| 前置 | 本地提交 | 提供的能力 |
+| --- | --- | --- |
+| 规则作用域与 registry 隔离 | usdb `f276ab4` / go-ethereum `7e18a18e7` | 同 BTC 来源可有独立 rules scope；配置、状态身份、双库存储和 checkpoint 校验 |
+| P2P fork ID 纳入 USDB checkpoint | usdb `f9cc98f` / go-ethereum `f4399c509` | 新高度进入握手/ENR 共用 fork 列表；不保证既有 peer 自动断开或相同高度规则内容可识别 |
+
+现有 v0 规则及数据继续按旧语义解释。第三批首先在独立数据目录和隔离测试 catalog 中实现。测试网重置、v1 网络包和真实部署位于最后发布阶段。
+
+## 当前实现差距
+
+| 范围 | 当前源码 | 差距与实现方向 |
+| --- | --- | --- |
+| schema 分类 | `src/btc/usdb-indexer/src/index/content.rs` | 当前只接受 v1，尚未按目标 BTC 高度选择 v1/v2 parser；禁止给用户一个可选择旧执行器的 v 字段 |
+| sat 位置 | `index/transfer.rs::calc_create_satpoint` | 能定位 reveal 输入和 commit outpoint，但仍写死输入 offset 0；须显式限定 Ord envelope 支持范围并验证真实 sat |
+| 区块输入证据 | `usdb-util/src/btc/prevout.rs`、`btc/rpc.rs`、indexer `btc/utxo.rs` | verbosity-3 已校验规范块、交易字节/顺序和 prevout 金额，但丢弃脚本/创建高度等信息，未反查 commit 输入来源 |
+| 区块内资格余额 | `index/indexer.rs`、`index/indexer/block_events.rs` | 事件执行只遍历 mint/transfer；整块余额结算不能直接用作交易前资格余额，需覆盖所有 BTC 交易 |
+| prev 状态机 | `index/pass.rs::validate_mint_state`、`on_mint_pass` | 验证和消费复核均比较 mint_owner；新模式必须传入经过验证的 source owner，不能只改一处比较 |
+| 有效持有历史 | `storage/pass.rs` | 已有 mint、owner transfer、状态历史；先验证是否能完整派生 ever_valid_owner，再决定物化索引；不能只看当前 Active |
+| 状态承诺与恢复 | `index/pass_commit.rs`、`storage/pass.rs`、`storage/energy.rs`、checkpoint tool | 审查新来源/资格信息是否有新增共识编码；旧 hash、旧高度回放和上游 balance-history 身份须保持可重放 |
+| 控制面 | `usdb-control-plane/src/server.rs::prepare_btc_mint_context`、`models.rs` | 当前只有 owner_address，按目标查询 Active/prev；需拆 source/recipient 和最终核验；execute 仍仅 development |
+| Go 版本支持 | `internal/usdb/activation.go`、registry/profile 验证 | 当前 BTC profile 只接受 v1 集合；须与实际受支持的新组合和 golden 一起改，不先扩大白名单 |
+
+路径如未带 crate 前缀，默认位于 `src/btc/usdb-indexer/src/`。这些代码位置由当前工作区核查，不沿用 issue 中旧 revision 的行号。
+
+## 实施顺序与退出条件
+
+### 1. 规范与向量基线
+
+当前已建立 UIP-0016 Draft 和 M01–M18 期望表。继续实现前应将以下编码选择落成测试：
+
+- 候选 JSON `v=2` 与 schema/state-machine v2 成对启用，H 前旧规则、H 后不能用 v1 绕过。
+- Ord 当前锁定依赖是 0.24.2；固定支持的 envelope 子集与 satpoint 向量，尤其 pointer、unbound、非首输入及歧义输入。不得把 envelope offset 当 sat offset。
+- P2PKH/P2WPKH/P2TR key-path 的支持形式、sighash 白名单和 annex 处理。
+- 新 mutation/查询字段的 canonical 编码与最低必要版本影响；资格缓存必须可从已承诺历史重建，或另行承诺。
+
+退出条件：每条路径有明确有效/无效/数据不可用分类，所有未支持的链上形式有确定结果，历史规则可完整描述。生产激活高度不属于实现前必须猜测的参数。
+
+### 2. 来源证据与交易前余额
+
+先建立无状态证据层，再接业务写入，减少把链数据问题误写成 Invalid 的风险。
+
+- 将区块输入缓存扩展为有金额、锁定脚本、创建高度及规范链锚的 spent prevout 上下文。旧金额 API 可保留适配，缓存只发布完整已验证结果。
+- 用 reveal spent prevout 的创建高度定位 commit 所属块；同块 commit 从当前块读取。校验 commit txid/vout、原始交易及前后链锚，再取得 commit 输入证据。
+- 若历史 Core block/undo 不可用，则暂停当前块。需要历史 fallback 时，必须具备同等链上认证和确定性，不允许浏览器 From/gettxout/猜测来源。
+- 取得目标 E 的 H-1 精确余额并按全块交易顺序计算每个交易前余额；同块普通支付、coinbase 及输入脚本对应的变化不能遗漏。若快照 query floor 为 H，需用同锚 H 的区块后余额减完整全块 delta 精确反推，或报告证据不可用；必须验收 origin/base 首块，不能让部署在该边界永久等待不存在的 H-1 记录。
+- 缺数据重试前不缓存部分证据；同高度另一 block hash 不能复用旧缓存。
+
+退出条件：多输入多输出和 sat 边界向量通过；同块/历史 commit、1 sat、零值输入、无效铭文前转账通过；RPC 失败/reorg 后能重新加载；真实 `txindex=0` 的隔离 Core 可完成证明。
+
+### 3. 一次性资格与原子状态机
+
+- 资格读取覆盖有效 mint、成功 owner transfer 和激活前历史；Invalid 不占用，消费/烧毁/转出不重置原 owner。
+- 按 UIP-0002 的事件顺序更新资格；同一 reveal 多 mint 共用交易前余额，但资格观察顺序不同。
+- 统一选择首次开户、同地址、跨地址三条路径；来源签名限制仅对后两条强制。
+- 跨地址仅处理 prev 引用的源 Active，未引用的 pass 保持原状态；同地址保留旧 Active 休眠逻辑。
+- 所有 prev 与 Leader 预校验先完成，再写入；消费前复核使用同一 source owner。
+- 复用整块 SQLite savepoint、energy pending/finalize 和 tracker staging 恢复机制，并补故障注入。无效 mint 不能抹掉同交易真实 transfer。
+
+退出条件：M01–M18 对 standard/collab 的适用场景通过；失败没有部分消费；重复竞争只成功一次；同块/跨块余额迁移能量结果明确；block rollback、重开、快照恢复和完整重放一致。
+
+### 4. 版本、状态身份和查询
+
+- 按 registry 的 active set 选择规则；混合 v1/v2 组合必须拒绝，旧高度仍有旧 parser/状态机。
+- 新 scope 的 v2 测试 catalog 显式 pin；现有 embedded registry 和 v0 发布包保持旧规则。
+- 来源、操作路径、资格拒绝原因通过审计接口提供；缺少链上证据与确定的协议 Invalid 使用不同错误分类。
+- state commitment 若新增编码，先定义向量，再同步 Rust、Go、checkpoint 与黄金文件；不能只更新版本字符串。
+- 新 registry revision 的验证使用独立 dataset；第一批仍未提供现有 dataset 的在线 revision 迁移。
+
+退出条件：H-1/H/H+1、旧 v1 prev、旧 schema 绕过、未知版本失败关闭、两作用域互不影响和 Rust/Go 互验通过。query ready 不得被误当作来源历史已经可用于共识。
+
+### 5. 控制面与钱包流程
+
+- prepare 输入/显示分开 source D、recipient E；建议 prev 来自 D，展示所有将消费和保留的 pass。
+- 展示收益/Leader 配置、source proof 支持范围、当前资格、观察高度和预期路径。draft 观测不是将来 reveal 必然有效的保证。
+- 开户和迁移增加完成核验：交易确认、指定铭文 Active、来源与配置匹配、prev 消费结果、残留 UTXO。
+- 未核验成功不提示入金/清扫余额；小额干扰或地址抢占时提示换新地址；Leader 迁移提示协作者重绑。
+- 开发 execute 的真实选币需保证 sat 来自 D，并保护 prev UTXO；生产钱包没有验收的能力继续明确显示未支持。
+
+退出条件：prepare 不把 wallet_name 当来源；缺证据不显示成功；首开/同地址/cross-owner 三流程及异常恢复可操作；前后端契约测试通过。
+
+### 6. 真实签名与发布验收
+
+在新建的隔离 regtest 数据目录中，用真实签名的 commit/reveal 验收：
+
+1. P2PKH、P2WPKH、P2TR key-path 允许形式，以及至少一组链上有效但 USDB 不支持的 sighash/script 形式。
+2. 同块和不同块 commit/reveal，多输入非首来源，pointer/unbound/歧义形式。
+3. 首次开户与攻击拒绝、同地址 remint、多 prev 跨地址继承、外部 pass 买入后激活。
+4. 跨激活 reorg、故障重启、snapshot 恢复，以及增量与从 origin 完整重放一致。
+5. `txindex=0`、AssumeUTXO 基线、commit 早于 index origin/base 的历史取证；明确是否需要额外历史数据保留及下载就绪门槛。
+6. 普通付款到恶意 commit 后可被用于 pass 操作的接受边界，不能写成“攻击已被阻止”。
+
+可复用 `tests/assumeutxo_indexer_inputs.rs`、`tests/run_assumeutxo_p64_live.py`、`tests/common/minting.py` 和 world-sim/reorg 工具，但新测试不得连接或重置在线节点。现有测试通过不自动构成 v2 验收。
+
+退出条件：上述证据均可复现，部署能够提供所需历史输入，UI 不夸大安全性，才进入 testnet-v1 网络参数/catalog/genesis/checkpoint/镜像与重置公告冻结。正式网仍使用独立作用域及按高度升级策略。
+
+## 完成判定
+
+只有上述链上取证、资格、状态机、重放、工具和真实签名验收全部完成，才可报告“MinerPass 新方案已实现”。规范草案完成、某个攻击单测通过、registry 能加载 v2，均不能替代整个验收。
+
+本轮不需要把 BIP-322、OP_RETURN、commit 同时迁移余额或 Leader 自动跨地址跟随加入依赖；这些均保留为后续增强。

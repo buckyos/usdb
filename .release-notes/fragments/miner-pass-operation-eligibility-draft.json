@@ -1,0 +1,25 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-operation-eligibility-draft",
+  "type": "internal",
+  "scopes": [
+    "documentation",
+    "testing"
+  ],
+  "summary": "Draft MinerPass operation eligibility and staged acceptance requirements",
+  "details": [
+    "Add UIP-0016 Draft for one-time zero-balance enrollment, source-qualified same-owner operations, and single-source cross-owner inheritance, based on issue 51.",
+    "Document 18 acceptance scenarios and the implementation sequence for historical input evidence, transaction-boundary balances, atomic state transitions, replay, and wallet verification.",
+    "This documentation introduces no runtime rule, activation, network reset, or completed security-fix claim; version and encoding candidates still require implementation validation."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579"
+  ]
+}

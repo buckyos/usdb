@@ -10,6 +10,8 @@ Activation: BTC network activation matrix
 
 # 摘要
 
+本文保留 v1 schema 与历史解释。后续操作资格、来源证明及候选 v2 schema 见 [UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md)；仅在对应规则作用域和高度激活后替代相关新 mint 规则。
+
 本文定义 USDB 矿工证铭文的标准 JSON schema。
 
 本文把矿工证 mint 明确拆成两种互斥形态，类型由字段直接推导：

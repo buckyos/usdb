@@ -9,6 +9,8 @@ Activation: See owner-scoped BTC registries and USDB activation schedules
 
 # 摘要
 
+[UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md) 规划 MinerPass 操作资格和跨地址继承，需要按 BTC source、rules scope 和历史 BTC 高度分派 schema/state-machine 版本。其候选 v2 与受影响编码须完成专项验收；本引用不添加 activation record，也不修改现有 legacy registry。
+
 本文定义 USDB 经济模型相关协议的版本字段、激活矩阵、历史重放规则和 state commit 承诺边界。
 
 UIP-0008 不直接定义新的 pass schema、energy 公式或 USDB chain reward 公式。它定义的是：

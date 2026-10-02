@@ -62,6 +62,7 @@ RPC 和运行参数同样必须显式区分边界：BTC-side 状态服务使用
 - [UIP-0013-price-and-real-price-update-rules.md](./UIP-0013-price-and-real-price-update-rules.md)：BTC 算法价格状态、固定价格启动策略和动态 price source 升级边界。
 - [UIP-0014-leader-quote-activity-and-candidate-energy.md](./UIP-0014-leader-quote-activity-and-candidate-energy.md)：Leader 主动报价活跃窗口、candidate energy 和 candidate level 策略。
 - [UIP-0015-auxiliary-hashpower-pool.md](./UIP-0015-auxiliary-hashpower-pool.md)：辅助算力池激活边界、BTC 算力证明纲要、pass 绑定和 reward 分配待审计问题。
+- [UIP-0016-miner-pass-operation-eligibility.md](./UIP-0016-miner-pass-operation-eligibility.md)：MinerPass 首次零余额开户、来源证明与跨地址继承草案；尚未激活。
 - [uip-split-design.md](./uip-split-design.md)：经济模型拆分与标准化顺序。
 
 ## 跨 UIP 术语索引
@@ -78,6 +79,7 @@ RPC 和运行参数同样必须显式区分边界：BTC-side 状态服务使用
 | `query_context`、`expected_state`、`external_state`、`candidate_pass`、`candidate_set_view`、`top_ranked_candidate`、`collab_breakdown` | [UIP-0006](./UIP-0006-usdb-economic-state-view.md) | BTC-side USDB 历史查询、经济审计集合和确定性排序。 |
 | `ProfileSelectorPayload`、`selected_pass`、`btc_anchor_age_blocks`、`btc_anchor_policy_version`、`btc_anchor_max_age_blocks`、USDB miner、USDB validator | [UIP-0007](./UIP-0007-usdb-consensus-profile-selector.md) | USDB block 选择的 pass、链上 selector payload、父子 BTC anchor transition 和验证角色。 |
 | `btc_activation_record`、`btc_registry_revision`、`activation_registry_id`、`active_version_set`、`usdb_activation_checkpoint`、`usdb_activation_schedule`、`resolved_usdb_versions` | [UIP-0008](./UIP-0008-protocol-versioning-and-activation-matrix.md) | BTC 单版本族记录、完整 registry 快照，以及 USDB chain 的完整激活检查点和按高度 lookup。 |
+| `source_owner`、`mint_owner`、`balance_before_tx`、`ever_valid_owner`、`can_open`、`source_proof` | [UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md) | 待激活的新 mint 资格、链上来源与一次性开户历史；不等于业务内容签名授权。 |
 | `candidate_energy`、`candidate_level`、`leader_quote_active` | [UIP-0014](./UIP-0014-leader-quote-activity-and-candidate-energy.md) | USDB-chain policy 应用于 selected pass 的实际候选能量和等级。 |
 
 特别地，`candidate_set_view` 的排序首项只是 `top_ranked_candidate`，不自动等于某个 USDB block 的 `selected_pass`，也不表示已经赢得 PoW 出块竞争。正式 UIP 不使用裸 `winner` 指代 pass；需要分别写明审计排序首项、区块声明的 pass 或已经通过 PoW 验证的区块。

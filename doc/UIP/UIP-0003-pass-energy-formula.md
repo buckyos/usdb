@@ -10,6 +10,8 @@ Activation: BTC network activation matrix; development networks activate from he
 
 # 摘要
 
+[UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md) 规划跨地址继承，继续受本文余额惩罚、逐个 prev 继承折损和整块结算边界约束。地址迁移不等于总共只损失 5%；同块及跨块迁移需分别验收。该草案不修改本文已定义的 v1 公式参数。
+
 本文定义 USDB 矿工证的 `raw_energy` 公式、余额变化惩罚、继承折损和终态 energy 语义。
 
 本文的核心边界是：

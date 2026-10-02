@@ -10,6 +10,8 @@ Activation: BTC network activation matrix
 
 # 摘要
 
+本文保留 v1 同 owner 继承语义。首次开户、来源检查及单来源跨地址继承草案见 [UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md)；旧高度仍按本文重放，后继规则不得通过只修改 owner 比较而隐式启用。
+
 本文定义 USDB 矿工证的标准状态机。
 
 本文覆盖：

@@ -10,6 +10,8 @@ Activation: BTC and USDB-chain network activation matrix
 
 # 摘要
 
+[UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md) 的操作资格入口同时适用于 standard 与 collab。Leader 跨地址继承不使固定 pass 绑定或旧地址绑定自动跟随；协作者重绑前仍按本文解析。该后继草案尚未激活。
+
 本文定义协作矿工证如何解析 Leader，以及如何从 `raw_energy` 派生 `effective_energy`。
 
 核心规则：
