@@ -22,3 +22,11 @@ mod assumeutxo_indexer_inputs;
 #[cfg(test)]
 #[path = "../../../../../tests/assumeutxo_service_fixture.rs"]
 mod assumeutxo_service_fixture;
+
+#[cfg(test)]
+#[path = "../../../../../tests/miner_pass_evidence.rs"]
+mod miner_pass_evidence;
+
+#[cfg(test)]
+#[path = "../../../../../tests/common/http_rpc.rs"]
+pub(crate) mod test_http_rpc;

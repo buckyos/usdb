@@ -17,13 +17,32 @@ pub struct BTCRpcClient {
 }
 
 impl BTCRpcClient {
-    /// Resolve spent input amounts from this canonical block's undo records, including old coins
-    /// and outputs created earlier in the same block. No transaction index or current UTXO is used.
+    /// Resolve historical amounts without adding full-evidence requirements to legacy callers.
     pub fn get_block_input_values(
         &self,
         height: u32,
         block: &Block,
     ) -> Result<std::collections::HashMap<OutPoint, Amount>, String> {
+        self.read_block_undo(height, block, super::prevout::parse_block_input_values)
+    }
+
+    /// Load complete spent scripts, values and creation heights without txindex or live UTXOs.
+    /// Missing block/undo data and chain changes are retryable availability errors.
+    pub fn get_block_prevouts(
+        &self,
+        height: u32,
+        block: &Block,
+    ) -> Result<super::BlockPrevouts, String> {
+        self.read_block_undo(height, block, super::prevout::parse_block_prevouts)
+    }
+
+    // Anchor both sides of the read to the caller's exact block. Never return partial evidence.
+    fn read_block_undo<T>(
+        &self,
+        height: u32,
+        block: &Block,
+        parse: impl FnOnce(u32, &Block, serde_json::Value) -> Result<T, String>,
+    ) -> Result<T, String> {
         let hash = block.block_hash();
         let result = (|| {
             if self.get_block_hash(height)? != hash {
@@ -36,11 +55,11 @@ impl BTCRpcClient {
                     self.on_error(&e);
                     format!("getblock verbosity 3 failed: {e}")
                 })?;
-            let values = super::prevout::parse_block_input_values(height, block, response)?;
+            let evidence = parse(height, block, response)?;
             if self.get_block_hash(height)? != hash {
                 return Err("Canonical input block changed during retrieval".to_string());
             }
-            Ok(values)
+            Ok(evidence)
         })();
         result.map_err(|error: String| {
             let msg = format!(

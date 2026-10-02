@@ -1,0 +1,27 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-chain-evidence",
+  "type": "internal",
+  "scopes": [
+    "indexer",
+    "bitcoin",
+    "testing"
+  ],
+  "summary": "Add chain-bound source evidence and transaction-before balance contexts for MinerPass v2",
+  "details": [
+    "Add opt-in complete spent-prevout evidence, exact sat source mapping and verified P2PKH/P2WPKH ALL and Taproot key-path DEFAULT/ALL signatures, including annex handling.",
+    "Locate same-block and historical commits without txindex, distinguish unsupported source forms from unavailable evidence, bound historical caches and reject changed chain anchors.",
+    "Reconstruct transaction-before balances from an exact post-block baseline, including snapshot-floor boundaries, ordinary transfers, coinbase and unspendable outputs; incomplete responses never become zero balances.",
+    "The evidence layer is independently tested on isolated Bitcoin Core. It is not yet connected to v2 eligibility or pass mutations and does not activate new rules or fix deployed MinerPass authorization by itself."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579"
+  ]
+}

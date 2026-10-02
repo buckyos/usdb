@@ -4,7 +4,27 @@
 
 本计划落实 [issue #51 收敛方案](https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579)，协议草案为 [UIP-0016](../UIP/UIP-0016-miner-pass-operation-eligibility.md)。用户已同意按该方案推进；草案、代码合并、委员会状态和网络激活是不同事项。
 
-本文件区分当前事实与后续实现任务。本文新增时只完成规范草案、代码入口核对和验收拆分，尚未改变 MinerPass 运行时规则。下列任务不能仅因有文档或测试名称就标记完成。
+本文件区分当前事实与后续实现任务。规范草案已提交为 usdb `c0f362b`，Go 兼容锁同步提交为 `beb9a3b2e`。当前已完成下一批独立来源证据与交易前余额上下文，并通过下述验收；尚未将它们接入 mint 状态机，也未改变现网规则。下列任务不能仅因有文档或测试名称就标记完成。
+
+## 本批已实现：来源证据与交易前余额
+
+- `usdb-util::BTCRpcClient::get_block_prevouts` 返回完整 `BlockPrevouts`：精确块/交易字节、金额、脚本、创建高度、coinbase 标志。同块 prevout 与真实创建输出交叉检查；旧金额 API 保持原要求。
+- `btc/mint_evidence.rs` 定位受支持 Ord envelope 的实际 sat 和接收 owner；按 spent prevout 创建高度查询历史 commit，覆盖早于 index origin/base 的位置。历史缓存最多保留 4 个块，按规范链锚校验后复用；不使用 txindex、当前 gettxout 或浏览器数据。
+- `usdb-util::prove_commit_source` 使用左闭右开输入区间反查来源，并实际验证允许的 ECDSA/Schnorr 签名。确定不支持的脚本/sighash、coinbase 来源与数据不可用分开返回。
+- `btc/transaction_balance.rs` 按所有 BTC 交易建立精确 sat 余额。RPC 路径固定读取同锚 H 的区块后余额，反推块前余额，支持 query floor 为 H；读取前后复核 snapshot identity 与 Core hash。空/不完整响应不能当作零。
+- 本批没有新持有历史索引、三路径状态机写入、JSON v2 parser/activation dispatch、RPC 对外审计字段或钱包流程。因此不能据此声称现有强制赠予问题已修复。
+
+验收入口：
+
+```bash
+cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer -p usdb-util
+python3 tests/run_miner_pass_evidence_live.py --bitcoind /path/to/bitcoind
+```
+
+独立证据测试覆盖 11 组场景：来源签名/annex/篡改、sat 区间及零值输入、同块和历史 commit、缺失 undo 恢复与 reorg、严格 prevout、pointer/歧义/unbound/burn、coinbase、交易前余额以及 snapshot floor RPC 的错误响应。真实 Core 28.1 在全新 `txindex=0`、不裁剪 regtest 中接受 8 类真实交易：P2PKH ALL、P2WPKH ALL、P2TR DEFAULT、P2TR ALL+annex，以及不支持的 ANYONECANPAY/NONE/SINGLE/script-path；正确定位第 3 个来源输入，包含真实零值前置输入、同块/历史 commit、重开一致性及旧分支拒绝。runner 保存原始 commit/reveal 交易和结果到独立临时目录。
+
+测试只在隔离环境运行。query floor 边界已通过 RPC 夹具验收；**完整 AssumeUTXO 装载、后台验证及历史 undo 可用性的服务级验收仍属于阶段 6**。本批的独立上下文重开不等于数据库/快照恢复验收；后者随阶段 3/6 完成。
+
 
 ## 已完成的前置条件
 
@@ -15,7 +35,7 @@
 
 现有 v0 规则及数据继续按旧语义解释。第三批首先在独立数据目录和隔离测试 catalog 中实现。测试网重置、v1 网络包和真实部署位于最后发布阶段。
 
-## 当前实现差距
+## 方案启动时的实现差距（本批证据层进展见上）
 
 | 范围 | 当前源码 | 差距与实现方向 |
 | --- | --- | --- |
@@ -35,7 +55,7 @@
 
 ### 1. 规范与向量基线
 
-当前已建立 UIP-0016 Draft 和 M01–M18 期望表。继续实现前应将以下编码选择落成测试：
+当前已建立 UIP-0016 Draft 和 M01–M18 期望表；Ord 子集与来源签名形式已落实到本批证据层测试。v2 分派与业务 canonical 编码仍待后续状态机实现：
 
 - 候选 JSON `v=2` 与 schema/state-machine v2 成对启用，H 前旧规则、H 后不能用 v1 绕过。
 - Ord 当前锁定依赖是 0.24.2；固定支持的 envelope 子集与 satpoint 向量，尤其 pointer、unbound、非首输入及歧义输入。不得把 envelope offset 当 sat offset。
@@ -44,7 +64,7 @@
 
 退出条件：每条路径有明确有效/无效/数据不可用分类，所有未支持的链上形式有确定结果，历史规则可完整描述。生产激活高度不属于实现前必须猜测的参数。
 
-### 2. 来源证据与交易前余额
+### 2. 来源证据与交易前余额（独立层已实现并验收）
 
 先建立无状态证据层，再接业务写入，减少把链数据问题误写成 Invalid 的风险。
 

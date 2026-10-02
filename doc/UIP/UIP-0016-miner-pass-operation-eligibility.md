@@ -87,7 +87,17 @@ source input offset = q - sum(input[n].value, n < i)
 
 区间为左闭右开；零金额输入不能提供 sat。必须验证完整输入顺序和金额、输出索引、offset 边界、具体 prevout 脚本及交易所属规范链，不能任选祖先或来源输入。多输入交易中，即使 D 出现在输入列表中，只要实际 sat 来自 A，就不能认定 D 是来源。
 
-Ord envelope 的 `offset` 是 envelope 序号，不可直接当作 sat 偏移。Ord pointer 可以改变 sat 归属；不得无条件使用当前实现的 `offset=0`。首版实现必须冻结支持的 envelope 子集，并对不支持的 pointer、unbound、歧义形式给出确定的协议错误。保留同一 reveal input 上多个 USDB mint 的歧义拒绝规则。支持范围与固定 Ord 版本的原始交易向量必须在启用前一起审查。
+Ord envelope 的 `offset` 是 envelope 序号，不可直接当作 sat 偏移。Ord pointer 可以改变 sat 归属；不得无条件使用旧实现的 `offset=0`。
+
+首版 v2 证据层采用以下明确子集（v1 回放保持原实现）：
+
+- reveal 花费原生 P2TR 输出，叶版本为 `0xc0`，并校验 script/control block 与 commit 输出公钥的承诺关系。
+- 每个 reveal input 仅允许一个 envelope；可以位于非首输入，不把 inscription index 当作 input index。首版也拒绝同输入混合其他协议的多 envelope，比仅拒绝多个 USDB mint 更保守。
+- 不接受 pointer（包括指向默认位置或编码无效的 pointer）、pushnum、stutter、duplicate field、incomplete field、unrecognized even field。
+- 对支持的 envelope，实际铭文位于对应输入的首 sat；输入金额必须非零。输出位置仍按所有前置输入金额与输出区间计算，绝非固定 reveal output 0。
+- 无绑定 sat、进入手续费或不可花费输出的形式不支持。普通接收脚本不要求 P2TR。
+
+上述拒绝是确定的“不支持”，不是数据缺失；缺少 Core 证据则仍为可重试错误。来源 commit 若为 coinbase，没有签名输入，不能用于同地址/跨地址来源授权；真正符合首次开户条件的路径无需取得来源授权。子集已有独立证据测试，但接入 v2 状态机及激活前仍须完成整体验收。
 
 依赖来源的路径，首版支持范围为：
 
@@ -97,7 +107,7 @@ Ord envelope 的 `offset` 是 envelope 序号，不可直接当作 sat 偏移。
 | 原生 P2WPKH | 单签 witness，与 prevout witness program 匹配 | ECDSA ALL (`0x01`) |
 | P2TR | 明确识别 key-path；不能把 script-path 的某个 witness item 误作签名 | DEFAULT（64 字节签名）或 ALL（65 字节且末字节 `0x01`） |
 
-不接受 NONE、SINGLE、ANYONECANPAY；首版不覆盖其他脚本组合。Taproot annex 的识别和支持范围必须列入原始交易向量，不能仅凭 witness 总长度猜测 key-path。该白名单约束 USDB 来源证明，不改变 Bitcoin 交易有效性，不限制接收地址必须为 Taproot。
+不接受 NONE、SINGLE、ANYONECANPAY；首版不覆盖其他脚本组合。Taproot annex 按 BIP-341 从 witness 最后一项识别并纳入签名哈希，移除 annex 后必须恰好剩一个 key-path 签名。64 字节为 DEFAULT，65 字节只允许末字节 `0x01`；不接受显式附加 `0x00`。不能仅凭原始 witness 总长度猜测 key-path。P2PKH 要求两个最小 push 的标准 scriptSig 和空 witness；P2WPKH 要求空 scriptSig、两个 witness item 与压缩公钥。除公钥哈希/输出公钥匹配外，还对完整交易摘要实际执行 ECDSA/Schnorr 验签。该白名单约束 USDB 来源证明，不改变 Bitcoin 交易有效性，不限制接收地址必须为 Taproot。
 
 取证来自已经通过 Bitcoin 共识验证的规范块，并核对交易字节、输入 prevout 和链锚；仅检查任意字节末尾的 sighash 标记不构成来源证明。ALL/DEFAULT 的输入与输出覆盖依据 [BIP-143](https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki) 和 [BIP-341](https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki)。
 

@@ -7,9 +7,7 @@ use bitcoincore_rpc::bitcoin::{Amount, Block, OutPoint, consensus};
 use serde_json::{Value, json};
 use usdb_util::BTCRpcClient;
 
-#[path = "http_rpc.rs"]
-mod http_rpc;
-use http_rpc::RpcServer;
+use crate::index::test_http_rpc::RpcServer;
 
 pub struct Reply {
     pub canonical_hash: String,

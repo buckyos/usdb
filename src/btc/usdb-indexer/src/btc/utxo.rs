@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use bitcoincore_rpc::bitcoin::{Amount, Block, OutPoint};
-use usdb_util::BTCRpcClientRef;
+use usdb_util::{BTCRpcClientRef, BlockPrevouts};
 
 /// A bounded, lazy input-value context for one exact block, shared by mint and transfer processing.
 /// Core undo retains historical spent values independently of balance-history's own undo window.
@@ -11,6 +11,7 @@ pub struct UTXOValueManager {
     height: u32,
     block: Arc<Block>,
     values: Mutex<Option<HashMap<OutPoint, Amount>>>,
+    prevouts: Mutex<Option<Arc<BlockPrevouts>>>,
 }
 
 impl UTXOValueManager {
@@ -21,12 +22,35 @@ impl UTXOValueManager {
             height,
             block,
             values: Mutex::new(None),
+            prevouts: Mutex::new(None),
         }
     }
 
     /// Match both height and full block bytes before reusing a previous context.
     pub fn matches(&self, height: u32, block: &Block) -> bool {
         self.height == height && *self.block == *block
+    }
+
+    /// Load complete scripts, amounts and creation heights for operation evidence.
+    /// This opt-in path leaves v1 amount-only requirements unchanged. Failures are never cached.
+    pub fn get_prevouts(&self) -> Result<Arc<BlockPrevouts>, String> {
+        let mut cached = self.prevouts.lock().unwrap();
+        if self.btc_client.get_block_hash(self.height)? != self.block.block_hash() {
+            *cached = None;
+            let msg = format!(
+                "Evidence block is no longer canonical: height={}",
+                self.height
+            );
+            error!("{msg}");
+            return Err(msg);
+        }
+        if cached.is_none() {
+            *cached = Some(Arc::new(
+                self.btc_client
+                    .get_block_prevouts(self.height, &self.block)?,
+            ));
+        }
+        Ok(cached.as_ref().unwrap().clone())
     }
 
     /// Return a spent input value, loading one complete, checked verbosity-3 response on first use.
