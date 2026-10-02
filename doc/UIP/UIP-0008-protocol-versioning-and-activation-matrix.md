@@ -298,6 +298,28 @@ USDB activation schedule 必须遵循：
 - 已生效 checkpoint 的 versions、registry binding 或 BTC anchor max age 都属于
   chain compatibility 边界；未来 checkpoint 只可在生效前更新。
 
+## P2P Fork ID 与激活高度
+
+USDB 节点的 EIP-2124 fork ID 必须将 `ChainConfig.usdb.activations[].block` 纳入 USDB 分叉高度列表。仅切换 registry binding、anchor max age 或版本字段的 checkpoint 也占据一个分叉高度，不要求先判断哪些字段改变。新增高度与现有顶层 EVM fork blocks 合并后排序、去重，并去掉 block 0；同高多个规则只计一次，genesis 配置不增加额外高度条目。
+
+这里收集的全部是 **USDB block number**。BTC registry 中的 `activation_height` / BTC height 不进入 USDB fork ID；它们由目标 USDB checkpoint 绑定的 registry 与区块 BTC anchor 校验。
+
+`NewID`、`NewFilter` 与 `NewStaticFilter` 必须复用同一高度收集逻辑。eth Status 握手、协议广播的 ENR 属性和随 chain head 更新的 ENR 使用同一 fork ID 计算路径；`NewStaticFilter` 仍按 block 0 的静态视角过滤，不等同于已同步节点的动态 filter。
+
+对于旧节点确实遗漏的新 USDB 高度 `H`，其余 genesis 与分叉历史相同且没有其他不兼容条件时：
+
+| 本地升级节点状态 | 远端状态 | 新握手行为 |
+| --- | --- | --- |
+| head < H | 旧节点仍报告相同 checksum、`Next=0` | 可按 EIP-2124 建立连接；不能在激活前据此认定对端已升级 |
+| head >= H | 旧节点报告 H 之前的 checksum、`Next=0` | 拒绝不兼容的 fork ID |
+| head >= H | 已升级但尚未同步到 H 的节点，报告旧 checksum、`Next=H` | 允许其按已知日程追块 |
+
+已有连接不因经过 H 自动重新握手或主动断开；收到区块后的共识验证仍负责拒绝不兼容内容。这项检查不能远程强制所有节点升级，也不能阻止仍有人按旧规则运行旧链。
+
+fork ID 包含 4 字节 CRC32 `Hash` 和下一个分叉高度 `Next`，是 genesis 与分叉高度历史的兼容性摘要，不是版本字段、完整 chain config 或 registry ID 的密码学承诺。相同高度配置不同规则时可能有相同 fork ID；若 H 已作为顶层 EVM fork 出现在旧列表中，去重后也不能识别遗漏的 USDB 规则。这些情况仍须通过冻结 chain config、registry identity 和区块共识验证处理。
+
+当前 testnet-v0 仅有 block 0 的 USDB checkpoint，按上述规则不会改变既有 fork ID。本次完善高度收集不新增激活 checkpoint，不改变网络身份、genesis 或业务规则。
+
 # Version Lookup
 
 实现必须在每次历史查询或 validator replay 时按本链权威配置和历史高度查询版本，而不是读取全局常量或远程服务的 current head。
@@ -561,6 +583,10 @@ Rust `generate_go_release_manifest_golden --check` 必须保证 manifest 与 Go 
 - checkpoint 在安装前同时核对目标配置 pin、manifest registry ID、双库绑定和离线重算结果；跨 scope 失败关闭。
 - BTC registry 拒绝 USDB-chain version family。
 - conflicting BTC activation records fail closed。
+- P2P 高度收集合并嵌套 USDB checkpoints 与顶层 fork blocks，排序、去重、去 0；registry-only checkpoint 也被收集。
+- fork ID 在 H-1/H/H+1、新旧节点混合、落后节点追块及 head 跨 H 回退时行为符合 EIP-2124。
+- eth Status 与 ENR 共用同一 fork ID；v0 block-0-only checkpoint 不改变原 checksum/next。
+- 相同高度但不同规则或 registry 不被错误表述为 fork ID 可识别的差异；已连接节点不会因该 filter 自动断开。
 - historical RPC 按目标高度选择版本。
 - reorg 跨激活高度后重新选择版本。
 - `active_version_set_id` mismatch。

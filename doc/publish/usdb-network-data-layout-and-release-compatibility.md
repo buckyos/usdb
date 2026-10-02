@@ -151,6 +151,16 @@ scoped checkpoint 在 `data/rules-catalog.json` 携带导出时的完整 catalog
 
 checkpoint 预检要求 manifest registry ID 与目标网络 pin 一致，安装与离线验证继续校验双库绑定和重算 state-ref。旧 legacy checkpoint 允许按兼容规则读取缺少绑定的旧数据，新 scoped checkpoint 必须带有完整绑定。未通过验证时不得把恢复结果当作可用索引状态。
 
+### 4.3 按高度升级时的 Peer 兼容识别
+
+USDB 的 fork ID 高度列表包含 `ChainConfig.usdb.activations[].block`，与顶层 EVM fork 高度统一排序、去重和去除 0。Status 握手与 ENR 使用相同计算；只改变 registry binding 的非零 checkpoint 也会进入该列表。BTC registry 的 BTC 激活高度不会被混入 USDB 高度列表。
+
+对旧列表确实缺失的新增高度 H，升级节点在 H 前仍可能接受旧 peer；到 H 后，新握手会拒绝报告旧 checksum、`Next=0` 的节点。已升级但尚未同步到 H 的节点可以用 `Next=H` 继续追块。已经建立的连接不会仅因越过 H 自动断开，因此运维不能把连接数或握手成功当作全部 peer 已升级的证明。
+
+fork ID 是 4 字节高度历史 checksum 加下一高度，不是 registry/版本内容身份。同高不同规则，或新增 checkpoint 与已有顶层 fork 同高，仍须由链配置和区块共识验证发现。不能据此承诺旧链自动停止，也不能跳过升级前的版本和激活配置核验。
+
+这项软件改造本身不要求重置网络、重建数据或修改现有配置；安装对应链节点版本需要正常替换运行时并重启。当前 testnet-v0 只有 block 0 checkpoint，因此既有 fork ID 保持不变；本批没有修改或发布网络包。未来引入新的非零激活高度时，应在该高度前按已审议发布计划升级 miner 和 follower，网络身份与数据动作仍由该次变更的独立 compatibility contract 决定。
+
 ## 5. Reset、重建与恢复
 
 从空机器部署在数据可用性上是成立的，但恢复来源不同：

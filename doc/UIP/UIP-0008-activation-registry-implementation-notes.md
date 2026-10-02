@@ -159,6 +159,22 @@ version。miner/validator 必须把它们与同一 checkpoint 的完整 `version
 
 USDB chain 不读取 Rust BTC registry JSON，也不通过 RPC 查询 expected `payload_version`、`difficulty_policy_version` 或 reward policy version。companion service 不可用时 miner/validator fail closed，是因为历史 BTC profile 不可验证，不是因为 USDB chain activation lookup 依赖 RPC。
 
+# P2P 激活兼容识别
+
+`go-ethereum/core/forkid.gatherForks` 在原有顶层 `*Block` 反射收集后，追加 `ChainConfig.USDB.Activations[].Block`，然后复用原排序、去重和去除 0 的逻辑。没有 USDB 配置时保持原行为。这里只收 USDB 区块高度，不读取 BTC registry 的 BTC 激活高度，也不按 checkpoint 的版本字段差异过滤条目。
+
+调用链保持共用：
+
+- `forkid.NewID`、`NewIDWithChain` 和 `NewFilter` / `NewStaticFilter` 使用同一 `gatherForks`。
+- `eth/handler.go` 为 Status 握手计算 `NewID`，`eth/protocols/eth/handshake.go` 通过 fork filter 检查远端 Status。
+- `eth/protocols/eth/discovery.go` 的 `currentENREntry` 使用 `NewID`；协议 ENR 属性与 head 事件更新共享该路径。已有 ENR updater 在 head 变化后发布更新，不新增独立激活日程。
+
+如果 H 是旧节点 fork 列表缺失的新高度，升级节点在 H 前可接受相同 checksum、`Next=0` 的旧节点；本地 head 到达 H 后，新握手会拒绝这种旧声明。已升级但还在 H 前同步的节点可用旧 checksum、`Next=H` 证明它知道下一高度，继续追块。动态 filter 按当前 head 判断，回退跨越 H 时也应重新计算当前兼容视角。
+
+fork ID 的 Hash 是 4 字节 CRC32，Next 是后续分叉高度。它不承诺版本字段或 registry ID；两个节点同高使用不同 registry、不同规则，或 H 恰与旧列表已有顶层 fork 同高，都可能得到相同 fork ID。链配置兼容检查、本地 registry 绑定及区块共识校验仍是最终防线。
+
+这批改造没有建立定时重新检查现有 peer 的机制，因此已连接节点不会在 H 自动断线；它也不保证旧链停止或全网强制升级。testnet-v0 当前只有 block 0 checkpoint，去 0 后其 fork ID 保持不变。
+
 # State Identity
 
 ```text
@@ -262,11 +278,11 @@ miner/validator version guard 和 RPC failure mapping。`usdb_activation_conform
 build tag 额外提供保留 policy `65535`，只用于验证真实第二版本分派、restart/reorg
 和旧二进制 fail closed，不定义未来 production v2 公式。
 
-# 本批验收边界
+# 改造批次与验收边界
 
-本批实现规则域、显式 catalog pin、RPC/state identity、持久化和 checkpoint 隔离，以及部署配置传递；部署 renderer、冻结 selector、catalog 只读挂载和 v0 identity 兼容由隔离测试覆盖。
+第一批实现规则域、显式 catalog pin、RPC/state identity、持久化和 checkpoint 隔离，以及部署配置传递；部署 renderer、冻结 selector、catalog 只读挂载和 v0 identity 兼容由隔离测试覆盖。第二批将嵌套 USDB checkpoints 接入共用 fork ID 高度收集，覆盖激活边界、混合版本握手与 ENR 的同源行为。
 
-本批不激活新的 MinerPass schema、开户/来源检查/继承规则，不修改 USDB P2P fork ID 收集逻辑，不发布或重置 testnet-v1，不执行在线 DB migration，也不自动迁移现有节点。真实多节点升级和新业务规则验收仍属于后续批次。已有 v0 bundle、registry artifact、激活高度和历史解释保持不变。
+两批均不激活新的 MinerPass schema、开户/来源检查/继承规则，不发布或重置 testnet-v1，不执行在线 DB migration，也不自动迁移现有节点。这里的隔离测试不能代替后续真实网络升级和新业务规则验收。已有 v0 bundle、registry artifact、激活高度和历史解释保持不变。
 
 # 后续事项
 
