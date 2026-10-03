@@ -1,0 +1,22 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-v2-cold-wallet-and-network-handbook",
+  "type": "added",
+  "scopes": [
+    "documentation"
+  ],
+  "summary": "Document MinerPass V2 cold-wallet operation and independent network planning",
+  "details": [
+    "Add zero-balance enrollment, pre-funding verification and cross-address inheritance guidance, including public-key exposure, wallet capability and collaboration boundaries.",
+    "Add an advanced handbook category explaining network configuration inputs, generated identities, reusable data and the current limits of custom-network tooling.",
+    "Separate testnet-v1 frozen configuration from historical v0 acceptance, and refresh UIP implementation notes without changing protocol rules or claiming public deployment acceptance."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

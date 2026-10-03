@@ -11,6 +11,7 @@
 | 你的目标 | 阅读入口 |
 | --- | --- |
 | 第一次铸造，准备自己挖矿 | [使用铭文钱包铸造标准矿工证](mint.md) |
+| 用冷钱包长期持币并减少公钥暴露 | [冷钱包开户与地址轮换](cold-wallet.md) |
 | 已铸造，确认是否生效 | [确认矿工证生效](mint.md#确认矿工证生效) |
 | 换收益地址、转让或继承旧证 | [转让、换地址与继承](manage.md) |
 | 把自己的能量用于协作挖矿 | [协作矿工证](manage.md#协作矿工证) |
@@ -74,4 +75,4 @@
 
 ## 想了解协议细节
 
-日常操作使用本章即可。精确定义见 [UIP-0001 铭文格式](../../UIP/UIP-0001-miner-pass-inscription.md)、[UIP-0002 状态与转让](../../UIP/UIP-0002-pass-state-machine.md)、[UIP-0003 能量](../../UIP/UIP-0003-pass-energy-formula.md)和 [UIP-0004 协作](../../UIP/UIP-0004-collab-leader-effective-energy.md)。
+日常操作使用本章即可。精确定义见 [UIP-0001 铭文格式](../../UIP/UIP-0001-miner-pass-inscription.md)、[UIP-0002 状态与转让](../../UIP/UIP-0002-pass-state-machine.md)、[UIP-0003 能量](../../UIP/UIP-0003-pass-energy-formula.md)、[UIP-0004 协作](../../UIP/UIP-0004-collab-leader-effective-energy.md)和 [UIP-0016 操作资格与跨地址继承](../../UIP/UIP-0016-miner-pass-operation-eligibility.md)。

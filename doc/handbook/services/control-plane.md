@@ -8,7 +8,7 @@ Control-plane 随 USDB 节点发布，供节点运维人员查看本机同步、
 
 **本页的令牌登录、独立监控进程和提前启动属于当前源码改进，尚未包含在 r30 中。**
 需要同时升级 node kit 和 `usdb-services` 镜像；仅升级网页或 CLI 不能获得完整功能。
-当前源码还提供“钱包与身份”只读页面；正式网络的钱包签名、矿工证铸造和交易操作尚未完成验收。
+当前源码还提供“钱包与身份”查询、MinerPass V2 草案和入金前核验。正式网络的签名与广播仍在外部钱包完成，控制台不直接执行铸造交易；使用范围以所选网络和发布版本为准。
 
 ## 启用与访问
 
@@ -175,7 +175,7 @@ USDB 账户必须同时匹配本节点配置的 **Chain ID 和 genesis**。本�
 如果钱包未添加网络，使用该网络运营方提供的浏览器可达 RPC 手动添加；控制台不会把节点内部
 Docker RPC 地址自动写入钱包。相同 Chain ID、不同 genesis 仍然是网络不匹配。
 
-BTC 网络单独校验。**当前 USDB testnet-v0 使用 Bitcoin mainnet，BTC 钱包应选择 Bitcoin 主网**，
+BTC 网络单独校验。**USDB testnet-v0/v1 均使用 Bitcoin mainnet，BTC 钱包应选择 Bitcoin 主网**，
 不能因为 USDB 名称中有 testnet 就选择 Bitcoin testnet。地址会检查格式、校验和及网络；
 Bitcoin testnet / signet 等共享地址格式时，以钱包报告的链为准，不靠地址前缀猜测。
 钱包不能报告网络时，页面显示“网络身份尚未确认”，可改用只读地址查询本节点数据。
@@ -207,7 +207,7 @@ BTC 查询还要求 indexer 的查询能力就绪、网络匹配。数据约每 
 修改表单、切换账户或网络、页面重新获得焦点时会清除旧核验；成功观测 30 秒后过期。再次核验失败不会保留成功提示。
 新地址已被小额转账或其他有效 mint 占用时，换另一个新地址重铸并核验。
 
-最低安全承诺及冷地址轮换边界见[首次铸造](../miner-pass/mint.md)和[继承与协作](../miner-pass/manage.md)。
+最低安全承诺及逐步操作见[冷钱包与地址轮换](../miner-pass/cold-wallet.md)，完整继承及 Leader 规则见[继承与协作](../miner-pass/manage.md)。
 来源检查不能阻止被诱导的普通付款成为 pass 操作。Taproot 本身公开输出公钥；地址轮换只减少暴露窗口。
 
 `/#/development/btc` 仅在显式开启 `development_mint.enabled` 且 Bitcoin 为 regtest 时允许使用本机 Ord 广播。

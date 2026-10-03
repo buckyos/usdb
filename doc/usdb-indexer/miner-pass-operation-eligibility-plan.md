@@ -1,10 +1,19 @@
 # MinerPass 操作资格改造计划
 
-更新时间：2026-10-02。
+更新时间：2026-10-03。
 
 本计划落实 [issue #51 收敛方案](https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579)，协议草案为 [UIP-0016](../UIP/UIP-0016-miner-pass-operation-eligibility.md)。用户已同意按该方案推进；草案、代码合并、委员会状态和网络激活是不同事项。
 
-本文件区分当前事实与后续实现任务。规范草案已提交为 usdb `c0f362b`，Go 兼容锁同步提交为 `beb9a3b2e`；来源证据与交易前余额层已提交为 usdb `cacdcd3`，对应 Go 兼容锁为 `ba631d72b`。一次性开户资格、状态机及诊断改进已提交为 usdb `e8303f9`，Go 兼容锁为 `ab52b498a`。阶段 4 的完整区块执行/恢复、审计接口及仅执行 MinerPass v2 的收敛已提交为 usdb `dcd41f6`，配套 Go 提交为 `889d74197`。最小真实服务闭环已提交为 usdb `e8c73d9`、Go `aea0a7af9`。当前工作区继续迁移 nightly/weekly 的攻击、协作、重组和恢复矩阵。旧 embedded catalog/ID 保持冻结，但不再是本程序支持的执行规则。下列任务不能仅因有文档或测试名称就标记完成。
+本文件区分当前事实与后续实现任务。规范草案已提交为 usdb `c0f362b`，Go 兼容锁同步提交为 `beb9a3b2e`；来源证据与交易前余额层已提交为 usdb `cacdcd3`，对应 Go 兼容锁为 `ba631d72b`。一次性开户资格、状态机及诊断改进已提交为 usdb `e8303f9`，Go 兼容锁为 `ab52b498a`。阶段 4 的完整区块执行/恢复、审计接口及仅执行 MinerPass v2 的收敛已提交为 usdb `dcd41f6`，配套 Go 提交为 `889d74197`。最小真实服务闭环已提交为 usdb `e8c73d9`、Go `aea0a7af9`。nightly/weekly 矩阵迁移已提交为 `0452f5c`，UIP 覆盖复核为 `bda0d58`，control-plane 引导与核验为 `a28cf4c`。testnet-v1 网络包已提交为 `c025ce5`，配套 Go 为 `09a9402d4`。旧 embedded catalog/ID 保持冻结，但不再是本程序支持的执行规则。下列任务不能仅因有文档或测试名称就标记完成。
+
+## 当前交付状态
+
+- 协议与执行：仅执行 MinerPass V2，三路径资格、来源取证、完整区块恢复及审计已接通。
+- 测试：隔离真实服务、矩阵迁移及 UIP 覆盖审查已有分批记录；完整 weekly 和当前 tag 的 CI 结论以对应运行证据为准。
+- 用户工具：control-plane 草案与入金前核验已实现；正式网络签名和广播继续由外部钱包完成，见[冷钱包手册](../handbook/miner-pass/cold-wallet.md)。
+- 网络包：testnet-v1 的身份、registry、genesis 和发布配置已冻结，见[网络包说明](../publish/usdb-testnet-v1-network-bundle.md)。线上重置、实际安装与多节点验收不是本文件已经完成的事项。
+
+下列“该批／本批”描述保留各阶段当时的实现与验证边界，不表示后续工作仍未开始。
 
 ## 前批已提交：来源证据与交易前余额
 
@@ -92,9 +101,9 @@ go test -ldflags=-checklinkname=0 ./cmd/geth
 
 复现入口、原始产物与本次边界见 [最小真实服务验收](miner-pass-v2-live-acceptance.md)。本次使用 P2TR 钱包、`txindex=1` 和未裁剪完整 regtest；不代表已完成 hash 地址冷钱包、全部签名形式、完整余额清扫、AssumeUTXO 或签名 checkpoint 验收。
 
-后续执行顺序已确定为：本批最小闭环 → 扩展 nightly/weekly 攻击、恢复与长期测试 → control-plane 钱包引导 → 网络参数冻结及真实部署。下面阶段 5/6 的编号沿用原计划，不代表仍要求先做控制面。
+当时确定的执行顺序为：最小闭环 → 扩展 nightly/weekly 攻击、恢复与长期测试 → control-plane 钱包引导 → 网络参数冻结及真实部署。下面阶段 5/6 的编号沿用原计划，不代表仍要求先做控制面。
 
-## 本批工作区：nightly/weekly 矩阵迁移
+## 已提交：nightly/weekly 矩阵迁移
 
 - 新增真实 Ord 攻击/协作矩阵：非参与持币地址、强制替换/消费 prev、归零旧 owner、Dormant 跨地址继承、两种协作引用在 Leader 轮换后的断开与重新绑定。
 - 在同一链上验证上述状态的重组撤销、进程崩溃重开和空数据库完整重放，逐项比较 pass、mint audit 及系统身份。
@@ -111,7 +120,7 @@ go test -ldflags=-checklinkname=0 ./cmd/geth
 | 规则作用域与 registry 隔离 | usdb `f276ab4` / go-ethereum `7e18a18e7` | 同 BTC 来源可有独立 rules scope；配置、状态身份、双库存储和 checkpoint 校验 |
 | P2P fork ID 纳入 USDB checkpoint | usdb `f9cc98f` / go-ethereum `f4399c509` | 新高度进入握手/ENR 共用 fork 列表；不保证既有 peer 自动断开或相同高度规则内容可识别 |
 
-旧 v0 元数据仅作历史记录；新程序不重放旧规则。改造在独立数据目录和显式 v2 catalog 中验收。测试网重置、v1 网络包和真实部署位于最后发布阶段。
+旧 v0 元数据仅作历史记录；新程序不重放旧规则。改造在独立数据目录和显式 v2 catalog 中验收。v1 网络包已在发布准备阶段冻结；测试网重置和真实部署仍由发布验收独立记录。
 
 ## 方案启动时的实现差距（后续批次进展见上）
 

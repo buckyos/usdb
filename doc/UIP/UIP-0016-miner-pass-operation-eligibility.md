@@ -6,17 +6,17 @@ Layer: BTC Application / Consensus Input
 Created: 2026-10-02
 Requires: UIP-0000, UIP-0001, UIP-0002, UIP-0003, UIP-0004, UIP-0006, UIP-0008
 Supersedes: UIP-0001 v1 mint eligibility and UIP-0002 v1 same-owner inheritance for fresh development networks
-Activation: Planned; no network or height activated by this draft
+Activation: testnet-v1 bundle frozen; network deployment requires separate release acceptance
 Affected-Version-Fields: inscription_schema_version, pass_state_machine_version; other fields subject to encoding review
 Activation-Matrix: See activation section
-Backwards-Compatibility: Replay pre-activation rules; retain existing valid pass history
+Backwards-Compatibility: Fresh development networks execute v2 only; no v1 replay or state migration
 Test-Cases: See acceptance vectors and implementation plan
 
 # 摘要
 
 本文把 [issue #51 的收敛方案](https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579) 整理为 MinerPass 下一阶段的协议草案。三个操作路径共用一个资格入口：首次零余额开户、同地址操作、单来源跨地址继承。
 
-本文是实现基线草案，不代表实现已经完成或某一网络已激活。具体实施状态见 [实施计划](../usdb-indexer/miner-pass-operation-eligibility-plan.md)。此前完成的 registry 作用域隔离和 P2P fork ID 修正只是前置条件，不会自动启用本文规则。
+本文保留 Draft 规范状态；实现进度、委员会状态和网络部署分别记录。V2 执行、控制面核验和 testnet-v1 网络包已实现，具体证据及未完成的发布验收见 [实施计划](../usdb-indexer/miner-pass-operation-eligibility-plan.md)和 [v1 网络包](../publish/usdb-testnet-v1-network-bundle.md)。代码合并或 tag 创建不等于某一在线网络已激活。
 
 # 动机与承诺
 
@@ -97,7 +97,7 @@ Ord envelope 的 `offset` 是 envelope 序号，不可直接当作 sat 偏移。
 - 对支持的 envelope，实际铭文位于对应输入的首 sat；输入金额必须非零。输出位置仍按所有前置输入金额与输出区间计算，绝非固定 reveal output 0。
 - 无绑定 sat、进入手续费或不可花费输出的形式不支持。普通接收脚本不要求 P2TR。
 
-上述拒绝是确定的“不支持”，不是数据缺失；缺少 Core 证据则仍为可重试错误。来源 commit 若为 coinbase，没有签名输入，不能用于同地址/跨地址来源授权；真正符合首次开户条件的路径无需取得来源授权。子集已接入逐块校验 active set 的生产区块管线，并有隔离 RPC/双库存储测试；网络激活前仍须完成真实服务整体验收。
+上述拒绝是确定的“不支持”，不是数据缺失；缺少 Core 证据则仍为可重试错误。来源 commit 若为 coinbase，没有签名输入，不能用于同地址/跨地址来源授权；真正符合首次开户条件的路径无需取得来源授权。子集已接入逐块校验 active set 的生产区块管线，并有隔离 RPC/双库存储测试及[真实服务验收](../usdb-indexer/miner-pass-v2-live-acceptance.md)。隔离服务验收与实际发布包的部署验收分别记录。
 
 依赖来源的路径，首版支持范围为：
 
@@ -144,7 +144,7 @@ registry 的 BTC source、rules scope、revision、按高度查询及 active-ver
 
 若 qualification 完全由已有已承诺历史派生，缓存不是独立共识状态；若新增不可派生字段或改变规范编码，则必须定义其 commitment、版本和快照恢复规则。不能只升级一个版本字符串。尤其当前 commit 版本还关联 balance-history，必须区分 pass mutation 编码与上游快照协议的影响，避免无必要地改变 BTC 基础数据身份。
 
-本次实现保留 `PassBlockMutation` 的字段和编码、逐块 rolling commit、经济 query/state-view 及 balance-history 版本。新资格依赖规范链输入和既有持有历史，结果仍使用已有 mint/Invalid/状态转移 mutation；`active_version_set_id` 把成对 v2 和作用域纳入现有 local/system state 身份。Rust/Go 使用同一隔离 catalog 的黄金向量互验，保持旧默认 catalog/ID 原样；Go 额外识别显式选择的隔离 regtest v2 catalog，不改变默认 chain config。
+本次实现保留 `PassBlockMutation` 的字段和编码、逐块 rolling commit、经济 query/state-view 及 balance-history 版本。新资格依赖规范链输入和既有持有历史，结果仍使用已有 mint/Invalid/状态转移 mutation；`active_version_set_id` 把成对 v2 和作用域纳入现有 local/system state 身份。Rust/Go 使用同一隔离 catalog 的黄金向量互验，保持旧默认 catalog/ID 原样；Go 额外识别显式选择的隔离 regtest v2 catalog 和 testnet-v1 catalog；v1 网络包从 USDB block 0 绑定后者，不改写旧网 chain config。
 
 v2 的规范事件集合由当前完整区块按锁定 Ord parser 解析。若配置的数据源漏报、重复、内容/有效分类不一致，或使用非规范 envelope 编号，整块作为数据源错误停止并重试，不能静默接受差异。执行使用链上规范内容和编号。
 
@@ -156,12 +156,12 @@ v2 的 Invalid 记录沿用原 mutation 格式，但无受支持 sat 位置的�
 | --- | --- | --- | --- |
 | btc-regtest | miner-pass-v2-fixture | 自 H=0 | 隔离开发 catalog；Rust 显式 pin，Go 可显式选用；不是默认网络 |
 | btc-mainnet | 现有 legacy / testnet-v0 | 不添加本文激活 | 默认 catalog/ID 冻结；新程序拒绝其 v1 规则 |
-| btc-mainnet | 待发布 testnet-v1 | 待冻结网络包 | Planned |
+| btc-mainnet | usdb-testnet-v1 | registry 自 BTC H=0，index origin=963800；USDB block 0 绑定 | 网络包已冻结；发布和在线部署另行验收 |
 | btc-mainnet | 未来正式网作用域 | 独立审议 | Planned |
 
 代码合并不等于激活。registry 隔离、USDB chain checkpoint 绑定、Go 版本支持及发布包必须一致。P2P fork ID 仅纳入 USDB checkpoint 高度，不替代对 BTC 高度规则与版本身份的验证。
 
-本次不提供旧开发网在线升级或数据迁移。发布前须冻结新的作用域、catalog 和网络包，以全新数据集启动；实际重置另行实施，不能把旧 registry ID 重新解释成 v2。
+本次不提供旧开发网在线升级或数据迁移。testnet-v1 的新作用域、catalog 和网络包已经冻结，以全新数据集启动；实际重置另行实施，不能把旧 registry ID 重新解释成 v2。
 
 # 数据可用性与工具
 
@@ -212,6 +212,6 @@ sat 映射数值向量：commit 两输入分别为 A=700、D=2300；输出依次
 
 # 参考实现与待完成事项
 
-当前行为的代码入口及分批验收见 [实施计划](../usdb-indexer/miner-pass-operation-eligibility-plan.md)。唯一 v2 parser/状态机、按高度支持检查、真实区块执行器/tracker、审计 RPC 和回滚重放已在隔离 Core/BH RPC 夹具及真实 SQLite/RocksDB 上接通。仍须完成控制面引导/核验、签名 checkpoint 导出安装、真实 Core/AssumeUTXO/BH 完整管线与历史取证整体验收，才能进入发布激活。
+当前行为的代码入口及分批验收见 [实施计划](../usdb-indexer/miner-pass-operation-eligibility-plan.md)。唯一 v2 parser/状态机、按高度支持检查、完整区块执行/恢复、来源与审计 RPC、control-plane 草案及入金核验均已实现。真实服务闭环、攻击/协作/重组矩阵和 UIP 覆盖复核分别见 [live 验收](../usdb-indexer/miner-pass-v2-live-acceptance.md)、[矩阵验收](../usdb-indexer/miner-pass-v2-matrix-acceptance.md)及[覆盖审查](../usdb-indexer/uip-test-coverage-review.md)。这些记录不替代完整 weekly 和实际发布包的 Core/AssumeUTXO/BH/indexer、follower 入网及新链 SourceDAO 验收；具体完成程度以各项证据为准。
 
-本草案中的 v2 值已用于隔离开发执行；不修改旧默认 embedded registry、testnet-v0 bundle、chain genesis 或在线服务。正式激活高度和节点重置另行按发布流程冻结。
+testnet-v1 已有独立 registry、chain genesis 和发布配置，见[网络包记录](../publish/usdb-testnet-v1-network-bundle.md)。旧默认 embedded registry 和 testnet-v0 bundle 保留历史身份，不启用旧执行器。网络包生成不代表在线节点已重置，公开部署须按发布流程验收。用户操作见[冷钱包开户与轮换](../handbook/miner-pass/cold-wallet.md)。
