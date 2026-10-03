@@ -583,7 +583,7 @@ USDB Economic State View
 - cursor 正常续页在 current head 前进后仍固定原 external state。
 - 非法 limit、cursor 篡改、跨资源 cursor、绑定字段变化和旧 `page/page_size` 请求均 fail closed。
 
-参考实现的 Rust/service tests 已覆盖上述 core 规则；deterministic live/regtest 矩阵已覆盖 profile / `candidate_set_view` / `collab_breakdown`、版本 mismatch、head advance、same-height/multi-block reorg、restart 和 historical context。`100 / 1K / 10K / 100K` standard + collab 规模矩阵已覆盖 cursor 全分页、两种 breakdown 排序、冻结状态重放、restart 重放、cold-cache 物理 I/O、cache-hit 并发分页和 single/multi-leader topology；10K 补充矩阵进一步覆盖容量为 2 的 historical-context LRU、8-client cold-first singleflight，以及每类 5K consume/remint 后 rollback、replacement、orphan 拒绝和 reopen 重放。结果与测量边界见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。完整 300-block 随机 world-sim 与 2500-tick 多 seed 长时 soak 已通过。
+参考实现的 Rust/service tests 已覆盖上述 core 规则；deterministic live/regtest 矩阵已覆盖 profile / `candidate_set_view` / `collab_breakdown`、版本 mismatch、head advance、same-height/multi-block reorg、restart 和 historical context。`100 / 1K / 10K / 100K` standard + collab 规模矩阵已覆盖 cursor 全分页、两种 breakdown 排序、冻结状态重放、restart 重放、cold-cache 物理 I/O、cache-hit 并发分页和 single/multi-leader topology；10K 补充矩阵进一步覆盖容量为 2 的 historical-context LRU、8-client cold-first singleflight，以及每类 5K consume/remint 后 rollback、replacement、orphan 拒绝和 reopen 重放。结果与测量边界见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。这些规模报告与 300-block / 2500-tick 多 seed 结果是历史版本证据，不自动构成 MinerPass v2 的完整长期验收。V2 已完成的短程迁移演练、完整矩阵入口和尚待执行的长期项见[矩阵验收记录](../usdb-indexer/miner-pass-v2-matrix-acceptance.md)及[本轮测试覆盖复核](../usdb-indexer/uip-test-coverage-review.md)。
 
 # 后续实现议题
 

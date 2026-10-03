@@ -44,6 +44,10 @@ log "running world simulator tests"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$INDEXER_SCRIPTS/test_regtest_world_simulator.py"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/tests/test_world_replay.py"
 
+log "running MinerPass V2 fixture and matrix oracle tests"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/tests/test_miner_pass_regtest.py"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/tests/test_miner_pass_matrix_tools.py"
+
 log "running regtest harness lifecycle tests"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$INDEXER_SCRIPTS/test_regtest_reorg_lib.py"
 

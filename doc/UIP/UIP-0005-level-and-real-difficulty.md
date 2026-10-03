@@ -425,7 +425,7 @@ level(pass, h)
 - state view 或 future USDB chain policy 中携带的 `level` / `difficulty_factor_bps` / `real_difficulty` 与重算结果不一致时拒绝。
 - 参数表变更时，历史高度按当时激活版本重算。
 
-参考实现的公式、service/profile/`candidate_set_view` 交叉测试已覆盖 BTC-side nominal level/factor 和状态边界。当前未完成项只包括 UIP-0008 的历史参数激活，以及 UIP-0009 / UIP-0014 或后续 USDB chain policy 对 `candidate_difficulty_factor_bps`、`base_difficulty / real_difficulty` 来源、编码和 mismatch 校验。
+参考实现已有 BTC nominal level/factor 与状态边界、Go 向上取整及 profile 派生值 mismatch、按 payload 高度分派规则和 activation conformance 测试。测试用的未来规则不等于公开网络已经激活，formal quote/aux v1 仍未冻结；本轮覆盖和未完成服务资格见[测试覆盖复核](../usdb-indexer/uip-test-coverage-review.md)。
 
 # 待审计问题
 

@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 
+from common.miner_pass_regtest import configure_indexer
 from common.assumeutxo_services import CoreProxy, Processes, Rpc, RpcError, capture_anchor, free_port
 
 
@@ -19,6 +20,7 @@ def main():
     parser.add_argument("--bitcoind", required=True, type=Path)
     parser.add_argument("--balance-history", type=Path)
     parser.add_argument("--indexer", type=Path)
+    parser.add_argument("--work-dir", type=Path, help="Fresh artifact directory; existing paths are rejected")
     args = parser.parse_args()
     if not __debug__:
         parser.error("Acceptance assertions require Python without -O/PYTHONOPTIMIZE")
@@ -26,7 +28,11 @@ def main():
     bh_binary = (args.balance_history or repo / "src/btc/target/release/balance-history").resolve()
     indexer_binary = (args.indexer or repo / "src/btc/target/release/usdb-indexer").resolve()
     fixture = repo / "tests/fixtures/assumeutxo-p5"
-    root = Path(tempfile.mkdtemp(prefix="usdb-p65-services-"))
+    if args.work_dir:
+        root = args.work_dir.resolve()
+        root.mkdir(parents=True, exist_ok=False)
+    else:
+        root = Path(tempfile.mkdtemp(prefix="usdb-p65-services-"))
     print(f"P6.5 isolated run: {root}", flush=True)
     processes = Processes(root)
     start = time.monotonic()
@@ -109,6 +115,7 @@ def main():
                                   usdb=dict(genesis_block_height=102, inscription_source="bitcoind", inscription_source_shadow_compare=False,
                                             upstream_poll_interval_ms=100, rpc_server_host="127.0.0.1", rpc_server_port=ports[ix_name]))
             (ix_root / "config.json").write_text(json.dumps(indexer_config, indent=2) + "\n")
+            configure_indexer(ix_root / "config.json")
 
         def service_start(name):
             processes.start(name, [bh_binary if name.endswith("-bh") else indexer_binary,
@@ -170,7 +177,12 @@ def main():
         minted = snapshot("native", 103)
         assert minted and minted["state"] == "active" and minted["owner"] == chain["owner_a"]
         assert minted["satpoint"] == chain["mint_satpoint"]
-        stage("mint_recovered", snapshot=minted)
+        assert minted["mint_version"] == 2
+        audit = apis["native-indexer"]("get_pass_mint_audit", dict(inscription_id=pass_id, at_height=103))
+        assert audit["audit"]["operation_path"] == "first_opening"
+        assert audit["audit"]["balance_before_tx"] == 0 and not audit["audit"]["ever_valid_owner"]
+        assert audit == apis["full-indexer"]("get_pass_mint_audit", dict(inscription_id=pass_id, at_height=103))
+        stage("mint_recovered", snapshot=minted, audit=audit)
 
         proxy.missing_block = blocks[104]["hash"]
         submit([blocks[114]])

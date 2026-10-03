@@ -628,6 +628,91 @@ async fn ordinary_payment_before_reveal_prevents_zero_balance_opening() {
     p.cleanup();
 }
 
+// UIP-0016 M11 deliberately permits a previously used BTC address once its
+// pre-reveal balance is zero, provided it has never owned a valid MinerPass.
+#[tokio::test]
+async fn prior_balance_spent_before_reveal_allows_opening_without_source_authorization() {
+    use crate::index::test_miner_evidence as chain;
+    use bitcoincore_rpc::bitcoin::{OutPoint, Txid, hashes::Hash};
+    use std::collections::HashMap;
+    use usdb_util::ToBtcScriptHash;
+
+    for drain in [false, true] {
+        let target = source_script(SpendKind::Witness);
+        let mut spec = MintSpec::standard(81, target.clone(), 100_000_000, vec![]);
+        // A different signer funds the inscription: only zero-balance opening
+        // can authorize this recipient, not the same-owner path.
+        spec.source = SpendKind::Legacy;
+        let batch = MintBlock::new(10, vec![spec], false);
+        if drain {
+            let (original, _) = batch.core.state.lock().unwrap().blocks[&10].clone();
+            let inputs = batch.core.client.get_block_prevouts(10, &original).unwrap();
+            let funding = OutPoint::new(Txid::from_byte_array([181; 32]), 0);
+            let coin = chain::output(100_000_000, target.clone());
+            let mut payment = chain::transaction(
+                vec![funding],
+                vec![chain::output(99_999_000, cold_recipient(82))],
+            );
+            chain::sign(
+                &mut payment,
+                0,
+                std::slice::from_ref(&coin),
+                SpendKind::Witness,
+                1,
+                false,
+            );
+            let reveal = original.txdata[1].clone();
+            let coins = HashMap::from([
+                (
+                    funding,
+                    usdb_util::SpentPrevout {
+                        txout: coin,
+                        height: 1,
+                        coinbase: false,
+                    },
+                ),
+                (
+                    reveal.input[0].previous_output,
+                    inputs
+                        .get(&reveal.input[0].previous_output)
+                        .unwrap()
+                        .clone(),
+                ),
+            ]);
+            let block = chain::block(vec![payment, reveal]);
+            batch
+                .core
+                .state
+                .lock()
+                .unwrap()
+                .blocks
+                .insert(10, (block.clone(), chain::verbose(10, &block, &coins)));
+        }
+        let p = Pipeline::new("drained-opening", &[&batch], 9).await;
+        assert_eq!(
+            p.history.lock().unwrap().values[&target.to_btc_script_hash()][&9],
+            100_000_000
+        );
+        p.sync(9, 10).await.unwrap();
+        let storage = p.indexer.miner_pass_storage();
+        let id = batch.mints[0].inscription_id;
+        let pass = storage.get_pass_by_inscription_id(&id).unwrap().unwrap();
+        let audit = storage.get_mint_audit(&id).unwrap().unwrap();
+        assert_eq!(audit.ever_valid_owner, Some(false));
+        if drain {
+            assert_eq!(audit.balance_before_tx, Some(0));
+            assert_eq!(audit.operation_path.as_deref(), Some("first_opening"));
+            assert_eq!(audit.error_code, None);
+            assert_eq!(pass.state, MinerPassState::Active);
+        } else {
+            assert_eq!(audit.balance_before_tx, Some(100_000_000));
+            assert_eq!(audit.error_code.as_deref(), Some("INELIGIBLE_RECIPIENT"));
+            assert_eq!(pass.state, MinerPassState::Invalid);
+        }
+        p.cleanup();
+    }
+}
+
 #[tokio::test]
 async fn audit_query_enforces_selected_state_and_detects_missing_or_stale_data() {
     use crate::service::rpc::GetStateRefAtHeightParams;
