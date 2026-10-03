@@ -850,7 +850,7 @@ PY
       # Keep the total funding unchanged, with cardinal inputs for bootstrap and remint.
       local funding_part funding_slot
       funding_part="$(python3 -c 'from decimal import Decimal; import sys; print(Decimal(sys.argv[1]) / 4)' "$FUND_AGENT_AMOUNT_BTC")"
-      for funding_slot in 1 2 3 4; do
+      for ((funding_slot = 1; funding_slot <= 4; funding_slot++)); do
         "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
           sendtoaddress "$receive_address" "$funding_part" >/dev/null
       done
