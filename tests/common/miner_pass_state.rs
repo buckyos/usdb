@@ -22,7 +22,6 @@ use crate::btc::{
     mint_evidence::{MintEvidenceContext, MintSatOutcome},
     transaction_balance::{BalanceBaseline, BalanceBaselineSide, TransactionBalanceContext},
 };
-use crate::config::ConfigManager;
 use crate::index::energy::{BalanceProvider, PassEnergyManager};
 use crate::index::pass::{MinerPassManager, PassMintInscriptionInfo};
 use crate::index::test_miner_evidence as chain;
@@ -134,7 +133,7 @@ impl Harness {
         Self::open(root, Arc::new(Timeline::default()))
     }
     pub fn open(root: PathBuf, timeline: Arc<Timeline>) -> Self {
-        let config = Arc::new(ConfigManager::load(Some(root.clone())).unwrap());
+        let config = Arc::new(crate::test_config::load(Some(root.clone())).unwrap());
         let data = config.data_dir();
         let storage = Arc::new(MinerPassStorage::new(&data).unwrap());
         let energy = Arc::new(PassEnergyManager::new_with_deps(
@@ -181,23 +180,64 @@ impl Harness {
         self.manager.clear_block_mutation_collection();
         drop(guard);
     }
+    /// Prepopulate already-validated history for transition tests; no inscription is executed here.
     pub async fn seed(&self, tag: u8, owner: BtcScriptHash, height: u32, prev: Vec<InscriptionId>) {
         let guard = self.begin(height);
-        self.manager
-            .on_mint_pass(&PassMintInscriptionInfo {
-                inscription_id: id(tag),
-                inscription_number: i32::from(tag),
-                mint_txid: id(tag).txid,
-                mint_block_height: height,
-                mint_owner: owner,
-                satpoint: satpoint(tag),
-                mint_version: 1,
-                pass_kind: MinerPassKind::Standard,
-                usdb_main: "0x1111111111111111111111111111111111111111".into(),
-                leader_pass_id: None,
-                leader_btc_addr: None,
-                prev,
-            })
+        if let Some(old) = self
+            .storage
+            .get_last_active_mint_pass_by_owner(&owner)
+            .unwrap()
+        {
+            self.energy
+                .on_pass_dormant(&old.inscription_id, height)
+                .await
+                .unwrap();
+            self.storage
+                .update_state_at_height(
+                    &old.inscription_id,
+                    MinerPassState::Dormant,
+                    MinerPassState::Active,
+                    height,
+                )
+                .unwrap();
+        }
+        for previous in &prev {
+            self.storage
+                .update_state_at_height(
+                    previous,
+                    MinerPassState::Consumed,
+                    MinerPassState::Dormant,
+                    height,
+                )
+                .unwrap();
+            self.energy
+                .on_pass_consumed(previous, &owner, height)
+                .unwrap();
+        }
+        let pass = crate::storage::MinerPassInfo {
+            inscription_id: id(tag),
+            inscription_number: i32::from(tag),
+            mint_txid: id(tag).txid,
+            mint_block_height: height,
+            mint_owner: owner,
+            owner,
+            satpoint: satpoint(tag),
+            mint_version: 2,
+            pass_kind: MinerPassKind::Standard,
+            usdb_main: "0x1111111111111111111111111111111111111111".into(),
+            leader_pass_id: None,
+            leader_btc_addr: None,
+            leader_btc_owner: None,
+            prev,
+            state: MinerPassState::Active,
+            invalid_code: None,
+            invalid_reason: None,
+        };
+        self.storage
+            .add_new_mint_pass_at_height(&pass, height)
+            .unwrap();
+        self.energy
+            .on_new_pass(&id(tag), &owner, height, 0)
             .await
             .unwrap();
         self.finish(height, guard);
@@ -221,6 +261,7 @@ impl Harness {
 
 pub struct MintSpec {
     pub tag: u8,
+    pub version: u32,
     pub source: SpendKind,
     pub dest: ScriptBuf,
     pub balance_before: u64,
@@ -240,6 +281,7 @@ impl MintSpec {
     ) -> Self {
         Self {
             tag,
+            version: 2,
             source: SpendKind::Witness,
             dest,
             balance_before,
@@ -268,7 +310,7 @@ impl MintBlock {
         let mut coins = HashMap::new();
         let mut baselines = HashMap::new();
         for spec in &specs {
-            let mut payload = serde_json::json!({"p":"usdb","op":"mint","v":2,
+            let mut payload = serde_json::json!({"p":"usdb","op":"mint","v":spec.version,
                 "usdb_main":spec.main,
                 "prev":spec.prev.iter().map(ToString::to_string).collect::<Vec<_>>()});
             if spec.kind == MinerPassKind::Collab {
@@ -386,7 +428,7 @@ impl MintBlock {
                     mint_block_height: height,
                     mint_owner: sat.mint_owner,
                     satpoint: sat.satpoint,
-                    mint_version: 2,
+                    mint_version: spec.version,
                     pass_kind: spec.kind,
                     usdb_main: if spec.kind == MinerPassKind::Collab {
                         String::new()

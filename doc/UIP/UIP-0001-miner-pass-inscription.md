@@ -21,6 +21,8 @@ Activation: BTC network activation matrix
 
 v1 schema 移除 `usdb_collab` 的协议语义。协作关系不再由 Leader 主动填写协作者 USDB-chain account address 表达，而由协作者在自己 mint 的矿工证中显式指定 Leader 绑定字段表达。
 
+> 开发阶段实现更新：当前程序仅执行 [UIP-0016](UIP-0016-miner-pass-operation-eligibility.md) 的 MinerPass v2；本文 v1 铸造/继承约束保留作历史记录，不表示仍有 v1 执行器。新开发网使用全新数据及显式 v2 catalog。
+
 # 动机
 
 早期 `doc/矿工证铭文协议.md` 草案和开发期 `USDBMint` 曾包含：

@@ -4,21 +4,12 @@ use crate::inscription::InscriptionTransferItem;
 use crate::storage::MinerPassStorageRef;
 use crate::storage::ValidMinerPassInfo;
 use bitcoincore_rpc::bitcoin::Block;
-use bitcoincore_rpc::bitcoin::Txid;
-use bitcoincore_rpc::bitcoin::{Amount, OutPoint};
-use ord::{InscriptionId, ParsedEnvelope};
+use bitcoincore_rpc::bitcoin::OutPoint;
+use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use usdb_util::{BTCRpcClient, BTCRpcClientRef, BtcScriptHash};
-
-pub struct InscriptionCreateInfo {
-    pub satpoint: SatPoint,
-    pub value: Amount,
-    pub address: Option<BtcScriptHash>,
-    pub commit_txid: Txid,
-    pub commit_outpoint: OutPoint,
-}
 
 #[derive(Clone)]
 pub struct TransferTrackSeed {
@@ -245,86 +236,6 @@ impl InscriptionTransferTracker {
         );
 
         Ok(())
-    }
-
-    // The inscription content is contained within the input of a reveal transaction,
-    // and the inscription is made on the first sat of its input. This sat can then be tracked using the familiar rules of ordinal theory,
-    // allowing it to be transferred, bought, sold, lost to fees, and recovered.
-    pub async fn calc_create_satpoint(
-        &self,
-        inscription_id: &InscriptionId,
-        block_height: u32,
-        block: Arc<Block>,
-    ) -> Result<InscriptionCreateInfo, String> {
-        // The reveal is in the block currently being processed, so no global txindex is needed.
-        let tx = block.txdata.iter().find(|tx| tx.compute_txid() == inscription_id.txid)
-            .cloned().ok_or_else(|| {
-                let msg = format!("Reveal transaction absent from processing block: height={block_height}, inscription_id={inscription_id}");
-                error!("{msg}");
-                msg
-            })?;
-        let utxo_manager = self.inputs_for_block(block_height, block)?;
-        let envelopes = ParsedEnvelope::from_transaction(&tx);
-        let index = inscription_id.index as usize;
-        if index >= envelopes.len() {
-            let msg = format!(
-                "Invalid inscription index {} for transaction {}, envelope length {}",
-                index,
-                inscription_id.txid,
-                envelopes.len()
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
-        let envelope = &envelopes[index];
-        // Use envelope.input instead of inscription index to map to the actual reveal vin.
-        // Multiple inscriptions may exist on one input, so index->vin is not always valid.
-        let input_index = envelope.input as usize;
-        if input_index >= tx.input.len() {
-            let msg = format!(
-                "Invalid envelope input index {} for inscription {} in transaction {}, vin length {}",
-                input_index,
-                inscription_id,
-                inscription_id.txid,
-                tx.input.len()
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
-
-        let vin = &tx.input[input_index];
-        let commit_outpoint = vin.previous_output;
-
-        let commit_txid = commit_outpoint.txid;
-        let satpoint = SatPoint {
-            outpoint: OutPoint {
-                txid: commit_txid,
-                vout: commit_outpoint.vout,
-            },
-            offset: 0,
-        };
-
-        let item = TxItem::from_tx(tx);
-        let ret = item.calc_output_satpoint(satpoint, &utxo_manager).await?;
-        if ret.is_none() {
-            let msg = format!(
-                "No satpoint found for inscription_id {:?} in transaction {}",
-                inscription_id, inscription_id.txid
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
-
-        let ret = ret.unwrap();
-        let info = InscriptionCreateInfo {
-            satpoint: ret.satpoint,
-            value: ret.value,
-            address: ret.address,
-            commit_txid,
-            commit_outpoint,
-        };
-
-        Ok(info)
     }
 
     pub async fn process_block(

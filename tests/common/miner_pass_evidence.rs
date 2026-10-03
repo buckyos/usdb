@@ -174,6 +174,10 @@ pub struct ChainCore {
 }
 
 impl ChainCore {
+    pub fn url(&self) -> &str {
+        &self._server.url
+    }
+
     pub fn new(blocks: Vec<(u32, Block, Value)>) -> Self {
         let state = Arc::new(Mutex::new(ChainState {
             blocks: blocks.into_iter().map(|(h, b, v)| (h, (b, v))).collect(),

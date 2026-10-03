@@ -57,6 +57,14 @@ impl RpcClient {
         self.rpc_call::<RpcInfo>("get_rpc_info", json!([])).await
     }
 
+    /// Read a durably published v2 mint audit without inferring authorization from query readiness.
+    pub async fn get_pass_mint_audit(
+        &self,
+        params: GetPassMintAuditParams,
+    ) -> Result<Option<PassMintAuditInfo>, String> {
+        self.rpc_call("get_pass_mint_audit", json!([params])).await
+    }
+
     /// Returns the current Bitcoin network type of the running indexer.
     ///
     /// # Returns

@@ -265,7 +265,7 @@ pub fn validate_indexer_data(
         .lookup_active_version_set(height)
         .map_err(|error| format!("Failed to resolve checkpoint active versions: {error}"))?;
     active_versions
-        .validate_btc_indexer_v1()
+        .validate_btc_indexer()
         .map_err(|error| format!("Unsupported checkpoint active versions: {error}"))?;
     let active_version_set_id = active_versions.active_version_set_id();
     let commit_protocol_version = active_versions

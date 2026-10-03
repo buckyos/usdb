@@ -1,0 +1,32 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-activated-block-execution",
+  "type": "changed",
+  "scopes": [
+    "indexer",
+    "consensus",
+    "security",
+    "testing",
+    "documentation"
+  ],
+  "summary": "Run only MinerPass v2 with atomic block recovery and mint audit queries",
+  "details": [
+    "Remove legacy MinerPass execution. Rust and Go accept only the implemented v2 inscription-schema/state-machine pair, while preserving scoped registries, height checkpoints and state identities for future upgrades. Legacy catalogs keep their immutable IDs but cannot authorize execution; an explicitly selected isolated regtest catalog supports development validation.",
+    "Run v2 mints through the production event planner and tracker using canonical block discovery, actual sat/source evidence and transaction-order balances. Missing or inconsistent evidence aborts and retries the entire block rather than publishing a permanent Invalid.",
+    "Recover energy and tracker caches from committed SQLite after outer block publication fails, and gate subsequent blocks while recovery remains incomplete.",
+    "Add the optional get_pass_mint_audit RPC and rebuildable audit storage, published and rolled back with pass state. Reads verify the selected committed block and reveal anchor; v2 records missing audit report data errors. Audit is auxiliary and does not change mutation encoding or economic query, state-view and upstream balance-history versions.",
+    "Control-plane now emits v2 JSON. Full source/recipient wallet flows and live Core/AssumeUTXO qualification remain separate work. No existing network bundle, chain configuration or online service is reset by this change."
+  ],
+  "operator_actions": [
+    "Do not upgrade an existing V1 dataset in place. Prepare a fresh development network with an explicitly pinned V2 rules scope/catalog and matching Go chain configuration; freeze the reset network bundle separately before deployment."
+  ],
+  "compatibility": {
+    "network_reset": true,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579"
+  ]
+}

@@ -1,6 +1,4 @@
-use super::super::transfer::{
-    InscriptionCreateInfo, InscriptionTransferTracker, TransferTrackSeed,
-};
+use super::super::transfer::{InscriptionTransferTracker, TransferTrackSeed};
 use crate::inscription::InscriptionTransferItem;
 use crate::status::StatusManager;
 use balance_history::{
@@ -45,13 +43,6 @@ pub(crate) trait TransferTrackerApi: Send + Sync {
 
     fn reload_from_storage<'a>(&'a self) -> TransferTrackerFuture<'a, Result<(), String>>;
 
-    fn calc_create_satpoint<'a>(
-        &'a self,
-        inscription_id: &'a InscriptionId,
-        block_height: u32,
-        block: Arc<Block>,
-    ) -> TransferTrackerFuture<'a, Result<InscriptionCreateInfo, String>>;
-
     fn add_new_inscription<'a>(
         &'a self,
         inscription_id: InscriptionId,
@@ -84,18 +75,6 @@ impl TransferTrackerApi for InscriptionTransferTracker {
 
     fn reload_from_storage<'a>(&'a self) -> TransferTrackerFuture<'a, Result<(), String>> {
         Box::pin(async move { self.reload_from_storage().await })
-    }
-
-    fn calc_create_satpoint<'a>(
-        &'a self,
-        inscription_id: &'a InscriptionId,
-        block_height: u32,
-        block: Arc<Block>,
-    ) -> TransferTrackerFuture<'a, Result<InscriptionCreateInfo, String>> {
-        Box::pin(async move {
-            self.calc_create_satpoint(inscription_id, block_height, block)
-                .await
-        })
     }
 
     fn add_new_inscription<'a>(

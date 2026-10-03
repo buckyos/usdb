@@ -1,3 +1,7 @@
+#[path = "mint_audit.rs"]
+mod mint_audit;
+pub use mint_audit::*;
+
 use crate::index::{MinerPassKind, MinerPassState, PassBlockCommitEntry};
 use balance_history::SnapshotInfo as BalanceHistorySnapshotInfo;
 use bitcoincore_rpc::bitcoin::Txid;
@@ -200,7 +204,8 @@ impl MinerPassStorage {
             "SELECT EXISTS(SELECT 1 FROM miner_passes UNION ALL SELECT 1 FROM state \
              UNION ALL SELECT 1 FROM state_text WHERE name != ?1 \
              UNION ALL SELECT 1 FROM pass_block_commits UNION ALL SELECT 1 FROM active_balance_snapshots \
-             UNION ALL SELECT 1 FROM miner_pass_state_history UNION ALL SELECT 1 FROM balance_history_snapshot_history)",
+             UNION ALL SELECT 1 FROM miner_pass_state_history UNION ALL SELECT 1 FROM balance_history_snapshot_history \
+             UNION ALL SELECT 1 FROM miner_pass_mint_audit)",
             [INDEXER_RULES_BINDING_KEY], |row| row.get(0)
         ).map_err(|e| format!("Failed to check existing pass data: {e}"))
     }
@@ -311,6 +316,7 @@ impl MinerPassStorage {
         };
         let schema_begin = Instant::now();
         storage.init_db()?;
+        storage.init_mint_audit()?;
         info!(
             "Opened miner pass SQLite: path={}, journal_mode={}, synchronous=FULL, busy_timeout_ms={}, open_connection_elapsed_ms={}, schema_validation_elapsed_ms={}, total_elapsed_ms={}",
             storage.db_path.display(),
@@ -577,6 +583,19 @@ impl MinerPassStorage {
         if self.conn.lock().unwrap().is_autocommit() {
             let msg = format!(
                 "MinerPass v2 requires an enclosing block savepoint: db_path={}, autocommit=true",
+                self.db_path.display()
+            );
+            error!("{msg}");
+            return Err(msg);
+        }
+        Ok(())
+    }
+
+    /// Prevent recovery from reloading a still-provisional writer after a failed rollback.
+    pub(crate) fn require_committed_writer(&self) -> Result<(), String> {
+        if !self.conn.lock().unwrap().is_autocommit() {
+            let msg = format!(
+                "Writer transaction remains open during publication recovery: db_path={}",
                 self.db_path.display()
             );
             error!("{msg}");
@@ -1269,6 +1288,17 @@ impl MinerPassStorage {
             }
         }
 
+        tx.execute(
+            "DELETE FROM miner_pass_mint_audit WHERE block_height > ?1",
+            rusqlite::params![target_height],
+        )
+        .map_err(|err| {
+            let msg = format!(
+                "Failed to roll back mint audit: target_height={target_height}, error={err}"
+            );
+            error!("{msg}");
+            msg
+        })?;
         tx.execute(
             "DELETE FROM miner_pass_state_history WHERE block_height > ?1;",
             rusqlite::params![target_height as i64],

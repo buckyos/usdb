@@ -29,10 +29,15 @@ pub const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "uip-0008-cross-chain-release-
 /// Audit manifest schema that groups independent catalogs on the same BTC source.
 pub const SCOPED_RELEASE_MANIFEST_SCHEMA_VERSION: &str = "uip-0008-cross-chain-release-manifest:v4";
 
-/// UIP-0001 inscription schema implemented by the current BTC indexer.
+/// Historical UIP-0001 identifier, retained for frozen metadata and rejection diagnostics.
 pub const INSCRIPTION_SCHEMA_VERSION_V1: &str = "uip-0001-miner-pass-inscription:v1";
-/// UIP-0002 pass state-machine version implemented by the current BTC indexer.
+/// Historical UIP-0002 identifier; no legacy executor is provided.
 pub const PASS_STATE_MACHINE_VERSION_V1: &str = "uip-0002-pass-state-machine:v1";
+/// MinerPass schema paired with the UIP-0016 operation eligibility state machine.
+pub const INSCRIPTION_SCHEMA_VERSION_V2: &str = "uip-0001-miner-pass-inscription:v2";
+/// MinerPass state machine requiring source evidence and one-time opening eligibility.
+pub const PASS_STATE_MACHINE_VERSION_V2: &str = "uip-0002-pass-state-machine:v2";
+
 /// UIP-0003 raw-energy formula implemented by the current BTC indexer.
 pub const ENERGY_FORMULA_VERSION_V1: &str = "uip-0003-pass-energy-formula:v1";
 /// UIP-0004 effective-energy formula implemented by the current BTC indexer.
@@ -46,7 +51,7 @@ pub const COMMIT_PROTOCOL_VERSION_V1: &str = "uip-0008-usdb-local-state-commit:v
 /// Balance-history lookup semantics implemented by the current service.
 pub const BALANCE_HISTORY_SEMANTICS_VERSION_V1: &str = "balance-snapshot-at-or-before:v1";
 
-const BTC_INDEXER_V1_FAMILIES: [VersionFamily; 9] = [
+const BTC_INDEXER_FAMILIES: [VersionFamily; 9] = [
     VersionFamily::InscriptionSchemaVersion,
     VersionFamily::PassStateMachineVersion,
     VersionFamily::EnergyFormulaVersion,
@@ -405,27 +410,26 @@ impl ActiveVersionSet {
         encode_hex(&hasher.finalize())
     }
 
-    /// Verifies that all BTC indexer families select the currently implemented v1 rules.
-    pub fn validate_btc_indexer_v1(&self) -> Result<(), ActivationRegistryError> {
+    /// Validate every indexer family and reject every unsupported MinerPass rule pair.
+    pub fn validate_btc_indexer(&self) -> Result<(), ActivationRegistryError> {
         if let Some(scope) = &self.scope {
             scope.validate()?;
         }
         for (family, value) in &self.versions {
-            if !BTC_INDEXER_V1_FAMILIES.contains(family) {
+            if !BTC_INDEXER_FAMILIES.contains(family) {
                 return Err(ActivationRegistryError::VersionNotSupported {
                     family: *family,
                     value: value.to_string(),
                 });
             }
         }
-        self.require_supported_string(
-            VersionFamily::InscriptionSchemaVersion,
-            INSCRIPTION_SCHEMA_VERSION_V1,
-        )?;
-        self.require_supported_string(
-            VersionFamily::PassStateMachineVersion,
-            PASS_STATE_MACHINE_VERSION_V1,
-        )?;
+        let schema = self.require_string(VersionFamily::InscriptionSchemaVersion)?;
+        let state = self.require_string(VersionFamily::PassStateMachineVersion)?;
+        if schema != INSCRIPTION_SCHEMA_VERSION_V2 || state != PASS_STATE_MACHINE_VERSION_V2 {
+            return Err(ActivationRegistryError::InvalidRecord(format!(
+                "Unsupported MinerPass rule combination; this binary requires v2 and a fresh development network: inscription_schema_version={schema}, pass_state_machine_version={state}"
+            )));
+        }
         self.require_supported_string(
             VersionFamily::EnergyFormulaVersion,
             ENERGY_FORMULA_VERSION_V1,
@@ -453,7 +457,8 @@ impl ActiveVersionSet {
         self.require_supported_string(
             VersionFamily::BalanceHistorySemanticsVersion,
             BALANCE_HISTORY_SEMANTICS_VERSION_V1,
-        )
+        )?;
+        Ok(())
     }
 
     /// Verifies the balance-history family without interpreting indexer formulas.
@@ -755,7 +760,7 @@ impl BtcActivationRegistry {
                 record.activation_height
             )));
         }
-        if !BTC_INDEXER_V1_FAMILIES.contains(&record.version_family) {
+        if !BTC_INDEXER_FAMILIES.contains(&record.version_family) {
             return Err(ActivationRegistryError::InvalidRecord(format!(
                 "BTC registry {} cannot contain USDB-chain family {}",
                 self.scope.network_id,
@@ -1621,7 +1626,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_registries_resolve_supported_btc_versions() {
+    fn legacy_embedded_registry_identities_are_frozen_but_not_executable() {
         for (network, expected_registry_id) in [
             (
                 Network::Bitcoin,
@@ -1635,7 +1640,7 @@ mod tests {
             let registry = embedded_btc_activation_registry(network).unwrap();
             let versions = registry.lookup_active_version_set(0).unwrap();
             registry.validate_network(network).unwrap();
-            versions.validate_btc_indexer_v1().unwrap();
+            assert!(versions.validate_btc_indexer().is_err());
             assert_eq!(registry.activation_registry_id(), expected_registry_id);
             assert_eq!(registry.stable_lag_blocks(), 10);
             assert_eq!(
@@ -1814,7 +1819,7 @@ mod tests {
             .insert(VersionFamily::PayloadVersion, VersionValue::Integer(1));
 
         assert!(matches!(
-            versions.validate_btc_indexer_v1(),
+            versions.validate_btc_indexer(),
             Err(ActivationRegistryError::VersionNotSupported {
                 family: VersionFamily::PayloadVersion,
                 ..
@@ -1846,19 +1851,32 @@ mod tests {
 
     #[test]
     fn unsupported_formula_version_fails_closed_at_activation_boundary() {
-        let registry = embedded_regtest_with_energy_v2_at(100);
+        let mut registry = embedded_regtest_with_energy_v2_at(100);
+        for record in &mut registry.records {
+            match record.version_family {
+                VersionFamily::InscriptionSchemaVersion => {
+                    record.version_value =
+                        VersionValue::String(INSCRIPTION_SCHEMA_VERSION_V2.into())
+                }
+                VersionFamily::PassStateMachineVersion => {
+                    record.version_value =
+                        VersionValue::String(PASS_STATE_MACHINE_VERSION_V2.into())
+                }
+                _ => {}
+            }
+        }
         registry.validate().unwrap();
 
         registry
             .lookup_active_version_set(99)
             .unwrap()
-            .validate_btc_indexer_v1()
+            .validate_btc_indexer()
             .unwrap();
         assert!(matches!(
             registry
                 .lookup_active_version_set(100)
                 .unwrap()
-                .validate_btc_indexer_v1(),
+                .validate_btc_indexer(),
             Err(ActivationRegistryError::VersionNotSupported {
                 family: VersionFamily::EnergyFormulaVersion,
                 ..
@@ -2206,25 +2224,24 @@ mod tests {
             .current_registry()
             .lookup_active_version_set(100)
             .unwrap()
-            .validate_btc_indexer_v1()
-            .unwrap();
-        assert!(matches!(
+            .validate_btc_indexer()
+            .unwrap_err();
+        assert_eq!(
             testnet
                 .current_registry()
                 .lookup_active_version_set(100)
                 .unwrap()
-                .validate_btc_indexer_v1(),
-            Err(ActivationRegistryError::VersionNotSupported {
-                family: VersionFamily::EnergyFormulaVersion,
-                ..
-            })
-        ));
+                .get(VersionFamily::EnergyFormulaVersion),
+            Some(&VersionValue::String(
+                "uip-0003-pass-energy-formula:v2".into()
+            ))
+        );
         let legacy = embedded_btc_activation_registry(Network::Bitcoin).unwrap();
         legacy
             .lookup_active_version_set(100)
             .unwrap()
-            .validate_btc_indexer_v1()
-            .unwrap();
+            .validate_btc_indexer()
+            .unwrap_err();
         assert_eq!(
             legacy.activation_registry_id(),
             "a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224"
@@ -2264,8 +2281,8 @@ mod tests {
         first
             .lookup_active_version_set(100)
             .unwrap()
-            .validate_btc_indexer_v1()
-            .unwrap();
+            .validate_btc_indexer()
+            .unwrap_err();
         let mut mixed = vec![first.clone()];
         mixed.push(
             BtcActivationRegistryCatalog::from_json(SCOPED_MAINNET_CATALOG)

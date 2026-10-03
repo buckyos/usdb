@@ -38,3 +38,15 @@ pub(crate) mod test_miner_evidence;
 #[cfg(test)]
 #[path = "../../../../../tests/miner_pass_eligibility.rs"]
 mod miner_pass_eligibility;
+
+#[cfg(test)]
+#[path = "../../../../../tests/common/miner_pass_state.rs"]
+pub(crate) mod test_miner_state;
+
+#[cfg(test)]
+#[path = "../../../../../tests/miner_pass_activation.rs"]
+mod miner_pass_activation;
+
+#[cfg(test)]
+#[path = "../../../../../tests/miner_pass_startup.rs"]
+mod miner_pass_startup;

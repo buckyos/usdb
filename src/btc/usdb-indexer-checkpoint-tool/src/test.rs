@@ -62,16 +62,7 @@ fn temp_root(tag: &str) -> PathBuf {
 }
 
 fn write_indexer_config(root: &Path, height: u32) {
-    std::fs::create_dir_all(root).unwrap();
-    std::fs::write(
-        root.join("config.json"),
-        serde_json::to_vec_pretty(&json!({
-            "bitcoin": {"network": "regtest"},
-            "usdb": {"genesis_block_height": height}
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    write_scoped_config(root, height, &scoped_catalog("miner-pass-v2-fixture"));
 }
 
 fn write_indexer_data(root: &Path, height: u32, stable_hash: &str, block_commit: &str) {
@@ -143,11 +134,14 @@ fn write_indexer_data(root: &Path, height: u32, stable_hash: &str, block_commit:
 }
 
 fn build_fixture(tag: &str) -> Fixture {
-    build_fixture_with_scope(tag, None)
+    build_fixture_with_scope(tag, Some("miner-pass-v2-fixture"))
 }
 
 fn scoped_catalog(scope: &str) -> usdb_util::BtcActivationRegistryCatalog {
-    let legacy = embedded_btc_activation_registry_catalog(Network::Regtest).unwrap();
+    let legacy = usdb_util::BtcActivationRegistryCatalog::from_json(include_str!(
+        "../../../../tests/fixtures/miner-pass-v2/catalog.json"
+    ))
+    .unwrap();
     let mut registry = serde_json::to_value(legacy.current_registry()).unwrap();
     registry["schema_version"] = "uip-0008-btc-activation-registry:v3".into();
     registry["scope"]["rules_scope"] = scope.into();
@@ -500,9 +494,7 @@ fn staged_wal_checkpoint_keeps_inventory_stable_during_validation() {
             data_dir: staged.clone(),
             bitcoin_network: Network::Regtest,
             genesis_block_height: fixture.manifest.index_origin_height,
-            activation_registry_catalog: embedded_btc_activation_registry_catalog(Network::Regtest)
-                .unwrap()
-                .clone(),
+            activation_registry_catalog: scoped_catalog("miner-pass-v2-fixture"),
         };
         for _ in 0..2 {
             assert_eq!(

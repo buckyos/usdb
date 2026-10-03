@@ -195,3 +195,7 @@ async fn main() {
     output.println("Indexer has shut down gracefully.");
     log_handle.shutdown();
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/common/miner_pass_catalog.rs"]
+mod test_config;

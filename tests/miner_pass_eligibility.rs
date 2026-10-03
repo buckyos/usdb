@@ -1,7 +1,6 @@
 //! UIP-0016 state transitions using chain evidence and real SQLite/RocksDB block recovery.
 
-#[path = "common/miner_pass_state.rs"]
-mod support;
+use crate::index::test_miner_state as support;
 
 use crate::index::energy_formula::calc_inheritable_energy;
 use crate::index::pass::{InvalidPassMintInscriptionInfo, MintOperationPath};
@@ -15,7 +14,7 @@ async fn apply(
     index: usize,
 ) -> Result<Option<MintOperationPath>, String> {
     h.manager
-        .on_mint_pass_v2(&b.mints[index], &b.evidence, &b.balances)
+        .on_mint_pass(&b.mints[index], &b.evidence, &b.balances)
         .await
 }
 
@@ -51,7 +50,20 @@ async fn first_opening_is_exact_zero_and_can_skip_unavailable_source_history() {
                 Some("INELIGIBLE_RECIPIENT")
             );
         }
+        // The RPC reader must never see provisional audit, for either Active or Invalid mints.
+        assert!(
+            h.storage
+                .get_mint_audit(&b.mints[0].inscription_id)
+                .unwrap()
+                .is_none()
+        );
         h.finish(10, guard);
+        assert!(
+            h.storage
+                .get_mint_audit(&b.mints[0].inscription_id)
+                .unwrap()
+                .is_some()
+        );
         h.cleanup();
     }
 }
@@ -892,7 +904,7 @@ async fn v2_rejects_missing_block_guards_and_mismatched_balance_context_without_
         );
         let err = h
             .manager
-            .on_mint_pass_v2(&b.mints[0], &b.evidence, &other.balances)
+            .on_mint_pass(&b.mints[0], &b.evidence, &other.balances)
             .await
             .unwrap_err();
         for field in [
@@ -914,7 +926,7 @@ async fn v2_rejects_missing_block_guards_and_mismatched_balance_context_without_
         if other_height == 11 {
             let err = h
                 .manager
-                .on_mint_pass_v2(&b.mints[0], &other.evidence, &other.balances)
+                .on_mint_pass(&b.mints[0], &other.evidence, &other.balances)
                 .await
                 .unwrap_err();
             assert!(err.contains("mint_height=10, evidence_height=11"), "{err}");
@@ -995,5 +1007,106 @@ async fn consumed_pass_transfer_does_not_create_an_acquisition_for_a_new_owner()
         Some(MintOperationPath::FirstOpening)
     );
     h.finish(10, g);
+    h.cleanup();
+}
+
+#[tokio::test]
+async fn multi_prev_inheritance_saturates_after_each_individual_discount() {
+    let h = Harness::new("inherit-saturation");
+    let source = source_script(SpendKind::Witness).to_btc_script_hash();
+    h.seed(1, source, 3, vec![]).await;
+    h.seed(2, source, 4, vec![]).await;
+    for (tag, state) in [(1, MinerPassState::Dormant), (2, MinerPassState::Active)] {
+        h.energy
+            .insert_pass_energy_record_for_test(&crate::storage::PassEnergyRecord {
+                inscription_id: id(tag),
+                block_height: 4,
+                state,
+                active_block_height: 3,
+                owner_address: source,
+                owner_balance: 0,
+                owner_delta: 0,
+                energy: u128::MAX,
+            })
+            .unwrap();
+    }
+    let b = MintBlock::new(
+        10,
+        vec![MintSpec::standard(91, recipient(91), 0, vec![id(1), id(2)])],
+        false,
+    );
+    let guard = h.begin(10);
+    assert_eq!(
+        apply(&h, &b, 0).await.unwrap(),
+        Some(MintOperationPath::CrossOwner)
+    );
+    h.finish(10, guard);
+    assert_eq!(h.state(&id(1)), MinerPassState::Consumed);
+    assert_eq!(h.state(&id(2)), MinerPassState::Consumed);
+    assert_eq!(
+        h.energy
+            .get_pass_energy(&b.mints[0].inscription_id, 10)
+            .await
+            .unwrap()
+            .unwrap()
+            .energy,
+        u128::MAX
+    );
+    h.cleanup();
+}
+
+#[tokio::test]
+async fn collab_inheritance_uses_raw_energy_without_applying_contribution_weight() {
+    let h = Harness::new("collab-raw-inheritance");
+    let source = source_script(SpendKind::Witness);
+    h.seed(1, recipient(90).to_btc_script_hash(), 3, vec![])
+        .await;
+    let mut first = MintSpec::standard(92, source.clone(), 0, vec![]);
+    first.kind = MinerPassKind::Collab;
+    first.leader = Some(id(1));
+    let first = MintBlock::new(10, vec![first], false);
+    let g = h.begin(10);
+    apply(&h, &first, 0).await.unwrap();
+    h.finish(10, g);
+    let raw = 1_000_003;
+    h.energy
+        .insert_pass_energy_record_for_test(&crate::storage::PassEnergyRecord {
+            inscription_id: first.mints[0].inscription_id,
+            block_height: 10,
+            state: MinerPassState::Active,
+            active_block_height: 10,
+            owner_address: source.to_btc_script_hash(),
+            owner_balance: 0,
+            owner_delta: 0,
+            energy: raw,
+        })
+        .unwrap();
+    let mut next = MintSpec::standard(93, recipient(93), 0, vec![first.mints[0].inscription_id]);
+    next.kind = MinerPassKind::Collab;
+    next.leader = Some(id(1));
+    let next = MintBlock::new(11, vec![next], false);
+    let g = h.begin(11);
+    assert_eq!(
+        apply(&h, &next, 0).await.unwrap(),
+        Some(MintOperationPath::CrossOwner)
+    );
+    h.finish(11, g);
+    assert_eq!(
+        h.state(&first.mints[0].inscription_id),
+        MinerPassState::Consumed
+    );
+    assert_eq!(
+        h.energy
+            .get_pass_energy(&next.mints[0].inscription_id, 11)
+            .await
+            .unwrap()
+            .unwrap()
+            .energy,
+        calc_inheritable_energy(raw)
+    );
+    assert_ne!(
+        calc_inheritable_energy(raw),
+        calc_inheritable_energy(crate::index::energy_formula::calc_collab_contribution(raw))
+    );
     h.cleanup();
 }

@@ -5,7 +5,7 @@ Type: Standards Track
 Layer: BTC Application / Consensus Input
 Created: 2026-10-02
 Requires: UIP-0000, UIP-0001, UIP-0002, UIP-0003, UIP-0004, UIP-0006, UIP-0008
-Supersedes: UIP-0001 v1 mint eligibility and UIP-0002 v1 same-owner inheritance only after scoped activation
+Supersedes: UIP-0001 v1 mint eligibility and UIP-0002 v1 same-owner inheritance for fresh development networks
 Activation: Planned; no network or height activated by this draft
 Affected-Version-Fields: inscription_schema_version, pass_state_machine_version; other fields subject to encoding review
 Activation-Matrix: See activation section
@@ -67,7 +67,7 @@ balance_before_tx(E, txN)
 - 资格按 UIP-0002 ordered events 更新。先执行的有效开户或有效 transfer 可以阻止同交易后续 mint 使用开户豁免。
 - 精确余额 1 sat 也不满足开户条件，不能用 energy 的 balance units 为零代替。
 - checked arithmetic 溢出、不完整历史和上游读取错误不得转换成 0。证据缺失属于可重试的数据不可用，暂停该块并回滚未提交状态，不得永久写入协议 Invalid。
-- `ever_valid_owner` 必须来自本作用域自 index origin 起的规范历史，包含新规则激活前的有效历史。可以使用可重建的物化索引，但不得在升级、重启、地址归零或切换 current registry 时清空。
+- `ever_valid_owner` 必须来自本作用域自 index origin 起的规范历史，包含该作用域全部有效历史。可以使用可重建的物化索引，但不得在升级、重启、地址归零或切换 current registry 时清空。
 - reorg 应撤回被断开区块首次产生的资格记录；若更早规范历史已有记录，则资格仍被占用。快照必须足以恢复同一结果，不能仅保存当前 Active 集合。
 
 该公式规定余额语义，不强制 RPC 必须直接返回 H-1。如果快照只有 H 的区块后余额，可以在同一规范链锚下以完整且已验证的全块交易增量反推 H-1，再得到每笔交易前余额；减法、覆盖范围和脚本口径都必须严格校验。缺少任一输入脚本/金额或基线余额时，不能使用这个替代路径。
@@ -89,7 +89,7 @@ source input offset = q - sum(input[n].value, n < i)
 
 Ord envelope 的 `offset` 是 envelope 序号，不可直接当作 sat 偏移。Ord pointer 可以改变 sat 归属；不得无条件使用旧实现的 `offset=0`。
 
-首版 v2 证据层采用以下明确子集（v1 回放保持原实现）：
+当前唯一执行的 v2 证据层采用以下明确子集：
 
 - reveal 花费原生 P2TR 输出，叶版本为 `0xc0`，并校验 script/control block 与 commit 输出公钥的承诺关系。
 - 每个 reveal input 仅允许一个 envelope；可以位于非首输入，不把 inscription index 当作 input index。首版也拒绝同输入混合其他协议的多 envelope，比仅拒绝多个 USDB mint 更保守。
@@ -97,7 +97,7 @@ Ord envelope 的 `offset` 是 envelope 序号，不可直接当作 sat 偏移。
 - 对支持的 envelope，实际铭文位于对应输入的首 sat；输入金额必须非零。输出位置仍按所有前置输入金额与输出区间计算，绝非固定 reveal output 0。
 - 无绑定 sat、进入手续费或不可花费输出的形式不支持。普通接收脚本不要求 P2TR。
 
-上述拒绝是确定的“不支持”，不是数据缺失；缺少 Core 证据则仍为可重试错误。来源 commit 若为 coinbase，没有签名输入，不能用于同地址/跨地址来源授权；真正符合首次开户条件的路径无需取得来源授权。子集已有独立证据测试，并用于独立 v2 状态机测试；生产分派及激活前仍须完成整体验收。
+上述拒绝是确定的“不支持”，不是数据缺失；缺少 Core 证据则仍为可重试错误。来源 commit 若为 coinbase，没有签名输入，不能用于同地址/跨地址来源授权；真正符合首次开户条件的路径无需取得来源授权。子集已接入逐块校验 active set 的生产区块管线，并有隔离 RPC/双库存储测试；网络激活前仍须完成真实服务整体验收。
 
 依赖来源的路径，首版支持范围为：
 
@@ -129,29 +129,39 @@ standard/Leader 与 collab 共用同一资格入口。Leader 从 D 迁往 E 后�
 
 # 版本与激活
 
-本草案建议新 mint JSON 使用整数 `v: 2`，沿用现有业务字段，不新增 `sig/src/dest`。source/destination 从链上取得。建议原版本族演进为：
+当前开发测试网可彻底重置，生产程序只支持 MinerPass v2，不保留 v1 parser/状态机或历史执行分支。新 mint JSON 使用整数 `v: 2`，沿用现有业务字段，不新增 `sig/src/dest`；source/destination 从链上取得。
 
-| 字段 | 激活前 | 激活后候选 |
-| --- | --- | --- |
-| inscription_schema_version | uip-0001-miner-pass-inscription:v1 | uip-0001-miner-pass-inscription:v2 |
-| pass_state_machine_version | uip-0002-pass-state-machine:v1 | uip-0002-pass-state-machine:v2 |
-| energy / effective-energy / level formulas | 已有 v1 | 参数与数学公式不变时保持 v1 |
-| query / state-view / commit protocol | 已发布版本 | 在接口与 canonical encoding 审查时决定，不能预先宣称全不变 |
+| 字段 | 本次唯一执行版本 |
+| --- | --- |
+| inscription_schema_version | uip-0001-miner-pass-inscription:v2 |
+| pass_state_machine_version | uip-0002-pass-state-machine:v2 |
+| energy / effective-energy / level formulas | 数学规则不变，保持 v1 |
+| query / state-view / commit protocol | 保持原版本；新增辅助审计使用独立 schema |
 
-两个 v2 版本族须作为受支持组合分派；不能允许 v2 schema 搭配 v1 状态机。active version set 由指定 BTC source、rules scope、registry ID 及 BTC 高度选择，JSON v 不负责选择宽松执行器。激活后新出现的 `v:1` mint 必须 Invalid，不能绕过来源检查；激活前按原规则重放，已有合法 v1 pass 可以作为新操作的 prev。
+registry 的 BTC source、rules scope、revision、按高度查询及 active-version/state identity 框架保留。启动、每个区块、历史查询和 checkpoint 验证只接受上述成对 v2；v1、混合或未知组合拒绝执行。所有已处理高度的新 `v:1` mint 都记为 Invalid，不能选择宽松执行器。重置后的网络从 origin 使用 v2，不导入或继承旧开发网的 v1 pass/能量/状态。
+
+未来正式网若升级到 v3/v4，必须另行实现并测试升级前历史语义、激活边界和重放兼容；保留框架不表示当前已实现这些未知版本。
 
 若 qualification 完全由已有已承诺历史派生，缓存不是独立共识状态；若新增不可派生字段或改变规范编码，则必须定义其 commitment、版本和快照恢复规则。不能只升级一个版本字符串。尤其当前 commit 版本还关联 balance-history，必须区分 pass mutation 编码与上游快照协议的影响，避免无必要地改变 BTC 基础数据身份。
 
+本次实现保留 `PassBlockMutation` 的字段和编码、逐块 rolling commit、经济 query/state-view 及 balance-history 版本。新资格依赖规范链输入和既有持有历史，结果仍使用已有 mint/Invalid/状态转移 mutation；`active_version_set_id` 把成对 v2 和作用域纳入现有 local/system state 身份。Rust/Go 使用同一隔离 catalog 的黄金向量互验，保持旧默认 catalog/ID 原样；Go 额外识别显式选择的隔离 regtest v2 catalog，不改变默认 chain config。
+
+v2 的规范事件集合由当前完整区块按锁定 Ord parser 解析。若配置的数据源漏报、重复、内容/有效分类不一致，或使用非规范 envelope 编号，整块作为数据源错误停止并重试，不能静默接受差异。执行使用链上规范内容和编号。
+
+v2 的 Invalid 记录沿用原 mutation 格式，但无受支持 sat 位置的铭文使用明确占位：`mint_owner` 为全零 32 字节 script hash，satpoint 为 `<reveal_txid>:4294967295:0`；这些值不代表收款地址或可花费输出，不能占用开户资格或用作有效 pass 跟踪种子。此时辅助审计的 `recipient=null`。有受支持 sat 位置的 schema Invalid 仍记录真实 owner/satpoint；schema 校验错误优先于 envelope 不支持错误。旧 v1 网络记录仅作历史资料，不由新程序重放。
+
+辅助表 `miner_pass_mint_audit` 记录已完成 v2 尝试的来源位置/签名形式、交易前余额、历史资格、成功路径或协议拒绝原因。它与 pass 状态在同一个区块 savepoint 发布和回滚，不作为资格输入，也不新增到 mutation root。运行时缺证据/I/O 失败中止整块，不持久化 Invalid 或成功审计；日志上下文不进入 canonical Invalid reason。审计可由规范链和持有历史重放生成，不是独立的来源授权证明或 Merkle proof。RPC 语义见 [get_pass_mint_audit](../usdb-indexer/usdb-indexer-rpc-v1.md#8a-get_pass_mint_audit)。
+
 | BTC source | USDB rules scope | 激活高度 | 状态 |
 | --- | --- | --- | --- |
-| btc-regtest | 隔离验收 catalog，具体名称由测试夹具固定 | 测试指定 H | Planned |
-| btc-mainnet | 现有 legacy / testnet-v0 | 不添加本文激活 | Planned；旧规则保持 |
+| btc-regtest | miner-pass-v2-fixture | 自 H=0 | 隔离开发 catalog；Rust 显式 pin，Go 可显式选用；不是默认网络 |
+| btc-mainnet | 现有 legacy / testnet-v0 | 不添加本文激活 | 默认 catalog/ID 冻结；新程序拒绝其 v1 规则 |
 | btc-mainnet | 待发布 testnet-v1 | 待冻结网络包 | Planned |
 | btc-mainnet | 未来正式网作用域 | 独立审议 | Planned |
 
 代码合并不等于激活。registry 隔离、USDB chain checkpoint 绑定、Go 版本支持及发布包必须一致。P2P fork ID 仅纳入 USDB checkpoint 高度，不替代对 BTC 高度规则与版本身份的验证。
 
-激活不追溯证明旧 pass 获得过授权，也不自动修复历史恶意绑定。旧网如需强制处理存量须有独立迁移规则；可丢弃的测试网重置属于发布阶段操作，不能借本草案改写原网历史。
+本次不提供旧开发网在线升级或数据迁移。发布前须冻结新的作用域、catalog 和网络包，以全新数据集启动；实际重置另行实施，不能把旧 registry ID 重新解释成 v2。
 
 # 数据可用性与工具
 
@@ -192,7 +202,7 @@ control-plane prepare 必须区分 D 与 E，按 D 查询可继承 pass，同时
 | M13 | 同一交易先发生有效 pass transfer 到 E，再执行第三方 mint | transfer 占用资格，后续 mint 不获开户豁免 |
 | M14 | 所需 H-1 余额、commit 或 prevout 暂缺 | 暂停/回滚该块并重试，不记录永久 Invalid |
 | M15 | 断开首次开户所在块，再以另一规范分支重放 | 撤回该分支的资格占用，其他历史资格保留 |
-| M16 | 激活高度 H-1 / H / H+1 出现新 v1 mint | H-1 使用原规则；H 起拒绝；旧 v1 prev 不因此作废 |
+| M16 | origin 起任意高度出现 v1 mint；registry 指定旧/混合/未来规则 | v1 mint Invalid；不支持的规则拒绝执行，未来边界在业务写入前停止 |
 | M17 | D 普通付款到恶意预承诺 commit，后 reveal 回 D，来源合规 | 可以通过；是明确接受的业务授权边界 |
 | M18 | standard/collab 各执行 M01/M05/M07，Leader 从 D 迁 E | 相同资格规则；旧协作者绑定不自动跟随 |
 
@@ -202,6 +212,6 @@ sat 映射数值向量：commit 两输入分别为 A=700、D=2300；输出依次
 
 # 参考实现与待完成事项
 
-当前行为的代码入口、独立证据层及状态机核心验收见 [实施计划](../usdb-indexer/miner-pass-operation-eligibility-plan.md)。在启用 v2 前还必须完成生产 parser/按高度分派、完整区块与 tracker 恢复联调、版本/承诺兼容、RPC 与控制面核验、签名 checkpoint 恢复及包含历史取证的真实签名 regtest 整体验收。
+当前行为的代码入口及分批验收见 [实施计划](../usdb-indexer/miner-pass-operation-eligibility-plan.md)。唯一 v2 parser/状态机、按高度支持检查、真实区块执行器/tracker、审计 RPC 和回滚重放已在隔离 Core/BH RPC 夹具及真实 SQLite/RocksDB 上接通。仍须完成控制面引导/核验、签名 checkpoint 导出安装、真实 Core/AssumeUTXO/BH 完整管线与历史取证整体验收，才能进入发布激活。
 
-本草案中的 v2 值是实现候选，不修改现有 embedded registry、testnet-v0 bundle、chain genesis 或在线服务。正式激活高度和节点重置另行按发布流程冻结。
+本草案中的 v2 值已用于隔离开发执行；不修改旧默认 embedded registry、testnet-v0 bundle、chain genesis 或在线服务。正式激活高度和节点重置另行按发布流程冻结。

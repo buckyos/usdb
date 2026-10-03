@@ -1,4 +1,4 @@
-//! UIP-0016 eligibility and transitions, invoked explicitly until scoped version dispatch is added.
+//! UIP-0016 eligibility and transitions for the only supported MinerPass rule set.
 
 use std::collections::BTreeSet;
 
@@ -12,25 +12,60 @@ use crate::btc::{
     transaction_balance::TransactionBalanceContext,
 };
 use crate::index::{MinerPassState, MintValidationErrorCode, PassBlockMutation};
-use crate::storage::MinerPassInfo;
+use crate::storage::{MinerPassInfo, MinerPassMintAudit, MintSourceAudit};
 
 impl MinerPassManager {
     /// Apply a schema-validated v2 mint in ordered block context using actual chain evidence.
     /// The caller must derive payload fields from this inscription and enforce the active schema.
     /// Returns None for a recorded protocol Invalid, or the successful path. Data/I/O errors
     /// require the caller to abort the whole block, including energy, SQLite and tracker staging.
-    /// This entrypoint does not select activation; production v1 dispatch remains unchanged.
-    pub(crate) async fn on_mint_pass_v2(
+    pub(crate) async fn on_mint_pass(
         &self,
         mint: &PassMintInscriptionInfo,
         evidence: &MintEvidenceContext,
         balances: &TransactionBalanceContext,
     ) -> Result<Option<MintOperationPath>, String> {
-        let result = self.apply_mint_v2(mint, evidence, balances).await;
-        result.map_err(|err| {
+        let mut audit = MinerPassMintAudit {
+            schema_version: "miner-pass-mint-audit:v1".into(),
+            inscription_id: mint.inscription_id.to_string(),
+            block_height: mint.mint_block_height,
+            block_hash: String::new(),
+            recipient: Some(mint.mint_owner),
+            balance_before_tx: None,
+            ever_valid_owner: None,
+            source: None,
+            operation_path: None,
+            error_code: None,
+            error_reason: None,
+        };
+        let result = async {
+            let path = self
+                .apply_mint(mint, evidence, balances, &mut audit)
+                .await?;
+            audit.operation_path = path.map(|path| {
+                match path {
+                    MintOperationPath::FirstOpening => "first_opening",
+                    MintOperationPath::SameOwner => "same_owner",
+                    MintOperationPath::CrossOwner => "cross_owner",
+                }
+                .into()
+            });
+            if path.is_none() {
+                let pass = self
+                    .storage
+                    .get_pass_by_inscription_id(&mint.inscription_id)?
+                    .ok_or("Rejected mint missing from writer state")?;
+                audit.error_code = pass.invalid_code;
+                audit.error_reason = pass.invalid_reason;
+            }
+            self.storage.put_mint_audit(&audit)?;
+            Ok(path)
+        }
+        .await;
+        result.map_err(|err: String| {
             // Keep the same operation context in logs and in errors propagated to the block executor.
             let msg = format!(
-                "MinerPass v2 block processing failed: module=pass_manager, action=apply_mint_v2, inscription_id={}, block_height={}, mint_txid={}, mint_owner={}, satpoint={}, error={err}",
+                "MinerPass v2 block processing failed: module=pass_manager, action=apply_mint, inscription_id={}, block_height={}, mint_txid={}, mint_owner={}, satpoint={}, error={err}",
                 mint.inscription_id,
                 mint.mint_block_height,
                 mint.mint_txid,
@@ -42,11 +77,12 @@ impl MinerPassManager {
         })
     }
 
-    async fn apply_mint_v2(
+    async fn apply_mint(
         &self,
         mint: &PassMintInscriptionInfo,
         evidence: &MintEvidenceContext,
         balances: &TransactionBalanceContext,
+        audit: &mut MinerPassMintAudit,
     ) -> Result<Option<MintOperationPath>, String> {
         self.storage.require_block_savepoint()?;
         self.energy_manager
@@ -64,6 +100,7 @@ impl MinerPassManager {
             ));
         }
         let inputs = evidence.block_prevouts()?;
+        audit.block_hash = inputs.block().block_hash().to_string();
         if inputs.height() != mint.mint_block_height {
             return Err(format!(
                 "Mint height disagrees with evidence block: mint_height={}, evidence_height={}, evidence_block_hash={}",
@@ -124,6 +161,8 @@ impl MinerPassManager {
         let occupied = self
             .storage
             .has_ever_valid_owner(&mint.mint_owner, mint.mint_block_height)?;
+        audit.balance_before_tx = Some(balance);
+        audit.ever_valid_owner = Some(occupied);
         let can_open = balance == 0 && !occupied;
 
         // Only a true first opening can avoid loading historical source authorization. The
@@ -143,6 +182,7 @@ impl MinerPassManager {
                         .await;
                 }
             };
+            audit.source = Some(MintSourceAudit::from(&proof));
             if let SourceAuthorization::Unsupported(reason) = proof.authorization {
                 return self
                     .reject_v2(mint, MintValidationErrorCode::UnauthorizedSource, reason)

@@ -184,6 +184,24 @@ impl From<&IndexerSnapshotInfo> for ConsensusStateReference {
     }
 }
 
+/// Parameters for a mint audit at a durably observed height, with optional expected state.
+pub type GetPassMintAuditParams = GetPassSnapshotParams;
+
+/// Auxiliary v2 mint diagnostics bound to their registry-selected mint rules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassMintAuditInfo {
+    /// Durable query height; the mint may have happened earlier.
+    pub observed_at_height: u32,
+    /// Durable state selected for this query; audit itself is auxiliary and not a Merkle proof.
+    pub observed_state: ConsensusStateReference,
+    /// Exact registry revision used to interpret the mint height.
+    pub activation_registry_id: String,
+    /// Rule set ID at the reveal height, including rules scope.
+    pub active_version_set_id: String,
+    /// Rebuildable chain/ordered-history audit. Absence of a source proof on first opening is intentional.
+    pub audit: usdb_util::MinerPassMintAudit,
+}
+
 /// Parameters for `get_pass_block_commit`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassBlockCommitParams {
@@ -1430,6 +1448,14 @@ pub trait UsdbIndexerRpc {
     /// Returns one pass snapshot at a target height.
     #[rpc(name = "get_pass_snapshot")]
     fn get_pass_snapshot(&self, params: GetPassSnapshotParams) -> JsonResult<Option<PassSnapshot>>;
+
+    /// Return a completed v2 attempt's chain/eligibility audit; None for v1 or unknown mints.
+    /// Missing runtime evidence is not represented as a protocol Invalid audit.
+    #[rpc(name = "get_pass_mint_audit")]
+    fn get_pass_mint_audit(
+        &self,
+        params: GetPassMintAuditParams,
+    ) -> JsonResult<Option<PassMintAuditInfo>>;
 
     /// Returns active pass list at a target height with pagination.
     #[rpc(name = "get_active_passes_at_height")]

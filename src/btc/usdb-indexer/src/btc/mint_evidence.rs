@@ -31,6 +31,13 @@ pub struct MintSatEvidence {
     pub mint_owner: BtcScriptHash,
 }
 
+impl MintSatEvidence {
+    /// Exact commit output whose script and sat location were checked against this reveal.
+    pub fn commit_outpoint(&self) -> OutPoint {
+        self.commit_outpoint
+    }
+}
+
 /// Deterministic sat-form rejection is separate from retryable evidence loading errors.
 #[derive(Debug, Clone)]
 pub enum MintSatOutcome {

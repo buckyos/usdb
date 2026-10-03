@@ -32,3 +32,12 @@ pub use named_lock::{NamedLock, NamedLockGuard};
 
 #[macro_use]
 extern crate log;
+
+mod miner_pass_audit;
+pub use miner_pass_audit::*;
+
+#[cfg(test)]
+extern crate self as usdb_util;
+#[cfg(test)]
+#[path = "../../../../tests/miner_pass_rule_versions.rs"]
+mod miner_pass_rule_versions;

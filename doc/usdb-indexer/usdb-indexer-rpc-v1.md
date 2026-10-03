@@ -426,6 +426,50 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - 若高度低于统一历史保留窗口下界（当前实现为 `genesis_block_height`），会返回共享共识错误 `STATE_NOT_RETAINED`。
 - 若高度合法，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`。
 
+### 8a) `get_pass_mint_audit`
+
+返回 UIP-0016 激活规则下**已完成 mint 尝试**的辅助审计。`get_rpc_info.features` 的 `pass_mint_audit` 表示提供此方法；不改变已有经济 query/state-view 版本。当前程序只支持 MinerPass v2，网络启用仍须显式配置相应 catalog。
+
+请求与 `get_pass_snapshot` 相同，JSON-RPC 使用单个对象参数：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "get_pass_mint_audit",
+  "params": [{
+    "inscription_id": "<reveal_txid>i0",
+    "at_height": 10,
+    "context": null
+  }]
+}
+```
+
+建议明确 `at_height`；可提供与其他历史查询一致的 `ConsensusQueryContext`，核对 `requested_height` 及预期状态/registry。上下文查询仍要求现有的 consensus readiness 条件。响应为 `null` 或对象：
+
+| 字段 | 语义 |
+| --- | --- |
+| `observed_at_height` / `observed_state` | 本次查询选取的已提交高度和共识状态引用 |
+| `activation_registry_id` | 解释该历史状态的精确 registry revision |
+| `active_version_set_id` | **mint 高度**的规则集合 ID；可不同于查询高度的集合 |
+| `audit.schema_version` | 固定为 `miner-pass-mint-audit:v1`，独立于 mint JSON 的 `v` |
+| `audit.inscription_id` / `block_height` / `block_hash` | reveal 铭文和规范块身份 |
+| `audit.recipient` | E 的 script hash；无法定位受支持 sat 的 Invalid 为 `null` |
+| `audit.balance_before_tx` / `ever_valid_owner` | 该 mint 资格检查前的精确 sat 余额/有无有效持有历史；提前拒绝未执行的检查为 `null` |
+| `audit.source` | 已加载来源证据：commit 高度/哈希/outpoint、来源 input index/outpoint/sat offset、D 的 script hash、签名形式和 annex 标志；首次开户无需来源授权，因此可为 `null` |
+| `audit.operation_path` | 成功时 `first_opening`、`same_owner` 或 `cross_owner`；Invalid 为 `null` |
+| `audit.error_code` / `error_reason` | 协议 Invalid 的规范原因；成功为 `null` |
+
+`source.authorization` 为 `p2pkh_all`、`p2wpkh_all`、`taproot_key_path` 或被拒绝证据的 `unsupported`；不包含签名/witness 原文。来源参与不等于对业务内容的签名授权。
+
+一致性与失败语义：
+
+- `null` 表示该高度尚无此 mint、未知铭文；不能把它当作失败铭文的永久判定。
+- 确定的无效 v2 铭文返回审计和拒绝原因。缺 Core/BH 证据导致整块暂停时，不创建该记录；调用方应同时核对目标高度是否已同步。
+- 读取在同一个 committed SQLite 快照中核对查询高度的 pass block commit、mint 存在性和 reveal block hash；不读取待提交区块的审计。并发回滚导致选定状态不可用时返回错误，调用方重新取得状态后重试。
+- 已提交 v2 mint 缺少审计、审计内容无法解码或元数据与规范记录不符时返回内部数据错误，不伪装成未知。恢复完整历史数据后重放可重建；不支持用空审计自动补齐缺历史的 checkpoint。
+- 审计不参与状态承诺。`observed_state` 标识其观察上下文，不能据此将任意审计字段当成由 Merkle proof 验证的内容；仍需信任本机索引或独立重放。
+
 ### 9) `get_pass_history`
 
 查询某 inscription 的历史事件流。
@@ -699,7 +743,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
     "balance_history_api_version": "1.0.0",
     "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
     "activation_registry_id": "...",
-    "active_version_set": {"inscription_schema_version":"uip-0001-miner-pass-inscription:v1","pass_state_machine_version":"uip-0002-pass-state-machine:v1","energy_formula_version":"uip-0003-pass-energy-formula:v1","effective_energy_formula_version":"uip-0004-collab-leader-effective-energy:v1","level_formula_version":"uip-0005-level-and-real-difficulty:v1","query_semantics_version":"uip-0006-economic-query-semantics:v1","state_view_version":"uip-0006-usdb-economic-state-view:v1","commit_protocol_version":"uip-0008-usdb-local-state-commit:v1","balance_history_semantics_version":"balance-snapshot-at-or-before:v1"},
+    "active_version_set": {"inscription_schema_version":"uip-0001-miner-pass-inscription:v2","pass_state_machine_version":"uip-0002-pass-state-machine:v2","energy_formula_version":"uip-0003-pass-energy-formula:v1","effective_energy_formula_version":"uip-0004-collab-leader-effective-energy:v1","level_formula_version":"uip-0005-level-and-real-difficulty:v1","query_semantics_version":"uip-0006-economic-query-semantics:v1","state_view_version":"uip-0006-usdb-economic-state-view:v1","commit_protocol_version":"uip-0008-usdb-local-state-commit:v1","balance_history_semantics_version":"balance-snapshot-at-or-before:v1"},
     "active_version_set_id": "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
   },
   "pass": {
@@ -815,7 +859,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
     "balance_history_api_version": "1.0.0",
     "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
     "activation_registry_id": "...",
-    "active_version_set": {"inscription_schema_version":"uip-0001-miner-pass-inscription:v1","pass_state_machine_version":"uip-0002-pass-state-machine:v1","energy_formula_version":"uip-0003-pass-energy-formula:v1","effective_energy_formula_version":"uip-0004-collab-leader-effective-energy:v1","level_formula_version":"uip-0005-level-and-real-difficulty:v1","query_semantics_version":"uip-0006-economic-query-semantics:v1","state_view_version":"uip-0006-usdb-economic-state-view:v1","commit_protocol_version":"uip-0008-usdb-local-state-commit:v1","balance_history_semantics_version":"balance-snapshot-at-or-before:v1"},
+    "active_version_set": {"inscription_schema_version":"uip-0001-miner-pass-inscription:v2","pass_state_machine_version":"uip-0002-pass-state-machine:v2","energy_formula_version":"uip-0003-pass-energy-formula:v1","effective_energy_formula_version":"uip-0004-collab-leader-effective-energy:v1","level_formula_version":"uip-0005-level-and-real-difficulty:v1","query_semantics_version":"uip-0006-economic-query-semantics:v1","state_view_version":"uip-0006-usdb-economic-state-view:v1","commit_protocol_version":"uip-0008-usdb-local-state-commit:v1","balance_history_semantics_version":"balance-snapshot-at-or-before:v1"},
     "active_version_set_id": "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
   },
   "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
@@ -902,7 +946,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
     "balance_history_api_version": "1.0.0",
     "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
     "activation_registry_id": "...",
-    "active_version_set": {"inscription_schema_version":"uip-0001-miner-pass-inscription:v1","pass_state_machine_version":"uip-0002-pass-state-machine:v1","energy_formula_version":"uip-0003-pass-energy-formula:v1","effective_energy_formula_version":"uip-0004-collab-leader-effective-energy:v1","level_formula_version":"uip-0005-level-and-real-difficulty:v1","query_semantics_version":"uip-0006-economic-query-semantics:v1","state_view_version":"uip-0006-usdb-economic-state-view:v1","commit_protocol_version":"uip-0008-usdb-local-state-commit:v1","balance_history_semantics_version":"balance-snapshot-at-or-before:v1"},
+    "active_version_set": {"inscription_schema_version":"uip-0001-miner-pass-inscription:v2","pass_state_machine_version":"uip-0002-pass-state-machine:v2","energy_formula_version":"uip-0003-pass-energy-formula:v1","effective_energy_formula_version":"uip-0004-collab-leader-effective-energy:v1","level_formula_version":"uip-0005-level-and-real-difficulty:v1","query_semantics_version":"uip-0006-economic-query-semantics:v1","state_view_version":"uip-0006-usdb-economic-state-view:v1","commit_protocol_version":"uip-0008-usdb-local-state-commit:v1","balance_history_semantics_version":"balance-snapshot-at-or-before:v1"},
     "active_version_set_id": "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
   },
   "leader_pass_id": "txidi0",

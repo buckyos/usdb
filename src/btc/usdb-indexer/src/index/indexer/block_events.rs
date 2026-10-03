@@ -1,4 +1,4 @@
-use super::InscriptionIndexer;
+use super::{BlockMintContext, InscriptionIndexer};
 use crate::inscription::{InscriptionNewItem, InscriptionTransferItem};
 use bitcoincore_rpc::bitcoin::{Block, OutPoint, Txid};
 use std::collections::HashMap;
@@ -155,6 +155,7 @@ impl<'a> BlockEventExecutor<'a> {
     pub(super) async fn execute(
         &self,
         ordered_events: Vec<BlockProcessEvent>,
+        mint_context: &BlockMintContext,
     ) -> Result<(usize, usize), String> {
         let mut new_inscriptions_count = 0usize;
         let mut transfer_count = 0usize;
@@ -162,7 +163,7 @@ impl<'a> BlockEventExecutor<'a> {
         for event in ordered_events {
             match event {
                 BlockProcessEvent::Mint(item) => {
-                    self.indexer.on_new_inscription(&item).await?;
+                    self.indexer.on_new_inscription(&item, mint_context).await?;
                     new_inscriptions_count += 1;
                 }
                 BlockProcessEvent::Transfer(item) => {

@@ -25,6 +25,8 @@ Activation: BTC network activation matrix
 
 本文不定义 energy 具体公式、继承折损参数或 `effective_energy` 公式。
 
+> 开发阶段实现更新：当前程序仅执行 [UIP-0016](UIP-0016-miner-pass-operation-eligibility.md) 的 MinerPass v2；本文 v1 铸造/继承约束保留作历史记录，不表示仍有 v1 执行器。新开发网使用全新数据及显式 v2 catalog。
+
 # 动机
 
 早期实现已经具备可运行的 pass 状态记录和历史记录，但曾有几类规则尚未标准化：

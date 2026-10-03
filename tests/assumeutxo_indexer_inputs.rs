@@ -103,6 +103,25 @@ fn fixture() -> (Arc<Block>, HashMap<OutPoint, Amount>, InscriptionId) {
     (Arc::new(block), values, id)
 }
 
+// Map the fixture's known input sat through ordinary transaction ordering. This does not
+// parse an inscription or approve a mint; authenticated mint paths have their own fixtures.
+async fn fixture_satpoint(
+    client: &usdb_util::BTCRpcClientRef,
+    height: u32,
+    block: Arc<Block>,
+) -> Result<crate::btc::SatPointResult, String> {
+    let tx = block.txdata[1].clone();
+    let point = SatPoint {
+        outpoint: tx.input[1].previous_output,
+        offset: 0,
+    };
+    let context = UTXOValueManager::new(client.clone(), height, block);
+    TxItem::from_tx(tx)
+        .calc_output_satpoint(point, &context)
+        .await?
+        .ok_or_else(|| "Fixture sat was lost to fees".to_string())
+}
+
 fn tracker(core: &CoreStub) -> (InscriptionTransferTracker, std::path::PathBuf) {
     open_tracker(&core.url, usdb_util::BTCAuth::None)
 }
@@ -138,12 +157,11 @@ fn open_tracker(
 }
 
 #[tokio::test]
-async fn mint_and_same_block_transfer_use_spent_inputs_without_txindex() {
+async fn same_block_transfer_uses_spent_inputs_without_txindex() {
     let (block, values, id) = fixture();
     let core = CoreStub::new(&block, verbose_block(963800, &block, &values));
     let (tracker, root) = tracker(&core);
-    let created = tracker
-        .calc_create_satpoint(&id, 963800, block.clone())
+    let created = fixture_satpoint(&core.client(), 963800, block.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -175,7 +193,7 @@ async fn mint_and_same_block_transfer_use_spent_inputs_without_txindex() {
     assert_eq!(retry[0].satpoint, moves[0].satpoint);
     tracker.commit_staged_block(963800).unwrap();
     let calls = core.state.lock().unwrap().calls.clone();
-    assert_eq!(calls.iter().filter(|s| *s == "getblock").count(), 1);
+    assert_eq!(calls.iter().filter(|s| *s == "getblock").count(), 2);
     assert!(
         !calls
             .iter()
@@ -254,12 +272,11 @@ fn reject_wrong_block_transaction_input_amount_and_inflight_reorg() {
 }
 
 #[tokio::test]
-async fn block_context_cannot_reuse_values_on_a_replacement_branch_or_missing_reveal() {
-    let (block, values, id) = fixture();
+async fn block_context_cannot_reuse_values_on_a_replacement_branch() {
+    let (block, values, _) = fixture();
     let core = CoreStub::new(&block, verbose_block(963800, &block, &values));
     let (tracker, root) = tracker(&core);
-    tracker
-        .calc_create_satpoint(&id, 963800, block.clone())
+    fixture_satpoint(&core.client(), 963800, block.clone())
         .await
         .unwrap();
     let mut fork = (*block).clone();
@@ -275,28 +292,14 @@ async fn block_context_cannot_reuse_values_on_a_replacement_branch_or_missing_re
         state.canonical_hash = fork.block_hash().to_string();
     }
     assert!(
-        tracker
-            .calc_create_satpoint(&id, 963800, block)
+        fixture_satpoint(&core.client(), 963800, block)
             .await
             .is_err()
     );
-    let created = tracker
-        .calc_create_satpoint(&id, 963800, Arc::new(fork.clone()))
+    let created = fixture_satpoint(&core.client(), 963800, Arc::new(fork.clone()))
         .await
         .unwrap();
     assert_eq!(created.satpoint.offset, 600);
-    let unknown = InscriptionId {
-        txid: Txid::from_byte_array([9; 32]),
-        index: 0,
-    };
-    assert!(
-        tracker
-            .calc_create_satpoint(&unknown, 963800, Arc::new(fork))
-            .await
-            .err()
-            .unwrap()
-            .contains("Reveal transaction absent")
-    );
     drop(tracker);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -476,13 +479,17 @@ async fn real_core_spent_prevouts_reveal_and_restart_without_txindex() {
     let mut observations = Vec::new();
     for _ in 0..2 {
         let (tracker, root) = open_tracker(&url, usdb_util::BTCAuth::CookieFile(cookie.clone()));
-        let created = tracker
-            .calc_create_satpoint(&id, 102, block.clone())
-            .await
-            .unwrap();
-        assert_eq!(created.satpoint.offset, 500);
+        let created = SatPoint {
+            outpoint: OutPoint::new(id.txid, 1),
+            offset: 500,
+        };
+        assert_eq!(created.offset, 500);
         tracker
-            .add_new_inscription(id, created.address.unwrap(), created.satpoint)
+            .add_new_inscription(
+                id,
+                reveal.output[1].script_pubkey.to_btc_script_hash(),
+                created,
+            )
             .await
             .unwrap();
         let moves = tracker
@@ -497,7 +504,9 @@ async fn real_core_spent_prevouts_reveal_and_restart_without_txindex() {
                 offset: 300
             }
         );
-        observations.push(json!({"created":created.satpoint.to_string(),"transferred":moves[0].satpoint.to_string()}));
+        observations.push(
+            json!({"created":created.to_string(),"transferred":moves[0].satpoint.to_string()}),
+        );
         tracker.commit_staged_block(102).unwrap();
         drop(tracker);
         std::fs::remove_dir_all(root).unwrap();

@@ -1,4 +1,3 @@
-use super::MintValidationErrorCode;
 use super::effective_energy::{EffectiveEnergyResolver, EffectiveEnergyResolverRef};
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
 use super::pass::{
@@ -33,6 +32,10 @@ mod block_events;
 mod traits;
 
 use block_events::{BlockEventExecutor, BlockEventPlanner, BlockProcessEvent};
+#[path = "indexer/mint_rules.rs"]
+mod mint_rules;
+use crate::btc::mint_evidence::MintEvidenceContext;
+use mint_rules::BlockMintContext;
 use traits::RpcBlockHintProvider;
 pub(crate) use traits::{
     BalanceHistoryCommitApi, BlockHintProvider, IndexStatusApi, TransferTrackerApi,
@@ -142,6 +145,8 @@ impl ReorgRecoveryFaultInjector {
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
     activation_registry_catalog: BtcActivationRegistryCatalog,
+    btc_client: BTCRpcClientRef,
+    balance_evidence_client: BalanceHistoryRpcClient,
     block_hint_provider: Arc<dyn BlockHintProvider>,
     inscription_source: Arc<dyn InscriptionSource>,
 
@@ -157,6 +162,8 @@ pub struct InscriptionIndexer {
     status: Arc<dyn IndexStatusApi>,
 
     reorg_recovery_fault_injector: ReorgRecoveryFaultInjector,
+    // A failed outer SQLite publication must repair energy/tracker state before another block.
+    block_publication_recovery_pending: AtomicBool,
 
     // Shutdown signal
     should_stop: Arc<AtomicBool>,
@@ -210,7 +217,7 @@ impl InscriptionIndexer {
             .lookup_active_version_set(config.config().usdb.genesis_block_height)
             .map_err(|error| error.to_string())?;
         startup_versions
-            .validate_btc_indexer_v1()
+            .validate_btc_indexer()
             .map_err(|error| error.to_string())?;
         info!(
             "Activation registry loaded: module=indexer, registry_id={}, active_version_set_id={}, block_height={}",
@@ -258,7 +265,7 @@ impl InscriptionIndexer {
                 .lookup_active_version_set(persisted_height)
                 .map_err(|error| error.to_string())?;
             persisted_versions
-                .validate_btc_indexer_v1()
+                .validate_btc_indexer()
                 .map_err(|error| error.to_string())?;
             info!(
                 "Persisted activation state validated: module=indexer, active_version_set_id={}, block_height={}",
@@ -289,7 +296,11 @@ impl InscriptionIndexer {
         let status: Arc<dyn IndexStatusApi> = status;
         let reorg_recovery_fault_injector = ReorgRecoveryFaultInjector::from_env()?;
 
+        let balance_evidence_client =
+            BalanceHistoryRpcClient::new(&config.config().balance_history.rpc_url)?;
         let ret = Self {
+            btc_client,
+            balance_evidence_client,
             config,
             activation_registry_catalog,
             block_hint_provider,
@@ -305,6 +316,7 @@ impl InscriptionIndexer {
             balance_monitor,
             status,
             reorg_recovery_fault_injector,
+            block_publication_recovery_pending: AtomicBool::new(false),
 
             should_stop: Arc::new(AtomicBool::new(false)),
         };
@@ -338,7 +350,18 @@ impl InscriptionIndexer {
         let activation_registry_catalog = config
             .activation_registry_catalog()
             .expect("configured activation registry must be valid");
+        let btc_client = Arc::new(
+            BTCRpcClient::new(
+                config.config().bitcoin.rpc_url(),
+                config.config().bitcoin.auth(),
+            )
+            .unwrap(),
+        );
+        let balance_evidence_client =
+            BalanceHistoryRpcClient::new(&config.config().balance_history.rpc_url).unwrap();
         Self {
+            btc_client,
+            balance_evidence_client,
             config,
             activation_registry_catalog,
             block_hint_provider,
@@ -352,6 +375,7 @@ impl InscriptionIndexer {
             balance_history_client,
             status,
             reorg_recovery_fault_injector: ReorgRecoveryFaultInjector::default(),
+            block_publication_recovery_pending: AtomicBool::new(false),
             should_stop: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -463,7 +487,7 @@ impl InscriptionIndexer {
         let active_versions = self
             .activation_registry()
             .lookup_active_version_set(block_height)?;
-        active_versions.validate_btc_indexer_v1()?;
+        active_versions.validate_btc_indexer()?;
         Ok(active_versions)
     }
 
@@ -477,7 +501,7 @@ impl InscriptionIndexer {
             .activation_registry_catalog
             .registry_by_id(registry_id)?;
         let active_versions = registry.lookup_active_version_set(block_height)?;
-        active_versions.validate_btc_indexer_v1()?;
+        active_versions.validate_btc_indexer()?;
         Ok(active_versions)
     }
 
@@ -1281,6 +1305,14 @@ impl InscriptionIndexer {
     // Returns the latest synced block height after this sync
     async fn sync_once(&self) -> Result<u32, String> {
         let sync_once_begin = Instant::now();
+        // Even an idle/no-op cycle must finish failed publication recovery before clearing
+        // readiness blockers or publishing a fresh upstream snapshot anchor.
+        if self
+            .block_publication_recovery_pending
+            .load(Ordering::SeqCst)
+        {
+            self.recover_block_publication().await?;
+        }
         let balance_history_snapshot = self.current_balance_history_snapshot()?;
         let latest_height = self.get_balance_history_stable_height()?;
         let genesis_block_height = self.config.config().usdb.genesis_block_height;
@@ -1443,6 +1475,12 @@ impl InscriptionIndexer {
             block_range
         );
 
+        if self
+            .block_publication_recovery_pending
+            .load(Ordering::SeqCst)
+        {
+            self.recover_block_publication().await?;
+        }
         let sync_blocks_begin = Instant::now();
         let start_height = *block_range.start();
         let end_height = *block_range.end();
@@ -1458,11 +1496,6 @@ impl InscriptionIndexer {
                 .set_block_processing_pending_height(Some(height));
             debug!("Syncing inscriptions at block height {}", height);
             let sync_single_block_begin = Instant::now();
-            let durable_pass_synced_height = self
-                .miner_pass_storage
-                .get_synced_btc_block_height()?
-                .unwrap_or(0);
-
             // Use savepoint to keep pass+balance sqlite state atomic at per-block granularity.
             let savepoint_guard = MinePassStorageSavePointGuard::new(&self.miner_pass_storage)?;
 
@@ -1470,7 +1503,19 @@ impl InscriptionIndexer {
             self.status.update_index_status(None, None, Some(msg));
 
             // Any error in sync_block should abort this block and keep previous committed height intact.
-            self.sync_block(height).await?;
+            if let Err(error) = self.sync_block(height).await {
+                drop(savepoint_guard);
+                if let Err(rollback_error) = self.miner_pass_storage.require_committed_writer() {
+                    self.block_publication_recovery_pending
+                        .store(true, Ordering::SeqCst);
+                    return Err(Self::merge_block_failure_with_recovery(
+                        error,
+                        Some(rollback_error),
+                        "SQLite rollback after block failure",
+                    ));
+                }
+                return Err(error);
+            }
 
             // Persist synced height before committing savepoint so crash-recovery starts from durable progress.
             let update_synced_height_begin = Instant::now();
@@ -1478,14 +1523,16 @@ impl InscriptionIndexer {
                 .miner_pass_storage
                 .update_synced_btc_block_height(height)
             {
-                let recovery_error = self
-                    .pass_energy_manager
-                    .rollback_to_pass_synced_height(durable_pass_synced_height)
-                    .err();
+                // The tracker may already have published this block. Restore SQLite before
+                // reloading it; keep a retry gate if either downstream recovery step fails.
+                drop(savepoint_guard);
+                self.block_publication_recovery_pending
+                    .store(true, Ordering::SeqCst);
+                let recovery_error = self.recover_block_publication().await.err();
                 let msg = Self::merge_block_failure_with_recovery(
                     e,
                     recovery_error,
-                    "energy rollback after synced-height update failure",
+                    "cross-store recovery after synced-height update failure",
                 );
                 error!("{}", msg);
                 return Err(msg);
@@ -1495,14 +1542,13 @@ impl InscriptionIndexer {
             // Commit only after all block writes and synced-height update succeed.
             let commit_savepoint_begin = Instant::now();
             if let Err(e) = savepoint_guard.commit() {
-                let recovery_error = self
-                    .pass_energy_manager
-                    .rollback_to_pass_synced_height(durable_pass_synced_height)
-                    .err();
+                self.block_publication_recovery_pending
+                    .store(true, Ordering::SeqCst);
+                let recovery_error = self.recover_block_publication().await.err();
                 let msg = Self::merge_block_failure_with_recovery(
                     e,
                     recovery_error,
-                    "energy rollback after sqlite savepoint failure",
+                    "cross-store recovery after sqlite savepoint failure",
                 );
                 error!("{}", msg);
                 return Err(msg);
@@ -1554,6 +1600,14 @@ impl InscriptionIndexer {
         block_range: std::ops::RangeInclusive<u32>,
     ) -> Result<u32, String> {
         self.sync_blocks(block_range).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn rollback_and_resume_for_test(&self, height: u32) -> Result<(), String> {
+        self.miner_pass_storage
+            .rollback_to_block_height_with_upstream_reorg_recovery_pending(height, None)?;
+        self.resume_pending_upstream_reorg_recovery(self.config.config().usdb.genesis_block_height)
+            .await
     }
 
     #[cfg(test)]
@@ -1629,10 +1683,12 @@ impl InscriptionIndexer {
 
         // Collect mint events and transfer events first, then apply in tx order.
         let process_inscriptions_begin = Instant::now();
-        let collected_mints = match self
-            .collect_block_inscription_mints(height, Some(block_hint.clone()))
-            .await
-        {
+        let evidence =
+            MintEvidenceContext::new(self.btc_client.clone(), height, block_hint.clone());
+        let collected = self
+            .collect_block_inscription_mints(height, block_hint.clone(), &evidence)
+            .await;
+        let collected_mints = match collected {
             Ok(collected_mints) => collected_mints,
             Err(error) => {
                 let msg = self
@@ -1643,6 +1699,18 @@ impl InscriptionIndexer {
         };
         let process_inscriptions_elapsed_ms = process_inscriptions_begin.elapsed().as_millis();
 
+        let balances = match self
+            .load_mint_balances(&evidence, &collected_mints.valid_items)
+            .await
+        {
+            Ok(balances) => balances,
+            Err(error) => {
+                return Err(self
+                    .recover_failed_block_sync(height, false, energy_finalized, error)
+                    .await);
+            }
+        };
+        let mint_context = BlockMintContext { evidence, balances };
         let transfer_track_seeds = Self::build_transfer_track_seeds(&collected_mints.valid_items);
         let process_transfers_begin = Instant::now();
         let transfer_items = match self
@@ -1679,22 +1747,24 @@ impl InscriptionIndexer {
                 return Err(msg);
             }
         };
-        let (new_inscriptions_count, transfer_count) =
-            match self.execute_block_events(ordered_events).await {
-                Ok(value) => value,
-                Err(e) => {
-                    // Event execution failed after transfer staging; staged state must be discarded.
-                    let msg = self
-                        .recover_failed_block_sync(height, true, energy_finalized, e)
-                        .await;
-                    return Err(msg);
-                }
-            };
+        let (new_inscriptions_count, transfer_count) = match self
+            .execute_block_events(ordered_events, &mint_context)
+            .await
+        {
+            Ok(value) => value,
+            Err(e) => {
+                // Event execution failed after transfer staging; staged state must be discarded.
+                let msg = self
+                    .recover_failed_block_sync(height, true, energy_finalized, e)
+                    .await;
+                return Err(msg);
+            }
+        };
         let process_events_elapsed_ms = process_events_begin.elapsed().as_millis();
 
         let process_invalid_mints_begin = Instant::now();
         let invalid_mints_count = match self
-            .process_invalid_mints(collected_mints.invalid_items)
+            .process_invalid_mints(collected_mints.invalid_items, &mint_context)
             .await
         {
             Ok(value) => value,
@@ -1831,6 +1901,30 @@ impl InscriptionIndexer {
         }
     }
 
+    // Reconcile against durable SQLite, never the writer's failed provisional height. On a
+    // process restart, normal energy reconciliation and tracker initialization do the same work.
+    async fn recover_block_publication(&self) -> Result<(), String> {
+        let result = async {
+            self.miner_pass_storage.require_committed_writer()?;
+            let height = self
+                .miner_pass_storage
+                .get_committed_synced_btc_block_height()?
+                .unwrap_or(0);
+            self.pass_energy_manager
+                .rollback_to_pass_synced_height(height)?;
+            self.transfer_tracker.reload_from_storage().await?;
+            self.block_publication_recovery_pending
+                .store(false, Ordering::SeqCst);
+            Ok(())
+        }
+        .await;
+        result.map_err(|err: String| {
+            let msg = format!("Failed to recover block publication; new blocks remain gated: module=indexer, error={err}");
+            error!("{msg}");
+            msg
+        })
+    }
+
     async fn recover_failed_block_sync(
         &self,
         block_height: u32,
@@ -1871,6 +1965,10 @@ impl InscriptionIndexer {
         } else {
             "energy abort after pending block failure"
         };
+        if energy_recovery_result.is_some() {
+            self.block_publication_recovery_pending
+                .store(true, Ordering::SeqCst);
+        }
         let energy_recovery_error = energy_recovery_result.clone();
         let msg = Self::merge_block_failure_with_recovery(
             original_error,
@@ -1893,6 +1991,10 @@ impl InscriptionIndexer {
             .rollback_staged_block(block_height)
             .await
             .err();
+        if transfer_rollback_error.is_some() {
+            self.block_publication_recovery_pending
+                .store(true, Ordering::SeqCst);
+        }
         let transfer_rollback_error_for_log = transfer_rollback_error.clone();
         let final_error = Self::merge_block_failure_with_recovery(
             msg,
@@ -1981,8 +2083,11 @@ impl InscriptionIndexer {
     async fn execute_block_events(
         &self,
         ordered_events: Vec<BlockProcessEvent>,
+        mint_context: &BlockMintContext,
     ) -> Result<(usize, usize), String> {
-        BlockEventExecutor::new(self).execute(ordered_events).await
+        BlockEventExecutor::new(self)
+            .execute(ordered_events, mint_context)
+            .await
     }
 
     fn build_transfer_track_seeds(mint_items: &[InscriptionNewItem]) -> Vec<TransferTrackSeed> {
@@ -1996,167 +2101,11 @@ impl InscriptionIndexer {
             .collect()
     }
 
-    async fn collect_block_inscription_mints(
+    async fn on_new_inscription(
         &self,
-        block_height: u32,
-        block_hint: Option<Arc<Block>>,
-    ) -> Result<CollectedMintItems, String> {
-        let block = block_hint
-            .clone()
-            .ok_or("Missing block context for inscription discovery")?;
-        let discovered_batch = self
-            .inscription_source
-            .load_block_mint_batch(
-                block_height,
-                block_hint,
-                self.config.config().bitcoin.network(),
-            )
-            .await?;
-        if discovered_batch.valid_mints.is_empty() && discovered_batch.invalid_mints.is_empty() {
-            debug!("No inscriptions found at block height {}", block_height);
-            return Ok(CollectedMintItems {
-                valid_items: Vec::new(),
-                invalid_items: Vec::new(),
-            });
-        }
-
-        // Build create-info upfront so we can run block-level validation on reveal inputs.
-        let mut valid_candidates = Vec::with_capacity(discovered_batch.valid_mints.len());
-        let mut reveal_input_to_inscriptions = HashMap::new();
-        for mint in discovered_batch.valid_mints {
-            let create_info = self
-                .transfer_tracker
-                .calc_create_satpoint(&mint.inscription_id, block_height, block.clone())
-                .await?;
-
-            // Creator address is required to build pass ownership; missing address is unrecoverable.
-            if create_info.address.is_none() {
-                let msg = format!(
-                    "Inscription {} at block {} has no creator address",
-                    mint.inscription_id, block_height
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
-
-            if let Some(source_satpoint) = mint.satpoint
-                && source_satpoint != create_info.satpoint
-            {
-                warn!(
-                    "Inscription satpoint mismatch between source and local calc: module=indexer, source={}, block_height={}, inscription_id={}, source_satpoint={}, calc_satpoint={}",
-                    self.inscription_source.source_name(),
-                    block_height,
-                    mint.inscription_id,
-                    source_satpoint,
-                    create_info.satpoint
-                );
-            }
-
-            // Index by reveal input outpoint so we can detect ambiguous mint ownership later.
-            // Under USDB protocol assumptions, one reveal input must not produce multiple USDB mints.
-            reveal_input_to_inscriptions
-                .entry(create_info.commit_outpoint)
-                .or_insert_with(Vec::new)
-                .push(mint.inscription_id);
-
-            valid_candidates.push((mint, create_info));
-        }
-
-        let mut new_inscription_items = Vec::with_capacity(valid_candidates.len());
-        let mut invalid_items = Vec::with_capacity(discovered_batch.invalid_mints.len());
-        for (mint, create_info) in valid_candidates {
-            let conflicted_inscriptions = reveal_input_to_inscriptions
-                .get(&create_info.commit_outpoint)
-                .cloned()
-                .unwrap_or_default();
-
-            // Reject ambiguous reveal-input groups to avoid non-deterministic ownership mapping.
-            // If this check is removed, multiple mints could incorrectly inherit from the same origin sat.
-            if conflicted_inscriptions.len() > 1 {
-                let reason = format!(
-                    "Multiple usdb mints share the same reveal input outpoint {} in block {}, inscription_id={}, conflicted_inscriptions={:?}",
-                    create_info.commit_outpoint,
-                    block_height,
-                    mint.inscription_id,
-                    conflicted_inscriptions
-                );
-                warn!(
-                    "Ambiguous reveal input detected for usdb mint: module=indexer, block_height={}, inscription_id={}, reveal_input_outpoint={}, conflict_size={}",
-                    block_height,
-                    mint.inscription_id,
-                    create_info.commit_outpoint,
-                    conflicted_inscriptions.len()
-                );
-                invalid_items.push(InvalidPassMintInscriptionInfo {
-                    inscription_id: mint.inscription_id,
-                    inscription_number: mint.inscription_number,
-                    mint_txid: create_info.satpoint.outpoint.txid,
-                    mint_block_height: mint.block_height,
-                    mint_owner: create_info.address.unwrap(),
-                    satpoint: create_info.satpoint,
-                    error_code: MintValidationErrorCode::AmbiguousRevealInput
-                        .as_str()
-                        .to_string(),
-                    error_reason: reason,
-                });
-                continue;
-            }
-
-            let op = mint.content.op();
-            let inscription_new_item = InscriptionNewItem {
-                inscription_id: mint.inscription_id,
-                inscription_number: mint.inscription_number,
-                block_height: mint.block_height,
-                timestamp: mint.timestamp,
-                address: create_info.address.unwrap(), // The creator address
-                satpoint: create_info.satpoint,
-                value: create_info.value,
-
-                op,
-                content: mint.content,
-                content_string: mint.content_string,
-
-                commit_txid: create_info.commit_txid,
-            };
-
-            new_inscription_items.push(inscription_new_item);
-        }
-
-        for invalid_mint in discovered_batch.invalid_mints {
-            let create_info = self
-                .transfer_tracker
-                .calc_create_satpoint(&invalid_mint.inscription_id, block_height, block.clone())
-                .await?;
-
-            if create_info.address.is_none() {
-                let msg = format!(
-                    "Invalid inscription {} at block {} has no creator address",
-                    invalid_mint.inscription_id, block_height
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
-
-            let invalid_item = InvalidPassMintInscriptionInfo {
-                inscription_id: invalid_mint.inscription_id,
-                inscription_number: invalid_mint.inscription_number,
-                mint_txid: create_info.satpoint.outpoint.txid,
-                mint_block_height: invalid_mint.block_height,
-                mint_owner: create_info.address.unwrap(),
-                satpoint: create_info.satpoint,
-                error_code: invalid_mint.error_code.as_str().to_string(),
-                error_reason: invalid_mint.error_reason,
-            };
-            invalid_items.push(invalid_item);
-        }
-
-        Ok(CollectedMintItems {
-            valid_items: new_inscription_items,
-            invalid_items,
-        })
-    }
-
-    async fn on_new_inscription(&self, item: &InscriptionNewItem) -> Result<(), String> {
+        item: &InscriptionNewItem,
+        mint_context: &BlockMintContext,
+    ) -> Result<(), String> {
         // If it's a mint operation, process the pass minting
         let mint_content = item.content.as_mint().unwrap();
         let mint_info = PassMintInscriptionInfo {
@@ -2187,7 +2136,15 @@ impl InscriptionIndexer {
                 msg
             })?,
         };
-        self.miner_pass_manager.on_mint_pass(&mint_info).await?;
+        let balances = mint_context.balances.as_ref().ok_or_else(|| {
+            format!(
+                "Missing transaction balance context: inscription_id={}, block_height={}",
+                item.inscription_id, item.block_height
+            )
+        })?;
+        self.miner_pass_manager
+            .on_mint_pass(&mint_info, &mint_context.evidence, balances)
+            .await?;
 
         // Transfer tracking is handled by block-level staged state. We do not mutate
         // tracker cache directly here to keep commit/rollback consistent with DB savepoints.
@@ -2197,10 +2154,29 @@ impl InscriptionIndexer {
     async fn process_invalid_mints(
         &self,
         invalid_mints: Vec<InvalidPassMintInscriptionInfo>,
+        mint_context: &BlockMintContext,
     ) -> Result<usize, String> {
         let mut processed = 0usize;
         for item in invalid_mints {
             self.miner_pass_manager.on_invalid_mint_pass(&item).await?;
+            {
+                let evidence = &mint_context.evidence;
+                self.miner_pass_storage
+                    .put_mint_audit(&crate::storage::MinerPassMintAudit {
+                        schema_version: "miner-pass-mint-audit:v1".into(),
+                        inscription_id: item.inscription_id.to_string(),
+                        block_height: item.mint_block_height,
+                        block_hash: evidence.block_prevouts()?.block().block_hash().to_string(),
+                        recipient: (item.satpoint.outpoint.vout != u32::MAX)
+                            .then_some(item.mint_owner),
+                        balance_before_tx: None,
+                        ever_valid_owner: None,
+                        source: None,
+                        operation_path: None,
+                        error_code: Some(item.error_code.clone()),
+                        error_reason: Some(item.error_reason.clone()),
+                    })?;
+            }
             processed += 1;
         }
         Ok(processed)
@@ -2251,8 +2227,8 @@ mod rules_binding_tests {
         std::fs::create_dir_all(&root).unwrap();
         let json =
             include_str!("../../../usdb-util/tests/fixtures/btc-mainnet-usdb-mainnet-catalog.json");
-        let catalog = BtcActivationRegistryCatalog::from_json(json).unwrap();
-        std::fs::write(root.join("catalog.json"), json).unwrap();
+        let catalog = crate::test_config::current_catalog(json);
+        std::fs::write(root.join("catalog.json"), catalog.to_json().unwrap()).unwrap();
         let mut config = IndexerConfig::default();
         config.bitcoin.auth = Some(BTCAuth::None);
         config.bitcoin.rpc_url = Some("http://127.0.0.1:1".into());

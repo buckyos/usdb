@@ -2428,6 +2428,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 "system_state_info".to_string(),
                 "readiness".to_string(),
                 "pass_snapshot".to_string(),
+                "pass_mint_audit".to_string(),
                 "pass_history".to_string(),
                 "active_passes_at_height".to_string(),
                 "pass_stats_at_height".to_string(),
@@ -2539,6 +2540,56 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             self.resolve_height_for_contextual_query(params.at_height, params.context.as_ref())?;
         self.ensure_history_height_retained(resolved_height, "historical state")?;
         self.build_pass_snapshot(&inscription_id, resolved_height)
+    }
+
+    fn get_pass_mint_audit(
+        &self,
+        params: GetPassMintAuditParams,
+    ) -> JsonResult<Option<PassMintAuditInfo>> {
+        let id = self.parse_inscription_id(&params.inscription_id)?;
+        let height =
+            self.resolve_contextual_query_height(params.at_height, params.context.as_ref())?;
+        self.ensure_history_height_retained(height, "mint audit")?;
+        let state = self.build_historical_state_ref_info_with_registry(
+            height,
+            params
+                .context
+                .as_ref()
+                .and_then(|ctx| ctx.expected_state.activation_registry_id.as_deref()),
+        )?;
+        if let Some(context) = &params.context {
+            self.validate_historical_state_ref_expected_state(
+                height,
+                &state,
+                &context.expected_state,
+            )?;
+        }
+        let local = &state.local_state_commit_info;
+        let commit = local.latest_pass_block_commit.as_ref().ok_or_else(|| Self::to_internal_error(
+            format!("Missing committed pass identity for mint audit: inscription_id={id}, query_height={height}")))?;
+        // The selected identity must match the committed SQLite snapshot containing the audit.
+        // This also prevents a provisional writer or concurrent rollback from leaking mixed state.
+        let (audit, mint_height) = self
+            .indexer
+            .miner_pass_storage()
+            .get_mint_audit_at_height(&id, height, &commit.block_commit)
+            .map_err(Self::to_internal_error)?;
+        let Some(mint_height) = mint_height else {
+            return Ok(None);
+        };
+        let versions = self
+            .indexer
+            .active_version_set_at_with_registry(&local.activation_registry_id, mint_height)
+            .map_err(|err| Self::to_internal_error(err.to_string()))?;
+        let audit = audit.ok_or_else(|| Self::to_internal_error(
+            format!("Missing audit for processed MinerPass mint: inscription_id={id}, mint_height={mint_height}, query_height={height}")))?;
+        Ok(Some(PassMintAuditInfo {
+            observed_at_height: height,
+            observed_state: ConsensusStateReference::from(&state),
+            activation_registry_id: local.activation_registry_id.clone(),
+            active_version_set_id: versions.active_version_set_id(),
+            audit,
+        }))
     }
 
     fn get_active_passes_at_height(
@@ -3530,8 +3581,7 @@ mod tests {
         ConsensusStateReference, ENERGY_FORMULA_VERSION_V1, LocalStateActiveBalanceSnapshot,
         LocalStateCommitIdentity, LocalStatePassCommitIdentity, SystemStateIdentity,
         ToBtcScriptHash, VersionFamily, VersionValue, address_string_to_script_hash,
-        build_local_state_commit, build_system_state_id, embedded_btc_activation_registry,
-        embedded_btc_stable_lag_blocks,
+        build_local_state_commit, build_system_state_id, embedded_btc_stable_lag_blocks,
     };
 
     mod economic_scale;
@@ -3588,7 +3638,7 @@ mod tests {
             mint_block_height: mint_height,
             mint_owner: owner,
             satpoint: test_satpoint(ins_tag, 0, 0),
-            mint_version: 1,
+            mint_version: 2,
             pass_kind: MinerPassKind::Standard,
             usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
             leader_pass_id: None,
@@ -3799,7 +3849,7 @@ mod tests {
         root_dir: &Path,
         catalog: Option<BtcActivationRegistryCatalog>,
     ) -> UsdbIndexerRpcServer {
-        let config = Arc::new(ConfigManager::load(Some(root_dir.to_path_buf())).unwrap());
+        let config = Arc::new(crate::test_config::load(Some(root_dir.to_path_buf())).unwrap());
         let output = Arc::new(IndexOutput::new());
         let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
         let mut indexer = InscriptionIndexer::new(config.clone(), status.clone()).unwrap();
@@ -3819,9 +3869,11 @@ mod tests {
     }
 
     fn test_registry_revision_catalog() -> (BtcActivationRegistryCatalog, String, String) {
-        let previous = embedded_btc_activation_registry(Network::Regtest)
-            .unwrap()
-            .clone();
+        let previous = crate::test_config::current_catalog(include_str!(
+            "../../../../../tests/fixtures/miner-pass-v2/catalog.json"
+        ))
+        .current_registry()
+        .clone();
         let mut current = previous.clone();
         current.records.push(BtcActivationRecord {
             uip: "UIP-0008".to_string(),
@@ -3869,7 +3921,7 @@ mod tests {
             serde_json::to_vec_pretty(&config_file).unwrap(),
         )
         .unwrap();
-        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let config = Arc::new(crate::test_config::load(Some(root_dir.clone())).unwrap());
         let output = Arc::new(IndexOutput::new());
         let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
         let indexer = Arc::new(InscriptionIndexer::new(config.clone(), status.clone()).unwrap());
@@ -3986,7 +4038,7 @@ mod tests {
         )
         .unwrap();
 
-        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let config = Arc::new(crate::test_config::load(Some(root_dir.clone())).unwrap());
         let output = Arc::new(IndexOutput::new());
         let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
         let indexer = Arc::new(InscriptionIndexer::new(config.clone(), status.clone()).unwrap());
@@ -6367,9 +6419,9 @@ mod tests {
         let mut servers = Vec::new();
         let pass = make_active_pass(149, 229, 90);
         for (index, document) in fixtures.iter().enumerate() {
-            let catalog = BtcActivationRegistryCatalog::from_json(document).unwrap();
+            let catalog = crate::test_config::current_catalog(document);
             let root = test_root_dir(&format!("scoped_rpc_{index}"));
-            std::fs::write(root.join("catalog.json"), document).unwrap();
+            std::fs::write(root.join("catalog.json"), catalog.to_json().unwrap()).unwrap();
             let mut config = IndexerConfig::default();
             config.bitcoin.network = Network::Bitcoin;
             config.usdb.genesis_block_height = 0;
