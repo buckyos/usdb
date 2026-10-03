@@ -25,3 +25,10 @@ Remove `--check` only when intentionally regenerating reviewed fixture changes.
 Production block tests use isolated HTTP Core/BH fixtures and temporary real
 SQLite/RocksDB stores. These fixtures do not qualify a live Core/AssumeUTXO
 bootstrap, wallet workflow or public deployment.
+
+The shared regtest library and Geth profile runner now select this catalog
+explicitly in generated test configurations. Run
+`python3 tests/run_miner_pass_v2_profile_live.py --ord-bin /path/to/ord`
+from the USDB root for the minimal live-service flow. See
+[acceptance scope and artifacts](../../../doc/usdb-indexer/miner-pass-v2-live-acceptance.md).
+Other legacy nightly/weekly transaction fixtures still need individual migration.

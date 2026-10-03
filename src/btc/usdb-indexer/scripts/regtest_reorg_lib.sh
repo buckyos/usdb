@@ -1763,6 +1763,7 @@ regtest_create_usdb_indexer_config() {
   }
 }
 EOF
+  python3 "$REPO_ROOT/tests/common/miner_pass_regtest.py" configure-indexer "${USDB_INDEXER_ROOT}/config.json"
 }
 
 regtest_update_usdb_genesis_block_height() {
@@ -2092,24 +2093,42 @@ regtest_wait_until_ord_wallet_has_inscription() {
   done
 }
 
-regtest_ord_inscribe_file() {
-  local wallet_name="$1"
-  local file_path="$2"
-  local destination="${3:-}"
-  local output inscription_id
+# Resolve the actual inscription sat source, without spending a previous pass as funding.
+regtest_select_cardinal_satpoint() {
+  local wallet_name="$1" source_address="$2" evidence_dir satpoint
+  evidence_dir="$(mktemp -d "$WORK_DIR/source-selection-XXXXXX")"
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+    -rpcwallet="$wallet_name" listunspent 1 >"$evidence_dir/unspent.json" || return 1
+  regtest_run_ord_wallet_named "$wallet_name" inscriptions >"$evidence_dir/inscriptions.json" || return 1
+  satpoint="$(python3 "$REPO_ROOT/tests/common/miner_pass_regtest.py" select-satpoint \
+    --unspent "$evidence_dir/unspent.json" --inscriptions "$evidence_dir/inscriptions.json" \
+    --address "$source_address")" || return 1
+  echo "${REGTEST_LOG_PREFIX:-[usdb-indexer-reorg]} Selected source: address=${source_address}, satpoint=${satpoint}, evidence=${evidence_dir}" >&2
+  echo "$satpoint"
+}
 
-  echo "${REGTEST_LOG_PREFIX:-[usdb-indexer-reorg]} Inscribe file via ord: wallet=${wallet_name}, file=${file_path}, destination=${destination:-<default>}" >&2
+regtest_ord_inscribe_file() {
+  local wallet_name="$1" file_path="$2" destination="${3:-}" source_address="${4:-}"
+  local output inscription_id satpoint
+  local -a args=(inscribe --fee-rate "$ORD_FEE_RATE" --file "$file_path")
   if [[ -n "$destination" ]]; then
-    output="$(regtest_run_ord_wallet_named "$wallet_name" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$destination" --file "$file_path" 2>&1 || true)"
-  else
-    output="$(regtest_run_ord_wallet_named "$wallet_name" inscribe --fee-rate "$ORD_FEE_RATE" --file "$file_path" 2>&1 || true)"
+    args+=(--destination "$destination")
+  fi
+  if [[ -n "$source_address" ]]; then
+    satpoint="$(regtest_select_cardinal_satpoint "$wallet_name" "$source_address")" || return 1
+    args+=(--satpoint "$satpoint")
+  fi
+  echo "${REGTEST_LOG_PREFIX:-[usdb-indexer-reorg]} Inscribe file via ord: wallet=${wallet_name}, file=${file_path}, destination=${destination:-<default>}, source=${source_address:-<automatic>}" >&2
+  if ! output="$(regtest_run_ord_wallet_named "$wallet_name" "${args[@]}" 2>&1)"; then
+    echo "${REGTEST_LOG_PREFIX:-[usdb-indexer-reorg]} Ord mint failed: wallet=${wallet_name}, file=${file_path}, output=${output}" >&2
+    return 1
   fi
   inscription_id="$(regtest_extract_inscription_id "$output")"
   if [[ -z "$inscription_id" ]]; then
     echo "${REGTEST_LOG_PREFIX:-[usdb-indexer-reorg]} Failed to parse inscription id from ord output: ${output}" >&2
     return 1
   fi
-
+  printf '%s\n' "$output" >"${file_path}.ord-result.json"
   echo "$inscription_id"
 }
 

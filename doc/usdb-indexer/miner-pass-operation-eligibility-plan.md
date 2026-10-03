@@ -4,7 +4,7 @@
 
 本计划落实 [issue #51 收敛方案](https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579)，协议草案为 [UIP-0016](../UIP/UIP-0016-miner-pass-operation-eligibility.md)。用户已同意按该方案推进；草案、代码合并、委员会状态和网络激活是不同事项。
 
-本文件区分当前事实与后续实现任务。规范草案已提交为 usdb `c0f362b`，Go 兼容锁同步提交为 `beb9a3b2e`；来源证据与交易前余额层已提交为 usdb `cacdcd3`，对应 Go 兼容锁为 `ba631d72b`。一次性开户资格、状态机及诊断改进已提交为 usdb `e8303f9`，Go 兼容锁为 `ab52b498a`。本批工作区接通阶段 4 的完整区块执行/恢复和审计接口，并按开发测试网可重置的决定收敛为仅执行 MinerPass v2；尚未提交。旧 embedded catalog/ID 保持冻结，但不再是本程序支持的执行规则。下列任务不能仅因有文档或测试名称就标记完成。
+本文件区分当前事实与后续实现任务。规范草案已提交为 usdb `c0f362b`，Go 兼容锁同步提交为 `beb9a3b2e`；来源证据与交易前余额层已提交为 usdb `cacdcd3`，对应 Go 兼容锁为 `ba631d72b`。一次性开户资格、状态机及诊断改进已提交为 usdb `e8303f9`，Go 兼容锁为 `ab52b498a`。阶段 4 的完整区块执行/恢复、审计接口及仅执行 MinerPass v2 的收敛已提交为 usdb `dcd41f6`，配套 Go 提交为 `889d74197`。本批工作区迁移共用测试入口并完成最小真实服务闭环；尚未提交。旧 embedded catalog/ID 保持冻结，但不再是本程序支持的执行规则。下列任务不能仅因有文档或测试名称就标记完成。
 
 ## 前批已提交：来源证据与交易前余额
 
@@ -46,7 +46,7 @@ python3 tests/run_miner_pass_evidence_live.py --bitcoind /path/to/bitcoind
 
 该批验收边界：上述事件顺序测试直接调用状态机；双库复制恢复不是签名 checkpoint 导出/安装验收。生产联合验收和来源审计接口的本批进展见下；完整服务级重放仍属阶段 6，不能将 M01–M18 全部标为已完成。历史资格依赖自本作用域 index origin 起的完整规范历史；后续激活/导入校验不能把只含当前 Active 或缺历史的旧数据集视为合格。
 
-## 本批已实现：单规则执行、整块恢复与审计
+## 前批已提交：单规则执行、整块恢复与审计
 
 - 移除 `MinerPassRules::V1/V2` 分支、旧 mint 状态机及 `calc_create_satpoint` 旧推导入口；生产 parser 和 control-plane payload 只生成/接受 `v:2`。Rust 与 Go 只允许 schema/state 同为 v2。
 - 保留 source/scope/revision、高度查询、active set/state identity、checkpoint 和 P2P 升级框架。旧 catalog 可解码并核对冻结身份，但旧/混合/未知规则不能执行；未来不支持的 checkpoint 在对应块业务写入前停止。
@@ -80,6 +80,19 @@ cargo run --manifest-path src/btc/Cargo.toml -p usdb-util --bin generate_go_btc_
 go test ./internal/usdb ./consensus/ethash ./core ./miner
 go test -ldflags=-checklinkname=0 ./cmd/geth
 ```
+
+## 本批工作区：V2 共用测试基线与最小真实服务闭环
+
+- `regtest_reorg_lib.sh` 为临时 indexer 显式选择隔离 V2 catalog；Go profile runner 的临时 genesis 使用同一 registry。未修改生产默认、测试网发布参数或在线数据。
+- 新公共工具按实际地址选取 confirmed cardinal UTXO，排除所有带铭文的输出，并传给 Ord `--satpoint`。测试保留选币证据、Ord commit/reveal 结果和 `get_pass_mint_audit` 响应。
+- 真实 Core 28.1、Ord 0.29.0、balance-history、indexer 验证首次开户、同地址 prev 重铸、跨地址 prev 继承；第三方向既有权益地址伪造 prev 的铭文为 Invalid，原 pass 仍 Active。继承前后旧 pass UTXO 保持原位置。
+- 新 pass 入金后具有正能量；真实 Geth 出块、独立 profile/难度/奖励计算及第二个 Geth 节点相同高度/hash 检查通过。
+- 既有在线矿工分支也迁移至 V2；外部转移后 remint、运行中 selector 切换及 indexer 正常停启后挖矿恢复已单独回归通过。
+- nightly 的 `go-profile` 首个场景启用此闭环；其余旧 V1 交易场景、revision 切换、reorg/world-soak/weekly 用例仍需逐项迁移和整组运行，不能报告完整 nightly/weekly 已通过。
+
+复现入口、原始产物与本次边界见 [最小真实服务验收](miner-pass-v2-live-acceptance.md)。本次使用 P2TR 钱包、`txindex=1` 和未裁剪完整 regtest；不代表已完成 hash 地址冷钱包、全部签名形式、完整余额清扫、AssumeUTXO 或签名 checkpoint 验收。
+
+后续执行顺序已确定为：本批最小闭环 → 扩展 nightly/weekly 攻击、恢复与长期测试 → control-plane 钱包引导 → 网络参数冻结及真实部署。下面阶段 5/6 的编号沿用原计划，不代表仍要求先做控制面。
 
 ## 已完成的前置条件
 
@@ -144,7 +157,7 @@ go test -ldflags=-checklinkname=0 ./cmd/geth
 
 核心测试已通过；阶段 4 已接入 active-set 分派、真实 ordered block executor 和 tracker 恢复，并完成隔离激活边界测试。签名 checkpoint 与完整服务级重放在阶段 6 收尾。
 
-### 4. 版本、完整区块、状态身份和查询（本批工作区已实现）
+### 4. 版本、完整区块、状态身份和查询（已提交）
 
 - 按 registry 的 active set 校验支持范围；v1、混合和未知组合拒绝。唯一 JSON v2 parser/状态机接入 ordered block executor，同块共享完整链证据与交易前余额，运行时错误必须恢复 energy、SQLite 与 tracker staging。
 - 新 scope 的 v2 测试 catalog 显式 pin；旧 embedded registry 和 v0 发布包身份不变，新程序拒绝旧规则。
