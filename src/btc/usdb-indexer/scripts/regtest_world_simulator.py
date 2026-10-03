@@ -1052,6 +1052,18 @@ class RegtestWorldSimulator:
         payload = json.loads(self.run_ord_wallet(actor.wallet_name, ["outputs"]))
         return self.select_spendable_owner_output(payload, actor.receive_address)
 
+    def mint_source_output(self, actor: Agent, pre_height: int) -> tuple[str, int, int] | None:
+        """Cache a cardinal source candidate per actor/height; never fund a mint from a pass."""
+        cache = getattr(self, "mint_source_cache", {})
+        cached = cache.get(actor.agent_id)
+        if cached is None or cached[0] != pre_height:
+            output = self.load_spendable_owner_output(actor)
+            if output is not None and output[2] < 100_000:
+                output = None
+            cache[actor.agent_id] = (pre_height, output)
+            self.mint_source_cache = cache
+        return cache[actor.agent_id][1]
+
     def build_action_probe_state(self, actor: Agent, action: str) -> dict[str, Any] | None:
         if action in self.MINT_ACTIONS | self.REMINT_ACTIONS | {"transfer"}:
             return {
@@ -3277,7 +3289,7 @@ class RegtestWorldSimulator:
         payload = {
             "p": "usdb",
             "op": "mint",
-            "v": 1,
+            "v": 2,
             "prev": prev,
         }
         if identity.pass_kind == "standard":
@@ -3601,6 +3613,9 @@ class RegtestWorldSimulator:
     def is_action_viable(
         self, agent: Agent, action: str, available_agent_ids: set[int], pre_height: int
     ) -> bool:
+        if action in self.MINT_ACTIONS | self.REMINT_ACTIONS:
+            if self.mint_source_output(agent, pre_height) is None:
+                return False
         if action == "transfer":
             return bool(self.load_actor_remint_candidates(agent, pre_height)) and len(
                 available_agent_ids
@@ -3678,12 +3693,23 @@ class RegtestWorldSimulator:
             prev=prev,
             invalid_usdb_main=invalid_usdb_main,
         )
+        # Recheck at execution, even when action planning cached a source candidate.
+        self.mint_source_cache = {}
+        source = self.mint_source_output(actor, pre_height)
+        if source is None:
+            raise WorldSimError(
+                f"No cardinal mint source: wallet={actor.wallet_name}, owner={actor.receive_address}, "
+                f"action={action}, height={pre_height}"
+            )
+        source_satpoint = f"{source[0]}:{source[1]}:0"
         output = self.run_ord_wallet(
             actor.wallet_name,
             [
                 "inscribe",
                 "--fee-rate",
                 str(self.args.fee_rate),
+                "--satpoint",
+                source_satpoint,
                 "--destination",
                 actor.receive_address,
                 "--file",
@@ -4724,6 +4750,7 @@ class RegtestWorldSimulator:
         }
 
     def reset_local_chain_view(self) -> None:
+        self.mint_source_cache = {}
         self.pass_owner_by_id.clear()
         self.pass_identity_by_id.clear()
         for agent in self.agents:

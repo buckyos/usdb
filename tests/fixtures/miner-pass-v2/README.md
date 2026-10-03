@@ -31,4 +31,6 @@ explicitly in generated test configurations. Run
 `python3 tests/run_miner_pass_v2_profile_live.py --ord-bin /path/to/ord`
 from the USDB root for the minimal live-service flow. See
 [acceptance scope and artifacts](../../../doc/usdb-indexer/miner-pass-v2-live-acceptance.md).
-Other legacy nightly/weekly transaction fixtures still need individual migration.
+The protocol, reorg, historical/validator, and world-sim matrices also use the
+V2 fixture. See [matrix migration and evidence](../../../doc/usdb-indexer/miner-pass-v2-matrix-acceptance.md).
+Migration and short local runs do not qualify the full nightly/weekly matrix.

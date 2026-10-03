@@ -71,13 +71,13 @@ main() {
   mint_a_file="$WORK_DIR/usdb_validator_payload_version_upgrade_reorg_mint_a.json"
   mint_b_file="$WORK_DIR/usdb_validator_payload_version_upgrade_reorg_mint_b.json"
   cat >"$mint_a_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prev":[]}
 EOF
   cat >"$mint_b_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","prev":[]}
 EOF
 
-  pass1="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$mint_a_file" "$ord_receive_address_a")"
+  pass1="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$mint_a_file" "$ord_receive_address_a" "$ord_receive_address_a")"
   regtest_mine_blocks "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   regtest_wait_until_ord_server_synced_to_bitcoind
   height_v1="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
@@ -104,7 +104,7 @@ EOF
   payload_v1="$WORK_DIR/validator_block_body_payload_v1.json"
   regtest_write_validator_payload_v1 "$payload_v1" "$state_ref_resp" "$pass_snapshot_resp" "$pass_energy_resp"
 
-  pass2="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$mint_b_file" "$ord_receive_address_b")"
+  pass2="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$mint_b_file" "$ord_receive_address_b" "$ord_receive_address_b")"
   regtest_mine_blocks "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   regtest_wait_until_ord_server_synced_to_bitcoind
   height_v11="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"

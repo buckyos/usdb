@@ -1999,6 +1999,7 @@ regtest_start_ord_server() {
     --address 127.0.0.1 \
     --http \
     --http-port "$ORD_RPC_PORT" \
+    --polling-interval "${ORD_POLLING_INTERVAL:-5s}" \
     >"${ORD_SERVER_LOG_FILE}" 2>&1 &
   ORD_SERVER_PID=$!
   regtest_wait_http_ready "ord-server" "http://127.0.0.1:${ORD_RPC_PORT}/blockcount"
@@ -2093,19 +2094,8 @@ regtest_wait_until_ord_wallet_has_inscription() {
   done
 }
 
-# Resolve the actual inscription sat source, without spending a previous pass as funding.
-regtest_select_cardinal_satpoint() {
-  local wallet_name="$1" source_address="$2" evidence_dir satpoint
-  evidence_dir="$(mktemp -d "$WORK_DIR/source-selection-XXXXXX")"
-  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
-    -rpcwallet="$wallet_name" listunspent 1 >"$evidence_dir/unspent.json" || return 1
-  regtest_run_ord_wallet_named "$wallet_name" inscriptions >"$evidence_dir/inscriptions.json" || return 1
-  satpoint="$(python3 "$REPO_ROOT/tests/common/miner_pass_regtest.py" select-satpoint \
-    --unspent "$evidence_dir/unspent.json" --inscriptions "$evidence_dir/inscriptions.json" \
-    --address "$source_address")" || return 1
-  echo "${REGTEST_LOG_PREFIX:-[usdb-indexer-reorg]} Selected source: address=${source_address}, satpoint=${satpoint}, evidence=${evidence_dir}" >&2
-  echo "$satpoint"
-}
+# shellcheck source=tests/common/miner_pass_source.sh
+source "$REPO_ROOT/tests/common/miner_pass_source.sh"
 
 regtest_ord_inscribe_file() {
   local wallet_name="$1" file_path="$2" destination="${3:-}" source_address="${4:-}"
@@ -2196,6 +2186,29 @@ regtest_start_usdb_indexer() {
       --skip-process-lock
   ) >"${USDB_INDEXER_LOG_FILE}" 2>&1 &
   USDB_INDEXER_PID=$!
+}
+
+# Expect a rejected startup, keeping its diagnostics separate from the later healthy restart.
+regtest_expect_usdb_startup_failure() {
+  local expected="$1" status=0 state
+  regtest_start_usdb_indexer
+  for _ in $(seq 1 120); do
+    state="$(ps -o stat= -p "$USDB_INDEXER_PID" 2>/dev/null | tr -d ' ' || true)"
+    if [[ -z "$state" || "$state" == Z* ]]; then
+      wait "$USDB_INDEXER_PID" || status=$?
+      USDB_INDEXER_PID=""
+      cp "$USDB_INDEXER_LOG_FILE" "$WORK_DIR/expected-startup-rejection.log"
+      if [[ "$status" != 0 ]] && grep -Fq "$expected" "$WORK_DIR/expected-startup-rejection.log"; then
+        regtest_log "Startup rejected as expected: status=${status}, reason=${expected}"
+        return 0
+      fi
+      regtest_log "Unexpected startup result: status=${status}, expected=${expected}, log=${USDB_INDEXER_LOG_FILE}"
+      return 1
+    fi
+    sleep 0.5
+  done
+  regtest_log "Expected startup rejection did not occur: reason=${expected}, pid=${USDB_INDEXER_PID}"
+  return 1
 }
 
 regtest_stop_process() {

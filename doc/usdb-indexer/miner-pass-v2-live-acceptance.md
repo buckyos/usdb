@@ -4,7 +4,7 @@
 
 ## 复现
 
-需要 Bitcoin Core 28.1、Ord 0.29.0、Rust 工具链，以及配套 `go-ethereum` 工作区。两个仓库必须包含本批测试改动；单独使用当前旧兼容锁所指向的 USDB 提交还没有新增的公共测试工具。
+需要 Bitcoin Core 28.1、Ord 0.29.0、Rust 工具链，以及配套 `go-ethereum` 工作区。最低配套提交为 USDB `e8c73d9`、Go `aea0a7af9`，后者的兼容锁已指向该 USDB 提交。
 
 在 USDB 根目录执行：
 
@@ -58,3 +58,5 @@ USDB_GO_BIN=/path/to/go python3 tests/run_miner_pass_v2_profile_live.py \
 这次钱包为 P2TR，完整 Core 开启 `txindex=1`。不据此宣称 hash 地址冷钱包全流程、完整余额迁移、全部签名类型、协作/多 prev、同块竞争、普通付款攻击边界、深 reorg、故障恢复、签名 checkpoint 或 AssumeUTXO 已完成服务级验收。
 
 下一批复用公共 catalog 和显式来源构造工具，迁移攻击与协作矩阵、reorg/重启/完整重放、snapshot/checkpoint、`txindex=0`/AssumeUTXO 和 world-soak；然后运行完整 nightly/weekly。control-plane 引导继续后移。
+
+后续 nightly/weekly 迁移与扩展验收单独记录在 [V2 矩阵验收](miner-pass-v2-matrix-acceptance.md)，不改变本页原批次的验收范围。

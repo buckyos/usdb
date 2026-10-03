@@ -11,6 +11,7 @@ RUN_LIVE_ORD_E2E="${RUN_LIVE_ORD_E2E:-0}"
 RUN_LIVE_ORD_REALWORLD_SUITE="${RUN_LIVE_ORD_REALWORLD_SUITE:-0}"
 RUN_UIP0001_0004_LIVE_MATRIX="${RUN_UIP0001_0004_LIVE_MATRIX:-0}"
 RUN_REORG_REGRESSION="${RUN_REORG_REGRESSION:-0}"
+RUN_MINER_PASS_V2_MATRIX="${RUN_MINER_PASS_V2_MATRIX:-0}"
 
 log() {
   echo "[usdb-regression] $*"
@@ -25,16 +26,22 @@ run_core_protocol_tests() {
   local tests=(
     "storage::pass::tests::test_committed_reader_remains_available_during_spilled_savepoint"
     "storage::pass::tests::test_committed_reader_preserves_existing_rollback_journal_database"
-    "index::test::indexer_behavior::test_sync_blocks_timeline_mint_transfer_burn_remint_replay"
-    "index::test::indexer_behavior::test_sync_blocks_passive_transfer_keeps_receiver_active_and_transferred_pass_dormant"
-    "index::test::indexer_behavior::test_sync_blocks_same_owner_multiple_mints_keep_only_latest_active"
-    "index::test::indexer_behavior::test_sync_blocks_multi_prev_inherit_sums_discounted_energy_and_consumes_all_prev"
-    "index::test::indexer_behavior::test_sync_blocks_second_inherit_same_prev_records_invalid_mint"
-    "index::test::indexer_behavior::test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_transfer"
-    "index::test::indexer_behavior::test_sync_blocks_restart_after_failed_block_replay_matches_fresh_run"
+    "index::miner_pass_activation::pipeline_rejects_v1_at_every_height_and_accepts_current_schema_from_origin"
+    "index::miner_pass_activation::same_reveal_observes_prior_mint_history_and_real_transfer_before_mint"
+    "index::miner_pass_eligibility::unsolicited_mint_cannot_replace_existing_active_or_consume_its_prev"
+    "index::miner_pass_eligibility::cross_owner_consumes_only_listed_prev_and_inherits_each_after_loss"
+    "index::miner_pass_eligibility::repeated_cross_owner_prev_is_consumed_once_even_with_two_fresh_targets"
+    "index::miner_pass_eligibility::collab_uses_same_eligibility_and_neither_leader_reference_follows_rotation"
+    "index::miner_pass_activation::pipeline_reopen_and_rollback_replay_preserve_identity_and_audit"
   )
 
+  local listed_tests
+  listed_tests="$(cargo test --manifest-path "${MANIFEST_PATH}" -p usdb-indexer -- --list)"
   for test_name in "${tests[@]}"; do
+    if ! grep -Fxq "${test_name}: test" <<<"$listed_tests"; then
+      log "Required protocol regression test is missing: ${test_name}"
+      return 1
+    fi
     run_cmd cargo test \
       --manifest-path "${MANIFEST_PATH}" \
       -p usdb-indexer \
@@ -169,6 +176,10 @@ main() {
     run_cmd "${SCRIPT_DIR}/regtest_live_ord_uip0001_0004_gap_matrix.sh"
   else
     log "Skipping UIP0001-0004 live matrix: RUN_UIP0001_0004_LIVE_MATRIX=${RUN_UIP0001_0004_LIVE_MATRIX}"
+  fi
+
+  if [[ "${RUN_MINER_PASS_V2_MATRIX}" == "1" ]]; then
+    run_cmd bash "$REPO_ROOT/tests/run_miner_pass_v2_security_matrix.sh"
   fi
 
   if [[ "${RUN_REORG_REGRESSION}" == "1" ]]; then

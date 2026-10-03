@@ -343,6 +343,7 @@ create_usdb_indexer_config() {
   }
 }
 EOF
+  python3 "$REPO_ROOT/tests/common/miner_pass_regtest.py" configure-indexer "${USDB_INDEXER_ROOT}/config.json"
 }
 
 main() {

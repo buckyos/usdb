@@ -4,7 +4,7 @@
 
 本计划落实 [issue #51 收敛方案](https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579)，协议草案为 [UIP-0016](../UIP/UIP-0016-miner-pass-operation-eligibility.md)。用户已同意按该方案推进；草案、代码合并、委员会状态和网络激活是不同事项。
 
-本文件区分当前事实与后续实现任务。规范草案已提交为 usdb `c0f362b`，Go 兼容锁同步提交为 `beb9a3b2e`；来源证据与交易前余额层已提交为 usdb `cacdcd3`，对应 Go 兼容锁为 `ba631d72b`。一次性开户资格、状态机及诊断改进已提交为 usdb `e8303f9`，Go 兼容锁为 `ab52b498a`。阶段 4 的完整区块执行/恢复、审计接口及仅执行 MinerPass v2 的收敛已提交为 usdb `dcd41f6`，配套 Go 提交为 `889d74197`。本批工作区迁移共用测试入口并完成最小真实服务闭环；尚未提交。旧 embedded catalog/ID 保持冻结，但不再是本程序支持的执行规则。下列任务不能仅因有文档或测试名称就标记完成。
+本文件区分当前事实与后续实现任务。规范草案已提交为 usdb `c0f362b`，Go 兼容锁同步提交为 `beb9a3b2e`；来源证据与交易前余额层已提交为 usdb `cacdcd3`，对应 Go 兼容锁为 `ba631d72b`。一次性开户资格、状态机及诊断改进已提交为 usdb `e8303f9`，Go 兼容锁为 `ab52b498a`。阶段 4 的完整区块执行/恢复、审计接口及仅执行 MinerPass v2 的收敛已提交为 usdb `dcd41f6`，配套 Go 提交为 `889d74197`。最小真实服务闭环已提交为 usdb `e8c73d9`、Go `aea0a7af9`。当前工作区继续迁移 nightly/weekly 的攻击、协作、重组和恢复矩阵。旧 embedded catalog/ID 保持冻结，但不再是本程序支持的执行规则。下列任务不能仅因有文档或测试名称就标记完成。
 
 ## 前批已提交：来源证据与交易前余额
 
@@ -81,7 +81,7 @@ go test ./internal/usdb ./consensus/ethash ./core ./miner
 go test -ldflags=-checklinkname=0 ./cmd/geth
 ```
 
-## 本批工作区：V2 共用测试基线与最小真实服务闭环
+## 已提交：V2 共用测试基线与最小真实服务闭环
 
 - `regtest_reorg_lib.sh` 为临时 indexer 显式选择隔离 V2 catalog；Go profile runner 的临时 genesis 使用同一 registry。未修改生产默认、测试网发布参数或在线数据。
 - 新公共工具按实际地址选取 confirmed cardinal UTXO，排除所有带铭文的输出，并传给 Ord `--satpoint`。测试保留选币证据、Ord commit/reveal 结果和 `get_pass_mint_audit` 响应。
@@ -93,6 +93,16 @@ go test -ldflags=-checklinkname=0 ./cmd/geth
 复现入口、原始产物与本次边界见 [最小真实服务验收](miner-pass-v2-live-acceptance.md)。本次使用 P2TR 钱包、`txindex=1` 和未裁剪完整 regtest；不代表已完成 hash 地址冷钱包、全部签名形式、完整余额清扫、AssumeUTXO 或签名 checkpoint 验收。
 
 后续执行顺序已确定为：本批最小闭环 → 扩展 nightly/weekly 攻击、恢复与长期测试 → control-plane 钱包引导 → 网络参数冻结及真实部署。下面阶段 5/6 的编号沿用原计划，不代表仍要求先做控制面。
+
+## 本批工作区：nightly/weekly 矩阵迁移
+
+- 新增真实 Ord 攻击/协作矩阵：非参与持币地址、强制替换/消费 prev、归零旧 owner、Dormant 跨地址继承、两种协作引用在 Leader 轮换后的断开与重新绑定。
+- 在同一链上验证上述状态的重组撤销、进程崩溃重开和空数据库完整重放，逐项比较 pass、mint audit 及系统身份。
+- 迁移 protocol、reorg、historical、validator 与 world-sim 的 V2 JSON/catalog/source；测试必须指定实际来源 sat，不能以钱包名代替来源地址。
+- 移除回归入口中已不存在的旧精确测试名，并在执行前验证测试存在；retention 测试不再修改绑定的 index origin 来冒充裁剪。
+- world-sim 保留长期覆盖门槛；本地短程演练与完整 weekly 长跑分别记账。完整重放复制同一 external catalog，不复制派生数据库。
+
+本批的运行命令、结果和剩余边界见 [V2 矩阵验收](miner-pass-v2-matrix-acceptance.md)。公开网络参数、生产默认、control-plane 引导与线上服务均未改动。
 
 ## 已完成的前置条件
 

@@ -121,6 +121,15 @@ def prepare_configs(source_balance, source_usdb, scratch, balance_port, usdb_por
     require(config["bitcoin"]["network"] == "regtest", "replay is restricted to regtest")
     require(config["usdb"]["genesis_block_height"] == 1, "replay must start at genesis height 1")
     require(config["usdb"]["inscription_source"] == "bitcoind", "replay requires canonical Bitcoin inscriptions")
+    # External registry configuration is part of replay identity, never copy derived databases.
+    catalog = config["usdb"].get("activation_registry_catalog_file")
+    if catalog:
+        catalog_path = Path(catalog)
+        if not catalog_path.is_absolute():
+            catalog_path = source_usdb / catalog_path
+        target_catalog = usdb_root / "activation-registry-catalog.json"
+        target_catalog.write_bytes(catalog_path.read_bytes())
+        config["usdb"]["activation_registry_catalog_file"] = target_catalog.name
     config["balance_history"]["rpc_url"] = f"http://127.0.0.1:{balance_port}"
     config["usdb"]["rpc_server_port"] = usdb_port
     (usdb_root / "config.json").write_text(json.dumps(config, indent=2) + "\n")

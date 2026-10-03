@@ -66,13 +66,13 @@ main() {
   mint_a_file="$WORK_DIR/usdb_validator_candidate_set_crash_recovery_mint_a.json"
   mint_b_file="$WORK_DIR/usdb_validator_candidate_set_crash_recovery_mint_b.json"
   cat >"$mint_a_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a","prev":[]}
 EOF
   cat >"$mint_b_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","prev":[]}
 EOF
 
-  pass1="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$mint_a_file" "$ord_receive_address_a")"
+  pass1="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$mint_a_file" "$ord_receive_address_a" "$ord_receive_address_a")"
   regtest_mine_blocks "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   regtest_wait_until_ord_server_synced_to_bitcoind
 
@@ -81,7 +81,7 @@ EOF
     regtest_wait_until_ord_server_synced_to_bitcoind
   fi
 
-  pass2="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$mint_b_file" "$ord_receive_address_b")"
+  pass2="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$mint_b_file" "$ord_receive_address_b" "$ord_receive_address_b")"
   regtest_mine_blocks "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   regtest_wait_until_ord_server_synced_to_bitcoind
   current_tip_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"

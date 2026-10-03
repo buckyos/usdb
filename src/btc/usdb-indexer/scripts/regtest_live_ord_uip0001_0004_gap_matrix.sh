@@ -334,11 +334,11 @@ if int(multi_child["raw_energy"]) != expected_inherited:
 
 invalid_ids = {
     invalid_missing_id: "not found",
-    invalid_state_id: "state invalid",
-    invalid_owner_id: "does not match",
+    invalid_state_id: "state=invalid",
+    invalid_owner_id: "not eligible for source",
     invalid_duplicate_id: "duplicate prev",
-    invalid_consumed_id: "state consumed",
-    invalid_burned_id: "state burned",
+    invalid_consumed_id: "state=consumed",
+    invalid_burned_id: "state=burned",
 }
 invalid_page = rpc(
     "get_invalid_passes",
@@ -541,65 +541,65 @@ main() {
 
   json_mint_file="$WORK_DIR/standard-json.json"
   cat >"$json_mint_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
-  json_pass_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$json_mint_file" "$address_a")"
+  json_pass_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$json_mint_file" "$address_a" "$address_a")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   height_json_mint="$(current_btc_height)"
 
   text_mint_file="$WORK_DIR/standard-text.txt"
   cat >"$text_mint_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x2222222222222222222222222222222222222222","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x2222222222222222222222222222222222222222","prev":[]}
 EOF
-  text_pass_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$text_mint_file" "$address_b")"
+  text_pass_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$text_mint_file" "$address_b" "$address_b")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   assert_ord_content_types "$json_pass_id" "$text_pass_id"
 
   missing_prev_id="$(printf '0%.0s' {1..64})i0"
   local missing_file="$WORK_DIR/invalid-prev-missing.json"
   cat >"$missing_file" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x3333333333333333333333333333333333333333","prev":["${missing_prev_id}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x3333333333333333333333333333333333333333","prev":["${missing_prev_id}"]}
 EOF
-  invalid_missing_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$missing_file" "$address_a")"
+  invalid_missing_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$missing_file" "$address_a" "$address_a")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   height_missing="$(current_btc_height)"
 
   local invalid_state_file="$WORK_DIR/invalid-prev-state-invalid.json"
   cat >"$invalid_state_file" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x3434343434343434343434343434343434343434","prev":["${invalid_missing_id}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x3434343434343434343434343434343434343434","prev":["${invalid_missing_id}"]}
 EOF
-  invalid_state_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$invalid_state_file" "$address_a")"
+  invalid_state_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$invalid_state_file" "$address_a" "$address_a")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
 
   local owner_file="$WORK_DIR/invalid-prev-owner.json"
   cat >"$owner_file" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x4444444444444444444444444444444444444444","prev":["${text_pass_id}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x4444444444444444444444444444444444444444","prev":["${text_pass_id}"]}
 EOF
-  invalid_owner_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$owner_file" "$address_a")"
+  invalid_owner_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$owner_file" "$address_a" "$address_a")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   height_owner="$(current_btc_height)"
 
   local duplicate_file="$WORK_DIR/invalid-prev-duplicate.json"
   cat >"$duplicate_file" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x5555555555555555555555555555555555555555","prev":["${json_pass_id}","${json_pass_id}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x5555555555555555555555555555555555555555","prev":["${json_pass_id}","${json_pass_id}"]}
 EOF
-  invalid_duplicate_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$duplicate_file" "$address_a")"
+  invalid_duplicate_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$duplicate_file" "$address_a" "$address_a")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   height_duplicate="$(current_btc_height)"
 
   local successor_file="$WORK_DIR/valid-prev-successor.json"
   cat >"$successor_file" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x6666666666666666666666666666666666666666","prev":["${json_pass_id}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x6666666666666666666666666666666666666666","prev":["${json_pass_id}"]}
 EOF
-  successor_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$successor_file" "$address_a")"
+  successor_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$successor_file" "$address_a" "$address_a")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   height_consume="$(current_btc_height)"
 
   local consumed_file="$WORK_DIR/invalid-prev-consumed.json"
   cat >"$consumed_file" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x7777777777777777777777777777777777777777","prev":["${json_pass_id}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x7777777777777777777777777777777777777777","prev":["${json_pass_id}"]}
 EOF
-  invalid_consumed_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$consumed_file" "$address_a")"
+  invalid_consumed_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$consumed_file" "$address_a" "$address_a")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   height_consumed_invalid="$(current_btc_height)"
 
@@ -610,9 +610,9 @@ EOF
 
   local burned_file="$WORK_DIR/invalid-prev-burned.json"
   cat >"$burned_file" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x8888888888888888888888888888888888888888","prev":["${successor_id}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x8888888888888888888888888888888888888888","prev":["${successor_id}"]}
 EOF
-  invalid_burned_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$burned_file" "$address_a")"
+  invalid_burned_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$burned_file" "$address_a" "$address_a")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
 
   transfer_txid="$(regtest_ord_send_inscription "$ORD_WALLET_NAME_B" "$address_a" "$text_pass_id")"
@@ -633,9 +633,9 @@ EOF
 
   local multi_1_file="$WORK_DIR/multi-prev-1.json"
   cat >"$multi_1_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x9999999999999999999999999999999999999999","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x9999999999999999999999999999999999999999","prev":[]}
 EOF
-  multi_prev_1_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$multi_1_file" "$address_a")"
+  multi_prev_1_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$multi_1_file" "$address_a" "$address_a")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   transfer_txid="$(regtest_ord_send_inscription "$ORD_WALLET_NAME" "$address_b" "$multi_prev_1_id")"
   regtest_log "First multi-prev source transfer txid=${transfer_txid}"
@@ -645,9 +645,9 @@ EOF
 
   local multi_2_file="$WORK_DIR/multi-prev-2.json"
   cat >"$multi_2_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prev":[]}
 EOF
-  multi_prev_2_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$multi_2_file" "$address_a")"
+  multi_prev_2_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$multi_2_file" "$address_a" "$address_a")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   transfer_txid="$(regtest_ord_send_inscription "$ORD_WALLET_NAME" "$address_b" "$multi_prev_2_id")"
   regtest_log "Second multi-prev source transfer txid=${transfer_txid}"
@@ -657,9 +657,9 @@ EOF
 
   local multi_child_file="$WORK_DIR/multi-prev-child.json"
   cat >"$multi_child_file" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","prev":["${multi_prev_1_id}","${multi_prev_2_id}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","prev":["${multi_prev_1_id}","${multi_prev_2_id}"]}
 EOF
-  multi_child_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$multi_child_file" "$address_b")"
+  multi_child_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$multi_child_file" "$address_b" "$address_b")"
   mine_and_sync_ord "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
   stable_height="$(current_btc_height)"
 

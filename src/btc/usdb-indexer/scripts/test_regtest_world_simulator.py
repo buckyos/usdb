@@ -500,7 +500,7 @@ class RegtestWorldSimulatorPayloadTests(unittest.TestCase):
         self.assertEqual(
             set(payload), {"p", "op", "v", "prev", "usdb_main"}
         )
-        self.assertEqual(payload["v"], 1)
+        self.assertEqual(payload["v"], 2)
 
     def test_writes_strict_fixed_and_address_collab_payloads(self) -> None:
         fixed = self.load_payload(

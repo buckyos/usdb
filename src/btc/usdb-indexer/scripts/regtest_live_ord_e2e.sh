@@ -669,6 +669,7 @@ create_usdb_indexer_config() {
   }
 }
 EOF
+  python3 "$REPO_ROOT/tests/common/miner_pass_regtest.py" configure-indexer "${USDB_INDEXER_ROOT}/config.json"
 }
 
 build_live_transfer_remint_scenario() {
@@ -917,7 +918,7 @@ build_live_transfer_remint_scenario() {
       "params": [
         {
           "inscription_id": "${inscription_id_2}",
-          "block_height": ${height_remint},
+          "block_height": "\$pass2_remint.mint_block_height",
           "mode": "at_or_before"
         }
       ],
@@ -935,7 +936,7 @@ build_live_transfer_remint_scenario() {
       "value": "\$pass1_energy_transfer.raw_energy",
       "multiplier": 9500,
       "divisor": 10000,
-      "message": "remint raw energy must equal floor(prev raw energy * 9500 / 10000)"
+      "message": "energy at the actual remint height must equal floor(prev raw energy * 9500 / 10000)"
     },
     {
       "type": "rpc_call",
@@ -1433,7 +1434,7 @@ build_live_same_owner_multi_mint_scenario() {
     {
       "type": "assert_pass_energy_eq",
       "inscription_id": "${inscription_id_2}",
-      "block_height": ${height_mint_2},
+      "block_height": "\$pass2_mint2.mint_block_height",
       "expected_energy": 0,
       "mode": "at_or_before",
       "expected_state": "active"
@@ -1831,6 +1832,10 @@ build_live_duplicate_prev_inherit_scenario() {
 EOF
 }
 
+# Reuse the same cardinal-only source proof setup as the other V2 live tests.
+regtest_run_ord_wallet_named() { run_ord_wallet_named "$@"; }
+source "$REPO_ROOT/tests/common/miner_pass_source.sh"
+
 main() {
   trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
   trap on_exit EXIT
@@ -1901,12 +1906,21 @@ main() {
     exit 1
   fi
 
-  log "Funding ord wallet A address: ${ord_receive_address_a}"
-  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
-    sendtoaddress "$ord_receive_address_a" "$FUND_ORD_AMOUNT_BTC" >/dev/null
-  log "Funding ord wallet B address: ${ord_receive_address_b}"
-  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
-    sendtoaddress "$ord_receive_address_b" "$FUND_ORD_AMOUNT_BTC" >/dev/null
+  # Preserve the original total balance while reserving coins for repeated same-owner mints.
+  local funding_part funding_slot
+  funding_part="$(python3 -c 'from decimal import Decimal; import sys; print(Decimal(sys.argv[1]) / 4)' "$FUND_ORD_AMOUNT_BTC")"
+  for funding_slot in 1 2 3 4; do
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      sendtoaddress "$ord_receive_address_a" "$funding_part" >/dev/null
+    if [[ "$LIVE_SCENARIO" != "duplicate_prev_inherit" ]]; then
+      "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+        sendtoaddress "$ord_receive_address_b" "$funding_part" >/dev/null
+    elif [[ "$funding_slot" == 1 ]]; then
+      # This scenario deliberately leaves only postage at B until the penalty test.
+      "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+        sendtoaddress "$ord_receive_address_b" "$FUND_ORD_AMOUNT_BTC" >/dev/null
+    fi
+  done
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
     generatetoaddress "$FUND_CONFIRM_BLOCKS" "$miner_address" >/dev/null
   wait_until_ord_server_synced_to_bitcoind
@@ -1915,11 +1929,11 @@ main() {
     ORD_CONTENT_FILE="$WORK_DIR/usdb_live_mint.json"
     if [[ "$LIVE_SCENARIO" == "invalid_mint" ]]; then
       cat >"$ORD_CONTENT_FILE" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x123","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x123","prev":[]}
 EOF
     else
       cat >"$ORD_CONTENT_FILE" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
     fi
   fi
@@ -1937,7 +1951,7 @@ EOF
   log "Inscribe first mint via ord CLI: wallet=${ORD_WALLET_NAME}, fee_rate=${ORD_FEE_RATE}, content_file=${ORD_CONTENT_FILE}, destination=${first_mint_destination:-<default>}"
   local inscribe_output_1 inscription_id_1
   if [[ -n "$first_mint_destination" ]]; then
-    inscribe_output_1="$(run_ord_wallet_named "$ORD_WALLET_NAME" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$first_mint_destination" --file "$ORD_CONTENT_FILE" 2>&1 || true)"
+    inscribe_output_1="$(run_ord_wallet_named "$ORD_WALLET_NAME" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$first_mint_destination" --satpoint "$(regtest_select_cardinal_satpoint "$ORD_WALLET_NAME" "$first_mint_destination")" --file "$ORD_CONTENT_FILE" 2>&1 || true)"
   else
     inscribe_output_1="$(run_ord_wallet_named "$ORD_WALLET_NAME" inscribe --fee-rate "$ORD_FEE_RATE" --file "$ORD_CONTENT_FILE" 2>&1 || true)"
   fi
@@ -1980,7 +1994,7 @@ EOF
     local remint_content_file
     remint_content_file="$WORK_DIR/usdb_live_remint.json"
     cat >"$remint_content_file" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
 EOF
 
     # The UIP0002 prev-owner check compares exact scripts. Pin the remint to the
@@ -1988,7 +2002,7 @@ EOF
     # ord to allocate a fresh wallet-B destination.
     log "Inscribe remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}, destination=${ord_receive_address_b}"
     local inscribe_output_2 inscription_id_2
-    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --file "$remint_content_file" 2>&1 || true)"
+    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --satpoint "$(regtest_select_cardinal_satpoint "$ORD_WALLET_NAME_B" "$ord_receive_address_b")" --file "$remint_content_file" 2>&1 || true)"
     inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
     if [[ -z "$inscription_id_2" ]]; then
       log "Failed to parse remint inscription id from ord output: ${inscribe_output_2}"
@@ -2014,12 +2028,12 @@ EOF
     local second_mint_content_file
     second_mint_content_file="$WORK_DIR/usdb_live_second_mint.json"
     cat >"$second_mint_content_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x3333333333333333333333333333333333333333","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x3333333333333333333333333333333333333333","prev":[]}
 EOF
 
     log "Inscribe second mint via ord CLI: wallet=${ORD_WALLET_NAME_B}, destination=${ord_receive_address_b}"
     local inscribe_output_2 inscription_id_2
-    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --file "$second_mint_content_file" 2>&1 || true)"
+    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --satpoint "$(regtest_select_cardinal_satpoint "$ORD_WALLET_NAME_B" "$ord_receive_address_b")" --file "$second_mint_content_file" 2>&1 || true)"
     inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
     if [[ -z "$inscription_id_2" ]]; then
       log "Failed to parse second inscription id from ord output: ${inscribe_output_2}"
@@ -2057,12 +2071,12 @@ EOF
     local second_mint_content_file
     second_mint_content_file="$WORK_DIR/usdb_live_second_mint_same_owner.json"
     cat >"$second_mint_content_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x5555555555555555555555555555555555555555","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x5555555555555555555555555555555555555555","prev":[]}
 EOF
 
     log "Inscribe second mint via ord CLI with same owner wallet: wallet=${ORD_WALLET_NAME}, destination=${ord_receive_address_a}"
     local inscribe_output_2 inscription_id_2
-    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_a" --file "$second_mint_content_file" 2>&1 || true)"
+    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_a" --satpoint "$(regtest_select_cardinal_satpoint "$ORD_WALLET_NAME" "$ord_receive_address_a")" --file "$second_mint_content_file" 2>&1 || true)"
     inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
     if [[ -z "$inscription_id_2" ]]; then
       log "Failed to parse second same-owner inscription id from ord output: ${inscribe_output_2}"
@@ -2100,11 +2114,11 @@ EOF
     local remint_content_file_1
     remint_content_file_1="$WORK_DIR/usdb_live_remint_first.json"
     cat >"$remint_content_file_1" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
 EOF
     log "Inscribe first remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
     local inscribe_output_2 inscription_id_2
-    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --file "$remint_content_file_1" 2>&1 || true)"
+    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --satpoint "$(regtest_select_cardinal_satpoint "$ORD_WALLET_NAME_B" "$ord_receive_address_b")" --file "$remint_content_file_1" 2>&1 || true)"
     inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
     if [[ -z "$inscription_id_2" ]]; then
       log "Failed to parse first remint inscription id from ord output: ${inscribe_output_2}"
@@ -2216,14 +2230,21 @@ PY
     height_penalty="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
     log "Chain height after penalty spend confirmations: ${height_penalty}"
 
+    # Provide a fresh owner source only after verifying the zero-energy penalty baseline.
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      sendtoaddress "$ord_receive_address_b" 0.001 >/dev/null
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress 1 "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+
     local remint_content_file_2
     remint_content_file_2="$WORK_DIR/usdb_live_remint_second.json"
     cat >"$remint_content_file_2" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x4444444444444444444444444444444444444444","prev":["${inscription_id_1}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x4444444444444444444444444444444444444444","prev":["${inscription_id_1}"]}
 EOF
     log "Inscribe duplicate remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
     local inscribe_output_3 inscription_id_3
-    inscribe_output_3="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --file "$remint_content_file_2" 2>&1 || true)"
+    inscribe_output_3="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --satpoint "$(regtest_select_cardinal_satpoint "$ORD_WALLET_NAME_B" "$ord_receive_address_b")" --file "$remint_content_file_2" 2>&1 || true)"
     inscription_id_3="$(extract_inscription_id "$inscribe_output_3")"
     if [[ -z "$inscription_id_3" ]]; then
       log "Failed to parse duplicate remint inscription id from ord output: ${inscribe_output_3}"

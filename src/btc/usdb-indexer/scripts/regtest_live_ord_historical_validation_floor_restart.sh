@@ -163,7 +163,7 @@ main() {
 
   mint_content_file="$WORK_DIR/usdb_hist_validation_floor_mint.json"
   cat >"$mint_content_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
 
   pass_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$mint_content_file")"
@@ -204,16 +204,19 @@ EOF
   assert_historical_context_success "$pass_id" "$historical_height" "$context_json"
 
   retention_floor="$((historical_height + 1))"
-  regtest_log "Raising usdb-indexer genesis_block_height to ${retention_floor} to emulate future retention floor increase"
+  regtest_log "Changing a bound index origin must reject startup rather than silently truncate history"
   regtest_stop_usdb_indexer
   regtest_update_usdb_genesis_block_height "$retention_floor"
+  regtest_expect_usdb_startup_failure "Indexer rules binding mismatch"
+  regtest_update_usdb_genesis_block_height 1
   regtest_start_usdb_indexer
   regtest_wait_usdb_rpc_ready
   regtest_wait_until_usdb_synced_eq "$((historical_height + 1))"
   regtest_wait_usdb_consensus_ready
 
-  regtest_log "Historical context below the new retention floor must return STATE_NOT_RETAINED"
-  assert_historical_context_state_not_retained "$pass_id" "$historical_height" "$context_json"
+  assert_historical_context_success "$pass_id" "$historical_height" "$context_json"
+  regtest_log "Queries below the unchanged origin must return STATE_NOT_RETAINED after restart"
+  assert_historical_context_state_not_retained "$pass_id" 0 'null'
 
   regtest_log "USDB historical validation floor restart test succeeded."
 }

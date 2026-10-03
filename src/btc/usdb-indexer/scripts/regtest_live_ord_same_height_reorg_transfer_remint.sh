@@ -99,7 +99,7 @@ main() {
 
   mint_content_file="$WORK_DIR/usdb_live_mint.json"
   cat >"$mint_content_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
   remint_content_file="$WORK_DIR/usdb_live_remint.json"
 
@@ -114,9 +114,9 @@ EOF
   height_transfer="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
 
   cat >"$remint_content_file" <<EOF
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x2222222222222222222222222222222222222222","prev":["${pass_old}"]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x2222222222222222222222222222222222222222","prev":["${pass_old}"]}
 EOF
-  pass_new="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$remint_content_file" "$ord_receive_address_b")"
+  pass_new="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$remint_content_file" "$ord_receive_address_b" "$ord_receive_address_b")"
   regtest_mine_blocks "$REMINT_CONFIRM_BLOCKS" "$miner_address"
   regtest_wait_until_ord_server_synced_to_bitcoind
   target_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"

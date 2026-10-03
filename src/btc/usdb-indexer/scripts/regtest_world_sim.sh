@@ -172,19 +172,19 @@ validate_poll_intervals() {
 }
 
 resolve_btc_stable_lag_blocks() {
-  local registry="${REPO_ROOT}/src/btc/usdb-util/activation-registry/btc-regtest.json"
-  local embedded_stable_lag
+  local registry="${REPO_ROOT}/tests/fixtures/miner-pass-v2/catalog.json"
+  local registry_stable_lag
 
   if [[ ! -f "$registry" ]]; then
-    log "Missing embedded BTC activation registry: ${registry}"
+    log "Missing V2 BTC activation catalog: ${registry}"
     exit 1
   fi
-  embedded_stable_lag="$(python3 - "$registry" <<'PY'
+  registry_stable_lag="$(python3 - "$registry" <<'PY'
 import json
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    registry = json.load(source)
+    registry = json.load(source)["registries"][0]
 network_type = registry["scope"]["network_type"]
 if network_type != "regtest":
     raise SystemExit(f"expected regtest activation registry, got: {network_type!r}")
@@ -194,11 +194,11 @@ if not isinstance(stable_lag, int) or isinstance(stable_lag, bool) or stable_lag
 print(stable_lag)
 PY
 )"
-  if [[ -n "$BTC_STABLE_LAG_BLOCKS" && "$BTC_STABLE_LAG_BLOCKS" != "$embedded_stable_lag" ]]; then
-    log "BTC_STABLE_LAG_BLOCKS must match the embedded regtest registry: configured=${BTC_STABLE_LAG_BLOCKS}, embedded=${embedded_stable_lag}"
+  if [[ -n "$BTC_STABLE_LAG_BLOCKS" && "$BTC_STABLE_LAG_BLOCKS" != "$registry_stable_lag" ]]; then
+    log "BTC_STABLE_LAG_BLOCKS must match the V2 regtest fixture registry: configured=${BTC_STABLE_LAG_BLOCKS}, registry=${registry_stable_lag}"
     exit 1
   fi
-  BTC_STABLE_LAG_BLOCKS="$embedded_stable_lag"
+  BTC_STABLE_LAG_BLOCKS="$registry_stable_lag"
 }
 
 resolve_ord_reorg_capacity() {
@@ -724,6 +724,7 @@ create_usdb_indexer_config() {
   }
 }
 EOF
+  python3 "$REPO_ROOT/tests/common/miner_pass_regtest.py" configure-indexer "${USDB_INDEXER_ROOT}/config.json"
 }
 
 join_by_comma() {
@@ -846,8 +847,13 @@ PY
       fi
       AGENT_ADDRESSES+=("$receive_address")
 
-      "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
-        sendtoaddress "$receive_address" "$FUND_AGENT_AMOUNT_BTC" >/dev/null
+      # Keep the total funding unchanged, with cardinal inputs for bootstrap and remint.
+      local funding_part funding_slot
+      funding_part="$(python3 -c 'from decimal import Decimal; import sys; print(Decimal(sys.argv[1]) / 4)' "$FUND_AGENT_AMOUNT_BTC")"
+      for funding_slot in 1 2 3 4; do
+        "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+          sendtoaddress "$receive_address" "$funding_part" >/dev/null
+      done
     done
 
     log "Funding agent wallets confirmed by ${FUND_CONFIRM_BLOCKS} blocks"

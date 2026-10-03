@@ -47,7 +47,7 @@ main() {
   regtest_ensure_wallet
 
   local miner_address ord_receive_address mint_content_file pass_id
-  local historical_height payload_file retention_floor continue_address
+  local historical_height payload_file continue_address
   local state_ref_resp pass_snapshot_resp pass_energy_resp
 
   miner_address="$(regtest_get_new_address)"
@@ -65,7 +65,7 @@ main() {
 
   mint_content_file="$WORK_DIR/usdb_validator_block_body_retention_mint.json"
   cat >"$mint_content_file" <<'EOF'
-{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
+{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
 
   pass_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$mint_content_file")"
@@ -109,21 +109,22 @@ EOF
   regtest_log "Validator block-body payload remains valid after head advance"
   regtest_validate_validator_payload_success "$payload_file"
 
-  retention_floor="$((historical_height + 1))"
-  regtest_log "Raising usdb-indexer genesis_block_height to ${retention_floor} to emulate retention floor increase"
-  regtest_stop_usdb_indexer
-  regtest_update_usdb_genesis_block_height "$retention_floor"
-  regtest_start_usdb_indexer
-  regtest_wait_usdb_rpc_ready
-  regtest_wait_until_usdb_synced_eq "$((historical_height + 1))"
-  regtest_wait_usdb_consensus_ready
+  # The index origin is part of the bound dataset identity, not a mutable pruning knob.
+  # Exercise the actual retained boundary without changing that identity.
+  local below_origin_payload="$WORK_DIR/below-origin-payload.json"
+  python3 - "$payload_file" "$below_origin_payload" <<'PYJSON'
+import json
+from pathlib import Path
+import sys
+payload = json.loads(Path(sys.argv[1]).read_text())
+payload["external_state"]["btc_height"] = 0
+Path(sys.argv[2]).write_text(json.dumps(payload) + "\n")
+PYJSON
+  regtest_log "Payload below index origin must return STATE_NOT_RETAINED"
+  regtest_validate_validator_payload_consensus_error "$below_origin_payload" "-32048" "STATE_NOT_RETAINED"
 
-  regtest_log "Payload below the new retention floor must return STATE_NOT_RETAINED"
-  regtest_validate_validator_payload_consensus_error "$payload_file" "-32048" "STATE_NOT_RETAINED"
-
-  regtest_log "Restoring historical retention window and deleting retained auxiliary state"
+  regtest_log "Deleting retained auxiliary state while preserving the index origin"
   regtest_stop_usdb_indexer
-  regtest_update_usdb_genesis_block_height 1
   regtest_usdb_db_exec "DELETE FROM active_balance_snapshots WHERE block_height = ${historical_height};"
   regtest_start_usdb_indexer
   regtest_wait_usdb_rpc_ready
