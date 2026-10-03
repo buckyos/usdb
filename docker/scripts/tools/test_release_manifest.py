@@ -108,10 +108,10 @@ class ReleaseManifestTests(unittest.TestCase):
             )
         return evidence
 
-    def valid_manifest(self) -> dict:
+    def valid_manifest(self, release_id: str = "usdb-testnet-v0-r1") -> dict:
         return RELEASE.create_manifest(
             bundle_dir=self.bundle,
-            release_id="usdb-testnet-v0-r1",
+            release_id=release_id,
             created_at_utc="2026-08-26T12:00:00Z",
             compatibility_lock_path=self.compatibility_lock,
             revisions={
@@ -128,6 +128,29 @@ class ReleaseManifestTests(unittest.TestCase):
             qualification_level="fast",
             qualification_evidence=self.qualification_evidence(),
         )
+
+    def test_v1_native_release_manifest_and_node_kit(self) -> None:
+        from release_bundle import prepare, source_for_release
+        from prepare_release_node_kit import build_node_kit, load_release_layout
+        networks = MODULE_PATH.parents[2] / "networks"
+        self.bundle = prepare(source_for_release(networks, "usdb-testnet-v1-r1"), self.root / "v1-native")
+        manifest = self.valid_manifest("usdb-testnet-v1-r1")
+        RELEASE.validate_manifest(manifest, self.bundle, self.compatibility_lock)
+        self.assertEqual(manifest["network_bundle"]["btc_rules_scope"], "usdb-testnet-v1")
+        self.assertEqual(manifest["network_bundle"]["chain_id"], 202610030)
+        with self.assertRaisesRegex(ValueError, "does not belong"):
+            self.valid_manifest("usdb-testnet-v0-r1")
+        manifest_path = self.root / "usdb-release-manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        checksum_path = self.root / "usdb-release-manifest.json.sha256"
+        checksum_path.write_text(RELEASE.sha256(manifest_path) + "  usdb-release-manifest.json\n")
+        kit = build_node_kit(repository_root=MODULE_PATH.parents[3], bundle_dir=self.bundle,
+                             manifest_path=manifest_path, manifest_checksum_path=checksum_path,
+                             output_dir=self.root / "node-kit")
+        layout = load_release_layout(kit)
+        self.assertEqual(layout.release_id, "usdb-testnet-v1-r1")
+        self.assertEqual((layout.bundle_dir / "artifacts/btc-activation-registry-catalog.json").read_bytes(),
+                         (self.bundle / "artifacts/btc-activation-registry-catalog.json").read_bytes())
 
     def test_candidate_round_trip_is_stable(self) -> None:
         manifest = self.valid_manifest()

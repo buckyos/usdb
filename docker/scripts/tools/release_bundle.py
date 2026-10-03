@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -81,6 +82,20 @@ def prepare(source: Path, output: Path) -> Path:
                                      paths["manifest"], paths["trusted_keys"], paths["record"])
 
 
+def source_for_release(networks: Path, release_id: str, expected_bundle_id: str | None = None) -> Path:
+    """Resolve a tag's generation; never fall back to another available network bundle."""
+    match = re.fullmatch(r"usdb-(testnet|mainnet)-v([0-9]+)-r[1-9][0-9]*", release_id)
+    signing.require(match is not None, f"Invalid release ID: {release_id}")
+    bundle_id = release_id.rsplit("-r", 1)[0]
+    signing.require(expected_bundle_id is None or expected_bundle_id == bundle_id,
+                    f"Release/bundle generation mismatch: release={release_id}, bundle={expected_bundle_id}")
+    source = networks / f"{match[1]}-v{match[2]}"
+    network = validate_network_bundle(source)
+    signing.require(network["network_bundle_id"] == bundle_id,
+                    f"Release source identity mismatch: release={release_id}, source={source}")
+    return source
+
+
 def register(source: Path, candidate: Path, record: Path, published: dict) -> Path:
     """Record only the public inputs needed by CI; never copy a workspace or its raw UTXO."""
     network = validate_network_bundle(source)
@@ -148,14 +163,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     generate = sub.add_parser("prepare")
-    generate.add_argument("--source-bundle", type=Path, required=True)
+    selector = generate.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--source-bundle", type=Path)
+    selector.add_argument("--release-id")
+    generate.add_argument("--networks-root", type=Path, default=Path(__file__).resolve().parents[2] / "networks")
+    generate.add_argument("--expected-bundle-id")
     generate.add_argument("--output-dir", type=Path, required=True)
     verify = sub.add_parser("verify-public")
     verify.add_argument("--bundle-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "prepare":
-            print(prepare(args.source_bundle, args.output_dir))
+            signing.require(args.release_id is not None or args.expected_bundle_id is None,
+                            "--expected-bundle-id requires --release-id")
+            source = source_for_release(args.networks_root, args.release_id, args.expected_bundle_id) if args.release_id else args.source_bundle
+            print(prepare(source, args.output_dir))
         else:
             print(json.dumps(verify_public(args.bundle_dir), indent=2, sort_keys=True))
     except (OSError, ValueError, KeyError, TypeError) as error:

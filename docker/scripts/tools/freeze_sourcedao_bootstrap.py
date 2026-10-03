@@ -146,7 +146,8 @@ def main() -> int:
     try:
         selected = args.network or "usdb-testnet-v0"
         require(re.fullmatch(r"[a-z0-9][a-z0-9-]*", selected), "invalid network name")
-        bundle = args.bundle_dir or USDB_ROOT / "docker/networks" / ("testnet-v0" if selected == "usdb-testnet-v0" else selected)
+        directory_name = selected.removeprefix("usdb-") if re.fullmatch(r"usdb-(testnet|mainnet)-v[0-9]+", selected) else selected
+        bundle = args.bundle_dir or USDB_ROOT / "docker/networks" / directory_name
         network = validate_network_bundle(bundle)
         require(not args.network or network["network_bundle_id"] == selected, "bundle differs from selected network")
         directory = args.input_dir or SECURITY_ROOT / "candidate" / network["network_bundle_id"]

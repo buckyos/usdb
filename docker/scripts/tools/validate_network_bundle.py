@@ -36,7 +36,14 @@ from registry_scope import (  # noqa: E402
 EXPECTED_BUNDLE_ID = "usdb-testnet-v0"
 EXPECTED_CHAIN_ID = 202608250
 EXPECTED_BTC_REGISTRY = "a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224"
+TESTNET_V1_REGISTRY = "c51bdf87510c0083daefb3aa2344c8d35345dbf66af4612fce425e06348bcff6"
+NETWORK_PROFILES = {
+    EXPECTED_BUNDLE_ID: dict(chain_id=EXPECTED_CHAIN_ID, registry=EXPECTED_BTC_REGISTRY, scope="legacy"),
+    "usdb-testnet-v1": dict(chain_id=202610030, registry=TESTNET_V1_REGISTRY, scope="usdb-testnet-v1",
+                           catalog_sha256="f70f870b04f2ccc99b510111d4ca7c2d7e2b22694eebb4b38e53e59ea314ca79"),
+}
 BTC_REGISTRY_STABLE_LAG_BLOCKS = {
+    TESTNET_V1_REGISTRY: 10,
     EXPECTED_BTC_REGISTRY: 10,
 }
 EXPECTED_BOOTSTRAP_ADMIN = "0x0b5223FD31cDc1536f31b3627e6D7025b52310c9"
@@ -512,37 +519,44 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
         require_no_runtime_secrets(value)
 
     require(network.get("schema_version") == "usdb-network-bundle:v2", "unexpected network bundle schema")
-    require(network.get("network_bundle_id") == EXPECTED_BUNDLE_ID, "unexpected network bundle ID")
+    bundle_id = network.get("network_bundle_id")
+    require(isinstance(bundle_id, str) and bundle_id in NETWORK_PROFILES, f"unsupported network bundle ID: {bundle_id}")
+    profile = NETWORK_PROFILES[bundle_id]
+    expected_chain_id, expected_registry = profile["chain_id"], profile["registry"]
     # Deployment defaults are validated separately and do not enter chain identity.
     load_bootnodes(bundle_dir, network["network_bundle_id"])
-    require(network.get("status") == "development-resettable", "testnet-v0 must remain resettable")
-    require(network.get("deployment_tier") == "testnet", "testnet-v0 deployment tier must be testnet")
-    require(network.get("chain_id") == EXPECTED_CHAIN_ID, "unexpected testnet-v0 chain ID")
-    require(network.get("network_id") == EXPECTED_CHAIN_ID, "unexpected testnet-v0 network ID")
-    require(network.get("p2p_port") == 31303, "testnet-v0 P2P port must be 31303")
+    require(network.get("status") == "development-resettable", "testnet must remain resettable")
+    require(network.get("deployment_tier") == "testnet", "testnet deployment tier must be testnet")
+    require(network.get("chain_id") == expected_chain_id, f"unexpected {bundle_id.removeprefix('usdb-')} chain ID: expected={expected_chain_id}, actual={network.get('chain_id')}")
+    require(network.get("network_id") == expected_chain_id, f"unexpected {bundle_id.removeprefix('usdb-')} network ID: expected={expected_chain_id}, actual={network.get('network_id')}")
+    require(network.get("p2p_port") == 31303, "testnet P2P port must be 31303")
 
     btc_source = network.get("btc_source")
     require(isinstance(btc_source, dict), "network btc_source is required")
     index_origin_height = network_index_origin_height(network)
-    require(btc_source.get("network_id") == "btc-mainnet", "testnet-v0 must consume BTC mainnet")
-    require(btc_source.get("activation_registry_id") == EXPECTED_BTC_REGISTRY, "unexpected BTC registry")
-    require(btc_source.get("rules_scope", "legacy") == "legacy", "testnet-v0 must preserve its legacy rules scope")
-    require("btc_activation_registry_catalog" not in network.get("artifacts", {}), "testnet-v0 must use its frozen embedded registry")
+    require(btc_source.get("network_id") == "btc-mainnet", "testnet must consume BTC mainnet")
+    require(btc_source.get("activation_registry_id") == expected_registry, "unexpected BTC registry")
+    require(btc_source.get("rules_scope", "legacy") == profile["scope"], "frozen rules scope mismatch")
+    catalog = network.get("artifacts", {}).get("btc_activation_registry_catalog")
+    if profile["scope"] == "legacy":
+        require(catalog is None, "testnet-v0 must use its frozen embedded registry")
+    else:
+        require(isinstance(catalog, dict) and catalog.get("sha256") == profile["catalog_sha256"], "frozen registry catalog mismatch")
     validate_frozen_rule_selection(bundle_dir, network, env)
 
-    require(env.get("USDB_NETWORK_BUNDLE_ID") == EXPECTED_BUNDLE_ID, "network.env bundle ID mismatch")
-    require(env.get("USDB_CHAIN_ID") == str(EXPECTED_CHAIN_ID), "network.env chain ID mismatch")
-    require(env.get("USDB_NETWORK_ID") == str(EXPECTED_CHAIN_ID), "network.env network ID mismatch")
+    require(env.get("USDB_NETWORK_BUNDLE_ID") == bundle_id, "network.env bundle ID mismatch")
+    require(env.get("USDB_CHAIN_ID") == str(expected_chain_id), "network.env chain ID mismatch")
+    require(env.get("USDB_NETWORK_ID") == str(expected_chain_id), "network.env network ID mismatch")
     require(env.get("BTC_NETWORK") == "bitcoin", "network.env BTC network must be bitcoin")
     require(env.get("BTC_MIN_READY_HEIGHT") == str(index_origin_height), "network.env Bitcoin readiness height mismatch")
     require(env.get("BTC_MAX_TIP_AGE_SECS") == "7200", "network.env Bitcoin maximum tip age mismatch")
     require(env.get("BTC_MIN_CONNECTIONS") == "1", "network.env Bitcoin minimum connections mismatch")
     require(env.get("USDB_GENESIS_BLOCK_HEIGHT") == str(index_origin_height), "network.env origin mismatch")
-    require(env.get("BTC_ACTIVATION_REGISTRY_ID") == EXPECTED_BTC_REGISTRY, "network.env registry mismatch")
+    require(env.get("BTC_ACTIVATION_REGISTRY_ID") == expected_registry, "network.env registry mismatch")
     require(env.get("USDB_P2P_PORT") == "31303", "network.env P2P port mismatch")
 
     require(chain.get("schemaVersion") == 2, "chain bootstrap schema must be v2")
-    require(chain.get("chainId") == EXPECTED_CHAIN_ID, "chain bootstrap chain ID mismatch")
+    require(chain.get("chainId") == expected_chain_id, "chain bootstrap chain ID mismatch")
     chain_btc = chain.get("btcSource")
     require(isinstance(chain_btc, dict), "chain bootstrap btcSource is required")
     require(chain_btc.get("networkId") == "btc-mainnet", "chain bootstrap BTC network mismatch")
@@ -550,19 +564,19 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     activations = chain.get("usdbConsensus", {}).get("activations")
     require(isinstance(activations, list) and activations, "chain bootstrap activations are required")
     require(activations[0].get("block") == 0, "activation schedule must start at block 0")
-    require(activations[0].get("btcActivationRegistryId") == EXPECTED_BTC_REGISTRY, "activation registry mismatch")
+    require(activations[0].get("btcActivationRegistryId") == expected_registry, "activation registry mismatch")
     versions = activations[0].get("versions")
     require(isinstance(versions, dict), "activation versions are required")
-    require(versions.get("quotePolicyVersion") == 0, "testnet-v0 quote policy must be disabled")
-    require(versions.get("auxPoolPolicyVersion") == 0, "testnet-v0 aux pool policy must be disabled")
+    require(versions.get("quotePolicyVersion") == 0, "testnet quote policy must be disabled")
+    require(versions.get("auxPoolPolicyVersion") == 0, "testnet aux pool policy must be disabled")
 
     bootstrap_admin = validate_bootstrap_admin(
         network["deployment_tier"],
         chain.get("bootstrapAdmin", {}).get("address"),
     )
-    require(bootstrap_admin == EXPECTED_BOOTSTRAP_ADMIN, "unexpected testnet-v0 bootstrap admin")
+    require(bootstrap_admin == EXPECTED_BOOTSTRAP_ADMIN, f"unexpected {bundle_id.removeprefix('usdb-')} bootstrap admin: expected={EXPECTED_BOOTSTRAP_ADMIN}, actual={bootstrap_admin}")
 
-    require(source_dao.get("chainId") == EXPECTED_CHAIN_ID, "SourceDAO chain ID mismatch")
+    require(source_dao.get("chainId") == expected_chain_id, "SourceDAO chain ID mismatch")
     require("rpcUrl" not in source_dao, "SourceDAO release config must not freeze an RPC URL")
     require("artifactsDir" not in source_dao, "SourceDAO release config must not freeze an artifacts path")
     predeploys = chain.get("predeploys", {})
@@ -574,7 +588,7 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     )
     require(
         bootstrap_manifest.get("balance_history_snapshot_mode") == "none",
-        "testnet-v0 default balance-history bootstrap mode must be none",
+        "testnet default balance-history bootstrap mode must be none",
     )
     require(
         bootstrap_manifest.get("balance_history_snapshot_height") is None,
@@ -583,8 +597,8 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
 
     config = genesis.get("config")
     require(isinstance(config, dict), "genesis config is required")
-    require(config.get("chainId") == EXPECTED_CHAIN_ID, "genesis chainId mismatch")
-    require(config.get("chainId_alt") == EXPECTED_CHAIN_ID, "genesis chainId_alt mismatch")
+    require(config.get("chainId") == expected_chain_id, "genesis chainId mismatch")
+    require(config.get("chainId_alt") == expected_chain_id, "genesis chainId_alt mismatch")
     genesis_usdb = config.get("usdb")
     require(isinstance(genesis_usdb, dict), "genesis config.usdb is required")
     require(genesis_usdb.get("btcNetworkId") == "btc-mainnet", "genesis BTC network mismatch")
@@ -619,9 +633,9 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
         genesis_manifest.get("schema_version") == "usdb-genesis-manifest:v2",
         "unexpected genesis manifest schema",
     )
-    require(genesis_manifest.get("network_bundle_id") == EXPECTED_BUNDLE_ID, "genesis manifest bundle mismatch")
-    require(genesis_manifest.get("chain_id") == EXPECTED_CHAIN_ID, "genesis manifest chain ID mismatch")
-    require(genesis_manifest.get("network_id") == EXPECTED_CHAIN_ID, "genesis manifest network ID mismatch")
+    require(genesis_manifest.get("network_bundle_id") == bundle_id, "genesis manifest bundle mismatch")
+    require(genesis_manifest.get("chain_id") == expected_chain_id, "genesis manifest chain ID mismatch")
+    require(genesis_manifest.get("network_id") == expected_chain_id, "genesis manifest network ID mismatch")
     require(
         genesis_manifest.get("file_sha256") == sha256(bundle_dir / "artifacts/usdb-genesis.json"),
         "genesis manifest file hash mismatch",
@@ -861,8 +875,8 @@ def validate_node_env(
             "USDB_MINER_ADDRESS must be a non-zero EVM address",
         )
 
-    require(env.get("USDB_P2P_BIND_ADDRESS") == "0.0.0.0", "testnet-v0 base P2P binding must be 0.0.0.0; select IPv6 publication with peers configure")
-    require(env.get("USDB_P2P_BIND_PORT", "31303") == "31303", "testnet-v0 P2P bind port must be 31303")
+    require(env.get("USDB_P2P_BIND_ADDRESS") == "0.0.0.0", "testnet base P2P binding must be 0.0.0.0; select IPv6 publication with peers configure")
+    require(env.get("USDB_P2P_BIND_PORT", "31303") == "31303", "testnet P2P bind port must be 31303")
     from usdb_p2p import validate as validate_p2p
     validate_p2p(env)
     for key in (

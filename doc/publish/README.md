@@ -38,6 +38,7 @@
 - [USDB testnet-v0 深 BTC 重组停链与整网重置](./usdb-testnet-v0-deep-btc-reorg-operations.md)
 - [Balance-History 发布与 Snapshot 分发](./balance-history-release-and-snapshot-distribution.md)
 - [Balance-history Snapshot 与 Indexer Checkpoint 兼容规则](./balance-history-indexer-checkpoint-compatibility.md)
+- [USDB testnet-v1 网络包与首版发布准备](./usdb-testnet-v1-network-bundle.md)
 - [USDB testnet-v0 Network Bundle](./usdb-testnet-v0-network-bundle.md)
 
 ## 3. 关联文档

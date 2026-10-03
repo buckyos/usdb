@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-genesis-manifest:v2",
+  "network_bundle_id": "usdb-testnet-v1",
+  "chain_id": 202610030,
+  "network_id": 202610030,
+  "genesis_file": "usdb-genesis.json",
+  "file_sha256": "2e114ac60ac3ce9a9f840a7242258b4a95224221d7f168b1abf4837c623ba0aa",
+  "block_hash": "0xb0b6ebc9a6c2e051855c2d61dff9a51635ea1db09c898a3c0126e27b9e779314",
+  "bootstrap_config_sha256": "5e0e044eb7a332b090b094781c313fac4df5dbe17c732c7924d480a49a4c3520",
+  "sourcedao_config_sha256": "ff0467b6700be80faece5ed74937c98433c16005ea60ce43e07019b20509b180",
+  "sourcedao_revision": "09591c29bfb27ca14d209de25ed8e2c71614b841",
+  "trust": "development-manifest",
+  "derivation": {
+    "source_network_bundle_id": "usdb-testnet-v0",
+    "source_genesis_sha256": "ba7fa81fab2388b00acd1df9117124cecea0f5a99379c1c412d79eb938330776",
+    "allocation_policy": "reuse-contracts-and-admin-rebuild-system-state"
+  }
+}

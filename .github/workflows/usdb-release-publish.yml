@@ -246,17 +246,10 @@ jobs:
           [[ "$(jq -er '.repositories.go_ethereum.revision' "$manifest")" == \
             "$EXPECTED_GO_REVISION" ]]
           bundle_id="$(jq -er '.network_bundle.bundle_id' "$manifest")"
-          case "$bundle_id" in
-            usdb-testnet-v0)
-              bundle_dir="$(python3 usdb/docker/scripts/tools/release_bundle.py prepare \
-                --source-bundle usdb/docker/networks/testnet-v0 \
-                --output-dir "$GITHUB_WORKSPACE/selected-release-bundle/testnet-v0")"
-              ;;
-            *)
-              echo "unsupported publish network bundle: $bundle_id" >&2
-              exit 1
-              ;;
-          esac
+          bundle_dir="$(python3 usdb/docker/scripts/tools/release_bundle.py prepare \
+            --release-id "$RELEASE_ID" --expected-bundle-id "$bundle_id" \
+            --networks-root usdb/docker/networks \
+            --output-dir "$GITHUB_WORKSPACE/selected-release-bundle/${RELEASE_ID%-r*}")"
           python3 usdb/docker/scripts/tools/release_manifest.py validate \
             --bundle-dir "$bundle_dir" \
             --manifest "$manifest" \

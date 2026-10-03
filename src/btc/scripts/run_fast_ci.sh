@@ -83,6 +83,7 @@ shellcheck \
   "$REPO_DIR/docker/scripts/tools/run_testnet_bitcoin.sh" \
   "$REPO_DIR/docker/scripts/tools/run_testnet_runtime.sh"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_validate_network_bundle.py"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_testnet_v1_bundle.py"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_release_manifest.py"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_release_notes.py"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_sync_project_skills.py"

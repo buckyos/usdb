@@ -113,9 +113,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut check = false;
     let mut index = 0;
     while index < args.len() {
-        if args[index] == "--catalog" {
+        if args[index] == "--catalog" || args[index] == "--registry" {
+            let single_registry = args[index] == "--registry";
             index += 1;
-            catalogs.push(args.get(index).ok_or_else(usage_error)?.clone());
+            catalogs.push((
+                args.get(index).ok_or_else(usage_error)?.clone(),
+                single_registry,
+            ));
         } else if args[index] == "--check" {
             if check {
                 return Err(usage_error().into());
@@ -136,8 +140,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let registries = if scoped {
         let mut registries = Vec::new();
         let mut scopes = BTreeSet::new();
-        for path in catalogs {
-            let catalog = BtcActivationRegistryCatalog::from_json(&fs::read_to_string(path)?)?;
+        for (path, single_registry) in catalogs {
+            let json = fs::read_to_string(path)?;
+            let catalog = if single_registry {
+                BtcActivationRegistryCatalog::from_revisions(vec![
+                    BtcActivationRegistry::from_json(&json)?,
+                ])?
+            } else {
+                BtcActivationRegistryCatalog::from_json(&json)?
+            };
             let scope = &catalog.current_registry().scope;
             if !scopes.insert((scope.network_id.clone(), scope.rules_scope.clone())) {
                 return Err(
@@ -205,6 +216,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn usage_error() -> IoError {
     IoError::new(
         ErrorKind::InvalidInput,
-        "usage: generate_go_btc_activation_golden [--catalog catalog.json]... [--check] [output-path]",
+        "usage: generate_go_btc_activation_golden [--catalog catalog.json | --registry registry.json]... [--check] [output-path]",
     )
 }

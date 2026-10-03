@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "testnet-v1-network-generation",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime", "indexer", "documentation", "testing"],
+  "summary": "Prepare a fresh testnet-v1 network with isolated MinerPass V2 rules",
+  "details": [
+    "Freeze chain ID and network ID 202610030, a distinct genesis header, and an independent BTC-mainnet registry scope.",
+    "Preserve reviewed genesis allocations, contract code, PoW settings and reusable signed Bitcoin snapshot inputs.",
+    "Select Candidate and Publish bundles by release generation and reject mismatched tags, registries and bundle identities.",
+    "Go recognizes the explicitly selected testnet-v1 registry; genesis generation rebuilds chain-bound system storage, and fast CI checks Rust and Go artifacts together."
+  ],
+  "operator_actions": [
+    "After the v1 release is published, stop the v0 runtime and initialize the new USDB network from block zero using the v1 installer and isolated state paths.",
+    "Preserve wallet and signer material; do not copy v0 indexer, chain or runtime SourceDAO state into v1. Reuse Bitcoin data only under the validated compatibility contract.",
+    "Complete SourceDAO bootstrap again, verify a new MinerPass V2 inscription, and validate upgraded Seed connectivity before mining."
+  ],
+  "compatibility": {"network_reset": true, "data_rebuild": false, "config_change": true, "restart_required": true},
+  "references": ["https://github.com/buckyos/usdb/issues/51"]
+}

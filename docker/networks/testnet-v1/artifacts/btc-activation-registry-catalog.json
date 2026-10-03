@@ -1,0 +1,98 @@
+{
+  "schema_version": "uip-0008-btc-activation-registry-catalog:v1",
+  "current_registry_id": "c51bdf87510c0083daefb3aa2344c8d35345dbf66af4612fce425e06348bcff6",
+  "registries": [
+    {
+      "records": [
+        {
+          "activation_height": 0,
+          "notes": "USDB testnet-v1 fresh MinerPass V2 rules; independent of other BTC-mainnet scopes.",
+          "status": "Active",
+          "supersedes": null,
+          "uip": "UIP-0001",
+          "version_family": "inscription_schema_version",
+          "version_value": "uip-0001-miner-pass-inscription:v2"
+        },
+        {
+          "activation_height": 0,
+          "notes": "USDB testnet-v1 fresh MinerPass V2 rules; independent of other BTC-mainnet scopes.",
+          "status": "Active",
+          "supersedes": null,
+          "uip": "UIP-0002",
+          "version_family": "pass_state_machine_version",
+          "version_value": "uip-0002-pass-state-machine:v2"
+        },
+        {
+          "activation_height": 0,
+          "notes": "USDB testnet-v1 fresh MinerPass V2 rules; independent of other BTC-mainnet scopes.",
+          "status": "Active",
+          "supersedes": null,
+          "uip": "UIP-0003",
+          "version_family": "energy_formula_version",
+          "version_value": "uip-0003-pass-energy-formula:v1"
+        },
+        {
+          "activation_height": 0,
+          "notes": "USDB testnet-v1 fresh MinerPass V2 rules; independent of other BTC-mainnet scopes.",
+          "status": "Active",
+          "supersedes": null,
+          "uip": "UIP-0004",
+          "version_family": "effective_energy_formula_version",
+          "version_value": "uip-0004-collab-leader-effective-energy:v1"
+        },
+        {
+          "activation_height": 0,
+          "notes": "USDB testnet-v1 fresh MinerPass V2 rules; independent of other BTC-mainnet scopes.",
+          "status": "Active",
+          "supersedes": null,
+          "uip": "UIP-0005",
+          "version_family": "level_formula_version",
+          "version_value": "uip-0005-level-and-real-difficulty:v1"
+        },
+        {
+          "activation_height": 0,
+          "notes": "USDB testnet-v1 fresh MinerPass V2 rules; independent of other BTC-mainnet scopes.",
+          "status": "Active",
+          "supersedes": null,
+          "uip": "UIP-0006",
+          "version_family": "query_semantics_version",
+          "version_value": "uip-0006-economic-query-semantics:v1"
+        },
+        {
+          "activation_height": 0,
+          "notes": "USDB testnet-v1 fresh MinerPass V2 rules; independent of other BTC-mainnet scopes.",
+          "status": "Active",
+          "supersedes": null,
+          "uip": "UIP-0006",
+          "version_family": "state_view_version",
+          "version_value": "uip-0006-usdb-economic-state-view:v1"
+        },
+        {
+          "activation_height": 0,
+          "notes": "USDB testnet-v1 fresh MinerPass V2 rules; independent of other BTC-mainnet scopes.",
+          "status": "Active",
+          "supersedes": null,
+          "uip": "UIP-0008",
+          "version_family": "commit_protocol_version",
+          "version_value": "uip-0008-usdb-local-state-commit:v1"
+        },
+        {
+          "activation_height": 0,
+          "notes": "USDB testnet-v1 fresh MinerPass V2 rules; independent of other BTC-mainnet scopes.",
+          "status": "Active",
+          "supersedes": null,
+          "uip": "UIP-0008",
+          "version_family": "balance_history_semantics_version",
+          "version_value": "balance-snapshot-at-or-before:v1"
+        }
+      ],
+      "schema_version": "uip-0008-btc-activation-registry:v3",
+      "scope": {
+        "network_id": "btc-mainnet",
+        "network_type": "mainnet",
+        "rules_scope": "usdb-testnet-v1",
+        "stable_lag_blocks": 10
+      }
+    }
+  ]
+}

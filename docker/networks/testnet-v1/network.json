@@ -1,0 +1,69 @@
+{
+  "schema_version": "usdb-network-bundle:v2",
+  "network_bundle_id": "usdb-testnet-v1",
+  "status": "development-resettable",
+  "deployment_tier": "testnet",
+  "chain_id": 202610030,
+  "network_id": 202610030,
+  "p2p_port": 31303,
+  "btc_source": {
+    "network_id": "btc-mainnet",
+    "index_origin_height": 963800,
+    "activation_registry_id": "c51bdf87510c0083daefb3aa2344c8d35345dbf66af4612fce425e06348bcff6",
+    "rules_scope": "usdb-testnet-v1"
+  },
+  "artifacts": {
+    "genesis": {
+      "path": "artifacts/usdb-genesis.json",
+      "sha256": "2e114ac60ac3ce9a9f840a7242258b4a95224221d7f168b1abf4837c623ba0aa"
+    },
+    "genesis_manifest": {
+      "path": "artifacts/usdb-genesis.manifest.json",
+      "sha256": "9059dca8185ed6ab3e5b3a74c7048100948afe25b5fd9d609fa8c00b4ac0149c"
+    },
+    "chain_bootstrap": {
+      "path": "artifacts/usdb-chain-bootstrap-config.json",
+      "sha256": "5e0e044eb7a332b090b094781c313fac4df5dbe17c732c7924d480a49a4c3520"
+    },
+    "sourcedao_bootstrap": {
+      "path": "artifacts/sourcedao-bootstrap-config.json",
+      "sha256": "ff0467b6700be80faece5ed74937c98433c16005ea60ce43e07019b20509b180"
+    },
+    "snapshot_trusted_keys": {
+      "path": "trust/usdb-mainnet-snapshot-v1.trusted-keys.json",
+      "sha256": "ba92705824a6de913de2b64b9804687c50dc9d2e5b3aa6f61de5c169e5afc1d6"
+    },
+    "bootstrap_manifest": {
+      "path": "artifacts/bootstrap-manifest.json",
+      "sha256": "6ffe749e939e1115f8c5001f5c209811da8d4c54ae3f029a8f002ef0c524d523"
+    },
+    "network_environment": {
+      "path": "network.env",
+      "sha256": "7a7cc313dcb04ab0434c508238c68873b0f65b12c5b8776daa4aed0dd9342c5f"
+    },
+    "compose_overlay": {
+      "path": "compose.network.yml",
+      "sha256": "9ef4dfde255e3d51bef8f6bbc567728a271c6614f7b7080dbb0c4a1d15af1df0"
+    },
+    "sourcedao_contract_golden": {
+      "path": "artifacts/sourcedao-contract-golden.json",
+      "sha256": "3cb09c90ac11e057b1795624e11c74f6f668aff37e2a631b39dd23e579d8a334"
+    },
+    "sourcedao_bootstrap_source": {
+      "path": "artifacts/sourcedao-bootstrap-source.json",
+      "sha256": "723da81f9cc6d07b71e792b3d70ababfaea232f56b76b1a039b8a4e5f07b9b2a"
+    },
+    "sourcedao_bootstrap_imported": {
+      "path": "artifacts/sourcedao-bootstrap-imported.json",
+      "sha256": "66bebdb717b57442b97f8169db9166a2d91630054be205a40ae38553061faee6"
+    },
+    "sourcedao_bootstrap_freeze": {
+      "path": "artifacts/sourcedao-bootstrap-freeze.json",
+      "sha256": "c83d477f411f057c7ff73cd9246418bbc4c09c3dc8d480cd8b567430b745f00c"
+    },
+    "btc_activation_registry_catalog": {
+      "path": "artifacts/btc-activation-registry-catalog.json",
+      "sha256": "f70f870b04f2ccc99b510111d4ca7c2d7e2b22694eebb4b38e53e59ea314ca79"
+    }
+  }
+}

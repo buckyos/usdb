@@ -1,0 +1,95 @@
+{
+  "artifact_set_id": "59e54b88ef11829435c992a1d21afc0904698470a93491405bd95af070faf8ce",
+  "artifact_type": "balance-history-split",
+  "btc_block_hash": "000000000000000000012c999b5f6d2043b1d3d76dcf06ee007b5f86290c0551",
+  "components": {
+    "core": {
+      "artifact_id": "509070ff4fddda38ac878318fcee3c3a52ec1e96da9c785d144332c223375f53",
+      "completed_at": 1788612770,
+      "files": [
+        {
+          "object_key": "snapshots/v3/balance-history/bitcoin/000000963800/core/509070ff4fddda38ac878318fcee3c3a52ec1e96da9c785d144332c223375f53/balance_history_core_963800.db",
+          "path": "core/balance_history_core_963800.db",
+          "role": "database",
+          "sha256": "3e3490ac19521647a8513a0ef2961607df4456ba3e3ea6922c1ba750f7fbea61",
+          "size": 37006364672
+        },
+        {
+          "object_key": "snapshots/v3/balance-history/bitcoin/000000963800/core/509070ff4fddda38ac878318fcee3c3a52ec1e96da9c785d144332c223375f53/balance_history_core_963800.manifest.json",
+          "path": "core/balance_history_core_963800.manifest.json",
+          "role": "manifest",
+          "sha256": "a745c42dc219bcf97c0e3d25fb1b1338acf587e9d3b48bd48c0bab3c072de645",
+          "size": 1947
+        },
+        {
+          "object_key": "snapshots/v3/balance-history/bitcoin/000000963800/core/509070ff4fddda38ac878318fcee3c3a52ec1e96da9c785d144332c223375f53/balance_history_core_963800.manifest.sig",
+          "path": "core/balance_history_core_963800.manifest.sig",
+          "role": "signature",
+          "sha256": "b5ee67b6e0b0ef7f52bf50f5c8d7aab08c17d779aa35addbbc91cf2702aeff55",
+          "size": 88
+        },
+        {
+          "object_key": "snapshots/v3/balance-history/bitcoin/000000963800/core/509070ff4fddda38ac878318fcee3c3a52ec1e96da9c785d144332c223375f53/complete.json",
+          "path": "core/complete.json",
+          "role": "completion_marker",
+          "sha256": "a5a60f5b4c8d274e0bbee1f0fdb92e23f3e15b93904d5a220e35da99f96c8509",
+          "size": 718
+        }
+      ],
+      "object_prefix": "snapshots/v3/balance-history/bitcoin/000000963800/core/509070ff4fddda38ac878318fcee3c3a52ec1e96da9c785d144332c223375f53",
+      "signing_key_id": "usdb-mainnet-snapshot-v1"
+    },
+    "script_registry": {
+      "artifact_id": "934ab06abfc20769d007b642aaf9d8f7dd4c323dcb30ec397ea72e9a8bbdb3fa",
+      "completed_at": 1788634431,
+      "files": [
+        {
+          "object_key": "snapshots/v3/balance-history/bitcoin/000000963800/script-registry/934ab06abfc20769d007b642aaf9d8f7dd4c323dcb30ec397ea72e9a8bbdb3fa/script_registry_963800.db",
+          "path": "script-registry/script_registry_963800.db",
+          "role": "database",
+          "sha256": "6b421c280141ae8a4195843570bc3f1861f508b94a327647e9fd370d872096cf",
+          "size": 196696915968
+        },
+        {
+          "object_key": "snapshots/v3/balance-history/bitcoin/000000963800/script-registry/934ab06abfc20769d007b642aaf9d8f7dd4c323dcb30ec397ea72e9a8bbdb3fa/script_registry_963800.manifest.json",
+          "path": "script-registry/script_registry_963800.manifest.json",
+          "role": "manifest",
+          "sha256": "db4c559d6359eb28499859f0782826ca054043ce51e6fea6279130595f3e5229",
+          "size": 965
+        },
+        {
+          "object_key": "snapshots/v3/balance-history/bitcoin/000000963800/script-registry/934ab06abfc20769d007b642aaf9d8f7dd4c323dcb30ec397ea72e9a8bbdb3fa/script_registry_963800.manifest.sig",
+          "path": "script-registry/script_registry_963800.manifest.sig",
+          "role": "signature",
+          "sha256": "49b540ca79eb2b38ab2994d3f3dfc629ca55870bbcd6edb7447b90baf3eeb19e",
+          "size": 88
+        },
+        {
+          "object_key": "snapshots/v3/balance-history/bitcoin/000000963800/script-registry/934ab06abfc20769d007b642aaf9d8f7dd4c323dcb30ec397ea72e9a8bbdb3fa/complete.json",
+          "path": "script-registry/complete.json",
+          "role": "completion_marker",
+          "sha256": "31b81f57087b962098b09e61782e828c96eb2d48c9687d058f916c0d406b9c2c",
+          "size": 645
+        }
+      ],
+      "object_prefix": "snapshots/v3/balance-history/bitcoin/000000963800/script-registry/934ab06abfc20769d007b642aaf9d8f7dd4c323dcb30ec397ea72e9a8bbdb3fa",
+      "signing_key_id": "usdb-mainnet-snapshot-v1"
+    }
+  },
+  "core_snapshot_id": "7b1cf69a6922b55a90f378c3d03daa8e64c4dba48145cae6e0989be5c9730562",
+  "height": 963800,
+  "network": "bitcoin",
+  "producer": {
+    "artifact_finalization_marker_sha256": "689f2447b94d8030c2f2624684beec562789c544e2c3604b3c4e285fd66be1c8",
+    "artifact_finalized_at_utc": "2026-09-05T19:25:48.717155+00:00",
+    "artifact_finalizer_revision": "6fc5b723cdd73e497fd399199d930ac9150a29ee",
+    "artifact_producer_revision": "a531d2c3ed7367d9605c60a89f4ac8accb949450"
+  },
+  "public_base_url": "https://usdb-snapshot.tbudr.top",
+  "schema_version": "usdb-snapshot-release-record:v3",
+  "snapshot_release_id": "balance-history-bitcoin-h963800-59e54b88ef118294",
+  "trusted_keys": {
+    "file_name": "usdb-mainnet-snapshot-v1.trusted-keys.json",
+    "sha256": "ba92705824a6de913de2b64b9804687c50dc9d2e5b3aa6f61de5c169e5afc1d6"
+  }
+}
