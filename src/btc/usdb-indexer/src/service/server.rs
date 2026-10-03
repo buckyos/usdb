@@ -2429,6 +2429,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 "readiness".to_string(),
                 "pass_snapshot".to_string(),
                 "pass_mint_audit".to_string(),
+                "pass_mint_source".to_string(),
+                "owner_mint_history".to_string(),
                 "pass_history".to_string(),
                 "active_passes_at_height".to_string(),
                 "pass_stats_at_height".to_string(),
@@ -2540,6 +2542,34 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             self.resolve_height_for_contextual_query(params.at_height, params.context.as_ref())?;
         self.ensure_history_height_retained(resolved_height, "historical state")?;
         self.build_pass_snapshot(&inscription_id, resolved_height)
+    }
+
+    fn get_pass_mint_source(
+        &self,
+        mut params: GetPassMintAuditParams,
+    ) -> JsonResult<serde_json::Value> {
+        let info = self.get_pass_mint_audit(params.clone())?.ok_or_else(|| {
+            Self::to_internal_error(format!(
+                "Mint is not indexed: inscription_id={}",
+                params.inscription_id
+            ))
+        })?;
+        params.at_height = Some(info.observed_at_height);
+        let source = self
+            .indexer
+            .rebuild_mint_source(&info.audit)
+            .map_err(Self::to_internal_error)?;
+        let after = self.get_pass_mint_audit(params)?;
+        if serde_json::to_value(&after).map_err(|err| Self::to_internal_error(err.to_string()))?
+            != serde_json::to_value(Some(&info))
+                .map_err(|err| Self::to_internal_error(err.to_string()))?
+        {
+            return Err(Self::to_internal_error(format!(
+                "Mint state changed during source verification: inscription_id={}, observed_height={}",
+                info.audit.inscription_id, info.observed_at_height
+            )));
+        }
+        Ok(serde_json::json!({"mint": info, "source": source}))
     }
 
     fn get_pass_mint_audit(
@@ -2776,6 +2806,9 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             .map_err(Self::to_internal_error)?;
 
         Ok(OwnerPassesAtHeight {
+            ever_valid_owner: storage
+                .has_ever_valid_owner(&owner, resolved_height)
+                .map_err(Self::to_internal_error)?,
             resolved_height,
             owner: owner.to_string(),
             total,
@@ -5787,6 +5820,31 @@ mod tests {
             })
             .unwrap();
 
+        assert!(page0.ever_valid_owner);
+        // A prior owner remains occupied after transferring away its last pass.
+        let old_owner = server
+            .get_owner_passes_at_height(GetOwnerPassesAtHeightParams {
+                owner: dormant_owner.to_string(),
+                at_height: Some(200),
+                states: None,
+                order: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert!(old_owner.items.is_empty());
+        assert!(old_owner.ever_valid_owner);
+        let before_acquisition = server
+            .get_owner_passes_at_height(GetOwnerPassesAtHeightParams {
+                owner: dormant_owner.to_string(),
+                at_height: Some(100),
+                states: None,
+                order: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert!(!before_acquisition.ever_valid_owner);
         assert_eq!(page0.resolved_height, 200);
         assert_eq!(page0.owner, owner.to_string());
         assert_eq!(page0.total, 3);

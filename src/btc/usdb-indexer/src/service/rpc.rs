@@ -834,6 +834,8 @@ pub struct OwnerPassItem {
 /// Paged owner-pass response for a target height.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerPassesAtHeight {
+    /// True if this owner ever held a valid pass at or before the resolved height, even after transfer.
+    pub ever_valid_owner: bool,
     /// Final query height resolved by the server.
     pub resolved_height: u32,
     /// Target owner script hash.
@@ -1451,6 +1453,11 @@ pub trait UsdbIndexerRpc {
 
     /// Return a completed v2 attempt's chain/eligibility audit; None for v1 or unknown mints.
     /// Missing runtime evidence is not represented as a protocol Invalid audit.
+    /// Rebuild the actual commit source, including for first-opening exemption, without changing state.
+    #[rpc(name = "get_pass_mint_source")]
+    fn get_pass_mint_source(&self, params: GetPassMintAuditParams)
+    -> JsonResult<serde_json::Value>;
+
     #[rpc(name = "get_pass_mint_audit")]
     fn get_pass_mint_audit(
         &self,

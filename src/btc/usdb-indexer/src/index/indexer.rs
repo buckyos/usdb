@@ -457,6 +457,54 @@ impl InscriptionIndexer {
         }
     }
 
+    /// Reconstruct public sat-source evidence for an indexed mint without changing consensus state.
+    /// First-opening audits intentionally omit this proof; tools can request it before funding.
+    pub fn rebuild_mint_source(
+        &self,
+        audit: &usdb_util::MinerPassMintAudit,
+    ) -> Result<usdb_util::MintSourceAudit, String> {
+        use crate::btc::mint_evidence::{MintSatOutcome, MintSourceOutcome};
+        let result = (|| {
+            let block = self.btc_client.get_block(audit.block_height)?;
+            if block.block_hash().to_string() != audit.block_hash {
+                return Err("Mint block is no longer canonical".to_string());
+            }
+            let id = audit
+                .inscription_id
+                .parse()
+                .map_err(|err| format!("Invalid mint id: {err}"))?;
+            let context = MintEvidenceContext::new(
+                self.btc_client.clone(),
+                audit.block_height,
+                Arc::new(block),
+            );
+            let MintSatOutcome::Located(sat) = context.locate_mint(id)? else {
+                return Err("Mint sat is outside the supported subset".into());
+            };
+            let MintSourceOutcome::Proven(proof) = context.prove_source(&sat)? else {
+                return Err("Coinbase commit has no source owner".into());
+            };
+            if self
+                .btc_client
+                .get_block_hash(audit.block_height)?
+                .to_string()
+                != audit.block_hash
+            {
+                return Err("Mint block changed during source verification".into());
+            }
+            Ok(usdb_util::MintSourceAudit::from(&proof))
+        })();
+        result.map_err(|err: String| {
+            let msg = format!(
+                "Mint source reconstruction failed: inscription_id={}, mint_height={}, error={err}",
+                audit.inscription_id, audit.block_height
+            );
+            error!("{msg}");
+            msg
+        })
+    }
+
+    /// Returns the durable MinerPass storage facade.
     pub fn miner_pass_storage(&self) -> &MinerPassStorageRef {
         &self.miner_pass_storage
     }

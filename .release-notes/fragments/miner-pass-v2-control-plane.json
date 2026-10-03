@@ -1,0 +1,16 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-v2-control-plane",
+  "type": "added",
+  "scopes": ["node-runtime", "indexer", "documentation", "testing"],
+  "summary": "Add MinerPass V2 source/recipient planning and verification before funding",
+  "details": [
+    "Prepare explicit source D and recipient E at a pinned confirmed state, including owner history, prev consumption and retained passes.",
+    "Verify the exact inscription, canonical confirmations, source, recipient and full configuration; incomplete evidence never approves funding.",
+    "Development-only regtest Ord execution selects a confirmed cardinal source coin and checks canonical inventory; production wallet signing and broadcasting remain unavailable.",
+    "The control-plane mint API now requires source_address and recipient_address. The indexer adds read-only source reconstruction and owner history capability fields."
+  ],
+  "operator_actions": ["Use these tools only on a network explicitly configured for MinerPass V2; this change does not activate or reset an existing network."],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": ["https://github.com/buckyos/usdb/issues/51"]
+}

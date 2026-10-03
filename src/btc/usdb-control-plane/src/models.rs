@@ -15,7 +15,10 @@ pub struct ServiceRpcRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BtcMintPrepareRequest {
-    pub owner_address: String,
+    /// Address supplying the inscription sat in the commit.
+    pub source_address: String,
+    /// Address receiving the reveal output.
+    pub recipient_address: String,
     #[serde(default)]
     pub usdb_main: Option<String>,
     #[serde(default)]
@@ -30,7 +33,8 @@ pub struct BtcMintPrepareRequest {
 #[serde(deny_unknown_fields)]
 pub struct BtcMintExecuteRequest {
     pub wallet_name: String,
-    pub owner_address: String,
+    pub source_address: String,
+    pub recipient_address: String,
     #[serde(default)]
     pub usdb_main: Option<String>,
     #[serde(default)]
@@ -70,6 +74,14 @@ pub struct BtcMintPrepareActivePassSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BtcMintPrepareResponse {
+    pub source_address: String,
+    pub source_script_hash: String,
+    pub recipient_address: String,
+    pub operation_path: Option<String>,
+    pub observation: Value,
+    pub source_passes: Vec<Value>,
+    pub retained_pass_ids: Vec<String>,
+    pub execution_available: bool,
     pub eligible: bool,
     pub prepare_mode: String,
     pub blockers: Vec<String>,
@@ -91,6 +103,9 @@ pub struct BtcMintPrepareResponse {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BtcMintExecuteResponse {
+    pub source_address: String,
+    pub source_outpoint: String,
+    pub recipient_address: String,
     pub btc_network: String,
     pub btc_runtime_profile: String,
     pub wallet_name: String,
@@ -99,6 +114,30 @@ pub struct BtcMintExecuteResponse {
     pub inscription_id: String,
     pub txid: Option<String>,
     pub ord_output: String,
+}
+
+/// Expected configuration supplied by the user, never inferred from the received pass.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BtcMintVerifyRequest {
+    pub mint: BtcMintPrepareRequest,
+    pub inscription_id: String,
+    pub expected_source_outpoint: Option<String>,
+}
+
+/// One canonical observation; clients must discard it when the draft or network changes.
+#[derive(Debug, Clone, Serialize)]
+pub struct BtcMintVerifyResponse {
+    pub verified: bool,
+    pub blockers: Vec<String>,
+    pub observed_height: u32,
+    pub confirmations: u64,
+    pub required_confirmations: u64,
+    pub source_balance_sats: String,
+    pub remaining_source_pass_ids: Vec<String>,
+    pub source: Value,
+    pub snapshot: Value,
+    pub state: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]

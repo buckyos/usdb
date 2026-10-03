@@ -1,9 +1,11 @@
+#[path = "mint.rs"]
+mod mint;
+
 use crate::config::ControlPlaneConfig;
 use crate::models::{
     ApiError, AppEntry, ArtifactSummary, BalanceHistoryServiceSummary, BootstrapStepSummary,
-    BootstrapSummary, BtcMintExecuteRequest, BtcMintExecuteResponse,
-    BtcMintPrepareActivePassSummary, BtcMintPrepareRequest, BtcMintPrepareResponse,
-    BtcMintPrepareRuntimeSummary, BtcNodeServiceSummary, BtcWorldSimDevSignerResponse,
+    BootstrapSummary, BtcMintExecuteRequest, BtcMintExecuteResponse, BtcMintPrepareRequest,
+    BtcMintPrepareResponse, BtcNodeServiceSummary, BtcWorldSimDevSignerResponse,
     BtcWorldSimIdentitiesResponse, BtcWorldSimIdentity, CapabilitiesSummary, ExplorerLinks,
     OrdServiceSummary, OverviewResponse, ServiceProbe, ServiceRpcRequest, ServicesSummary,
     UsdbChainAddressStatusResponse, UsdbChainDevIdentityResponse, UsdbChainServiceSummary,
@@ -18,7 +20,7 @@ use axum::routing::{get, get_service, post};
 use axum::{Router, serve};
 use bitcoincore_rpc::bitcoin::Network;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Stdio;
@@ -240,6 +242,7 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
         )
         .route("/api/btc/mint/prepare", post(post_prepare_btc_mint))
         .route("/api/btc/mint/execute", post(post_execute_btc_mint))
+        .route("/api/btc/mint/verify", post(mint::verify))
         .route(
             "/api/services/balance-history/rpc",
             post(post_balance_history_rpc),
@@ -670,8 +673,10 @@ async fn post_execute_btc_mint(
     State(state): State<AppState>,
     Json(request): Json<BtcMintExecuteRequest>,
 ) -> Result<Json<BtcMintExecuteResponse>, (StatusCode, Json<ApiError>)> {
+    let _execution_guard = mint::EXECUTION_LOCK.lock().await;
     let prepare_request = BtcMintPrepareRequest {
-        owner_address: request.owner_address.clone(),
+        source_address: request.source_address.clone(),
+        recipient_address: request.recipient_address.clone(),
         usdb_main: request.usdb_main.clone(),
         leader_pass_id: request.leader_pass_id.clone(),
         leader_btc_addr: request.leader_btc_addr.clone(),
@@ -689,12 +694,12 @@ async fn post_execute_btc_mint(
             }),
         ));
     }
-    if prepared.runtime_profile != "development" {
+    if !prepared.response.execution_available || prepared.runtime_profile != "development" {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ApiError {
                 error: format!(
-                    "BTC mint execute is only available in development runtime, current runtime is {}",
+                    "BTC mint execute requires enabled development minting and ready Ord; runtime={}",
                     prepared.runtime_profile
                 ),
             }),
@@ -733,28 +738,45 @@ async fn post_execute_btc_mint(
                 }),
             )
         })?;
-    if identity.owner_address != prepared.response.owner_address {
+    if address_string_to_script_hash(&identity.owner_address, &Network::Regtest)
+        .map(|hash| hash.to_string())
+        .ok()
+        .as_deref()
+        != Some(&prepared.response.source_script_hash)
+    {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ApiError {
                 error: format!(
                     "World-sim wallet {} resolves to owner {} but the mint request targets {}",
-                    identity.wallet_name, identity.owner_address, prepared.response.owner_address
+                    identity.wallet_name, identity.owner_address, prepared.response.source_address
                 ),
             }),
         ));
     }
 
+    let source_outpoint = mint::select_source_coin(
+        &state,
+        &identity.wallet_name,
+        &prepared.response.source_address,
+        &prepared.response.source_passes,
+    )
+    .await
+    .map_err(mint::unavailable)?;
     let execution = execute_world_sim_ord_mint(
         &state,
         &identity.wallet_name,
         &prepared.response.owner_address,
         &prepared.response.inscription_payload_json,
+        &source_outpoint,
     )
     .await
     .map_err(|error| (StatusCode::BAD_GATEWAY, Json(ApiError { error })))?;
 
     Ok(Json(BtcMintExecuteResponse {
+        source_address: prepared.response.source_address,
+        recipient_address: prepared.response.recipient_address,
+        source_outpoint,
         btc_network: prepared.response.runtime.btc_network,
         btc_runtime_profile: prepared.runtime_profile,
         wallet_name: identity.wallet_name,
@@ -770,195 +792,7 @@ async fn prepare_btc_mint_context(
     state: &AppState,
     request: &BtcMintPrepareRequest,
 ) -> Result<PreparedBtcMintContext, (StatusCode, Json<ApiError>)> {
-    let services = build_services_summary(state).await;
-    let capabilities = build_capabilities_summary(&services, state.config.development_mint.enabled);
-    let btc_network_name = resolve_runtime_btc_network_name(&services).ok_or_else(|| {
-        let error =
-            "Failed to resolve the active BTC runtime network from btc-node or balance-history"
-                .to_string();
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(ApiError {
-                error: error.clone(),
-            }),
-        )
-    })?;
-    let btc_network = parse_balance_history_network(&btc_network_name).map_err(|error| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(ApiError {
-                error: format!(
-                    "Unsupported BTC runtime network {}: {}",
-                    btc_network_name, error
-                ),
-            }),
-        )
-    })?;
-    let owner_address = normalize_required_text("owner_address", &request.owner_address)
-        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
-    let owner_script_hash = address_string_to_script_hash(&owner_address, &btc_network)
-        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?
-        .to_string();
-    let mint_identity = normalize_btc_mint_identity(
-        request.usdb_main.as_deref(),
-        request.leader_pass_id.as_deref(),
-        request.leader_btc_addr.as_deref(),
-        &btc_network,
-    )
-    .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
-    let prev = normalize_prev_list(&request.prev)
-        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
-
-    let ord_query_ready = services
-        .ord
-        .data
-        .as_ref()
-        .and_then(|item| item.query_ready)
-        .unwrap_or(false);
-    let balance_history_ready = services
-        .balance_history
-        .data
-        .as_ref()
-        .and_then(|item| item.query_ready)
-        .unwrap_or(false);
-    let usdb_indexer_ready = services
-        .usdb_indexer
-        .data
-        .as_ref()
-        .and_then(|item| item.query_ready)
-        .unwrap_or(false);
-
-    let active_pass = if usdb_indexer_ready {
-        fetch_owner_active_pass_summary(state, &owner_script_hash)
-            .await
-            .map_err(|error| {
-                (
-                    StatusCode::BAD_GATEWAY,
-                    Json(ApiError {
-                        error: format!(
-                            "Failed to resolve the current active pass for {}: {}",
-                            owner_address, error
-                        ),
-                    }),
-                )
-            })?
-    } else {
-        None
-    };
-
-    let mut blockers = Vec::new();
-    if !state.config.development_mint.enabled {
-        blockers.push("Production wallet signing and broadcast are not enabled. Ord readiness alone does not enable transactions.".to_string());
-    }
-    if capabilities.btc_console_mode != "inscription_enabled" {
-        blockers.push(
-            "The current BTC runtime is still in read-only mode. Start an inscription-enabled runtime before preparing mint flow."
-                .to_string(),
-        );
-    }
-    if !capabilities.ord_available {
-        blockers.push("ORD backend is not available in the current stack.".to_string());
-    } else if !ord_query_ready {
-        blockers.push("ORD backend is online but not fully synced to the BTC tip yet.".to_string());
-    }
-    if !balance_history_ready {
-        blockers.push(
-            "balance-history is not query-ready yet. Wait until address balance queries are ready."
-                .to_string(),
-        );
-    }
-    if !usdb_indexer_ready {
-        blockers.push(
-            "usdb-indexer is not query-ready yet. Wait until miner-pass state queries are ready."
-                .to_string(),
-        );
-    }
-
-    let mut warnings = Vec::new();
-    let suggested_prev = active_pass
-        .as_ref()
-        .map(|item| vec![item.inscription_id.clone()])
-        .unwrap_or_default();
-    if let Some(active_pass) = active_pass.as_ref() {
-        if prev.is_empty() {
-            warnings.push(format!(
-                "Owner {} already has an active pass {}. A remint usually references the current active pass via prev.",
-                owner_address, active_pass.inscription_id
-            ));
-        } else if !prev.contains(&active_pass.inscription_id) {
-            warnings.push(format!(
-                "Owner {} already has an active pass {}. Current prev does not reference it.",
-                owner_address, active_pass.inscription_id
-            ));
-        }
-    }
-
-    let inscription_payload = build_btc_mint_inscription_payload(&mint_identity, &prev);
-    let inscription_payload_json =
-        serde_json::to_string_pretty(&inscription_payload).map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: format!("Failed to render inscription payload: {}", error),
-                }),
-            )
-        })?;
-    let prepare_request = json!({
-        "prepare_mode": "draft_only",
-        "protocol": "usdb-btc-mint-v1",
-        "wallet_signing": "psbt",
-        "runtime_btc_network": btc_network_name.clone(),
-        "owner_address": owner_address.clone(),
-        "owner_script_hash": owner_script_hash.clone(),
-        "inscription": {
-            "content_type": "application/json",
-            "payload": inscription_payload.clone(),
-        },
-        "psbt": Value::Null,
-    });
-
-    let runtime_profile = capabilities.btc_runtime_profile.clone();
-    Ok(PreparedBtcMintContext {
-        runtime_profile,
-        response: BtcMintPrepareResponse {
-            eligible: blockers.is_empty(),
-            prepare_mode: "draft_only".to_string(),
-            blockers,
-            warnings,
-            runtime: BtcMintPrepareRuntimeSummary {
-                btc_network: btc_network_name,
-                btc_runtime_profile: capabilities.btc_runtime_profile.clone(),
-                btc_console_mode: capabilities.btc_console_mode,
-                ord_available: capabilities.ord_available,
-                ord_query_ready,
-                balance_history_ready,
-                usdb_indexer_ready,
-                ord_synced_block_height: services
-                    .ord
-                    .data
-                    .as_ref()
-                    .and_then(|item| item.synced_block_height),
-                btc_tip_height: services
-                    .ord
-                    .data
-                    .as_ref()
-                    .and_then(|item| item.btc_tip_height),
-                ord_sync_gap: services.ord.data.as_ref().and_then(|item| item.sync_gap),
-            },
-            owner_address,
-            owner_script_hash,
-            pass_kind: mint_identity.pass_kind().to_string(),
-            usdb_main: mint_identity.usdb_main().map(str::to_string),
-            leader_pass_id: mint_identity.leader_pass_id().map(str::to_string),
-            leader_btc_addr: mint_identity.leader_btc_addr().map(str::to_string),
-            prev,
-            suggested_prev,
-            active_pass,
-            inscription_payload,
-            inscription_payload_json,
-            prepare_request,
-        },
-    })
+    mint::prepare(state, request).await
 }
 
 async fn post_balance_history_rpc(
@@ -1718,9 +1552,10 @@ fn normalize_prev_list(values: &[String]) -> Result<Vec<String>, String> {
                 candidate
             ));
         }
-        if !normalized.iter().any(|existing| existing == candidate) {
-            normalized.push(candidate.to_string());
+        if normalized.iter().any(|existing| existing == candidate) {
+            return Err(format!("Duplicate prev entry: {candidate}"));
         }
+        normalized.push(candidate.to_string());
     }
     Ok(normalized)
 }
@@ -1736,9 +1571,10 @@ fn is_valid_inscription_id(value: &str) -> bool {
         return false;
     };
     txid.len() == 64
-        && txid.chars().all(|char| char.is_ascii_hexdigit())
-        && !index.is_empty()
-        && index.chars().all(|char| char.is_ascii_digit())
+        && txid
+            .chars()
+            .all(|char| char.is_ascii_digit() || ('a'..='f').contains(&char))
+        && index.parse::<u32>().is_ok_and(|n| n.to_string() == index)
 }
 
 struct OrdMintExecution {
@@ -1752,6 +1588,7 @@ async fn execute_world_sim_ord_mint(
     wallet_name: &str,
     destination: &str,
     inscription_payload_json: &str,
+    source_outpoint: &str,
 ) -> Result<OrdMintExecution, String> {
     validate_world_sim_wallet_name(wallet_name).map_err(|error| {
         format!(
@@ -1846,6 +1683,8 @@ async fn execute_world_sim_ord_mint(
         .arg("inscribe")
         .arg("--fee-rate")
         .arg(format!("{}", state.config.development_mint.ord_fee_rate))
+        .arg("--satpoint")
+        .arg(format!("{source_outpoint}:0"))
         .arg("--destination")
         .arg(destination)
         .arg("--file")
@@ -1966,30 +1805,6 @@ fn extract_whitespace_separated(raw: &str) -> impl Iterator<Item = &str> {
             )
     })
     .filter(|candidate| !candidate.is_empty())
-}
-
-async fn fetch_owner_active_pass_summary(
-    state: &AppState,
-    owner_script_hash: &str,
-) -> Result<Option<BtcMintPrepareActivePassSummary>, String> {
-    let response = state
-        .rpc_client
-        .usdb_indexer_proxy(
-            &state.config.rpc.usdb_indexer_url,
-            "get_owner_active_pass_at_height",
-            json!([{
-                "owner": owner_script_hash,
-                "at_height": Value::Null,
-            }]),
-        )
-        .await?;
-
-    serde_json::from_value(response).map_err(|error| {
-        format!(
-            "Failed to decode active pass summary for owner {}: {}",
-            owner_script_hash, error
-        )
-    })
 }
 
 async fn build_services_summary(state: &AppState) -> ServicesSummary {
@@ -2989,7 +2804,8 @@ mod tests {
     #[test]
     fn btc_mint_request_rejects_removed_usdb_collab_field() {
         let error = serde_json::from_value::<BtcMintPrepareRequest>(json!({
-            "owner_address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "recipient_address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "source_address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
             "usdb_main": "0x1111111111111111111111111111111111111111",
             "usdb_collab": "0x2222222222222222222222222222222222222222",
             "prev": [],
@@ -2999,12 +2815,16 @@ mod tests {
     }
 
     #[test]
-    fn normalize_prev_list_deduplicates_and_rejects_invalid_ids() {
+    fn normalize_prev_list_rejects_duplicate_and_noncanonical_ids() {
         let valid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefi0";
         let duplicate = valid.to_string();
-        let normalized =
-            normalize_prev_list(&[valid.to_string(), duplicate, " ".to_string()]).unwrap();
-        assert_eq!(normalized, vec![valid.to_string()]);
+        assert!(normalize_prev_list(&[valid.to_string(), duplicate]).is_err());
+        assert_eq!(
+            normalize_prev_list(&[valid.to_string(), " ".into()]).unwrap(),
+            vec![valid]
+        );
+        assert!(!is_valid_inscription_id(&valid.replace("i0", "i00")));
+        assert!(!is_valid_inscription_id(&valid.to_uppercase()));
         assert!(normalize_prev_list(&["bad-prev".to_string()]).is_err());
     }
 

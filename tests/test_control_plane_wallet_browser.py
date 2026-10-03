@@ -177,7 +177,7 @@ def main():
         page.get_by_role("button", name="查询地址", exact=True).click()
         expect(page.get_by_role("region", name="本节点查询结果")).to_contain_text(SECOND_ADDRESS)
         page.goto(origin + "/?lang=zh-CN#/development/btc")
-        expect(page).to_have_url(origin + "/?lang=zh-CN#/me/usdb")
+        expect(page).to_have_url(origin + "/?lang=zh-CN#/me/btc")
         expect(page.get_by_role("heading", name="钱包与身份")).to_be_visible()
         browser.close()
     print("Wallet browser regression passed: rejection, network/genesis guards, late responses, watch-only, query errors, mobile, logout")

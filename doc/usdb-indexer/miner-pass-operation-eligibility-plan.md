@@ -177,7 +177,7 @@ go test -ldflags=-checklinkname=0 ./cmd/geth
 
 退出条件：origin 首块、旧 schema 拒绝、未知版本失败关闭、两作用域互不影响和 Rust/Go 互验通过。query ready 不得被误当作来源历史已经可用于共识。
 
-### 5. 控制面与钱包流程
+### 5. 控制面与钱包流程（已实现）
 
 - prepare 输入/显示分开 source D、recipient E；建议 prev 来自 D，展示所有将消费和保留的 pass。
 - 展示收益/Leader 配置、source proof 支持范围、当前资格、观察高度和预期路径。draft 观测不是将来 reveal 必然有效的保证。
@@ -186,6 +186,21 @@ go test -ldflags=-checklinkname=0 ./cmd/geth
 - 开发 execute 的真实选币需保证 sat 来自 D，并保护 prev UTXO；生产钱包没有验收的能力继续明确显示未支持。
 
 退出条件：prepare 不把 wallet_name 当来源；缺证据不显示成功；首开/同地址/cross-owner 三流程及异常恢复可操作；前后端契约测试通过。
+
+本批落点：`usdb-control-plane/src/mint.rs`、钱包页 `MinerPassMint.tsx`。prepare/execute 必填 D/E；
+verify 以用户预期配置及精确 inscription ID 独立核验。indexer 新增只读 `get_pass_mint_source` 和
+owner 列表 `ever_valid_owner`，无共识状态或存储格式变更。固定 Leader 与地址跟随的预检条件分别处理。
+开发执行强制 regtest + 开关 + Ord 规范链就绪，锁定实际 cardinal satpoint，保护旧证；正式页面只读生成草案与核验。
+
+验证入口：
+
+- `cargo test --manifest-path src/btc/Cargo.toml -p usdb-control-plane`：资格、完整配置、来源、确认数、prev、分页、缺证据、协作绑定与公开网络执行拒绝。
+- `cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer`：首开来源重建、规范链变化/缺证据不改写审计、历史占用及既有状态恢复回归。
+- `tests/test_control_plane_mint_browser.py`：隔离认证控制台 + Chromium，覆盖三路径、协作、错误清除、迟到响应、开发广播后仍须核验；沿用 `tests/test_control_plane_wallet_browser.py` 验证钱包隔离。
+- `tests/run_control_plane_mint_live.py --bitcoind <path> --ord <path>`：预先构建 debug 二进制及网页，在全新临时目录启动真实 Core / Ord / BH / indexer / control-plane；首次、同地址、跨地址到 P2WPKH 均经真实 API 广播核验，旧证 UTXO 保持位置，收益配置篡改及占用后伪造开户被工具拒绝。退出停止本次子进程，保留日志。
+
+Rust 回归由现有 fast gate 自动包含；浏览器与真实服务脚本可独立复跑。完整 weekly 留给后续 CI，未运行在线升级或重置。
+
 
 ### 6. 真实签名与发布验收
 

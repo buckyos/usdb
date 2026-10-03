@@ -503,7 +503,8 @@ export type BtcMintIdentityFields =
     }
 
 export type BtcMintPrepareRequest = BtcMintIdentityFields & {
-  owner_address: string
+  source_address: string
+  recipient_address: string
   prev: string[]
 }
 
@@ -512,6 +513,14 @@ export type BtcMintExecuteRequest = BtcMintPrepareRequest & {
 }
 
 export interface BtcMintPrepareResponse {
+  source_address: string
+  source_script_hash: string
+  recipient_address: string
+  operation_path: 'first_opening' | 'same_owner' | 'cross_owner' | null
+  observation: { height: number; source_balance_sats: string; recipient_balance_sats: string; recipient_ever_valid_owner: boolean; state: Record<string, unknown> } | null
+  source_passes: Array<{ inscription_id: string; state: string; owner: string; pass_kind: string; satpoint: string }>
+  retained_pass_ids: string[]
+  execution_available: boolean
   eligible: boolean
   prepare_mode: string
   blockers: string[]
@@ -531,7 +540,23 @@ export interface BtcMintPrepareResponse {
   prepare_request: Record<string, unknown>
 }
 
+export interface BtcMintVerifyResponse {
+  verified: boolean
+  blockers: string[]
+  observed_height: number
+  confirmations: number
+  required_confirmations: number
+  source_balance_sats: string
+  remaining_source_pass_ids: string[]
+  source: { source_owner?: string; source_outpoint?: string } | null
+  snapshot: Record<string, unknown> | null
+  state: Record<string, unknown>
+}
+
 export interface BtcMintExecuteResponse {
+  source_address: string
+  recipient_address: string
+  source_outpoint: string
   btc_network: string
   btc_runtime_profile: string
   wallet_name: string

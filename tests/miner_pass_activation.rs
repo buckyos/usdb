@@ -882,3 +882,53 @@ async fn unsupported_future_rule_pairs_stop_before_block_mutation() {
         p.cleanup();
     }
 }
+
+#[tokio::test]
+async fn pipeline_first_opening_source_query_is_read_only_and_rejects_lost_evidence() {
+    let batch = MintBlock::new(
+        10,
+        vec![MintSpec::standard(111, cold_recipient(111), 0, vec![])],
+        false,
+    );
+    let p = Pipeline::new("opening-tool-source", &[&batch], 10).await;
+    p.sync(10, 10).await.unwrap();
+    let params = GetPassMintAuditParams {
+        inscription_id: batch.mints[0].inscription_id.to_string(),
+        at_height: Some(10),
+        context: None,
+    };
+    let rpc = p.rpc();
+    let before = rpc.get_pass_mint_audit(params.clone()).unwrap().unwrap();
+    assert_eq!(
+        before.audit.operation_path.as_deref(),
+        Some("first_opening")
+    );
+    assert!(before.audit.source.is_none());
+    let evidence = rpc.get_pass_mint_source(params.clone()).unwrap();
+    assert_eq!(evidence["source"]["authorization"], "p2wpkh_all");
+    assert_eq!(
+        evidence["mint"]["audit"]["inscription_id"],
+        params.inscription_id
+    );
+    assert_eq!(
+        rpc.get_pass_mint_audit(params.clone())
+            .unwrap()
+            .unwrap()
+            .audit,
+        before.audit
+    );
+    // A concurrent canonical switch invalidates the evidence even when the persisted audit is unchanged.
+    let original_blocks = p.core.state.lock().unwrap().blocks.clone();
+    p.core.state.lock().unwrap().reorg_after_verbose = true;
+    assert!(rpc.get_pass_mint_source(params.clone()).is_err());
+    p.core.state.lock().unwrap().blocks = original_blocks;
+    // Pruned/unavailable source blocks prevent tool approval without changing protocol validity.
+    p.core.state.lock().unwrap().blocks.clear();
+    assert!(rpc.get_pass_mint_source(params.clone()).is_err());
+    assert_eq!(
+        rpc.get_pass_mint_audit(params).unwrap().unwrap().audit,
+        before.audit
+    );
+    drop(rpc);
+    p.cleanup();
+}

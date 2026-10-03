@@ -65,6 +65,15 @@ impl RpcClient {
         self.rpc_call("get_pass_mint_audit", json!([params])).await
     }
 
+    /// Reconstruct canonical source evidence for a processed mint, including a first opening.
+    /// Missing chain/undo evidence is an error, not a change to the pass validity.
+    pub async fn get_pass_mint_source(
+        &self,
+        params: GetPassMintAuditParams,
+    ) -> Result<serde_json::Value, String> {
+        self.rpc_call("get_pass_mint_source", json!([params])).await
+    }
+
     /// Returns the current Bitcoin network type of the running indexer.
     ///
     /// # Returns

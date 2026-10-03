@@ -470,6 +470,29 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - 已提交 v2 mint 缺少审计、审计内容无法解码或元数据与规范记录不符时返回内部数据错误，不伪装成未知。恢复完整历史数据后重放可重建；不支持用空审计自动补齐缺历史的 checkpoint。
 - 审计不参与状态承诺。`observed_state` 标识其观察上下文，不能据此将任意审计字段当成由 Merkle proof 验证的内容；仍需信任本机索引或独立重放。
 
+### 8b) `get_pass_mint_source`
+
+配套工具的只读来源重建，feature 为 `pass_mint_source`。参数与 `get_pass_mint_audit` 相同，返回：
+
+```json
+{"mint": "<PassMintAuditInfo 对象>", "source": "<MintSourceAudit 对象>"}
+```
+
+`mint` 是已提交审计及其观测状态；`source` 的字段、签名形式与 `audit.source` 一致。
+首次开户的 `audit.source` 可以为 `null`，本方法仍从规范 Core 区块与 undo 重建实际铭文 sat 的来源，
+用于钱包检查预期 D。重建不会改写审计、pass 状态或共识承诺，也不引入额外 mint 授权条件。
+
+未知／未索引铭文、缺失历史区块或 undo、无法定位受支持 sat、coinbase 无来源、规范块或
+观测状态变化均返回错误，不能据此标记原铭文 Invalid。`authorization=unsupported` 仍可能用于
+协议允许的首次开户；工具不能把它显示为通过受支持来源校验。返回值不是独立业务内容授权或 Merkle proof。
+
+### 8c) `get_owner_passes_at_height` 的历史占用字段
+
+feature `owner_mint_history` 表示返回 `ever_valid_owner: boolean`。该字段按响应 `resolved_height`
+派生本作用域自 origin 起的规范有效持有历史，与 `states`、页码及当前 `items` 是否为空无关。
+转出最后一张证、消费、销毁和余额归零不会清除占用；Invalid mint 不占用。
+旧服务缺少字段时，工具必须按证据不可用处理，不能假定为 `false`。
+
 ### 9) `get_pass_history`
 
 查询某 inscription 的历史事件流。

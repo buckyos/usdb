@@ -2145,7 +2145,8 @@ export function MePage({ data, locale, t }: MePageProps) {
 
     try {
       const result = await prepareBtcMintDraft({
-        owner_address: btcLookupAddress,
+        source_address: btcLookupAddress,
+        recipient_address: btcLookupAddress,
         prev,
         ...btcMintIdentityFields,
       })
@@ -2263,7 +2264,8 @@ export function MePage({ data, locale, t }: MePageProps) {
             : btcMintIdentityFields
       const executionResult = await executeBtcMint({
         wallet_name: btcSelectedWorldSimIdentity.wallet_name,
-        owner_address: btcMintPrepareResult?.owner_address ?? btcLookupAddress ?? '',
+        source_address: btcMintPrepareResult?.source_address ?? btcLookupAddress ?? '',
+        recipient_address: btcMintPrepareResult?.recipient_address ?? btcLookupAddress ?? '',
         prev: btcMintPrepareResult?.prev ?? btcMintParsedPrev,
         ...preparedIdentityFields,
       })

@@ -1,3 +1,4 @@
+import { MinerPassMint } from './components/MinerPassMint'
 import { PrivateConsole } from './components/PrivateConsole'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import useSWR from 'swr'
@@ -52,6 +53,11 @@ function ConsoleApp() {
         <Route path="/protocol" element={<ProtocolPage data={error ? undefined : data} locale={locale} t={t} />} />
         <Route path="/me" element={<Navigate to="/me/usdb" replace />} />
         <Route path="/me/:identityKind" element={<WalletIdentityPage data={error ? undefined : data} locale={locale} />} />
+        <Route path="/development/btc" element={isLoading && !error
+          ? <p role="status">{locale === 'zh-CN' ? '正在读取开发能力…' : 'Loading development capabilities…'}</p>
+          : data?.development_enabled && !error
+          ? <MinerPassMint key={JSON.stringify(data.node_monitor?.report?.network)} locale={locale} development />
+          : <Navigate to="/me/btc" replace />} />
         <Route path="/development/:identityKind" element={isLoading && !error
           ? <p role="status">{locale === 'zh-CN' ? '正在读取开发能力…' : 'Loading development capabilities…'}</p>
           : data?.development_enabled && !error

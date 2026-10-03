@@ -2,6 +2,7 @@ import type {
   AddressBalanceRow,
   BalanceHistorySyncStatus,
   BtcMintExecuteRequest,
+  BtcMintVerifyResponse,
   BtcMintExecuteResponse,
   BtcMintPrepareRequest,
   BtcWorldSimDevSignerResponse,
@@ -322,4 +323,20 @@ export async function fetchUsdbChainAddressStatus(
   }
 
   return response.json() as Promise<UsdbChainAddressStatusResponse>
+}
+
+/** Verify the user-supplied expectation; a broadcast receipt is never funding approval. */
+export async function verifyBtcMint(request: {
+  mint: BtcMintPrepareRequest; inscription_id: string; expected_source_outpoint?: string
+}): Promise<BtcMintVerifyResponse> {
+  const response = await fetch('/api/btc/mint/verify', {
+    method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (response.status === 401) window.dispatchEvent(new Event('usdb-session-expired'))
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    throw new Error(payload?.error ?? `Failed BTC mint verification: HTTP ${response.status}`)
+  }
+  return response.json() as Promise<BtcMintVerifyResponse>
 }

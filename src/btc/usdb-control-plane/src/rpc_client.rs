@@ -270,6 +270,45 @@ impl RpcClient {
             .await
     }
 
+    /// Read Bitcoin chain evidence for prepare/verify without requiring txindex.
+    pub async fn bitcoin_call(
+        &self,
+        config: &ControlPlaneConfig,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        self.bitcoin_json_rpc_call(config, method, params).await
+    }
+
+    /// Query a validated development wallet for explicit source coin selection.
+    pub async fn bitcoin_wallet_call(
+        &self,
+        config: &ControlPlaneConfig,
+        wallet: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        self.bitcoin_wallet_ensure_loaded(config, wallet).await?;
+        let url = self.bitcoin_wallet_url(config, wallet)?;
+        self.bitcoin_json_rpc_call_at_url(config, &url, method, params)
+            .await
+    }
+
+    /// Obtain the inscription inventory of one confirmed output before funding a mint.
+    pub async fn ord_output(&self, url: &str, outpoint: &str) -> Result<Value, String> {
+        self.client
+            .get(format!("{}/output/{outpoint}", url.trim_end_matches('/')))
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|err| format!("Ord output request failed: {err}"))?
+            .error_for_status()
+            .map_err(|err| format!("Ord output is unavailable: {err}"))?
+            .json()
+            .await
+            .map_err(|err| format!("Invalid Ord output response: {err}"))
+    }
+
     /// Resolves a spendable WIF for a BTC wallet address from the local node wallet.
     ///
     /// This helper is development-only. It currently backs the

@@ -1,3 +1,4 @@
+import { MinerPassMint } from '../components/MinerPassMint'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, Navigate, NavLink, useParams } from 'react-router-dom'
 import useSWR from 'swr'
@@ -155,6 +156,7 @@ function IdentityPanel({ kind, data, locale }: { kind: IdentityKind; data?: Over
       {canQuery && <button className={`${button} justify-self-start`} disabled={query.isValidating} onClick={() => void query.mutate()}>{text('刷新查询', 'Refresh query')}</button>}
       <p className="text-xs text-[color:var(--cp-muted)]">{text('数据来自私有节点，约每 15 秒刷新，可能落后于网络；不作为钱包所有权或挖矿资格证明。', 'Data comes from this private node, refreshes about every 15 seconds and may lag the network. It does not prove wallet ownership or mining eligibility.')}</p>
     </section>}
+    {kind === 'btc' && <MinerPassMint key={`${address}:${targetBitcoin}`} locale={locale} initialSource={address} />}
     {data?.development_enabled && <Link className="text-sm underline" to={`/development/${kind}`}>{text('开发工具（仅限开发环境）', 'Development tools (development environments only)')}</Link>}
   </div>
 }
