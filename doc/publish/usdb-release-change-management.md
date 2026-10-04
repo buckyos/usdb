@@ -106,7 +106,8 @@ Snapshot record 的更新会记录在 manifest diff 中，但 snapshot 是节点
 Publish workflow 校验 Candidate artifact digest、两个 JSON checksum，并重新执行
 `release_notes.py validate-release`。发布后：
 
-- 从已校验的 `release-changes.json` 渲染有长度预算的摘要，放在 GitHub Release 正文的 deployment identity 之前；
+- 正文开头保留升级兼容分类和完整运维动作链接，随后展示一键安装命令、下载及 SHA-256 链接、安装与升级手册；
+- deployment identity、镜像摘要等部署信息排在下载入口之后；最后从已校验的 `release-changes.json` 渲染有长度预算的更新摘要；
 - JSON、JSON checksum 和 Markdown 作为独立 Release assets 长期保留；
 - 已存在同名 Release 时，正文和完整资产集合仍必须逐字节一致，否则 fail closed。
 
@@ -114,6 +115,8 @@ Release 页面与完整审计附件分别生成。`release_notes.py render-summa
 canonical JSON，再显示兼容分类、运维动作、各变更的短摘要、三仓范围及 classified/exempt/unclassified
 计数；页面提供该 release 的完整 Markdown/JSON 下载链接，不内嵌逐条 commit inventory。
 Candidate 中的 `release-changes.md`、JSON 和 checksum 原样作为附件发布，不截断或重写。
+安装命令使用可复制的 Bash 代码块，安装脚本、node kit、network bundle 和 manifest 均提供固定到本次 release 的下载及校验链接。
+操作手册链接固定到同一 release tag；更新列表长短不影响安装入口位置。兼容分类在页面前部保留，完整运维动作仍在后面的更新摘要和附件中。
 
 摘要的运维动作预算为 30000 字符，变更短摘要预算为 20000 字符，整体不超过 60000 字符。
 运维动作整体超限时，页面明确显示动作数量并要求部署前阅读附件中的完整清单，不显示部分清单；

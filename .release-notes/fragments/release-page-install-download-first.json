@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "release-page-install-download-first",
+  "type": "changed",
+  "scopes": [
+    "release",
+    "documentation"
+  ],
+  "summary": "Put installation and downloads before the release changelist",
+  "details": [
+    "Show the release-bound installer in a copyable Bash block near the top of the release page.",
+    "Link release assets, SHA-256 files and tag-pinned operator guides before deployment identity and the changelist.",
+    "Keep upgrade classification and the complete operator checklist link visible near the top; preserve full change records and immutable release verification."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}
