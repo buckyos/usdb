@@ -76,6 +76,12 @@ release-changes.md
 如果不存在上一版已发布 Release，则按 initial release 处理：所有当前 fragment 和 Git history 都进入报告，
 manifest compatibility comparison 标记为无上一版证据。
 
+提交清单中的 `subject` 是展示文本，不要求上游历史提交符合当前提交风格。采集 Git 元数据时，
+工具将空白折叠为单个空格并去除首尾空白，空标题显示为 `(no subject)`；超过 1000 字符的标题
+截断并以 `...` 标识省略。完整 `revision`、提交数量、Release-Note trailer 和分类保持不变，
+原始消息可按提交哈希追溯。此处理仅用于 Git 标题采集；fragment 和最终发布 JSON 的严格文本校验
+不放宽，手动写入空白标题、空标题或超长标题仍会被拒绝。
+
 ## 4. Compatibility 推导
 
 最终分类同时消费 fragment 声明和 manifest 自动比较，采用最保守结果：

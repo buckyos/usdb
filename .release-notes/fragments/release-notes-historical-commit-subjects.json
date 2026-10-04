@@ -1,0 +1,25 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "release-notes-historical-commit-subjects",
+  "type": "fixed",
+  "scopes": [
+    "release",
+    "testing",
+    "documentation"
+  ],
+  "summary": "Normalize historical Git subjects when generating release change records",
+  "details": [
+    "Allow first-network releases to inventory upstream history containing padded, blank or overlong commit subjects by normalizing only the display title.",
+    "Retain full commit revisions, commit counts and release-note classification while keeping strict fragment and final release artifact validation."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/actions/runs/37173242964/job/111350377420"
+  ]
+}

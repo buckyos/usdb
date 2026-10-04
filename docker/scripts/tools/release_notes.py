@@ -60,6 +60,7 @@ COMPATIBILITY_KEYS = {
     "restart_required",
 }
 REPOSITORY_KEYS = {"go_ethereum", "source_dao", "usdb"}
+COMMIT_SUBJECT_MAX_LENGTH = 1000
 
 
 @dataclass(frozen=True)
@@ -337,6 +338,16 @@ def _load_range_fragments(spec: RepositorySpec) -> list[dict[str, Any]]:
     return fragments
 
 
+def _commit_display_subject(subject: str) -> str:
+    """Normalize legacy Git subjects for display without changing commit identity."""
+    # Initial releases include upstream history that predates our text contract.
+    # The full revision remains the authoritative link to the original message.
+    normalized = " ".join(subject.split()) or "(no subject)"
+    if len(normalized) > COMMIT_SUBJECT_MAX_LENGTH:
+        normalized = normalized[:COMMIT_SUBJECT_MAX_LENGTH - 3].rstrip() + "..."
+    return normalized
+
+
 def _commit_records(spec: RepositorySpec, known_change_ids: set[str]) -> list[dict[str, Any]]:
     revision_range = spec.current_revision
     if spec.previous_revision is not None:
@@ -366,7 +377,7 @@ def _commit_records(spec: RepositorySpec, known_change_ids: set[str]) -> list[di
         records.append(
             {
                 "revision": revision,
-                "subject": subject,
+                "subject": _commit_display_subject(subject),
                 "release_notes": release_notes,
                 "classification": classification,
             }
@@ -789,7 +800,7 @@ def validate_release_changes(
                 and REVISION_RE.fullmatch(commit["revision"]) is not None,
                 f"{context}.revision is invalid",
             )
-            _require_text(commit["subject"], f"{context}.subject", max_length=1000)
+            _require_text(commit["subject"], f"{context}.subject", max_length=COMMIT_SUBJECT_MAX_LENGTH)
             release_notes = commit["release_notes"]
             require(isinstance(release_notes, list), f"{context}.release_notes must be an array")
             for note_index, note in enumerate(release_notes):

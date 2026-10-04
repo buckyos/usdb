@@ -233,6 +233,75 @@ class ReleaseNotesTests(unittest.TestCase):
         output.write_bytes(RELEASE_NOTES.canonical_json(result))
         RELEASE_NOTES.validate_release_changes(RELEASE_NOTES.load_json(output), current_manifest, "usdb-testnet-v0-r12")
 
+    def test_generate_normalizes_historical_commit_subjects(self) -> None:
+        specs, previous_manifest, current_manifest = self.repository_fixture()
+        go_spec = next(spec for spec in specs if spec.key == "go_ethereum")
+        cases = [
+            (" use ethreact.Event and ethreact.ReactorEngine", "use ethreact.Event and ethreact.ReactorEngine"),
+            ("  historical\t subject  ", "historical subject"),
+            ("", "(no subject)"),
+            (" \t ", "(no subject)"),
+            ("a" * 1000, "a" * 1000),
+            ("a" * 1001, "a" * 997 + "..."),
+            ("修" * 1001, "修" * 997 + "..."),
+        ]
+        expected = {}
+        for subject, display in cases:
+            self.git(
+                go_spec.path, "commit", "--allow-empty", "--allow-empty-message",
+                "--cleanup=verbatim", "-q", "-m", subject,
+            )
+            revision = self.git(go_spec.path, "rev-parse", "HEAD").strip()
+            expected[revision] = display
+        current_revision = self.git(go_spec.path, "rev-parse", "HEAD").strip()
+        manifest = RELEASE_NOTES.load_json(current_manifest)
+        manifest["repositories"]["go_ethereum"]["revision"] = current_revision
+        current_manifest.write_bytes(RELEASE_NOTES.canonical_json(manifest))
+
+        for initial in (True, False):
+            with self.subTest(initial=initial):
+                selected = [
+                    RELEASE_NOTES.RepositorySpec(
+                        spec.key, spec.slug, spec.path,
+                        None if initial else spec.previous_revision,
+                        current_revision if spec.key == "go_ethereum" else spec.current_revision,
+                    )
+                    for spec in specs
+                ]
+                result = RELEASE_NOTES.build_release_changes(
+                    release_id="usdb-testnet-v0-r12",
+                    manifest_path=current_manifest,
+                    previous_manifest_path=None if initial else previous_manifest,
+                    repositories=selected,
+                )
+                RELEASE_NOTES.validate_release_changes(
+                    result, current_manifest, "usdb-testnet-v0-r12"
+                )
+                repository = result["repositories"]["go_ethereum"]
+                self.assertEqual(len(cases) + (2 if initial else 1), repository["commit_count"])
+                self.assertEqual(repository["commit_count"], repository["coverage"]["unclassified"])
+                by_revision = {commit["revision"]: commit for commit in repository["commits"]}
+                for revision, display in expected.items():
+                    self.assertEqual(display, by_revision[revision]["subject"])
+                    self.assertEqual([], by_revision[revision]["release_notes"])
+                self.assertIn("(no subject)", RELEASE_NOTES.render_markdown(result))
+
+    def test_release_validation_still_rejects_invalid_display_subjects(self) -> None:
+        specs, previous_manifest, current_manifest = self.repository_fixture()
+        result = RELEASE_NOTES.build_release_changes(
+            release_id="usdb-testnet-v0-r12",
+            manifest_path=current_manifest,
+            previous_manifest_path=previous_manifest,
+            repositories=specs,
+        )
+        for subject in (" padded ", "", " ", "line\nbreak", "a" * 1001):
+            with self.subTest(subject=repr(subject[:30])):
+                result["repositories"]["go_ethereum"]["commits"][0]["subject"] = subject
+                with self.assertRaisesRegex(ValueError, r"commits\[0\].subject"):
+                    RELEASE_NOTES.validate_release_changes(
+                        result, current_manifest, "usdb-testnet-v0-r12"
+                    )
+
     def test_commit_records_reject_duplicate_release_note_trailers(self) -> None:
         repository, previous = self.init_repository("duplicate-trailer")
         self.git(
