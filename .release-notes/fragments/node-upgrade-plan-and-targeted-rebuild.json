@@ -1,0 +1,27 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-upgrade-plan-and-targeted-rebuild",
+  "type": "added",
+  "scopes": [
+    "deployment",
+    "node-runtime",
+    "documentation"
+  ],
+  "summary": "Preview release compatibility and explicitly rebuild only incompatible node data",
+  "details": [
+    "Add read-only upgrade-plan with exact source-kit matching, field differences and per-service reuse decisions; compatible activate-release also checks complete consensus identity.",
+    "Add interactive, stopped-node upgrade-release with private backups, retained old datasets, durable recovery and rollback before new services write data.",
+    "Reuse compatible Bitcoin and balance-history data; isolate indexer, chain and control-plane state for a coordinated development-network reset. Preserve keys and settings, disable old mining authorization and leave old autostart disabled until the target controller is installed.",
+    "Cross-bundle, Bitcoin/BH contract, bootstrap-mode, combined Ord migration and production-network reset transitions require separate reviewed procedures. This tooling change does not itself change network or data identities."
+  ],
+  "operator_actions": [
+    "Install the target node kit, retain the old kit, and run usdb-node upgrade-plan before activation. Use upgrade-release --execute only when the reviewed plan requires a supported rebuild; follow the upgrade handbook for shutdown, backup, restart and recovery."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

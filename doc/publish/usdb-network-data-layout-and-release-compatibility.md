@@ -120,8 +120,16 @@ Compose 常驻服务，也不改变既有数据目录身份。
 4. 每个 dataset marker 与对应服务 contract 完全一致；
 5. image 使用目标 release 冻结的 digest。
 
-任一项不一致均失败关闭。`activate-release` 只允许 contract ID 不变的同 bundle 更新，只替换 image digest；
-它不执行 DB migration、不移动目录、不启动服务。
+任一项不一致均失败关闭。`activate-release` 还要求可识别的旧安装包与目标包完整共识身份不变，
+包括 genesis 文件 checksum、BTC origin、scope 和 registry；相同 genesis block hash 不充分。
+可通过 `--from-kit` 指定准确旧包。它不执行 DB migration、不移动既有数据库、不启动服务；已有的显式 Ord 版本切换仍按其独立规则选择新目录。
+
+`upgrade-plan` 提供只读差异与组件复用/重建计划；`upgrade-release` 默认预览，显式 `--execute` 才执行。
+当前执行器只支持同 bundle、Bitcoin/BH 与启动契约不变的重建，链重置仅允许 `development-resettable`。
+共识历史变化时必须同时重建 indexer、chain 和 control-plane，不能仅依据 chain service contract 判断链库可复用。
+旧数据库改名或原地保留，私有配置先备份，持久日志支持恢复；新服务启动或新数据变化后拒绝自动回退。
+执行器不会放宽 `migration_support=none`、修改数据库 marker 来假装兼容，也不提供正式网按高度升级迁移。
+操作顺序和边界见[升级手册](../handbook/node/upgrade.md)。
 
 ### 4.1 规则域与冻结 Catalog
 

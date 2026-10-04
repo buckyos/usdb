@@ -514,6 +514,9 @@ def controller_observed_state(layout: ReleaseLayout) -> str:
 @contextmanager
 def node_operation_lock(layout: ReleaseLayout, operation: str) -> Iterator[None]:
     """Serialize bundle-scoped operations that mutate configuration or runtime state."""
+    if operation not in {"down", "upgrade-release"}:
+        import node_upgrade
+        node_upgrade.ensure_no_pending(layout)
     lock_path = layout.node_env.parent / ".usdb-node-operation.lock"
     lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     flags = os.O_RDWR | os.O_CREAT
@@ -1244,8 +1247,10 @@ def _validate_dataset_directories(layout: ReleaseLayout, env: dict[str, str]) ->
     expected_compatibility_id = layout.runtime_compatibility["compatibility_id"]
     if env.get("USDB_RUNTIME_COMPATIBILITY_ID") != expected_compatibility_id:
         raise ValueError(
-            "node runtime compatibility ID does not match this release; automatic data "
-            "migration is not supported"
+            "node runtime compatibility ID does not match this release; "
+            f"configured={env.get('USDB_RUNTIME_COMPATIBILITY_ID', '<missing>')}, "
+            f"target={expected_compatibility_id}; automatic data migration is not supported. "
+            "Run usdb-node upgrade-plan to inspect component reuse and rebuild requirements"
         )
     for key, service in PERSISTENT_DATA_SERVICES.items():
         data_dir = Path(env.get(key, "")).expanduser().resolve()
@@ -1264,7 +1269,11 @@ def _validate_node_config(
     require_runtime: bool,
     require_bitcoin_runtime: bool,
     require_snapshot_artifacts: bool = True,
+    allow_pending_upgrade: bool = False,
 ) -> None:
+    if not allow_pending_upgrade:
+        import node_upgrade
+        node_upgrade.ensure_no_pending(layout)
     network = validate_network_bundle(layout.bundle_dir)
     env = read_env(layout.node_env)
     _validate_dataset_directories(layout, env)
@@ -1941,7 +1950,7 @@ def _validate_node_release_images(layout: ReleaseLayout) -> None:
             )
 
 
-def activate_release(layout: ReleaseLayout) -> None:
+def activate_release(layout: ReleaseLayout, *, from_kit: Path | None = None) -> None:
     if not layout.node_env.is_file():
         raise ValueError(
             "node is not configured; run 'usdb-node setup' first.\n"
@@ -1977,6 +1986,11 @@ def activate_release(layout: ReleaseLayout) -> None:
                                   require_runtime=False, require_bitcoin_runtime=True)
     else:
         _validate_node_config(layout, require_runtime=False, require_bitcoin_runtime=True)
+    # Genesis configuration and BTC rule history can change without changing block 0.
+    import node_upgrade
+    upgrade_plan = node_upgrade.plan(layout, sys.modules[__name__], from_kit)
+    if upgrade_plan["classification"] != "compatible" or not upgrade_plan["executable"]:
+        raise ValueError("Release requires an explicit rebuild/migration; inspect usdb-node upgrade-plan before activation")
     ord_updates = usdb_minting.activation_updates(env)
     if ord_updates:
         if any(item.get("state") not in {"exited", "dead", "created"}
@@ -6076,6 +6090,8 @@ def build_parser() -> argparse.ArgumentParser:
     usdb_sourcedao.add_parser(subparsers)
     import node_uninstall
     node_uninstall.add_parser(subparsers)
+    import node_upgrade
+    node_upgrade.add_parser(subparsers)
 
     prepare_host_parser = subparsers.add_parser(
         "prepare-host",
@@ -6228,8 +6244,8 @@ workflow:
 
     subparsers.add_parser(
         "activate-release",
-        help="Update only release-owned image digests in existing private config",
-    )
+        help="Update release-owned images after verifying source and target data/consensus compatibility",
+    ).add_argument("--from-kit", type=Path, help="exact old kit when automatic source matching is unavailable")
 
     subparsers.add_parser(
         "doctor",
@@ -6427,6 +6443,16 @@ def _operation_name(args: argparse.Namespace) -> str | None:
 
 
 def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
+    if args.command in {"upgrade-plan", "upgrade-release"}:
+        import node_upgrade
+        return node_upgrade.dispatch(args, layout, sys.modules[__name__])
+    read_only_actions = {"monitor": {"status", "report"}, "sourcedao": {"status", "check"},
+                         "peers": {"status", "check", "list", "enode", "network"}, "mining": {"status", "check"}}
+    if args.command == "uninstall" or (args.command in read_only_actions and
+            getattr(args, args.command + "_action", None) not in read_only_actions[args.command]):
+        import node_upgrade
+        # These modules also have their own locks; do not let them mutate isolated state.
+        node_upgrade.ensure_no_pending(layout)
     if args.command == "uninstall":
         import node_uninstall
         return node_uninstall.dispatch(args, layout, sys.modules[__name__])
@@ -6614,7 +6640,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             )
         print("Run usdb-node up to start the node and resume the existing Bitcoin data directory.")
     elif args.command == "activate-release":
-        activate_release(layout)
+        activate_release(layout, from_kit=args.from_kit)
         print(f"Activated release images in private node config: {layout.release_id}")
     elif args.command == "console":
         import control_plane_monitor
@@ -6761,7 +6787,7 @@ def main() -> int:
         with operation_context:
             return _execute_command(layout, args)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        if args.command in {"up", "mining", "sourcedao", "peers", "version"} and getattr(args, "json", False):
+        if args.command in {"up", "mining", "sourcedao", "peers", "version", "upgrade-plan", "upgrade-release"} and getattr(args, "json", False):
             print(
                 json.dumps(
                     {
