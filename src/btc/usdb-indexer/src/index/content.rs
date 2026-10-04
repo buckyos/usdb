@@ -13,7 +13,7 @@ use usdb_util::address_string_to_script_hash;
 
 const USDB_PROTOCOL_ID: &str = "usdb";
 const USDB_MINT_OP: &str = "mint";
-const USDB_MINT_SCHEMA_VERSION: u32 = 2;
+const USDB_MINT_SCHEMA_VERSION: u32 = usdb_util::MINER_PASS_MINT_SCHEMA_VERSION;
 const USDB_MINT_SCHEMA_FIELDS: [&str; 7] = [
     "p",
     "op",
@@ -41,7 +41,7 @@ fn parse_canonical_inscription_id(value: &str) -> Result<InscriptionId, String> 
 {
   "p": "usdb",
   "op": "mint",
-  "v": 2,
+  "v": 1,
   "usdb_main": "0x1234...NewUsdbAddr...",
   "prev": [
     "old_inscription_id_a",
@@ -815,11 +815,13 @@ mod tests {
         InscriptionId { txid, index }
     }
 
+    // Literal payload versions below pin the UIP-0001 schema-v1 contract, independently
+    // of the current-version constant used by generic workflow fixtures.
     #[test]
     fn test_classify_mint_content_str_standard_valid() {
         let inscription_id = test_inscription_id(1, 0);
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["{}"]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["{}"]}}"#,
             VALID_LEADER_PASS_ID
         );
 
@@ -827,7 +829,7 @@ mod tests {
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, &content).unwrap();
         match result {
             ParsedMintContent::Valid(USDBInscription::Mint(mint)) => {
-                assert_eq!(mint.version, 2);
+                assert_eq!(mint.version, 1);
                 assert_eq!(mint.pass_kind, MinerPassKind::Standard);
                 assert_eq!(mint.usdb_main, "0x1111111111111111111111111111111111111111");
                 assert_eq!(mint.prev, vec![VALID_LEADER_PASS_ID.to_string()]);
@@ -842,7 +844,7 @@ mod tests {
     fn test_classify_mint_content_str_collab_leader_pass_valid() {
         let inscription_id = test_inscription_id(2, 0);
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":2,"leader_pass_id":"{}","prev":[]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"leader_pass_id":"{}","prev":[]}}"#,
             VALID_LEADER_PASS_ID
         );
 
@@ -850,7 +852,7 @@ mod tests {
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, &content).unwrap();
         match result {
             ParsedMintContent::Valid(USDBInscription::Mint(mint)) => {
-                assert_eq!(mint.version, 2);
+                assert_eq!(mint.version, 1);
                 assert_eq!(mint.pass_kind, MinerPassKind::Collab);
                 assert_eq!(mint.usdb_main, "");
                 assert_eq!(mint.leader_pass_id, Some(VALID_LEADER_PASS_ID.to_string()));
@@ -864,7 +866,7 @@ mod tests {
     fn test_classify_mint_content_str_collab_leader_btc_addr_valid() {
         let inscription_id = test_inscription_id(3, 0);
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":2,"leader_btc_addr":"{}","prev":[]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"leader_btc_addr":"{}","prev":[]}}"#,
             VALID_MAINNET_ADDRESS
         );
 
@@ -888,9 +890,43 @@ mod tests {
     }
 
     #[test]
+    fn test_mint_schema_version_is_independent_of_state_machine_version() {
+        let inscription_id = test_inscription_id(20, 0);
+        for version in [
+            serde_json::json!(1),
+            serde_json::json!(2),
+            serde_json::json!(0),
+            serde_json::json!(999),
+            serde_json::json!("1"),
+            serde_json::Value::Null,
+        ] {
+            let content = serde_json::json!({"p":"usdb","op":"mint","v":version,
+                "usdb_main":"0x1111111111111111111111111111111111111111"})
+            .to_string();
+            let parsed =
+                InscriptionContentLoader::classify_mint_content_str(&inscription_id, &content)
+                    .unwrap();
+            if version == serde_json::json!(1) {
+                assert!(matches!(parsed, ParsedMintContent::Valid(_)), "{content}");
+            } else {
+                assert!(
+                    matches!(
+                        parsed,
+                        ParsedMintContent::Invalid(MintValidationError {
+                            code: MintValidationErrorCode::InvalidSchema,
+                            ..
+                        })
+                    ),
+                    "{content}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_classify_mint_content_str_missing_prev_defaults_empty() {
         let inscription_id = test_inscription_id(4, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111"}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111"}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -905,7 +941,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_invalid_usdb_main() {
         let inscription_id = test_inscription_id(5, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":2,"usdb_main":"0x123","prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x123","prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -920,7 +956,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_invalid_leader_pass_id() {
         let inscription_id = test_inscription_id(6, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":2,"leader_pass_id":"bad-pass-id","prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"leader_pass_id":"bad-pass-id","prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -937,7 +973,7 @@ mod tests {
         let inscription_id = test_inscription_id(16, 0);
         let non_canonical = format!("{}i0", "A".repeat(64));
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":2,"leader_pass_id":"{}","prev":[]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"leader_pass_id":"{}","prev":[]}}"#,
             non_canonical
         );
 
@@ -956,7 +992,7 @@ mod tests {
     fn test_classify_mint_content_str_invalid_leader_btc_addr_for_network() {
         let inscription_id = test_inscription_id(7, 0);
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":2,"leader_btc_addr":"{}","prev":[]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"leader_btc_addr":"{}","prev":[]}}"#,
             VALID_TESTNET_ADDRESS
         );
 
@@ -977,7 +1013,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_invalid_prev_id() {
         let inscription_id = test_inscription_id(8, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["bad-prev-id"]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["bad-prev-id"]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -994,7 +1030,7 @@ mod tests {
         let inscription_id = test_inscription_id(17, 0);
         let non_canonical = format!("{}i00", "1".repeat(64));
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["{}"]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["{}"]}}"#,
             non_canonical
         );
 
@@ -1013,7 +1049,7 @@ mod tests {
     fn test_classify_mint_content_str_duplicate_prev_invalid() {
         let inscription_id = test_inscription_id(9, 0);
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["{}","{}"]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["{}","{}"]}}"#,
             VALID_LEADER_PASS_ID, VALID_LEADER_PASS_ID
         );
 
@@ -1031,7 +1067,7 @@ mod tests {
     fn test_classify_mint_content_str_usdb_main_with_leader_invalid() {
         let inscription_id = test_inscription_id(10, 0);
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","leader_pass_id":"{}","prev":[]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","leader_pass_id":"{}","prev":[]}}"#,
             VALID_LEADER_PASS_ID
         );
 
@@ -1049,7 +1085,7 @@ mod tests {
     fn test_classify_mint_content_str_two_leader_bindings_invalid() {
         let inscription_id = test_inscription_id(11, 0);
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":2,"leader_pass_id":"{}","leader_btc_addr":"{}","prev":[]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"leader_pass_id":"{}","leader_btc_addr":"{}","prev":[]}}"#,
             VALID_LEADER_PASS_ID, VALID_MAINNET_ADDRESS
         );
 
@@ -1066,7 +1102,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_missing_identity_invalid() {
         let inscription_id = test_inscription_id(12, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":2,"prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -1081,7 +1117,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_usdb_collab_invalid() {
         let inscription_id = test_inscription_id(13, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","usdb_collab":"0x2222222222222222222222222222222222222222","prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","usdb_collab":"0x2222222222222222222222222222222222222222","prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -1096,7 +1132,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_unknown_field_invalid() {
         let inscription_id = test_inscription_id(14, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","unexpected":true,"prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","unexpected":true,"prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -1111,7 +1147,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_duplicate_key_invalid() {
         let inscription_id = test_inscription_id(15, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","usdb_main":"0x2222222222222222222222222222222222222222","prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","usdb_main":"0x2222222222222222222222222222222222222222","prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -1127,8 +1163,8 @@ mod tests {
     fn test_classify_mint_content_str_duplicate_protocol_key_invalid_in_both_orders() {
         let inscription_id = test_inscription_id(16, 0);
         let payloads = [
-            r#"{"p":"usdb","p":"other","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
-            r#"{"p":"other","p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+            r#"{"p":"usdb","p":"other","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+            r#"{"p":"other","p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
         ];
 
         for content in payloads {
@@ -1148,8 +1184,8 @@ mod tests {
     fn test_classify_mint_content_str_duplicate_operation_key_invalid_in_both_orders() {
         let inscription_id = test_inscription_id(17, 0);
         let payloads = [
-            r#"{"p":"usdb","op":"mint","op":"other","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
-            r#"{"p":"usdb","op":"other","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+            r#"{"p":"usdb","op":"mint","op":"other","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+            r#"{"p":"usdb","op":"other","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
         ];
 
         for content in payloads {

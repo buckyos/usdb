@@ -166,7 +166,7 @@ async fn state_at(state: &AppState, height: u32) -> Result<Value, String> {
         ));
     }
     let versions = &value["local_state_commit_info"]["active_version_set"];
-    if versions["inscription_schema_version"] != "uip-0001-miner-pass-inscription:v2"
+    if versions["inscription_schema_version"] != "uip-0001-miner-pass-inscription:v1"
         || versions["pass_state_machine_version"] != "uip-0002-pass-state-machine:v2"
     {
         return Err(format!(
@@ -608,7 +608,7 @@ pub(super) async fn verify(
 fn snapshot_matches(draft: &Draft, snapshot: &Value) -> bool {
     let prev: Option<Vec<String>> = serde_json::from_value(snapshot["prev"].clone()).ok();
     snapshot["state"] == "active"
-        && snapshot["mint_version"] == 2
+        && snapshot["mint_version"] == usdb_util::MINER_PASS_MINT_SCHEMA_VERSION
         && snapshot["owner"] == draft.recipient_hash
         && snapshot["mint_owner"] == draft.recipient_hash
         && snapshot["pass_kind"] == draft.identity.pass_kind()

@@ -585,7 +585,7 @@ fn scale_pass(
         mint_block_height: MINT_HEIGHT,
         mint_owner: owner,
         satpoint: scale_satpoint(namespace, index),
-        mint_version: 1,
+        mint_version: usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
         pass_kind,
         usdb_main: if pass_kind == MinerPassKind::Standard {
             "0x1111111111111111111111111111111111111111".to_string()

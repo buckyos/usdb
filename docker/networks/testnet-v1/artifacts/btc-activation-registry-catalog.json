@@ -1,6 +1,6 @@
 {
   "schema_version": "uip-0008-btc-activation-registry-catalog:v1",
-  "current_registry_id": "c51bdf87510c0083daefb3aa2344c8d35345dbf66af4612fce425e06348bcff6",
+  "current_registry_id": "53b4bfed53b55a4accbd947d04d113a684f1af896d39d2d9bd984e07ad543f32",
   "registries": [
     {
       "records": [
@@ -11,7 +11,7 @@
           "supersedes": null,
           "uip": "UIP-0001",
           "version_family": "inscription_schema_version",
-          "version_value": "uip-0001-miner-pass-inscription:v2"
+          "version_value": "uip-0001-miner-pass-inscription:v1"
         },
         {
           "activation_height": 0,

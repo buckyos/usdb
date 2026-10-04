@@ -222,7 +222,7 @@ impl Harness {
             mint_owner: owner,
             owner,
             satpoint: satpoint(tag),
-            mint_version: 2,
+            mint_version: usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
             pass_kind: MinerPassKind::Standard,
             usdb_main: "0x1111111111111111111111111111111111111111".into(),
             leader_pass_id: None,
@@ -281,7 +281,7 @@ impl MintSpec {
     ) -> Self {
         Self {
             tag,
-            version: 2,
+            version: usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
             source: SpendKind::Witness,
             dest,
             balance_before,

@@ -8,7 +8,7 @@ import shutil
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CATALOG = REPO_ROOT / "tests/fixtures/miner-pass-v2/catalog.json"
-REGISTRY_ID = "747b656a814bf8d57409c19aa8df9754a1d46aadbe2ebb6fc09805ca14637014"
+REGISTRY_ID = "d53e9907cfc5abf5d8294e98bbaa838630ee070118eb0845ad3e770959279f08"
 RULES_SCOPE = "miner-pass-v2-fixture"
 
 

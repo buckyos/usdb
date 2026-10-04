@@ -58,7 +58,7 @@ pub(super) fn make_pass(
         mint_block_height,
         mint_owner: owner,
         satpoint: satpoint(tag, index, 0),
-        mint_version: 1,
+        mint_version: usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
         pass_kind: MinerPassKind::Standard,
         usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
         leader_pass_id: None,

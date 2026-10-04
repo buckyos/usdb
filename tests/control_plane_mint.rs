@@ -126,7 +126,7 @@ async fn verification_checks_full_configuration_source_and_confirmations() {
         ("owner", json!(hash(SOURCE))),
         ("mint_owner", json!(hash(SOURCE))),
         ("state", json!("dormant")),
-        ("mint_version", json!(1)),
+        ("mint_version", json!(2)),
         ("usdb_main", json!("0xwrong")),
         ("leader_pass_id", json!(id('e'))),
         ("prev", json!([id('c')])),

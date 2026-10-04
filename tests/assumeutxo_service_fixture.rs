@@ -73,7 +73,14 @@ fn generate_assumeutxo_service_chain() {
             .serialize();
         (output, Witness::from_slice(&[script.as_bytes(), &control]))
     };
-    let body = PushBytesBuf::try_from(br#"{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#.to_vec()).unwrap();
+    let body = PushBytesBuf::try_from(
+        format!(
+            r#"{{"p":"usdb","op":"mint","v":{},"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}}"#,
+            usdb_util::MINER_PASS_MINT_SCHEMA_VERSION
+        )
+        .into_bytes(),
+    )
+    .unwrap();
     let inscription = Builder::new()
         .push_int(0)
         .push_opcode(OP_IF)

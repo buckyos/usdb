@@ -177,7 +177,7 @@ def main():
         minted = snapshot("native", 103)
         assert minted and minted["state"] == "active" and minted["owner"] == chain["owner_a"]
         assert minted["satpoint"] == chain["mint_satpoint"]
-        assert minted["mint_version"] == 2
+        assert minted["mint_version"] == 1
         audit = apis["native-indexer"]("get_pass_mint_audit", dict(inscription_id=pass_id, at_height=103))
         assert audit["audit"]["operation_path"] == "first_opening"
         assert audit["audit"]["balance_before_tx"] == 0 and not audit["audit"]["ever_valid_owner"]

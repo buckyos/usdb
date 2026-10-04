@@ -5825,7 +5825,7 @@ mod tests {
             mint_block_height: height,
             mint_owner: owner,
             satpoint: satpoint(ins_tag, index, 0),
-            mint_version: 1,
+            mint_version: usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
             pass_kind: MinerPassKind::Standard,
             usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
             leader_pass_id: None,
@@ -5961,6 +5961,7 @@ mod tests {
         let owner = script_hash(30);
         let leader_pass_id = inscription_id(31, 0);
         let mut pass = make_pass(30, 0, owner, MinerPassState::Active, 100);
+        // Persist this explicit schema-v1 record even if the generic fixture default changes.
         pass.mint_version = 1;
         pass.pass_kind = MinerPassKind::Collab;
         pass.usdb_main = String::new();

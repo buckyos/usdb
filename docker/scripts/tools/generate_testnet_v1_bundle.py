@@ -113,7 +113,7 @@ def generate(output: Path, activation_generator: Path, genesis_hash_tool: Path, 
     (output / "README.md").write_text("""# USDB testnet-v1
 
 开发测试网重置代际，chain ID / network ID 为 `202610030`。
-BTC 主网 origin `963800`；独立 rules scope `usdb-testnet-v1`，从 origin 使用 MinerPass V2。
+BTC 主网 origin `963800`；独立 rules scope `usdb-testnet-v1`，从 origin 使用 JSON schema v1 + MinerPass 状态机 V2。
 USDB 链从 block 0 开始；不导入 v0 区块、余额、运行期 SourceDAO 状态或 indexer 数据。
 SourceDAO 的冻结初始分配、委员会、bootstrap admin 与 PoW 参数沿用 v0。
 

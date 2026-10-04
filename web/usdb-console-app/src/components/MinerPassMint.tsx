@@ -87,6 +87,7 @@ export function MinerPassMint({ locale, initialSource = '', development = false 
   const paths = { first_opening: text('首次零余额开户', 'First zero-balance opening'), same_owner: text('同地址操作', 'Same-owner operation'), cross_owner: text('跨地址继承', 'Cross-owner inheritance') }
   return <section className="console-card grid gap-4" aria-label="MinerPass V2">
     <h2 className="text-xl font-semibold">{text('MinerPass V2 铸造与核验', 'MinerPass V2 planning & verification')}</h2>
+    <p className="text-sm">{text('铭文 JSON 使用 v: 1；这里的 V2 表示开户、来源与继承规则。请勿把 JSON 的 v 改为 2。', 'Mint JSON uses v: 1. V2 here refers to opening, source and inheritance rules; keep the JSON version at 1.')}</p>
     <p className="text-sm">{text('填写 D / E → 预检并在钱包铸造 → 核验指定铭文 → 按计划入金或迁移余额。', 'Set D / E → Prepare and mint with your wallet → Verify the exact inscription → Fund or migrate as planned.')}</p>
     <p className="text-sm">{text('冷地址请选择全新、未暴露公钥的 hash 地址（推荐原生 P2WPKH）。首次开户不带 prev；跨地址继承填写 D 持有的 Active / Dormant 旧证。E 不需要为草案签名。', 'Choose a fresh hash address (prefer native P2WPKH) with an unexposed public key for cold storage. First opening has no prev; cross-owner inheritance lists Active / Dormant passes owned by D. E need not sign a draft.')}</p>
     <fieldset disabled={busy === 'execute'} className="grid min-w-0 gap-4">

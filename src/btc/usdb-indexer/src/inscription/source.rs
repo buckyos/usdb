@@ -193,7 +193,8 @@ mod tests {
         let leader_btc_addr = regtest_address();
         let inscription_id = test_inscription_id(1);
         let content_string = format!(
-            r#"{{"p":"usdb","op":"mint","v":2,"leader_btc_addr":"{}","prev":[]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":{},"leader_btc_addr":"{}","prev":[]}}"#,
+            usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
             leader_btc_addr
         );
         let inscriptions = vec![DiscoveredInscription {
@@ -219,9 +220,10 @@ mod tests {
 
     #[test]
     fn classify_usdb_mints_records_duplicate_protocol_and_operation_as_invalid() {
+        // Pin raw schema-v1 payloads: parsing or serializing them would erase duplicate keys.
         let payloads = [
-            r#"{"p":"usdb","p":"other","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
-            r#"{"p":"usdb","op":"mint","op":"other","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+            r#"{"p":"usdb","p":"other","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+            r#"{"p":"usdb","op":"mint","op":"other","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
         ];
         let inscriptions = payloads
             .into_iter()
@@ -262,7 +264,10 @@ mod tests {
 
     #[test]
     fn classify_usdb_mints_is_consistent_across_supported_content_type_hints() {
-        let content_string = r#"{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#;
+        let content_string = format!(
+            r#"{{"p":"usdb","op":"mint","v":{},"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}}"#,
+            usdb_util::MINER_PASS_MINT_SCHEMA_VERSION
+        );
         let content_types = [
             Some("application/json;charset=utf-8"),
             Some("text/plain;charset=utf-8"),

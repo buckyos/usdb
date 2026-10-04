@@ -36,11 +36,11 @@ from registry_scope import (  # noqa: E402
 EXPECTED_BUNDLE_ID = "usdb-testnet-v0"
 EXPECTED_CHAIN_ID = 202608250
 EXPECTED_BTC_REGISTRY = "a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224"
-TESTNET_V1_REGISTRY = "c51bdf87510c0083daefb3aa2344c8d35345dbf66af4612fce425e06348bcff6"
+TESTNET_V1_REGISTRY = "53b4bfed53b55a4accbd947d04d113a684f1af896d39d2d9bd984e07ad543f32"
 NETWORK_PROFILES = {
     EXPECTED_BUNDLE_ID: dict(chain_id=EXPECTED_CHAIN_ID, registry=EXPECTED_BTC_REGISTRY, scope="legacy"),
     "usdb-testnet-v1": dict(chain_id=202610030, registry=TESTNET_V1_REGISTRY, scope="usdb-testnet-v1",
-                           catalog_sha256="f70f870b04f2ccc99b510111d4ca7c2d7e2b22694eebb4b38e53e59ea314ca79"),
+                           catalog_sha256="55d52ff8959ef5bb74ec67d695ea98af22f10c3af602657e48832e5b03f887dc"),
 }
 BTC_REGISTRY_STABLE_LAG_BLOCKS = {
     TESTNET_V1_REGISTRY: 10,

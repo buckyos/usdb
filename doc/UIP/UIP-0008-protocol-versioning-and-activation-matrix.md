@@ -9,7 +9,7 @@ Activation: See owner-scoped BTC registries and USDB activation schedules
 
 # 摘要
 
-[UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md) 规划 MinerPass 操作资格和跨地址继承，需要按 BTC source、rules scope 和历史 BTC 高度分派 schema/state-machine 版本。其候选 v2 与受影响编码须完成专项验收；本引用不添加 activation record，也不修改现有 legacy registry。
+[UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md) 规划 MinerPass 操作资格和跨地址继承，需要按 BTC source、rules scope 和历史 BTC 高度分派 schema/state-machine 版本。其状态机 v2 沿用 JSON schema v1，二者独立编号；受影响编码须完成专项验收；本引用不添加 activation record，也不修改现有 legacy registry。
 
 本文定义 USDB 经济模型相关协议的版本字段、激活矩阵、历史重放规则和 state commit 承诺边界。
 
@@ -141,6 +141,8 @@ block 100 是 registry-only checkpoint：USDB version fields 没有变化，但�
 # 版本族
 
 不同版本字段有不同职责。实现不得把所有变更合并成一个全局版本号。
+
+铭文 JSON `v` 对应载荷 schema，不选择资格执行器。当前受支持组合是 `inscription_schema_version=v1` 与 `pass_state_machine_version=v2`；零余额开户、来源检查和跨地址继承改变状态机，不改变现有 JSON 字段契约。未来应逐族评审升级，不要求各版本数字一致。
 
 本文维护 version family registry 的通用字段名和激活语义。每个 version family 的业务含义、输入输出、fail-closed 条件和可选 disabled 状态由对应 UIP 定义。
 

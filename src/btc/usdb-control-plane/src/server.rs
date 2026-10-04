@@ -1512,7 +1512,10 @@ fn build_btc_mint_inscription_payload(identity: &BtcMintIdentity, prev: &[String
     let mut inscription_map = serde_json::Map::new();
     inscription_map.insert("p".to_string(), Value::String("usdb".to_string()));
     inscription_map.insert("op".to_string(), Value::String("mint".to_string()));
-    inscription_map.insert("v".to_string(), Value::Number(2_u64.into()));
+    inscription_map.insert(
+        "v".to_string(),
+        Value::Number(usdb_util::MINER_PASS_MINT_SCHEMA_VERSION.into()),
+    );
     match identity {
         BtcMintIdentity::Standard { usdb_main } => {
             inscription_map.insert("usdb_main".to_string(), Value::String(usdb_main.clone()));
@@ -2762,7 +2765,8 @@ mod tests {
     }
 
     #[test]
-    fn btc_mint_payload_uses_current_v2_schema() {
+    fn btc_mint_payload_emits_schema_v1() {
+        // Pin the public JSON contract; a changed default must not silently update this oracle.
         let prev = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefi0";
         let standard = BtcMintIdentity::Standard {
             usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
@@ -2772,7 +2776,7 @@ mod tests {
             json!({
                 "p": "usdb",
                 "op": "mint",
-                "v": 2,
+                "v": 1,
                 "usdb_main": "0x1111111111111111111111111111111111111111",
             })
         );
@@ -2781,7 +2785,7 @@ mod tests {
             json!({
                 "p": "usdb",
                 "op": "mint",
-                "v": 2,
+                "v": 1,
                 "usdb_main": "0x1111111111111111111111111111111111111111",
                 "prev": [prev],
             })
@@ -2795,7 +2799,7 @@ mod tests {
             json!({
                 "p": "usdb",
                 "op": "mint",
-                "v": 2,
+                "v": 1,
                 "leader_pass_id": prev,
             })
         );

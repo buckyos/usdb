@@ -19,7 +19,7 @@ v1 是可重置开发测试网的新一代，USDB 从 block 0 开始，不延续
 | USDB genesis hash | `0xb0b6ebc9a6c2e051855c2d61dff9a51635ea1db09c898a3c0126e27b9e779314` |
 | Bitcoin 数据源 | **Bitcoin mainnet，铸造和转账使用真实 BTC** |
 | BTC 索引 origin | `963800`；USDB 链从 0 开始不等于 BTC 索引也从 0 开始 |
-| MinerPass 规则 | 从索引 origin 使用 V2；新铭文 JSON 为整数 `v: 2` |
+| MinerPass 规则 | 从索引 origin 使用状态机 V2；修正版铭文 JSON 为整数 `v: 1`（r1–r4 配置已撤回） |
 | 稳定状态滞后 | 10 个 BTC 区块 |
 | USDB P2P 默认端口 | `31303/TCP` 和 `31303/UDP` |
 | Seed | 使用发布包及运营方确认已切换到 v1 的默认列表；旧服务器地址复用不代表旧节点已升级 |

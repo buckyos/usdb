@@ -29,12 +29,12 @@ fn only_current_rules_execute_and_scope_identity_remains_separate() {
         (
             INSCRIPTION_SCHEMA_VERSION_V2,
             PASS_STATE_MACHINE_VERSION_V2,
-            true,
+            false,
         ),
         (
             INSCRIPTION_SCHEMA_VERSION_V1,
             PASS_STATE_MACHINE_VERSION_V2,
-            false,
+            true,
         ),
         (
             INSCRIPTION_SCHEMA_VERSION_V2,

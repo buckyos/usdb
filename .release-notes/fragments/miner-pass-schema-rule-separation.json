@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-schema-rule-separation",
+  "type": "changed",
+  "scopes": ["consensus", "indexer", "documentation", "node-runtime", "deployment", "testing"],
+  "summary": "Keep MinerPass JSON schema v1 independent of operation rules v2",
+  "details": [
+    "Mint JSON uses integer v=1 while zero-balance opening, source checks, ownership history and cross-address inheritance continue to execute state-machine v2. The payload version cannot select the retired permissive state machine.",
+    "Withdraw the development schema v2 accepted by testnet-v1 r1-r4 without adding a payload alias or a legacy executor. Update wallet drafts, post-mint verification, RPC fixtures and protocol documentation to distinguish schema from operation rules.",
+    "Regenerate scoped registries, active-version identities, Rust/Go golden vectors and the resettable testnet-v1 bundle. Preserve chain/network IDs, Bitcoin origin, genesis allocation and genesis block hash; update the genesis configuration digest and runtime data identities."
+  ],
+  "operator_actions": [
+    "Upgrade all testnet-v1 miners, followers and indexers together. The new release derives a new indexer path, but the USDB-chain directory name is unchanged: explicitly provision an empty chain data directory for the development reset. Do not import prior indexer or USDB-chain state; reuse Bitcoin and balance-history data only under the existing compatibility checks.",
+    "After selecting the updated release, mint with integer v=1 and verify the intended pass, source and recipient before funding a new cold address. JSON v=2 from the withdrawn development configuration is no longer accepted."
+  ],
+  "compatibility": {"network_reset": true, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}

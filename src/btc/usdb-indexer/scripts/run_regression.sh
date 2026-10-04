@@ -26,7 +26,7 @@ run_core_protocol_tests() {
   local tests=(
     "storage::pass::tests::test_committed_reader_remains_available_during_spilled_savepoint"
     "storage::pass::tests::test_committed_reader_preserves_existing_rollback_journal_database"
-    "index::miner_pass_activation::pipeline_rejects_v1_at_every_height_and_accepts_current_schema_from_origin"
+    "index::miner_pass_activation::pipeline_rejects_withdrawn_schema_v2_and_accepts_schema_v1_from_origin"
     "index::miner_pass_activation::same_reveal_observes_prior_mint_history_and_real_transfer_before_mint"
     "index::miner_pass_eligibility::unsolicited_mint_cannot_replace_existing_active_or_consume_its_prev"
     "index::miner_pass_eligibility::cross_owner_consumes_only_listed_prev_and_inherits_each_after_loss"

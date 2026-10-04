@@ -31,7 +31,7 @@ def main():
             path = "same_owner" if request["source_address"] == request["recipient_address"] else "cross_owner" if request["prev"] else "first_opening"
             return dict(eligible=True, execution_available=development, operation_path=path, blockers=[], warnings=[],
                         observation=dict(height=100, source_balance_sats="100000", recipient_balance_sats="0", recipient_ever_valid_owner=False),
-                        source_passes=[], retained_pass_ids=[], inscription_payload_json=__import__('json').dumps(dict(p="usdb", op="mint", v=2, **request)))
+                        source_passes=[], retained_pass_ids=[], inscription_payload_json=__import__('json').dumps(dict(p="usdb", op="mint", v=1, **request)))
 
         def mint(route):
             request = route.request.post_data_json

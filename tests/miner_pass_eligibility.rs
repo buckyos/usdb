@@ -478,14 +478,14 @@ async fn unavailable_source_aborts_block_without_recording_invalid_and_can_retry
 }
 
 #[tokio::test]
-async fn old_json_version_cannot_select_old_behavior_through_v2_entrypoint() {
+async fn withdrawn_schema_cannot_select_behavior_through_v2_entrypoint() {
     let h = Harness::new("version_guard");
     let mut b = MintBlock::new(
         10,
         vec![MintSpec::standard(36, recipient(36), 0, vec![])],
         false,
     );
-    b.mints[0].mint_version = 1;
+    b.mints[0].mint_version = 2;
     let g = h.begin(10);
     assert_eq!(apply(&h, &b, 0).await.unwrap(), None);
     h.finish(10, g);

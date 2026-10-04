@@ -78,7 +78,7 @@ main() {
   leader_address="$(regtest_get_ord_wallet_receive_address "$ORD_WALLET_NAME")"
   leader_mint_file="$WORK_DIR/usdb_validator_three_collab_leader.json"
   cat >"$leader_mint_file" <<'EOF'
-{"p":"usdb","op":"mint","v":2,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
   leader_pass_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$leader_mint_file" "$leader_address")"
   regtest_mine_blocks "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address"
@@ -93,7 +93,7 @@ EOF
     collab_address="$(regtest_get_ord_wallet_receive_address "$wallet_name")"
     collab_mint_file="$WORK_DIR/usdb_validator_three_collab_$((idx + 1)).json"
     cat >"$collab_mint_file" <<EOF
-{"p":"usdb","op":"mint","v":2,"leader_pass_id":"${leader_pass_id}","prev":[]}
+{"p":"usdb","op":"mint","v":1,"leader_pass_id":"${leader_pass_id}","prev":[]}
 EOF
     collab_pass_id="$(regtest_ord_inscribe_file "$wallet_name" "$collab_mint_file" "$collab_address")"
     collab_addresses+=("$collab_address")

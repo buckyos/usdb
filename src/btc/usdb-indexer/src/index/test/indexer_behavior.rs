@@ -461,7 +461,7 @@ fn make_active_pass(
         mint_block_height: mint_height,
         mint_owner: owner,
         satpoint: test_satpoint(7, 0, 0),
-        mint_version: 2,
+        mint_version: usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
         pass_kind: MinerPassKind::Standard,
         usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
         leader_pass_id: None,

@@ -7,7 +7,7 @@
       "supersedes": null,
       "uip": "UIP-0001",
       "version_family": "inscription_schema_version",
-      "version_value": "uip-0001-miner-pass-inscription:v2"
+      "version_value": "uip-0001-miner-pass-inscription:v1"
     },
     {
       "activation_height": 0,

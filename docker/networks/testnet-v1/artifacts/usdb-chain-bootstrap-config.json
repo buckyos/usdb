@@ -9,7 +9,7 @@
     "activations": [
       {
         "block": 0,
-        "btcActivationRegistryId": "c51bdf87510c0083daefb3aa2344c8d35345dbf66af4612fce425e06348bcff6",
+        "btcActivationRegistryId": "53b4bfed53b55a4accbd947d04d113a684f1af896d39d2d9bd984e07ad543f32",
         "btcAnchorMaxAgeBlocks": 6650,
         "versions": {
           "payloadVersion": 1,

@@ -1,6 +1,6 @@
 # MinerPass 操作资格改造计划
 
-更新时间：2026-10-03。
+更新时间：2026-10-04。
 
 本计划落实 [issue #51 收敛方案](https://github.com/buckyos/usdb/issues/51#issuecomment-5894524579)，协议草案为 [UIP-0016](../UIP/UIP-0016-miner-pass-operation-eligibility.md)。用户已同意按该方案推进；草案、代码合并、委员会状态和网络激活是不同事项。
 
@@ -9,6 +9,7 @@
 ## 当前交付状态
 
 - 协议与执行：仅执行 MinerPass V2，三路径资格、来源取证、完整区块恢复及审计已接通。
+- 版本分层修正：当前 JSON schema 为 v1，操作状态机为 v2；r4 后修正版已完成本地实现与隔离验收；正式发布与远程 CI 资格另行确认，见[验收记录](miner-pass-schema-rule-separation.md)。
 - 测试：隔离真实服务、矩阵迁移及 UIP 覆盖审查已有分批记录；完整 weekly 和当前 tag 的 CI 结论以对应运行证据为准。
 - 用户工具：control-plane 草案与入金前核验已实现；正式网络签名和广播继续由外部钱包完成，见[冷钱包手册](../handbook/miner-pass/cold-wallet.md)。
 - 网络包：testnet-v1 的身份、registry、genesis 和发布配置已冻结，见[网络包说明](../publish/usdb-testnet-v1-network-bundle.md)。线上重置、实际安装与多节点验收不是本文件已经完成的事项。
@@ -57,7 +58,7 @@ python3 tests/run_miner_pass_evidence_live.py --bitcoind /path/to/bitcoind
 
 ## 前批已提交：单规则执行、整块恢复与审计
 
-- 移除 `MinerPassRules::V1/V2` 分支、旧 mint 状态机及 `calc_create_satpoint` 旧推导入口；生产 parser 和 control-plane payload 只生成/接受 `v:2`。Rust 与 Go 只允许 schema/state 同为 v2。
+- 移除 `MinerPassRules::V1/V2` 分支、旧 mint 状态机及 `calc_create_satpoint` 旧推导入口；早期实现将 schema/state 同时升级；r4 后分层修正为 parser 和 control-plane payload 只生成/接受 `v:1`，Rust/Go 只执行 schema v1 + state machine v2。
 - 保留 source/scope/revision、高度查询、active set/state identity、checkpoint 和 P2P 升级框架。旧 catalog 可解码并核对冻结身份，但旧/混合/未知规则不能执行；未来不支持的 checkpoint 在对应块业务写入前停止。
 - `tests/fixtures/miner-pass-v2/catalog.json` 从 H=0 使用新规则。`catalog-staged.json` 额外加入不激活公式的 Planned 修订，Go 显式开发 catalog 使用相同黄金向量。未修改旧默认 catalog、默认 chain config 或发布包；使用者必须显式配置新作用域及精确 ID，使用新数据集。
 - 生产采集复核完整规范候选集合，拒绝外部源遗漏/重复/内容、分类或编号不一致。整块共享来源证据和覆盖全部 BTC 交易的余额；同交易 transfer 在 mint 前，同 reveal 按 envelope index 执行。
@@ -144,7 +145,7 @@ go test -ldflags=-checklinkname=0 ./cmd/geth
 
 当前已建立 UIP-0016 Draft 和 M01–M18 期望表；Ord 子集与来源签名形式已落实到已提交的证据层测试。v2 分派与业务 canonical 编码的本批结论见阶段 4：
 
-- JSON `v=2` 与 schema/state-machine v2 成对启用，从新网络 origin 开始；v1 不得绕过。
+- JSON `v=1` 与独立的 state-machine v2 从新网络 origin 启用；schema v1 不得绕过新资格规则，撤回的 schema v2 和旧状态机均拒绝。
 - Ord 当前锁定依赖是 0.24.2；固定支持的 envelope 子集与 satpoint 向量，尤其 pointer、unbound、非首输入及歧义输入。不得把 envelope offset 当 sat offset。
 - P2PKH/P2WPKH/P2TR key-path 的支持形式、sighash 白名单和 annex 处理。
 - 新 mutation/查询字段的 canonical 编码与最低必要版本影响；资格缓存必须可从已承诺历史重建，或另行承诺。
@@ -178,7 +179,7 @@ go test -ldflags=-checklinkname=0 ./cmd/geth
 
 ### 4. 版本、完整区块、状态身份和查询（已提交）
 
-- 按 registry 的 active set 校验支持范围；v1、混合和未知组合拒绝。唯一 JSON v2 parser/状态机接入 ordered block executor，同块共享完整链证据与交易前余额，运行时错误必须恢复 energy、SQLite 与 tracker staging。
+- 按 registry 的 active set 校验支持范围；当前只接受 schema v1 + state-machine v2，旧状态机、撤回的 schema v2 和未知组合拒绝。parser/状态机接入 ordered block executor，同块共享完整链证据与交易前余额，运行时错误必须恢复 energy、SQLite 与 tracker staging。原批次的双 v2 配置已由 r4 后的版本分层修正替代。
 - 新 scope 的 v2 测试 catalog 显式 pin；旧 embedded registry 和 v0 发布包身份不变，新程序拒绝旧规则。
 - 来源、操作路径、资格拒绝原因通过审计接口提供；缺少链上证据与确定的协议 Invalid 使用不同错误分类。
 - state commitment 若新增编码，先定义向量，再同步 Rust、Go、checkpoint 与黄金文件；不能只更新版本字符串。

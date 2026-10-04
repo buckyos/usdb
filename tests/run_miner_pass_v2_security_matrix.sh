@@ -17,7 +17,7 @@ matrix_mint() {
 import json
 from pathlib import Path
 import sys
-payload = dict(p="usdb", op="mint", v=2, prev=json.loads(sys.argv[2]))
+payload = dict(p="usdb", op="mint", v=1, prev=json.loads(sys.argv[2]))
 payload.update(json.loads(sys.argv[3]) if sys.argv[3] else dict(usdb_main="0x" + "11" * 20))
 Path(sys.argv[1]).write_text(json.dumps(payload) + "\n")
 PY

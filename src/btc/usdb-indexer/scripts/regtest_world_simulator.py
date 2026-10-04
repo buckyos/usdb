@@ -3289,7 +3289,7 @@ class RegtestWorldSimulator:
         payload = {
             "p": "usdb",
             "op": "mint",
-            "v": 2,
+            "v": 1,
             "prev": prev,
         }
         if identity.pass_kind == "standard":

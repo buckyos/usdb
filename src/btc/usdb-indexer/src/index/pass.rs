@@ -926,7 +926,7 @@ mod tests {
             mint_block_height: block_height,
             mint_owner: owner,
             satpoint: test_satpoint(23, 0, 0),
-            mint_version: 1,
+            mint_version: usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
             pass_kind,
             usdb_main: if pass_kind == MinerPassKind::Standard {
                 "0x1111111111111111111111111111111111111111".to_string()
@@ -1013,7 +1013,7 @@ mod tests {
             mint_block_height: 100,
             mint_owner: owner,
             satpoint,
-            mint_version: 1,
+            mint_version: usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
             pass_kind: MinerPassKind::Standard,
             usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
             leader_pass_id: None,

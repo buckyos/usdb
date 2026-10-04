@@ -10,7 +10,7 @@ Activation: BTC network activation matrix
 
 # 摘要
 
-本文保留 v1 schema 与历史解释。操作资格、来源证明及当前实现的 v2 schema 见 [UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md)；仅在对应规则作用域和高度激活后替代相关新 mint 规则。
+本文定义当前使用的 v1 JSON schema。操作资格、来源证明及状态机 v2 见 [UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md)；操作规则由对应网络作用域和高度选择，不由 JSON 的 `v` 选择。
 
 本文定义 USDB 矿工证铭文的标准 JSON schema。
 
@@ -21,7 +21,7 @@ Activation: BTC network activation matrix
 
 v1 schema 移除 `usdb_collab` 的协议语义。协作关系不再由 Leader 主动填写协作者 USDB-chain account address 表达，而由协作者在自己 mint 的矿工证中显式指定 Leader 绑定字段表达。
 
-> 开发阶段实现更新：当前程序仅执行 [UIP-0016](UIP-0016-miner-pass-operation-eligibility.md) 的 MinerPass v2；本文 v1 铸造/继承约束保留作历史记录，不表示仍有 v1 执行器。新开发网使用全新数据及显式 v2 catalog。
+> 版本分层：JSON `v: 1` 表示本文的 schema；当前开户、来源检查及继承统一执行 [UIP-0016](UIP-0016-miner-pass-operation-eligibility.md) 状态机 v2。旧状态机 v1 不再执行。
 
 # 动机
 
@@ -41,11 +41,11 @@ USDB 经济模型需要的是可重放、可审计、可按历史高度验证的
 
 # 当前实现状态
 
-开发阶段已收敛为 UIP-0016 MinerPass v2：parser 只接收整数 `v: 2`，保留三种互斥业务字段形态及严格 JSON 校验；`v: 1` 在 origin 起所有高度均为 Invalid。不再提供旧开发网数据兼容执行器。
+当前 parser 只接收整数 `v: 1`，保留三种互斥业务字段形态及严格 JSON 校验；状态机固定执行 UIP-0016 v2。此前开发版使用的 `v: 2` 已撤回，不作为兼容别名。不得通过 JSON `v` 选择旧状态机。
 
 业务字段解析之后，由实际 sat 来源、交易前余额、有效 owner 历史和 `prev` 决定操作资格。无法定位的 envelope 不虚构 owner；所需证据暂缺时整块回滚重试。完整测试映射和服务验收边界见 [UIP 测试覆盖复核](../usdb-indexer/uip-test-coverage-review.md)。
 
-公开网络 activation、control-plane 钱包引导和新网络发布准备仍是独立工作，不能从旧版 UI 测试通过推导 V2 钱包已验收。下方 v1 规范正文保留为历史记录。
+公开网络 activation、control-plane 钱包引导和新网络发布准备仍是独立工作，不能从旧版 UI 测试通过推导 V2 钱包已验收。下方 v1 JSON schema 为当前规范；操作资格以 UIP-0016 为准。
 
 # 非目标
 
@@ -82,7 +82,7 @@ USDB 经济模型需要的是可重放、可审计、可按历史高度验证的
 
 # 版本模型
 
-UIP-0001 定义 USDB 矿工证铭文的第一个标准协议版本：v1。
+UIP-0001 定义 USDB 矿工证铭文的 JSON schema v1。`v` 控制字段、类型、编码及字段解释；开户资格、来源授权和继承状态转换由独立的 `pass_state_machine_version` 控制。规则升级不要求 schema 同步升号，只有载荷契约需要不兼容变更时才升级 schema。
 
 当前代码和早期文档中的开发期载荷不定义为正式协议版本。开发期字段和本地测试数据不进入 UIP-0001 的规范版本序列；在当前 dev 阶段，旧载荷和旧数据库应直接删除或重建，不设计兼容解析或迁移路径。
 
@@ -396,24 +396,24 @@ effective energy 不写入本 schema 或 pass mint storage，由 UIP-0004 / UIP-
 
 # 测试要求
 
-当前开发程序的最小测试集合（v2；业务字段沿用下述 v1 定义）：
+当前开发程序的最小测试集合（schema v1，状态机 v2）：
 
-- v2 standard mint valid。
-- v2 collab mint with `leader_pass_id` valid。
-- v2 collab mint with `leader_btc_addr` valid。
-- v2 missing `prev` 等价于空数组。
-- v2 invalid `usdb_main`。
-- v2 invalid `leader_pass_id`。
-- v2 non-canonical `leader_pass_id` invalid。
-- v2 invalid `leader_btc_addr` for active BTC network。
-- v2 同时包含 `usdb_main` 和任一 leader 绑定字段 invalid。
-- v2 同时包含 `leader_pass_id` 和 `leader_btc_addr` invalid。
-- v2 同时缺失 `usdb_main`、`leader_pass_id` 和 `leader_btc_addr` invalid。
-- v2 包含 `usdb_collab` invalid。
-- v2 unknown field invalid。
-- v2 duplicate key invalid。
-- v2 non-canonical `prev` pass id invalid。
-- v1 mint 在 origin 起任意高度均 Invalid；旧/混合/未来 registry 规则拒绝执行。
+- v1 standard mint valid。
+- v1 collab mint with `leader_pass_id` valid。
+- v1 collab mint with `leader_btc_addr` valid。
+- v1 missing `prev` 等价于空数组。
+- v1 invalid `usdb_main`。
+- v1 invalid `leader_pass_id`。
+- v1 non-canonical `leader_pass_id` invalid。
+- v1 invalid `leader_btc_addr` for active BTC network。
+- v1 同时包含 `usdb_main` 和任一 leader 绑定字段 invalid。
+- v1 同时包含 `leader_pass_id` 和 `leader_btc_addr` invalid。
+- v1 同时缺失 `usdb_main`、`leader_pass_id` 和 `leader_btc_addr` invalid。
+- v1 包含 `usdb_collab` invalid。
+- v1 unknown field invalid。
+- v1 duplicate key invalid。
+- v1 non-canonical `prev` pass id invalid。
+- schema v1 mint 按状态机 v2 验证；schema v2、旧状态机或未知 registry 规则拒绝执行。
 - pre-standard development payload 不作为正式协议版本参与标准解析。
 
 上述 parser 规则还必须与 UIP-0016 的操作资格组合验证；完整区块执行、审计、重组和恢复覆盖见其 M01–M18 验收向量及[测试覆盖复核](../usdb-indexer/uip-test-coverage-review.md)。

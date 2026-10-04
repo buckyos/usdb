@@ -17,8 +17,8 @@ regtest_v2_assert_audit() {
   printf '%s\n' "$response" >"$WORK_DIR/v2-audit-${pass_id}.json"
   regtest_assert_json_expr "$response" "data.get('error') is None" True
   regtest_assert_json_expr "$response" "data['result']['audit']['operation_path']" "$path"
-  regtest_assert_json_expr "$response" "data['result']['activation_registry_id']" 747b656a814bf8d57409c19aa8df9754a1d46aadbe2ebb6fc09805ca14637014
-  regtest_assert_json_expr "$response" "data['result']['active_version_set_id']" 91c2b5b1fe9622d6f8a61561d2ef89a9d206d0d8d7f91e83f3b34dcdab2cad8c
+  regtest_assert_json_expr "$response" "data['result']['activation_registry_id']" d53e9907cfc5abf5d8294e98bbaa838630ee070118eb0845ad3e770959279f08
+  regtest_assert_json_expr "$response" "data['result']['active_version_set_id']" 58a5bf5a3cfdba184c57a7ab13d6d7d6c19a359da467625ebc0392459a0f2a18
   if [[ "$path" == first_opening || "$path" == cross_owner ]]; then
     regtest_assert_json_expr "$response" "data['result']['audit']['balance_before_tx']" 0
     regtest_assert_json_expr "$response" "data['result']['audit']['ever_valid_owner']" False
@@ -44,7 +44,7 @@ import json
 from pathlib import Path
 import sys
 Path(sys.argv[1]).write_text(json.dumps({
-    "p": "usdb", "op": "mint", "v": 2, "usdb_main": sys.argv[2], "prev": [sys.argv[3]],
+    "p": "usdb", "op": "mint", "v": 1, "usdb_main": sys.argv[2], "prev": [sys.argv[3]],
 }) + "\n")
 PY
 }
@@ -103,7 +103,10 @@ PY
   regtest_wait_until_ord_wallet_has_inscription "$ORD_WALLET_NAME_B" "$cross"
   regtest_fund_address "$destination" "$ENERGY_TOPUP_AMOUNT_BTC"
   regtest_v2_sync "$miner_address"
+  # Results are consumed by the sourcing Geth profile runner.
+  # shellcheck disable=SC2034
   V2_FINAL_PASS_ID="$cross"
+  # shellcheck disable=SC2034
   V2_FINAL_OWNER="$destination"
   python3 - "$WORK_DIR/v2-transitions.json" "$first_pass" "$remint" "$gift" "$cross" "$V2_CONTEXT_HEIGHT" <<'PY'
 import json

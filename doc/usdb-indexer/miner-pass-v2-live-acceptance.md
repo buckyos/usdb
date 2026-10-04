@@ -2,6 +2,8 @@
 
 本批在隔离环境验证 Core → Ord commit/reveal → balance-history → indexer → Geth 出块/独立节点验证，不操作在线节点。属于 [UIP-0016 实施计划](miner-pass-operation-eligibility-plan.md) 的阶段性验收，不是 testnet-v1 发布资格。
 
+本页保留 2026-10-02 批次的历史结果；当时 schema/state-machine 同为 v2。r4 后已修正为 JSON schema v1 + 状态机 v2，当前脚本及重新实测结果见[版本分层验收](miner-pass-schema-rule-separation.md)。
+
 ## 复现
 
 需要 Bitcoin Core 28.1、Ord 0.29.0、Rust 工具链，以及配套 `go-ethereum` 工作区。最低配套提交为 USDB `e8c73d9`、Go `aea0a7af9`，后者的兼容锁已指向该 USDB 提交。

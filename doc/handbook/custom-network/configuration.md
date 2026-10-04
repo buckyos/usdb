@@ -41,7 +41,7 @@ python3 -m json.tool docker/networks/testnet-v1/artifacts/btc-activation-registr
 | P2P 网络选择 | `network.json.network_id` 与 `network.env` | 当前同为 `202610030`；相同端口不代表同网 |
 | 网络包与规则作用域 | `network_bundle_id`、`btc_source.rules_scope` | 当前均为 `usdb-testnet-v1`；作用域用于隔离规则及其状态身份 |
 | Bitcoin 链和索引起点 | `btc_source.network_id/index_origin_height` | `btc-mainnet`、`963800`；USDB 从 block 0 启动，不意味着 BTC 索引从 0 起算 |
-| BTC 侧规则 | registry 的 `scope`、`records[].activation_height/version_value` | MinerPass schema/state 为 v2，能量等仍为 v1；这里的高度是 BTC 高度 |
+| BTC 侧规则 | registry 的 `scope`、`records[].activation_height/version_value` | MinerPass schema 为 v1、state machine 为 v2，能量等仍为 v1；这里的高度是 BTC 高度 |
 | USDB 侧规则 | bootstrap 的 `usdbConsensus.activations[]` | `block: 0` 绑定目标 `btcActivationRegistryId`；这里的高度是 USDB 高度 |
 | 稳定状态延迟 | registry 的 `scope.stable_lag_blocks` | `10`；不是每个节点可随意调整的同步性能参数 |
 | 管理员和预部署 | bootstrap 的 `bootstrapAdmin`、`predeploys` 及 DAO 初始配置 | 新运营者必须改为自己安排的治理身份；复制官方地址不会获得其控制权 |

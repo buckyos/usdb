@@ -35,7 +35,7 @@
 {
   "p": "usdb",
   "op": "mint",
-  "v": 2,
+  "v": 1,
   "usdb_main": "YOUR_USDB_REWARD_ADDRESS",
   "prev": ["YOUR_OLD_PASS_ID"]
 }
@@ -89,7 +89,7 @@
 {
   "p": "usdb",
   "op": "mint",
-  "v": 2,
+  "v": 1,
   "leader_pass_id": "LEADER_ACTIVE_STANDARD_PASS_ID"
 }
 ```
@@ -100,7 +100,7 @@
 {
   "p": "usdb",
   "op": "mint",
-  "v": 2,
+  "v": 1,
   "leader_btc_addr": "LEADER_BITCOIN_MAINNET_ADDRESS"
 }
 ```

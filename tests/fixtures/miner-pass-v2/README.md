@@ -1,14 +1,29 @@
 # Isolated MinerPass v2 development catalogs
 
+## Mint fixture version policy
+
+Generic Rust mint/pass constructors use `usdb_util::MINER_PASS_MINT_SCHEMA_VERSION`.
+Workflow tests keep that default unless the version itself is under test. Payload
+parser contracts, invalid-version cases, historical records, canonical mutation
+inputs and catalog/golden identities keep explicit versions; do not replace them
+with a mutable current-version constant. This ensures that changing a default
+cannot silently change both the implementation and its protocol oracle.
+
+The shell/Python runners remain explicitly paired with the pinned catalog below;
+a future schema change must review their payloads and catalog together, rather
+than infer a version by parsing Rust source.
+
+## Pinned catalogs
+
 `catalog.json` pins `btc-regtest / miner-pass-v2-fixture`, stable lag 10, and
-paired inscription-schema/state-machine v2 from BTC height 0. Every other
+inscription schema v1 with independent state-machine v2 from BTC height 0. Every other
 version family retains its existing value. `catalog-staged.json` adds a Planned
 formula record as a second revision without activating another formula.
 
 Rust tests explicitly select these files in temporary roots. Go embeds the
 staged vector as an explicitly selected development scope; no default chain
 configuration, old catalog identity, or deployment bundle selects it. Legacy
-catalog metadata remains hashable, but neither Rust nor Go executes V1 rules.
+catalog metadata remains hashable, but neither Rust nor Go executes the legacy state machine v1.
 A development network using the new binary needs a fresh dataset and a V2
 catalog pinned by scope and ID. Public network parameters remain a release task.
 

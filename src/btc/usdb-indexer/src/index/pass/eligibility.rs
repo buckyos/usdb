@@ -15,7 +15,7 @@ use crate::index::{MinerPassState, MintValidationErrorCode, PassBlockMutation};
 use crate::storage::{MinerPassInfo, MinerPassMintAudit, MintSourceAudit};
 
 impl MinerPassManager {
-    /// Apply a schema-validated v2 mint in ordered block context using actual chain evidence.
+    /// Apply a schema-v1 mint under state-machine v2 in ordered block context using actual chain evidence.
     /// The caller must derive payload fields from this inscription and enforce the active schema.
     /// Returns None for a recorded protocol Invalid, or the successful path. Data/I/O errors
     /// require the caller to abort the whole block, including energy, SQLite and tracker staging.
@@ -116,12 +116,16 @@ impl MinerPassManager {
                 mint.mint_txid, mint.inscription_id.txid
             ));
         }
-        if mint.mint_version != 2 {
+        if mint.mint_version != usdb_util::MINER_PASS_MINT_SCHEMA_VERSION {
             return self
                 .reject_v2(
                     mint,
                     MintValidationErrorCode::InvalidSchema,
-                    "Active v2 state machine requires mint version 2".into(),
+                    format!(
+                        "MinerPass state machine v2 requires mint schema v{}: actual={}",
+                        usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
+                        mint.mint_version
+                    ),
                 )
                 .await;
         }

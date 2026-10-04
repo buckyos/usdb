@@ -22,7 +22,7 @@ pub fn load(root: Option<PathBuf>) -> Result<ConfigManager, String> {
     for record in &mut registry.records {
         if record.version_family == usdb_util::VersionFamily::InscriptionSchemaVersion {
             record.version_value =
-                serde_json::from_value(serde_json::json!(usdb_util::INSCRIPTION_SCHEMA_VERSION_V2))
+                serde_json::from_value(serde_json::json!(usdb_util::INSCRIPTION_SCHEMA_VERSION_V1))
                     .unwrap();
         }
         if record.version_family == usdb_util::VersionFamily::PassStateMachineVersion {
@@ -62,7 +62,7 @@ pub fn current_catalog(json: &str) -> usdb_util::BtcActivationRegistryCatalog {
                 match record.version_family {
                     usdb_util::VersionFamily::InscriptionSchemaVersion => {
                         record.version_value = usdb_util::VersionValue::String(
-                            usdb_util::INSCRIPTION_SCHEMA_VERSION_V2.into(),
+                            usdb_util::INSCRIPTION_SCHEMA_VERSION_V1.into(),
                         )
                     }
                     usdb_util::VersionFamily::PassStateMachineVersion => {

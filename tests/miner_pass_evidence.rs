@@ -157,7 +157,8 @@ fn envelope(pointer: bool) -> ScriptBuf {
     }
     script
         .push_int(0)
-        .push_slice(b"{\"p\":\"usdb\",\"op\":\"mint\",\"v\":2}")
+        // Fixed envelope bytes for sat tracing, not a schema-valid business mint.
+        .push_slice(b"{\"p\":\"usdb\",\"op\":\"mint\",\"v\":1}")
         .push_opcode(OP_ENDIF)
         .into_script()
 }

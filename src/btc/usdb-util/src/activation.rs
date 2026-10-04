@@ -29,11 +29,13 @@ pub const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "uip-0008-cross-chain-release-
 /// Audit manifest schema that groups independent catalogs on the same BTC source.
 pub const SCOPED_RELEASE_MANIFEST_SCHEMA_VERSION: &str = "uip-0008-cross-chain-release-manifest:v4";
 
-/// Historical UIP-0001 identifier, retained for frozen metadata and rejection diagnostics.
+/// UIP-0001 payload schema, independent of MinerPass operation eligibility rules.
 pub const INSCRIPTION_SCHEMA_VERSION_V1: &str = "uip-0001-miner-pass-inscription:v1";
+/// Integer encoded in mint JSON `v`; never selects an older state machine.
+pub const MINER_PASS_MINT_SCHEMA_VERSION: u32 = 1;
 /// Historical UIP-0002 identifier; no legacy executor is provided.
 pub const PASS_STATE_MACHINE_VERSION_V1: &str = "uip-0002-pass-state-machine:v1";
-/// MinerPass schema paired with the UIP-0016 operation eligibility state machine.
+/// Withdrawn development payload schema, retained only for rejection diagnostics.
 pub const INSCRIPTION_SCHEMA_VERSION_V2: &str = "uip-0001-miner-pass-inscription:v2";
 /// MinerPass state machine requiring source evidence and one-time opening eligibility.
 pub const PASS_STATE_MACHINE_VERSION_V2: &str = "uip-0002-pass-state-machine:v2";
@@ -425,9 +427,9 @@ impl ActiveVersionSet {
         }
         let schema = self.require_string(VersionFamily::InscriptionSchemaVersion)?;
         let state = self.require_string(VersionFamily::PassStateMachineVersion)?;
-        if schema != INSCRIPTION_SCHEMA_VERSION_V2 || state != PASS_STATE_MACHINE_VERSION_V2 {
+        if schema != INSCRIPTION_SCHEMA_VERSION_V1 || state != PASS_STATE_MACHINE_VERSION_V2 {
             return Err(ActivationRegistryError::InvalidRecord(format!(
-                "Unsupported MinerPass rule combination; this binary requires v2 and a fresh development network: inscription_schema_version={schema}, pass_state_machine_version={state}"
+                "Unsupported MinerPass rule combination; this binary requires schema v1 with state machine v2 and a fresh development network: inscription_schema_version={schema}, pass_state_machine_version={state}"
             )));
         }
         self.require_supported_string(
@@ -1856,7 +1858,7 @@ mod tests {
             match record.version_family {
                 VersionFamily::InscriptionSchemaVersion => {
                     record.version_value =
-                        VersionValue::String(INSCRIPTION_SCHEMA_VERSION_V2.into())
+                        VersionValue::String(INSCRIPTION_SCHEMA_VERSION_V1.into())
                 }
                 VersionFamily::PassStateMachineVersion => {
                     record.version_value =

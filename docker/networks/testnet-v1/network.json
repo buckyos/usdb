@@ -9,21 +9,21 @@
   "btc_source": {
     "network_id": "btc-mainnet",
     "index_origin_height": 963800,
-    "activation_registry_id": "c51bdf87510c0083daefb3aa2344c8d35345dbf66af4612fce425e06348bcff6",
+    "activation_registry_id": "53b4bfed53b55a4accbd947d04d113a684f1af896d39d2d9bd984e07ad543f32",
     "rules_scope": "usdb-testnet-v1"
   },
   "artifacts": {
     "genesis": {
       "path": "artifacts/usdb-genesis.json",
-      "sha256": "2e114ac60ac3ce9a9f840a7242258b4a95224221d7f168b1abf4837c623ba0aa"
+      "sha256": "3417be9f2a9614d330fa68caa298b2fa6ef3876a1db6f8c2b56cce8d32500fba"
     },
     "genesis_manifest": {
       "path": "artifacts/usdb-genesis.manifest.json",
-      "sha256": "9059dca8185ed6ab3e5b3a74c7048100948afe25b5fd9d609fa8c00b4ac0149c"
+      "sha256": "286700c7b96d5eeb23982f7b9580d8d12147ab1efd2998b0f8e7096c2c5497e1"
     },
     "chain_bootstrap": {
       "path": "artifacts/usdb-chain-bootstrap-config.json",
-      "sha256": "5e0e044eb7a332b090b094781c313fac4df5dbe17c732c7924d480a49a4c3520"
+      "sha256": "8ac109e50699e8b9025feba719d9cacef84722c73edc0fcb8ae1684b2b0ab5cf"
     },
     "sourcedao_bootstrap": {
       "path": "artifacts/sourcedao-bootstrap-config.json",
@@ -39,7 +39,7 @@
     },
     "network_environment": {
       "path": "network.env",
-      "sha256": "7a7cc313dcb04ab0434c508238c68873b0f65b12c5b8776daa4aed0dd9342c5f"
+      "sha256": "7a38a8967d791c617a093d390817d2ecadf8d300d40f56b311711c82e76b3347"
     },
     "compose_overlay": {
       "path": "compose.network.yml",
@@ -63,7 +63,7 @@
     },
     "btc_activation_registry_catalog": {
       "path": "artifacts/btc-activation-registry-catalog.json",
-      "sha256": "f70f870b04f2ccc99b510111d4ca7c2d7e2b22694eebb4b38e53e59ea314ca79"
+      "sha256": "55d52ff8959ef5bb74ec67d695ea98af22f10c3af602657e48832e5b03f887dc"
     }
   }
 }

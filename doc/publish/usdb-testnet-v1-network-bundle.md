@@ -4,6 +4,21 @@
 不迁移 v0 的区块、挖矿余额、运行期 SourceDAO 状态和 indexer 数据。实际重置在发布后执行。
 源码中的 v0 包保留作为历史身份和可复用输入，不代表新的 MinerPass 程序继续支持 V1 规则。
 
+## r4 后的 schema 分层修正
+
+后续开发发布使用 JSON schema v1 + 状态机 v2；r1–r4 的 schema/state 双 v2 配置撤回。
+新 registry 和 active-version-set 身份已重新计算，并同步到 Rust、Go 和网络包。
+chain ID、network ID、BTC origin 和创世分配保持不变；genesis 配置中的 registry 绑定、文件校验和、
+network bundle 与运行数据 compatibility ID 更新。创世 block hash 不包含 chain config，
+因此相同 genesis hash 不能替代精确 registry/config 一致性检查。
+
+此调整仅用于已允许重置的开发网，不提供旧 schema v2 铭文或旧索引状态的兼容迁移。
+miner、follower 与 indexer 必须一起切换到同一新发布。新包会派生新的 indexer 数据路径；
+USDB chain 的目录名仍为 `networks/usdb-testnet-v1/usdb-chain`，不会仅因更新包而自动隔离旧状态。
+部署时必须使用空的 USDB chain 数据目录，不复用旧 indexer/USDB chain 状态；
+Bitcoin/BH 基础数据仍按原兼容合同复用。
+不能将此做法用于正式网：正式网应按网络 scope、激活高度与历史规则设计升级。
+
 ## 固定身份
 
 | 项目 | v1 值 |
@@ -11,11 +26,11 @@
 | bundle | `usdb-testnet-v1` |
 | chain ID / network ID | `202610030`（2026-10-03 + 当日序号 0，与 v0 编号方式一致） |
 | genesis block hash | `0xb0b6ebc9a6c2e051855c2d61dff9a51635ea1db09c898a3c0126e27b9e779314` |
-| genesis 文件 SHA-256 | `2e114ac60ac3ce9a9f840a7242258b4a95224221d7f168b1abf4837c623ba0aa` |
+| genesis 文件 SHA-256 | `3417be9f2a9614d330fa68caa298b2fa6ef3876a1db6f8c2b56cce8d32500fba` |
 | BTC 数据源 / origin | `btc-mainnet` / `963800` |
 | origin block hash | `000000000000000000012c999b5f6d2043b1d3d76dcf06ee007b5f86290c0551` |
 | rules scope | `usdb-testnet-v1` |
-| registry ID | `c51bdf87510c0083daefb3aa2344c8d35345dbf66af4612fce425e06348bcff6` |
+| registry ID | `53b4bfed53b55a4accbd947d04d113a684f1af896d39d2d9bd984e07ad543f32` |
 | 稳定滞后 | 10 BTC blocks |
 
 规则从索引 origin 即使用 MinerPass V2；registry 的全域生效点为 BTC height 0，

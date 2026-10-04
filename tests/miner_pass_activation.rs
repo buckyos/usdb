@@ -7,7 +7,7 @@ use crate::service::rpc::{GetPassMintAuditParams, UsdbIndexerRpc};
 use pipeline::*;
 
 #[tokio::test]
-async fn pipeline_rejects_v1_at_every_height_and_accepts_current_schema_from_origin() {
+async fn pipeline_rejects_withdrawn_schema_v2_and_accepts_schema_v1_from_origin() {
     let mut batches = Vec::new();
     for height in 9..=11 {
         let mut legacy = MintSpec::standard(
@@ -16,20 +16,16 @@ async fn pipeline_rejects_v1_at_every_height_and_accepts_current_schema_from_ori
             0,
             vec![],
         );
-        legacy.version = 1;
-        batches.push(MintBlock::new(
-            height,
-            vec![
-                legacy,
-                MintSpec::standard(
-                    height as u8 + 70,
-                    cold_recipient(height as u8 + 70),
-                    0,
-                    vec![],
-                ),
-            ],
-            true,
-        ));
+        legacy.version = 2;
+        let mut schema_v1 = MintSpec::standard(
+            height as u8 + 70,
+            cold_recipient(height as u8 + 70),
+            0,
+            vec![],
+        );
+        // This boundary test must pin both payload versions, independently of fixture defaults.
+        schema_v1.version = 1;
+        batches.push(MintBlock::new(height, vec![legacy, schema_v1], true));
     }
     let p = Pipeline::new("current-only", &batches.iter().collect::<Vec<_>>(), 9).await;
     p.sync(9, 11).await.unwrap();
@@ -69,8 +65,7 @@ async fn pipeline_rejects_v1_at_every_height_and_accepts_current_schema_from_ori
 
 #[tokio::test]
 async fn pipeline_inherits_current_prev_and_publishes_source_audit() {
-    let mut spec = MintSpec::standard(64, source_script(SpendKind::Witness), 0, vec![]);
-    spec.version = 2;
+    let spec = MintSpec::standard(64, source_script(SpendKind::Witness), 0, vec![]);
     let old = MintBlock::new(9, vec![spec], false);
     let next = MintBlock::new(
         10,
@@ -119,8 +114,7 @@ async fn pipeline_inherits_current_prev_and_publishes_source_audit() {
 
 #[tokio::test]
 async fn pipeline_unavailable_evidence_leaves_no_invalid_or_audit_and_retries() {
-    let mut spec = MintSpec::standard(66, source_script(SpendKind::Witness), 0, vec![]);
-    spec.version = 2;
+    let spec = MintSpec::standard(66, source_script(SpendKind::Witness), 0, vec![]);
     let old = MintBlock::new(9, vec![spec], false);
     let new = MintBlock::new(
         11,
@@ -180,8 +174,7 @@ async fn pipeline_unavailable_evidence_leaves_no_invalid_or_audit_and_retries() 
 #[tokio::test]
 async fn pipeline_recovers_after_energy_finalize_and_after_tracker_publication() {
     for outer_sql_failure in [false, true] {
-        let mut spec = MintSpec::standard(68, source_script(SpendKind::Witness), 0, vec![]);
-        spec.version = 2;
+        let spec = MintSpec::standard(68, source_script(SpendKind::Witness), 0, vec![]);
         let old = MintBlock::new(9, vec![spec], false);
         let new = MintBlock::new(
             10,
@@ -265,8 +258,7 @@ async fn pipeline_recovers_after_energy_finalize_and_after_tracker_publication()
 
 #[tokio::test]
 async fn pipeline_reopen_and_rollback_replay_preserve_identity_and_audit() {
-    let mut spec = MintSpec::standard(70, source_script(SpendKind::Witness), 0, vec![]);
-    spec.version = 2;
+    let spec = MintSpec::standard(70, source_script(SpendKind::Witness), 0, vec![]);
     let old = MintBlock::new(9, vec![spec], false);
     let new = MintBlock::new(
         10,
@@ -394,8 +386,7 @@ async fn same_reveal_observes_prior_mint_history_and_real_transfer_before_mint()
 
     use crate::index::test_miner_evidence as chain;
     use bitcoincore_rpc::bitcoin::{Amount, TxIn, TxOut};
-    let mut spec = MintSpec::standard(74, source_script(SpendKind::Witness), 0, vec![]);
-    spec.version = 2;
+    let spec = MintSpec::standard(74, source_script(SpendKind::Witness), 0, vec![]);
     let old = MintBlock::new(9, vec![spec], false);
     let mut new = MintBlock::new(
         10,
@@ -835,7 +826,7 @@ async fn unsupported_future_rule_pairs_stop_before_block_mutation() {
             serde_json::from_value(catalog["registries"][0].clone()).unwrap();
         catalog["current_registry_id"] = registry.activation_registry_id().into();
         let mut old_spec = MintSpec::standard(79, cold_recipient(79), 0, vec![]);
-        old_spec.version = 2;
+        old_spec.version = 1;
         let old = MintBlock::new(9, vec![old_spec], false);
         let new = MintBlock::new(
             10,

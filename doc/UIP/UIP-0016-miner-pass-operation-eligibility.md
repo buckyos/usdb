@@ -7,7 +7,7 @@ Created: 2026-10-02
 Requires: UIP-0000, UIP-0001, UIP-0002, UIP-0003, UIP-0004, UIP-0006, UIP-0008
 Supersedes: UIP-0001 v1 mint eligibility and UIP-0002 v1 same-owner inheritance for fresh development networks
 Activation: testnet-v1 bundle frozen; network deployment requires separate release acceptance
-Affected-Version-Fields: inscription_schema_version, pass_state_machine_version; other fields subject to encoding review
+Affected-Version-Fields: pass_state_machine_version; inscription_schema_version remains UIP-0001 v1
 Activation-Matrix: See activation section
 Backwards-Compatibility: Fresh development networks execute v2 only; no v1 replay or state migration
 Test-Cases: See acceptance vectors and implementation plan
@@ -129,22 +129,26 @@ standard/Leader 与 collab 共用同一资格入口。Leader 从 D 迁往 E 后�
 
 # 版本与激活
 
-当前开发测试网可彻底重置，生产程序只支持 MinerPass v2，不保留 v1 parser/状态机或历史执行分支。新 mint JSON 使用整数 `v: 2`，沿用现有业务字段，不新增 `sig/src/dest`；source/destination 从链上取得。
+当前开发测试网可彻底重置，生产程序只执行 MinerPass 状态机 v2，不保留旧状态机 v1。mint JSON 使用 UIP-0001 的整数 `v: 1`，沿用现有业务字段，不新增 `sig/src/dest`；source/destination 从链上取得。
+
+JSON schema 与操作规则独立编号：`v` 只选择载荷解析契约；状态机由 registry 的 BTC source、rules scope 和历史 BTC 高度选择。schema v1 不授权使用旧规则，零余额、持有历史、来源及 prev 校验始终按已激活状态机执行。程序发布号 rN 是第三层版本，不参与铭文解释。
 
 | 字段 | 本次唯一执行版本 |
 | --- | --- |
-| inscription_schema_version | uip-0001-miner-pass-inscription:v2 |
+| inscription_schema_version | uip-0001-miner-pass-inscription:v1 |
 | pass_state_machine_version | uip-0002-pass-state-machine:v2 |
 | energy / effective-energy / level formulas | 数学规则不变，保持 v1 |
 | query / state-view / commit protocol | 保持原版本；新增辅助审计使用独立 schema |
 
-registry 的 BTC source、rules scope、revision、按高度查询及 active-version/state identity 框架保留。启动、每个区块、历史查询和 checkpoint 验证只接受上述成对 v2；v1、混合或未知组合拒绝执行。所有已处理高度的新 `v:1` mint 都记为 Invalid，不能选择宽松执行器。重置后的网络从 origin 使用 v2，不导入或继承旧开发网的 v1 pass/能量/状态。
+registry 的 BTC source、rules scope、revision、按高度查询及 active-version/state identity 框架保留。启动、每个区块、历史查询和 checkpoint 验证只接受 schema v1 + 状态机 v2；旧状态机和未知组合拒绝执行。重置后的网络从 origin 使用该组合，不导入旧开发网 pass/能量/状态。
 
-未来正式网若升级到 v3/v4，必须另行实现并测试升级前历史语义、激活边界和重放兼容；保留框架不表示当前已实现这些未知版本。
+早期 testnet-v1 r1–r4 曾将两层同时标为 v2；该开发配置已撤回。后续发布的 parser 拒绝 JSON `v: 2`，不把它作为 v1 别名。registry、active-version-set、运行数据身份和两端向量一起重新生成；旧 tag 保留原样，旧开发状态不得混用。
+
+未来正式网若将状态机升级到 v3/v4，必须另行实现并测试升级前历史语义、激活边界和重放兼容；保留框架不表示当前已实现这些未知版本。
 
 若 qualification 完全由已有已承诺历史派生，缓存不是独立共识状态；若新增不可派生字段或改变规范编码，则必须定义其 commitment、版本和快照恢复规则。不能只升级一个版本字符串。尤其当前 commit 版本还关联 balance-history，必须区分 pass mutation 编码与上游快照协议的影响，避免无必要地改变 BTC 基础数据身份。
 
-本次实现保留 `PassBlockMutation` 的字段和编码、逐块 rolling commit、经济 query/state-view 及 balance-history 版本。新资格依赖规范链输入和既有持有历史，结果仍使用已有 mint/Invalid/状态转移 mutation；`active_version_set_id` 把成对 v2 和作用域纳入现有 local/system state 身份。Rust/Go 使用同一隔离 catalog 的黄金向量互验，保持旧默认 catalog/ID 原样；Go 额外识别显式选择的隔离 regtest v2 catalog 和 testnet-v1 catalog；v1 网络包从 USDB block 0 绑定后者，不改写旧网 chain config。
+本次实现保留 `PassBlockMutation` 的字段和编码、逐块 rolling commit、经济 query/state-view 及 balance-history 版本。新资格依赖规范链输入和既有持有历史，结果仍使用已有 mint/Invalid/状态转移 mutation；`active_version_set_id` 把 schema v1、状态机 v2 和作用域纳入现有 local/system state 身份。Rust/Go 使用同一隔离 catalog 的黄金向量互验，保持旧默认 catalog/ID 原样；Go 额外识别显式选择的隔离 regtest v2 catalog 和 testnet-v1 catalog；v1 网络包从 USDB block 0 绑定后者，不改写旧网 chain config。
 
 v2 的规范事件集合由当前完整区块按锁定 Ord parser 解析。若配置的数据源漏报、重复、内容/有效分类不一致，或使用非规范 envelope 编号，整块作为数据源错误停止并重试，不能静默接受差异。执行使用链上规范内容和编号。
 
@@ -202,7 +206,7 @@ control-plane prepare 必须区分 D 与 E，按 D 查询可继承 pass，同时
 | M13 | 同一交易先发生有效 pass transfer 到 E，再执行第三方 mint | transfer 占用资格，后续 mint 不获开户豁免 |
 | M14 | 所需 H-1 余额、commit 或 prevout 暂缺 | 暂停/回滚该块并重试，不记录永久 Invalid |
 | M15 | 断开首次开户所在块，再以另一规范分支重放 | 撤回该分支的资格占用，其他历史资格保留 |
-| M16 | origin 起任意高度出现 v1 mint；registry 指定旧/混合/未来规则 | v1 mint Invalid；不支持的规则拒绝执行，未来边界在业务写入前停止 |
+| M16 | origin 起出现 schema v1/v2 mint；registry 指定独立的 schema/state 组合 | schema v1 仍执行新资格检查；schema v2 Invalid；旧状态机和未知组合拒绝执行，未来边界在业务写入前停止 |
 | M17 | D 普通付款到恶意预承诺 commit，后 reveal 回 D，来源合规 | 可以通过；是明确接受的业务授权边界 |
 | M18 | standard/collab 各执行 M01/M05/M07，Leader 从 D 迁 E | 相同资格规则；旧协作者绑定不自动跟随 |
 

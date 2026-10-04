@@ -2,7 +2,7 @@
 
 2026-10-03，基于 USDB `0452f5c`、go-ethereum `c69e034fe` 加本批未提交改动。复核对象是 UIP-0000–0016 与两仓库的实际测试、夹具、CI 入口及断言。本批不改生产共识规则、embedded registry、公开网络 genesis 或在线数据。
 
-V2 指 MinerPass schema/state-machine；energy、selector、commit 等独立版本族仍可为 v1。旧规则的拒绝向量、冻结 registry 身份和历史文档不能机械替换为 v2。Draft 中尚未冻结的未来政策也不能因为有测试构建就算已实现生产规则。
+本页历史验收时 V2 同时指 schema/state-machine；r4 后版本分层已修正为 schema v1 + state-machine v2，当前测试夹具已迁移，本页旧运行结果不替代修正版验收。energy、selector、commit 等独立版本族仍可为 v1。旧规则的拒绝向量、冻结 registry 身份和历史文档不能机械替换为 v2。Draft 中尚未冻结的未来政策也不能因为有测试构建就算已实现生产规则。
 
 ## 发现并修复
 

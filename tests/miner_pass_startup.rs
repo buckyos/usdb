@@ -31,9 +31,9 @@ fn legacy_default_cannot_silently_start_a_current_rule_dataset() {
         Arc::new(StatusManager::new(config.clone(), Arc::new(IndexOutput::new())).unwrap());
     let error = InscriptionIndexer::new(config, status)
         .err()
-        .expect("V1 must not start");
+        .expect("Legacy state machine v1 must not start");
     assert!(
-        error.contains("requires v2 and a fresh development network"),
+        error.contains("requires schema v1 with state machine v2 and a fresh development network"),
         "{error}"
     );
     assert!(

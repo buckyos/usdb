@@ -199,6 +199,7 @@ mod tests {
             inscription_number: 1,
             mint_owner: "owner".to_string(),
             satpoint: "satpoint".to_string(),
+            // Keep the canonical mutation input independent of current mint defaults.
             mint_version: 1,
             pass_kind: "standard".to_string(),
             usdb_main: "0x1".to_string(),
