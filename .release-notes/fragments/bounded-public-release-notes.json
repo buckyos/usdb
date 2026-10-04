@@ -1,0 +1,26 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "bounded-public-release-notes",
+  "type": "fixed",
+  "scopes": [
+    "release",
+    "documentation",
+    "testing"
+  ],
+  "summary": "Bound the public release body while retaining complete change record assets",
+  "details": [
+    "Render a validated public summary with compatibility, operator guidance, change summaries and repository coverage instead of embedding the complete historical commit inventory.",
+    "Keep the candidate Markdown and JSON assets intact; direct oversized action checklists and change lists to those attachments with explicit counts.",
+    "Check the final assembled body against the GitHub character limit before publication, while retaining exact existing-release body and asset verification."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/actions/runs/37180147854/job/111370929170"
+  ]
+}

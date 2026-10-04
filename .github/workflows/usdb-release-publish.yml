@@ -434,7 +434,11 @@ jobs:
           Immutable USDB deployment release for network bundle \`${BUNDLE_ID}\`.
 
           EOF
-          cat dist/release-changes.md
+          python3 usdb/docker/scripts/tools/release_notes.py render-summary \
+            --release-id "$RELEASE_ID" \
+            --manifest dist/usdb-release-manifest.json \
+            --changes dist/release-changes.json \
+            --release-repository "$GITHUB_REPOSITORY"
           cat <<EOF
           ## Deployment Identity
 
@@ -476,6 +480,8 @@ jobs:
           and review it before executing bash.
           EOF
           } >dist/release-notes.md
+          python3 usdb/docker/scripts/tools/release_publish_resolver.py validate-notes \
+            --notes dist/release-notes.md
 
       - name: Publish or verify immutable GitHub Release
         id: release

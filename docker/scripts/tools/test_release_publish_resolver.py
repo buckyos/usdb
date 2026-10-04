@@ -125,6 +125,26 @@ class ReleasePublishResolverTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "qualification level"):
             RESOLVER.canonical_release_title(self.release_id, "custom")
 
+    def test_release_body_character_limit_includes_unicode_boundary(self) -> None:
+        for character in ("a", "证", "🌍"):
+            with self.subTest(character=character):
+                self.assertEqual(125000, RESOLVER.validate_release_notes(character * 125000))
+                with self.assertRaisesRegex(ValueError, "actual=125001"):
+                    RESOLVER.validate_release_notes(character * 125001)
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            RESOLVER.validate_release_notes(" \n")
+
+    def test_publish_workflow_uses_summary_and_checks_final_body_before_request(self) -> None:
+        publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("release_notes.py render-summary", publish)
+        self.assertNotIn("cat dist/release-changes.md", publish)
+        self.assertIn("cp candidate/release-changes.md dist/", publish)
+        self.assertIn("dist/release-changes.json.sha256", publish)
+        self.assertLess(publish.index("} >dist/release-notes.md"),
+                        publish.index("release_publish_resolver.py validate-notes"))
+        self.assertLess(publish.index("release_publish_resolver.py validate-notes"),
+                        publish.index('gh release create "$RELEASE_ID"'))
+
     def test_verifies_exact_existing_release(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -162,6 +182,12 @@ class ReleasePublishResolverTests(unittest.TestCase):
                 prerelease=True,
             )
             self.assertEqual(url, release["html_url"])
+
+            with self.assertRaisesRegex(ValueError, "notes do not match"):
+                RESOLVER.verify_existing_release(
+                    release, release_id=self.release_id, qualification_level="fast",
+                    notes="changed summary\n", assets=[first, second], prerelease=True,
+                )
 
             release["assets"][0]["digest"] = "sha256:" + "0" * 64
             with self.assertRaisesRegex(ValueError, "assets do not match"):

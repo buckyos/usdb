@@ -106,9 +106,24 @@ Snapshot record 的更新会记录在 manifest diff 中，但 snapshot 是节点
 Publish workflow 校验 Candidate artifact digest、两个 JSON checksum，并重新执行
 `release_notes.py validate-release`。发布后：
 
-- `release-changes.md` 被合并到 GitHub Release 正文的 deployment identity 之前；
+- 从已校验的 `release-changes.json` 渲染有长度预算的摘要，放在 GitHub Release 正文的 deployment identity 之前；
 - JSON、JSON checksum 和 Markdown 作为独立 Release assets 长期保留；
 - 已存在同名 Release 时，正文和完整资产集合仍必须逐字节一致，否则 fail closed。
+
+Release 页面与完整审计附件分别生成。`release_notes.py render-summary` 先复核 manifest 绑定和
+canonical JSON，再显示兼容分类、运维动作、各变更的短摘要、三仓范围及 classified/exempt/unclassified
+计数；页面提供该 release 的完整 Markdown/JSON 下载链接，不内嵌逐条 commit inventory。
+Candidate 中的 `release-changes.md`、JSON 和 checksum 原样作为附件发布，不截断或重写。
+
+摘要的运维动作预算为 30000 字符，变更短摘要预算为 20000 字符，整体不超过 60000 字符。
+运维动作整体超限时，页面明确显示动作数量并要求部署前阅读附件中的完整清单，不显示部分清单；
+变更短摘要超限时显示各类型数量并链接完整列表。标题、deployment identity、镜像和安装命令拼接完成后，
+`release_publish_resolver.py validate-notes` 再检查最终正文不超过 GitHub 的 125000 字符限制，
+在发送创建请求前报告实际长度。`<details>` 折叠内容仍计入限制，不能作为长度控制手段。
+
+这些是展示层预算，不改变报告覆盖范围、兼容性判定或现有 Release 的正文与附件一致性检查。
+首次发布没有上一版基线时，完整历史仍保留在附件中。此生成逻辑随发布源码固定；已冻结旧 tag 的
+失败运行不会自动使用新的正文生成器。
 
 批准 Candidate 前至少检查：
 

@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,7 @@ COMPATIBILITY_KEYS = {
 }
 REPOSITORY_KEYS = {"go_ethereum", "source_dao", "usdb"}
 COMMIT_SUBJECT_MAX_LENGTH = 1000
+PUBLIC_SUMMARY_MAX_LENGTH = 60000
 
 
 @dataclass(frozen=True)
@@ -699,6 +701,81 @@ def render_markdown(release_changes: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_release_summary(release_changes: dict[str, Any], repository_slug: str) -> str:
+    """Render a bounded public summary; complete evidence remains in release assets."""
+    require(
+        re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository_slug) is not None,
+        "invalid release repository slug",
+    )
+    release_id = release_changes["release_id"]
+    release_lineage(release_id)
+    asset_base = f"https://github.com/{repository_slug}/releases/download/{release_id}"
+    full_record = f"[full change record]({asset_base}/release-changes.md)"
+    previous = release_changes["previous_release"]
+    previous_label = previous["release_id"] if previous else "initial release"
+    compatibility = release_changes["compatibility"]
+    flags = [key for key in sorted(compatibility["flags"]) if compatibility["flags"][key]]
+    lines = [
+        f"## Changes Since {previous_label}",
+        "",
+        f"Upgrade classification: `{compatibility['classification']}`.",
+        f"Compatibility flags: {', '.join(flags) if flags else 'none declared'}.",
+        "",
+        f"This page is a summary. Download the {full_record} and "
+        f"[machine-readable record]({asset_base}/release-changes.json) for all details, "
+        "compatibility evidence and commit inventory.",
+        "",
+        "### Operator Actions",
+        "",
+    ]
+    actions = compatibility["operator_actions"]
+    action_lines = [f"- {action}" for action in actions]
+    # If actions outgrow the budget, point to the entire checklist instead of
+    # showing a partial checklist that could look sufficient for deployment.
+    if sum(len(line) + 1 for line in action_lines) > 30000:
+        lines.append(
+            f"**All {len(actions)} operator actions are in the {full_record}; "
+            "read the complete checklist before deployment.**"
+        )
+    else:
+        lines.extend(action_lines or ["- No release-specific operator action is declared."])
+    lines.extend(["", "### Structured Changes", ""])
+    changes = release_changes["changes"]
+    summaries = [
+        f"- **{CHANGE_TYPE_TITLES[change['type']]}** `{change['change_id']}`: {change['summary']}"
+        for change in changes
+    ]
+    if sum(len(line) + 1 for line in summaries) > 20000:
+        for change_type in CHANGE_TYPE_ORDER:
+            count = sum(change["type"] == change_type for change in changes)
+            if count:
+                lines.append(f"- {CHANGE_TYPE_TITLES[change_type]}: {count}")
+        lines.append(f"All {len(changes)} change summaries and details are in the {full_record}.")
+    else:
+        lines.extend(summaries or ["- No structured change fragments were added."])
+    lines.extend(["", "### Source Ranges", ""])
+    for key in sorted(release_changes["repositories"]):
+        repository = release_changes["repositories"][key]
+        coverage = repository["coverage"]
+        lines.append(
+            f"- [{repository['repository']}]({repository['compare_url']}): "
+            f"{repository['commit_count']} commits; "
+            f"{coverage['classified']} classified, {coverage['exempt']} exempt, "
+            f"{coverage['unclassified']} unclassified."
+        )
+    lines.extend([
+        "",
+        "> Commit coverage is report-only. Review unclassified commits in the full record.",
+        "",
+    ])
+    summary = "\n".join(lines)
+    require(
+        len(summary) <= PUBLIC_SUMMARY_MAX_LENGTH,
+        f"public release summary exceeds {PUBLIC_SUMMARY_MAX_LENGTH} characters: actual={len(summary)}",
+    )
+    return summary
+
+
 def validate_release_changes(
     release_changes: dict[str, Any], manifest_path: Path, expected_release_id: str
 ) -> None:
@@ -927,6 +1004,12 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--output-json", type=Path, required=True)
     generate.add_argument("--output-markdown", type=Path, required=True)
 
+    summary = subparsers.add_parser("render-summary")
+    summary.add_argument("--release-id", required=True)
+    summary.add_argument("--manifest", type=Path, required=True)
+    summary.add_argument("--changes", type=Path, required=True)
+    summary.add_argument("--release-repository", required=True)
+
     validate = subparsers.add_parser("validate-release")
     validate.add_argument("--release-id", required=True)
     validate.add_argument("--manifest", type=Path, required=True)
@@ -958,6 +1041,8 @@ def main() -> int:
         "release changes JSON must use canonical encoding",
     )
     validate_release_changes(release_changes, args.manifest, args.release_id)
+    if args.command == "render-summary":
+        sys.stdout.write(render_release_summary(release_changes, args.release_repository))
     return 0
 
 

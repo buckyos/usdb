@@ -19,6 +19,7 @@ REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 ARTIFACT_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 CANDIDATE_WORKFLOW_PATH = ".github/workflows/usdb-release-candidate.yml"
 QUALIFICATION_LEVELS = {"fast", "nightly", "weekly"}
+GITHUB_RELEASE_BODY_MAX_LENGTH = 125000
 
 
 def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -168,6 +169,19 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_release_notes(notes: str) -> int:
+    """Reject an invalid public body before making a GitHub release request."""
+    length = len(notes)
+    if not notes.strip():
+        raise ValueError("GitHub release notes must not be empty")
+    if length > GITHUB_RELEASE_BODY_MAX_LENGTH:
+        raise ValueError(
+            f"GitHub release notes exceed {GITHUB_RELEASE_BODY_MAX_LENGTH} characters: "
+            f"actual={length}; use a bounded summary and attach the full change record"
+        )
+    return length
+
+
 def verify_existing_release(
     release: dict[str, Any],
     *,
@@ -179,6 +193,7 @@ def verify_existing_release(
 ) -> str:
     """Require an existing GitHub Release to equal the intended publication."""
 
+    validate_release_notes(notes)
     expected_title = canonical_release_title(release_id, qualification_level)
     expected_assets = {path.name: f"sha256:{_sha256(path)}" for path in assets}
     if len(expected_assets) != len(assets):
@@ -250,6 +265,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     title.add_argument("--github-output", type=Path)
 
+    notes = subparsers.add_parser("validate-notes")
+    notes.add_argument("--notes", type=Path, required=True)
+    notes.add_argument("--github-output", type=Path)
+
     verify = subparsers.add_parser("verify-release")
     verify.add_argument("--release", type=Path, required=True)
     verify.add_argument("--release-id", required=True)
@@ -281,6 +300,8 @@ def main() -> int:
                     args.release_id, args.qualification_level
                 )
             }
+        elif args.command == "validate-notes":
+            resolved = {"notes_characters": str(validate_release_notes(args.notes.read_text(encoding="utf-8")))}
         else:
             url = verify_existing_release(
                 load_json(args.release),

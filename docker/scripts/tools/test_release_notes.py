@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import os
@@ -301,6 +302,105 @@ class ReleaseNotesTests(unittest.TestCase):
                     RELEASE_NOTES.validate_release_changes(
                         result, current_manifest, "usdb-testnet-v0-r12"
                     )
+
+    def test_public_summary_preserves_actions_and_links_without_commit_inventory(self) -> None:
+        specs, previous_manifest, current_manifest = self.repository_fixture()
+        result = RELEASE_NOTES.build_release_changes(
+            release_id="usdb-testnet-v0-r12", manifest_path=current_manifest,
+            previous_manifest_path=previous_manifest, repositories=specs,
+        )
+        before = RELEASE_NOTES.canonical_json(result)
+        full_record = RELEASE_NOTES.render_markdown(result)
+        summary = RELEASE_NOTES.render_release_summary(result, "buckyos/usdb")
+        self.assertIn("Upgrade classification: `restart_required`", summary)
+        self.assertIn("1 commits; 0 classified, 0 exempt, 1 unclassified", summary)
+        self.assertIn("/releases/download/usdb-testnet-v0-r12/release-changes.md", summary)
+        self.assertIn("/releases/download/usdb-testnet-v0-r12/release-changes.json", summary)
+        self.assertNotIn("Change chain implementation", summary)
+        self.assertIn("Change chain implementation", full_record)
+        self.assertEqual(before, RELEASE_NOTES.canonical_json(result))
+        self.assertEqual(full_record, RELEASE_NOTES.render_markdown(result))
+        self.assertEqual(summary, RELEASE_NOTES.render_release_summary(result, "buckyos/usdb"))
+        with self.assertRaisesRegex(ValueError, "repository slug"):
+            RELEASE_NOTES.render_release_summary(result, "buckyos/usdb?wrong")
+
+    def test_public_summary_is_bounded_for_large_initial_history(self) -> None:
+        specs, _, current_manifest = self.repository_fixture()
+        initial_specs = [
+            RELEASE_NOTES.RepositorySpec(spec.key, spec.slug, spec.path, None, spec.current_revision)
+            for spec in specs
+        ]
+        result = RELEASE_NOTES.build_release_changes(
+            release_id="usdb-testnet-v0-r12", manifest_path=current_manifest,
+            previous_manifest_path=None, repositories=initial_specs,
+        )
+        repository = result["repositories"]["go_ethereum"]
+        repository["commits"] = [
+            {"revision": f"{i:040x}", "subject": "Historical subject " + "x" * 900,
+             "classification": "unclassified", "release_notes": []}
+            for i in range(15000)
+        ]
+        repository["commit_count"] = 15000
+        repository["coverage"] = {"classified": 0, "exempt": 0, "unclassified": 15000}
+        RELEASE_NOTES.validate_release_changes(result, current_manifest, "usdb-testnet-v0-r12")
+        self.assertGreater(len(RELEASE_NOTES.render_markdown(result)), 125000)
+        summary = RELEASE_NOTES.render_release_summary(result, "buckyos/usdb")
+        self.assertLessEqual(len(summary), 60000)
+        self.assertIn("Changes Since initial release", summary)
+        self.assertIn("15000 commits", summary)
+        self.assertIn("15000 unclassified", summary)
+        self.assertNotIn("Historical subject", summary)
+        self.assertEqual(15000, len(repository["commits"]))
+
+    def test_public_summary_bounds_structured_changes_without_partial_action_list(self) -> None:
+        specs, previous_manifest, current_manifest = self.repository_fixture()
+        result = RELEASE_NOTES.build_release_changes(
+            release_id="usdb-testnet-v0-r12", manifest_path=current_manifest,
+            previous_manifest_path=previous_manifest, repositories=specs,
+        )
+        for index in range(200):
+            change = copy.deepcopy(result["changes"][0])
+            change["change_id"] = f"large-change-{index}"
+            change["source_path"] = f".release-notes/fragments/{change['change_id']}.json"
+            change["summary"] = f"Change {index}: " + "x" * 130
+            change["operator_actions"] = [f"Required action {index}: " + "x" * 900]
+            result["changes"].append(change)
+        result["compatibility"]["operator_actions"] = sorted(
+            {action for change in result["changes"] for action in change["operator_actions"]}
+        )
+        RELEASE_NOTES.validate_release_changes(result, current_manifest, "usdb-testnet-v0-r12")
+        summary = RELEASE_NOTES.render_release_summary(result, "buckyos/usdb")
+        self.assertLessEqual(len(summary), 60000)
+        self.assertIn("All 200 operator actions", summary)
+        self.assertIn("read the complete checklist before deployment", summary)
+        self.assertNotIn("Required action 0:", summary)
+        self.assertIn("All 202 change summaries", summary)
+        self.assertIn("Added: 202", summary)
+        self.assertEqual(202, len(result["changes"]))
+        # A short required checklist remains inline in full.
+        result["compatibility"]["operator_actions"] = ["Back up all chain data before deployment."]
+        self.assertIn("Back up all chain data before deployment.",
+                      RELEASE_NOTES.render_release_summary(result, "buckyos/usdb"))
+
+    def test_render_summary_cli_validates_candidate_before_rendering(self) -> None:
+        specs, previous_manifest, current_manifest = self.repository_fixture()
+        result = RELEASE_NOTES.build_release_changes(
+            release_id="usdb-testnet-v0-r12", manifest_path=current_manifest,
+            previous_manifest_path=previous_manifest, repositories=specs,
+        )
+        changes = self.root / "release-changes.json"
+        changes.write_bytes(RELEASE_NOTES.canonical_json(result))
+        command = [sys.executable, str(MODULE_PATH), "render-summary",
+                   "--release-id", "usdb-testnet-v0-r12", "--manifest", str(current_manifest),
+                   "--changes", str(changes), "--release-repository", "buckyos/usdb"]
+        completed = subprocess.run(command, capture_output=True, text=True, check=True)
+        self.assertEqual(RELEASE_NOTES.render_release_summary(result, "buckyos/usdb"), completed.stdout)
+        result["compatibility"]["classification"] = "in_place"
+        changes.write_bytes(RELEASE_NOTES.canonical_json(result))
+        failed = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(0, failed.returncode)
+        self.assertIn("compatibility classification mismatch", failed.stderr)
+        self.assertEqual("", failed.stdout)
 
     def test_commit_records_reject_duplicate_release_note_trailers(self) -> None:
         repository, previous = self.init_repository("duplicate-trailer")
