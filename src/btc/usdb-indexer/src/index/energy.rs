@@ -1,7 +1,6 @@
 use super::content::MinerPassState;
-use super::energy_formula::{
-    Energy, calc_balance_penalty_energy, calc_growth_delta, calc_next_active_block_height,
-};
+use super::energy_formula::Energy;
+use super::energy_settlement::EnergySettlement;
 use crate::config::ConfigManagerRef;
 use crate::storage::{PassEnergyRecord, PassEnergyStorage, PassEnergyValue};
 use balance_history::{AddressBalance, RpcClient as BalanceHistoryRpcClient};
@@ -76,53 +75,10 @@ impl BalanceProvider for RpcBalanceProvider {
     }
 }
 
-fn calc_incremental_growth(
-    owner_balance: u64,
-    from_block_height: u32,
-    to_block_height: u32,
-) -> Energy {
-    if to_block_height <= from_block_height {
-        return 0;
-    }
-
-    calc_growth_delta(
-        owner_balance,
-        to_block_height.saturating_sub(from_block_height),
-    )
-}
-
-fn settle_active_balance_change(
-    last_record: &PassEnergyRecord,
-    event_block_height: u32,
-    next_owner_balance: u64,
-) -> (Energy, u32) {
-    let growth_delta = calc_incremental_growth(
-        last_record.owner_balance,
-        last_record.block_height,
-        event_block_height,
-    );
-    let after_growth = last_record.energy.saturating_add(growth_delta);
-
-    let penalty = calc_balance_penalty_energy(
-        last_record.owner_balance,
-        next_owner_balance,
-        last_record.active_block_height,
-        event_block_height,
-    );
-    let next_energy = after_growth.saturating_sub(penalty);
-    let next_active_height = calc_next_active_block_height(
-        last_record.owner_balance,
-        next_owner_balance,
-        last_record.active_block_height,
-        event_block_height,
-    );
-
-    (next_energy, next_active_height)
-}
-
 pub struct PassEnergyManager {
     config: ConfigManagerRef,
     storage: PassEnergyStorage,
+    settlement: EnergySettlement,
     balance_provider: Arc<dyn BalanceProvider>,
     #[cfg(test)]
     force_strict_settle_consistency_for_test: std::sync::atomic::AtomicBool,
@@ -163,21 +119,35 @@ impl PassEnergyManager {
             &config.config().balance_history.rpc_url,
         )?);
 
-        Ok(Self::new_with_deps(config, storage, balance_provider))
+        Self::new_with_deps(config, storage, balance_provider)
     }
 
     pub(crate) fn new_with_deps(
         config: ConfigManagerRef,
         storage: PassEnergyStorage,
         balance_provider: Arc<dyn BalanceProvider>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, String> {
+        let catalog = config.activation_registry_catalog()?;
+        let timeline = usdb_util::BtcRuleTimeline::new_with_indexer_support(
+            catalog.current_registry(),
+            super::rules::validate_indexer_rules,
+        )
+        .map_err(|error| {
+            let msg = format!(
+                "Failed to build energy rule timeline: registry_id={}, error={error}",
+                catalog.current_registry_id()
+            );
+            error!("{msg}");
+            msg
+        })?;
+        Ok(Self {
             config,
             storage,
+            settlement: EnergySettlement::new(timeline),
             balance_provider,
             #[cfg(test)]
             force_strict_settle_consistency_for_test: std::sync::atomic::AtomicBool::new(false),
-        }
+        })
     }
 
     fn strict_settle_consistency_enabled(&self) -> bool {
@@ -458,7 +428,9 @@ impl PassEnergyManager {
         block_height: u32,
     ) -> Result<Option<PassEnergyResult>, String> {
         let record = self.get_pass_energy_record_at_or_before(inscription_id, block_height)?;
-        Ok(record.map(|r| self.project_energy_record_no_balance_change(&r, block_height)))
+        record
+            .map(|r| self.project_energy_record_no_balance_change(&r, block_height))
+            .transpose()
     }
 
     // Record-query API: exact stored record at block height.
@@ -498,24 +470,20 @@ impl PassEnergyManager {
         &self,
         record: &PassEnergyRecord,
         query_block_height: u32,
-    ) -> PassEnergyResult {
-        if query_block_height <= record.block_height || record.state != MinerPassState::Active {
-            return PassEnergyResult {
-                energy: record.energy,
-                state: record.state.clone(),
-            };
-        }
-
-        let incremental_growth = calc_incremental_growth(
-            record.owner_balance,
-            record.block_height,
-            query_block_height,
-        );
-
-        PassEnergyResult {
-            energy: record.energy.saturating_add(incremental_growth),
+    ) -> Result<PassEnergyResult, String> {
+        Ok(PassEnergyResult {
+            energy: self.settlement.project(record, query_block_height)?,
             state: record.state.clone(),
-        }
+        })
+    }
+
+    /// Select the inheritance discount at the event height, after settling each prev.
+    pub(crate) fn inheritable_energy_at(
+        &self,
+        energy: Energy,
+        height: u32,
+    ) -> Result<Energy, String> {
+        self.settlement.inherit(energy, height)
     }
 
     pub fn get_pass_energy_records_by_page_in_height_range(
@@ -628,14 +596,13 @@ impl PassEnergyManager {
             "Last record block height should be less than or equal to current block height"
         );
 
+        // Validate the complete history before any balance event can write a partial result.
+        let projected = self.project_energy_record_no_balance_change(&last_record, block_height)?;
         // Check the pass state
         // If the pass is active, we need to update the energy based on owner's balance delta
-        // If dormant or consumed, energy remains the same as last record, and we just record return the same energy
+        // Frozen balances do not grow, but explicit formula representation conversions still apply.
         if last_record.state != MinerPassState::Active {
-            return Ok(PassEnergyResult {
-                energy: last_record.energy,
-                state: last_record.state,
-            });
+            return Ok(projected);
         }
 
         // For active passes, get the owner's balance records between last_record.block_height and block_height: [last_record.block_height + 1, block_height]
@@ -643,15 +610,18 @@ impl PassEnergyManager {
         let mut balances = self
             .get_balance_at_range(&last_record.owner_address, range)
             .await?;
+        if balances.is_empty() {
+            return Ok(projected);
+        }
         balances.sort_unstable_by_key(|balance| balance.block_height);
 
         // Update energy based on balance changes records
         for balance_record in balances {
-            let (new_energy, active_block_height) = settle_active_balance_change(
+            let (new_energy, active_block_height) = self.settlement.balance_change(
                 &last_record,
                 balance_record.block_height,
                 balance_record.balance,
-            );
+            )?;
 
             let new_energy = PassEnergyRecord {
                 inscription_id: *inscription_id,
@@ -667,28 +637,7 @@ impl PassEnergyManager {
             last_record = new_energy;
         }
 
-        let ret = if last_record.block_height < block_height {
-            // No balance changes in between, just calculate energy up to block_height
-            // This record should not save to storage, as there is no balance change record at this height
-            let energy_delta = calc_incremental_growth(
-                last_record.owner_balance,
-                last_record.block_height,
-                block_height,
-            );
-            let new_energy = last_record.energy.saturating_add(energy_delta);
-
-            PassEnergyResult {
-                energy: new_energy,
-                state: last_record.state,
-            }
-        } else {
-            PassEnergyResult {
-                energy: last_record.energy,
-                state: last_record.state,
-            }
-        };
-
-        Ok(ret)
+        self.project_energy_record_no_balance_change(&last_record, block_height)
     }
 
     // Apply one active owner balance update (already loaded by balance settlement)
@@ -811,7 +760,8 @@ impl PassEnergyManager {
         }
 
         let (next_energy, next_active_height) =
-            settle_active_balance_change(&last_record, block_height, owner_balance);
+            self.settlement
+                .balance_change(&last_record, block_height, owner_balance)?;
 
         let record = PassEnergyRecord {
             inscription_id: *inscription_id,
@@ -959,9 +909,9 @@ impl PassEnergyManager {
             return Err(msg);
         }
 
+        self.update_pass_energy(inscription_id, block_height)
+            .await?;
         if expected_previous_state == MinerPassState::Active {
-            self.update_pass_energy(inscription_id, block_height)
-                .await?;
             last_record = self
                 .storage
                 .find_last_pass_energy_record(inscription_id, block_height)?
@@ -1027,7 +977,8 @@ pub type PassEnergyManagerRef = std::sync::Arc<PassEnergyManager>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ConfigManager;
+    use crate::index::energy_formula::{calc_balance_penalty_energy, calc_growth_delta};
+    use crate::test_config as ConfigManager;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::{ScriptBuf, Txid};
     use std::path::PathBuf;
@@ -1522,7 +1473,7 @@ mod tests {
             at_height: vec![],
             at_range: vec![],
         });
-        let manager = PassEnergyManager::new_with_deps(config, storage, provider);
+        let manager = PassEnergyManager::new_with_deps(config, storage, provider).unwrap();
 
         let inscription_id = test_inscription_id(17, 0);
         let owner = test_script_hash(17);

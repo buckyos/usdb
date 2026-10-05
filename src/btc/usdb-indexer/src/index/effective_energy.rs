@@ -522,7 +522,7 @@ impl EffectiveEnergyResolver {
             },
             DerivedPassEnergyMode::AtOrBefore => self
                 .pass_energy_manager
-                .project_energy_record_no_balance_change(&record, block_height),
+                .project_energy_record_no_balance_change(&record, block_height)?,
         };
 
         Ok(Some((record, raw_result)))
@@ -763,7 +763,7 @@ impl EffectiveEnergyResolver {
         Ok(Some((
             record_block_height,
             self.pass_energy_manager
-                .project_energy_record_no_balance_change(&record, block_height),
+                .project_energy_record_no_balance_change(&record, block_height)?,
         )))
     }
 }

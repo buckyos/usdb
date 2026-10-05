@@ -505,11 +505,9 @@ fn build_indexer_fixture_with_runtime_deps_at_root(
     let balance_monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
 
     let energy_storage = PassEnergyStorage::new(&config.data_dir()).unwrap();
-    let pass_energy_manager = Arc::new(PassEnergyManager::new_with_deps(
-        config.clone(),
-        energy_storage,
-        energy_provider,
-    ));
+    let pass_energy_manager = Arc::new(
+        PassEnergyManager::new_with_deps(config.clone(), energy_storage, energy_provider).unwrap(),
+    );
     let miner_pass_manager = Arc::new(
         MinerPassManager::new(config.clone(), storage.clone(), pass_energy_manager.clone())
             .unwrap(),

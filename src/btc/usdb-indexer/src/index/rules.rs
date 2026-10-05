@@ -79,9 +79,10 @@ pub(crate) fn validate_indexer_rules(
 ) -> Result<(), ActivationRegistryError> {
     #[cfg(test)]
     if conformance_scope(versions) {
-        return versions.validate_btc_indexer_with_miner_pass(|_, _| {
+        return versions.validate_btc_indexer_with_executors(|_, _, _| {
             MintSchemaRules::from_versions(versions)?;
             PassStateRules::from_versions(versions)?;
+            super::energy_settlement::EnergyRules::from_versions(versions)?;
             Ok(())
         });
     }
@@ -133,7 +134,7 @@ pub(crate) use crate::index::test_miner_rules::{
     CONFORMANCE_SCHEMA, CONFORMANCE_SCOPE, CONFORMANCE_STATE,
 };
 #[cfg(test)]
-fn conformance_scope(versions: &ActiveVersionSet) -> bool {
+pub(crate) fn conformance_scope(versions: &ActiveVersionSet) -> bool {
     versions.scope().is_some_and(|scope| {
         scope.network_id == "btc-regtest" && scope.rules_scope == CONFORMANCE_SCOPE
     })

@@ -1,0 +1,26 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-segmented-energy-settlement",
+  "type": "internal",
+  "scopes": [
+    "indexer",
+    "consensus",
+    "testing"
+  ],
+  "summary": "Share height-segmented raw-energy settlement across projections, balance events and inheritance",
+  "details": [
+    "Raw-energy settlement traverses every rule interval and requires explicit conversions at changed boundaries. Queries and balance events share the same arithmetic; missing rules or conversion paths return errors rather than partial energy.",
+    "Each prev is settled to the inheritance height and discounted under that height's rules before saturating summation. Existing production schema v1, state machine v2 and formula v1 remain unchanged, with no new persisted fields or network identities.",
+    "Test-only formulas validate three stages, a nonidentity conversion, event ordering, dormant inheritance and failed-block retry against an independent per-block reference. Ordinary binaries reject these formulas before opening business stores; full boundary recovery and historical query integration remain later batches."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/blob/main/doc/UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md"
+  ]
+}

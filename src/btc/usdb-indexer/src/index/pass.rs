@@ -3,7 +3,7 @@ mod eligibility;
 
 use super::content::{MinerPassKind, MinerPassState, MintValidationErrorCode};
 use super::energy::PassEnergyManagerRef;
-use super::energy_formula::{Energy, calc_inheritable_energy};
+use super::energy_formula::Energy;
 use super::pass_commit::{PassBlockMutation, PassBlockMutationCollector};
 use crate::config::ConfigManagerRef;
 use crate::storage::{MinerPassInfo, MinerPassSnapshotInfo, MinerPassStorageRef};
@@ -596,20 +596,6 @@ impl MinerPassManager {
             pass.state
         );
 
-        self.storage.update_state_at_height(
-            inscription_id,
-            MinerPassState::Consumed,
-            pass.state.clone(),
-            block_height,
-        )?;
-        self.push_block_mutation(PassBlockMutation::StateTransition {
-            inscription_id: inscription_id.to_string(),
-            from_state: pass.state.as_str().to_string(),
-            to_state: MinerPassState::Consumed.as_str().to_string(),
-            owner: pass.owner.to_string(),
-            satpoint: pass.satpoint.to_string(),
-        });
-
         // Get the latest energy at block_height.
         // The pass may become dormant at an earlier height, so exact-height lookup is not reliable.
         let ret = self
@@ -633,7 +619,23 @@ impl MinerPassManager {
             energy.state
         );
 
-        let inheritable_energy = calc_inheritable_energy(energy.energy);
+        let inheritable_energy = self
+            .energy_manager
+            .inheritable_energy_at(energy.energy, block_height)?;
+
+        self.storage.update_state_at_height(
+            inscription_id,
+            MinerPassState::Consumed,
+            pass.state.clone(),
+            block_height,
+        )?;
+        self.push_block_mutation(PassBlockMutation::StateTransition {
+            inscription_id: inscription_id.to_string(),
+            from_state: pass.state.as_str().to_string(),
+            to_state: MinerPassState::Consumed.as_str().to_string(),
+            owner: pass.owner.to_string(),
+            satpoint: pass.satpoint.to_string(),
+        });
 
         self.energy_manager
             .on_pass_consumed(inscription_id, &pass.owner, block_height)?;
@@ -832,9 +834,9 @@ pub type MinerPassManagerRef = Arc<MinerPassManager>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ConfigManager;
     use crate::index::energy::{BalanceProvider, PassEnergyManager};
     use crate::storage::{MinerPassStorage, PassEnergyRecord, PassEnergyStorage};
+    use crate::test_config as ConfigManager;
     use balance_history::AddressBalance;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::secp256k1::{Secp256k1, SecretKey};
@@ -903,11 +905,14 @@ mod tests {
         let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
         let storage = Arc::new(MinerPassStorage::new(&config.data_dir()).unwrap());
         let energy_storage = PassEnergyStorage::new(&config.data_dir()).unwrap();
-        let energy_manager = Arc::new(PassEnergyManager::new_with_deps(
-            config.clone(),
-            energy_storage,
-            Arc::new(NoopBalanceProvider),
-        ));
+        let energy_manager = Arc::new(
+            PassEnergyManager::new_with_deps(
+                config.clone(),
+                energy_storage,
+                Arc::new(NoopBalanceProvider),
+            )
+            .unwrap(),
+        );
         let manager = MinerPassManager::new(config, storage.clone(), energy_manager).unwrap();
 
         (root_dir, storage, manager)
@@ -995,11 +1000,14 @@ mod tests {
         let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
         let storage = Arc::new(MinerPassStorage::new(&config.data_dir()).unwrap());
         let energy_storage = PassEnergyStorage::new(&config.data_dir()).unwrap();
-        let energy_manager = Arc::new(PassEnergyManager::new_with_deps(
-            config.clone(),
-            energy_storage,
-            Arc::new(NoopBalanceProvider),
-        ));
+        let energy_manager = Arc::new(
+            PassEnergyManager::new_with_deps(
+                config.clone(),
+                energy_storage,
+                Arc::new(NoopBalanceProvider),
+            )
+            .unwrap(),
+        );
         let manager =
             MinerPassManager::new(config, storage.clone(), energy_manager.clone()).unwrap();
 

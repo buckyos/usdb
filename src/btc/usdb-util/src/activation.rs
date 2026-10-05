@@ -447,6 +447,24 @@ impl ActiveVersionSet {
         &self,
         check_miner_pass: impl FnOnce(&str, &str) -> Result<(), ActivationRegistryError>,
     ) -> Result<(), ActivationRegistryError> {
+        self.validate_btc_indexer_with_executors(|schema, state, energy| {
+            check_miner_pass(schema, state)?;
+            if energy != ENERGY_FORMULA_VERSION_V1 {
+                return Err(ActivationRegistryError::VersionNotSupported {
+                    family: VersionFamily::EnergyFormulaVersion,
+                    value: energy.into(),
+                });
+            }
+            Ok(())
+        })
+    }
+
+    /// Validate schema, state and raw-energy executors explicitly. All other families
+    /// retain their existing support checks; the callback must reject uncompiled rules.
+    pub fn validate_btc_indexer_with_executors(
+        &self,
+        check_executors: impl FnOnce(&str, &str, &str) -> Result<(), ActivationRegistryError>,
+    ) -> Result<(), ActivationRegistryError> {
         if let Some(scope) = &self.scope {
             scope.validate()?;
         }
@@ -460,11 +478,8 @@ impl ActiveVersionSet {
         }
         let schema = self.require_string(VersionFamily::InscriptionSchemaVersion)?;
         let state = self.require_string(VersionFamily::PassStateMachineVersion)?;
-        check_miner_pass(schema, state)?;
-        self.require_supported_string(
-            VersionFamily::EnergyFormulaVersion,
-            ENERGY_FORMULA_VERSION_V1,
-        )?;
+        let energy = self.require_string(VersionFamily::EnergyFormulaVersion)?;
+        check_executors(schema, state, energy)?;
         self.require_supported_string(
             VersionFamily::EffectiveEnergyFormulaVersion,
             EFFECTIVE_ENERGY_FORMULA_VERSION_V1,

@@ -7,7 +7,10 @@ pub const CONFORMANCE_SCOPE: &str = "miner-pass-upgrade-conformance";
 pub const CONFORMANCE_SCHEMA: &str = "conformance-miner-pass-schema:901";
 pub const CONFORMANCE_STATE: &str = "conformance-miner-pass-state:no-new-collab";
 
-/// Add independent schema/state boundaries in a scope accepted only by indexer test builds.
+pub const CONFORMANCE_ENERGY_DOUBLE: &str = "conformance-energy:double";
+pub const CONFORMANCE_ENERGY_TRIPLE: &str = "conformance-energy:triple";
+
+/// Add independent schema/state/energy boundaries in a scope accepted only by indexer test builds.
 pub fn conformance_catalog(activations: &[(VersionFamily, u32, &str)]) -> String {
     let mut doc: serde_json::Value = serde_json::from_str(CATALOG).unwrap();
     doc["registries"][0]["scope"]["rules_scope"] = CONFORMANCE_SCOPE.into();

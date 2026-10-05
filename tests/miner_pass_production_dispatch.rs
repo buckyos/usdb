@@ -2,16 +2,27 @@
 #[path = "common/miner_pass_conformance.rs"]
 mod conformance;
 
-use conformance::{CONFORMANCE_SCHEMA, CONFORMANCE_SCOPE, CONFORMANCE_STATE, conformance_catalog};
+use conformance::{
+    CONFORMANCE_ENERGY_DOUBLE, CONFORMANCE_ENERGY_TRIPLE, CONFORMANCE_SCHEMA, CONFORMANCE_SCOPE,
+    CONFORMANCE_STATE, conformance_catalog,
+};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use usdb_util::{BtcActivationRegistryCatalog, VersionFamily};
 
 #[test]
-fn ordinary_binary_rejects_conformance_schema_and_state_before_opening_stores() {
+fn ordinary_binary_rejects_conformance_executors_before_opening_stores() {
     for (family, version) in [
         (VersionFamily::InscriptionSchemaVersion, CONFORMANCE_SCHEMA),
         (VersionFamily::PassStateMachineVersion, CONFORMANCE_STATE),
+        (
+            VersionFamily::EnergyFormulaVersion,
+            CONFORMANCE_ENERGY_DOUBLE,
+        ),
+        (
+            VersionFamily::EnergyFormulaVersion,
+            CONFORMANCE_ENERGY_TRIPLE,
+        ),
     ] {
         let root = std::env::temp_dir().join(format!(
             "usdb-production-dispatch-{}-{}",
@@ -66,8 +77,13 @@ fn ordinary_binary_rejects_conformance_schema_and_state_before_opening_stores() 
             "Production binary did not reject {version}: {stdout}\n{stderr}"
         );
         assert!(!output.status.success(), "{version}: {stdout}\n{stderr}");
+        let expected_error = if family == VersionFamily::EnergyFormulaVersion {
+            "version not supported: energy_formula_version="
+        } else {
+            "Unsupported MinerPass rule combination"
+        };
         assert!(
-            stdout.contains("Unsupported MinerPass rule combination") && stdout.contains(version),
+            stdout.contains(expected_error) && stdout.contains(version),
             "{stdout}\n{stderr}"
         );
         assert!(

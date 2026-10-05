@@ -123,6 +123,13 @@ pub struct Harness {
 
 impl Harness {
     pub fn new(name: &str) -> Self {
+        Self::with_optional_catalog(name, None)
+    }
+    /// Exercise compiled upgrade rules with the same real stores and event guards.
+    pub fn with_catalog(name: &str, catalog: &str) -> Self {
+        Self::with_optional_catalog(name, Some(catalog))
+    }
+    fn with_optional_catalog(name: &str, catalog: Option<&str>) -> Self {
         let root = std::env::temp_dir().join(format!(
             "usdb-mint-v2-{name}-{}-{}",
             std::process::id(),
@@ -131,27 +138,47 @@ impl Harness {
                 .unwrap()
                 .as_nanos()
         ));
+        if let Some(json) = catalog {
+            std::fs::create_dir_all(&root).unwrap();
+            let catalog = usdb_util::BtcActivationRegistryCatalog::from_json(json).unwrap();
+            let mut config = crate::config::IndexerConfig::default();
+            config.bitcoin.network = bitcoincore_rpc::bitcoin::Network::Regtest;
+            config.usdb.genesis_block_height = 0;
+            config.usdb.rules_scope = Some(catalog.current_registry().scope.rules_scope().into());
+            config.usdb.activation_registry_id = Some(catalog.current_registry_id().into());
+            config.usdb.activation_registry_catalog_file = Some("catalog.json".into());
+            std::fs::write(root.join("catalog.json"), json).unwrap();
+            std::fs::write(
+                root.join("config.json"),
+                serde_json::to_vec(&config).unwrap(),
+            )
+            .unwrap();
+        }
         Self::open(root, Arc::new(Timeline::default()))
     }
     pub fn open(root: PathBuf, timeline: Arc<Timeline>) -> Self {
         let config = Arc::new(crate::test_config::load(Some(root.clone())).unwrap());
         let data = config.data_dir();
         let storage = Arc::new(MinerPassStorage::new(&data).unwrap());
-        let energy = Arc::new(PassEnergyManager::new_with_deps(
-            config.clone(),
-            PassEnergyStorage::new(&data).unwrap(),
-            timeline.clone(),
-        ));
+        let energy = Arc::new(
+            PassEnergyManager::new_with_deps(
+                config.clone(),
+                PassEnergyStorage::new(&data).unwrap(),
+                timeline.clone(),
+            )
+            .unwrap(),
+        );
         energy
             .reconcile_with_pass_synced_height(
                 storage.get_synced_btc_block_height().unwrap().unwrap_or(0),
             )
             .unwrap();
-        let rules = usdb_util::BtcRuleTimeline::new(
+        let rules = usdb_util::BtcRuleTimeline::new_with_indexer_support(
             config
                 .activation_registry_catalog()
                 .unwrap()
                 .current_registry(),
+            crate::index::rules::validate_indexer_rules,
         )
         .unwrap();
         let manager = MinerPassManager::new(config, storage.clone(), energy.clone()).unwrap();

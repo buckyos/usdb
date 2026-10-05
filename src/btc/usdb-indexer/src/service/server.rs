@@ -2171,7 +2171,8 @@ impl UsdbIndexerRpcServer {
             let projected = self
                 .indexer
                 .pass_energy_manager()
-                .project_energy_record_no_balance_change(&record, resolved_height);
+                .project_energy_record_no_balance_change(&record, resolved_height)
+                .map_err(Self::to_internal_error)?;
 
             ranked.push(RankedPassEnergyItem {
                 energy: projected.energy,

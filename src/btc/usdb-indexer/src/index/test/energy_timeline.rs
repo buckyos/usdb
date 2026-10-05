@@ -1,11 +1,11 @@
 use super::common::{cleanup_temp_dir, test_inscription_id, test_root_dir, test_script_hash};
-use crate::config::ConfigManager;
 use crate::index::content::MinerPassState;
 use crate::index::energy::{BalanceProvider, PassEnergyManager};
 use crate::index::energy_formula::{
     Energy, calc_balance_penalty_energy, calc_growth_delta, calc_next_active_block_height,
 };
 use crate::storage::PassEnergyStorage;
+use crate::test_config as ConfigManager;
 use balance_history::AddressBalance;
 use ord::InscriptionId;
 use std::collections::HashMap;
@@ -141,7 +141,7 @@ async fn setup_manager_with_timeline(
     let mut timelines = HashMap::new();
     timelines.insert(owner, timeline_points.clone());
     let provider = Arc::new(TimelineBalanceProvider::new(timelines));
-    let manager = PassEnergyManager::new_with_deps(config, storage, provider);
+    let manager = PassEnergyManager::new_with_deps(config, storage, provider).unwrap();
 
     let inscription_id = test_inscription_id(9, 0);
     manager

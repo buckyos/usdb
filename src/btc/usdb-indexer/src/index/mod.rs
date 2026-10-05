@@ -2,6 +2,7 @@ mod content;
 mod effective_energy;
 mod energy;
 pub(crate) mod energy_formula;
+mod energy_settlement;
 mod indexer;
 mod pass;
 mod pass_commit;
@@ -63,3 +64,7 @@ mod miner_pass_upgrade_dispatch;
 #[cfg(test)]
 #[path = "../../../../../tests/common/miner_pass_pipeline.rs"]
 pub(crate) mod test_miner_pipeline;
+
+#[cfg(test)]
+#[path = "../../../../../tests/miner_pass_upgrade_energy.rs"]
+mod miner_pass_upgrade_energy;
