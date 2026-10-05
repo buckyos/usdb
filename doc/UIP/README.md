@@ -63,6 +63,7 @@ RPC 和运行参数同样必须显式区分边界：BTC-side 状态服务使用
 - [UIP-0014-leader-quote-activity-and-candidate-energy.md](./UIP-0014-leader-quote-activity-and-candidate-energy.md)：Leader 主动报价活跃窗口、candidate energy 和 candidate level 策略。
 - [UIP-0015-auxiliary-hashpower-pool.md](./UIP-0015-auxiliary-hashpower-pool.md)：辅助算力池激活边界、BTC 算力证明纲要、pass 绑定和 reward 分配待审计问题。
 - [UIP-0016-miner-pass-operation-eligibility.md](./UIP-0016-miner-pass-operation-eligibility.md)：MinerPass V2 首次零余额开户、来源证明与跨地址继承；保留 Draft 状态，testnet-v1 网络包已冻结，部署验收另行记录。
+- [UIP-0017-miner-pass-upgrade-and-legacy-rights.md](./UIP-0017-miner-pass-upgrade-and-legacy-rights.md)：存量 MinerPass 默认保留、跨版本继承与例外权益处置提案要求；Draft，尚无激活或迁移实现。
 - [uip-split-design.md](./uip-split-design.md)：经济模型拆分与标准化顺序。
 
 ## 跨 UIP 术语索引

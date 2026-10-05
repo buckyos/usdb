@@ -504,12 +504,14 @@ Rust `generate_go_release_manifest_golden --check` 必须保证 manifest 与 Go 
 
 版本变更不得 retroactively 改写旧高度，除非该 UIP 明确是开发期重建规则，并且未在公开网络激活。
 
+存量 MinerPass 的默认保留及例外权益处置提案要求见 [UIP-0017](./UIP-0017-miner-pass-upgrade-and-legacy-rights.md)。新 mint 准入变化不自动作废旧证；改变存量后续权益须由独立 UIP 明确对象、状态/能量/继承处理和激活边界。该草案不新增 registry record，也不代表当前已实现跨版本迁移。
+
 # 跨版本 `prev` 继承
 
 当 pass 通过 `prev` 继承旧 pass 时，继承边界必须按事件高度解释：
 
 - `prev` pass 的 terminal / consumed 状态按该状态发生高度的 active version 计算。
-- 新 pass 的 mint 和后续增长按新 mint 高度的 active version 计算。
+- 新 pass 的 mint 按新 mint 高度的 active version 校验；后续增长按各增长区间的 active version 分段计算，不永久锁定到 mint 高度的公式。
 - 如果公式升级改变 energy 单位、rounding 或可继承字段，升级 UIP 必须定义迁移函数。
 - 如果公式升级保持可继承字段兼容，升级 UIP 必须显式说明可以直接继承。
 - 未定义迁移函数或兼容声明时，不得允许跨版本继承产生新的 active pass。

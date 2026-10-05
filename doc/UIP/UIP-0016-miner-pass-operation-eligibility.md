@@ -144,7 +144,7 @@ registry 的 BTC source、rules scope、revision、按高度查询及 active-ver
 
 早期 testnet-v1 r1–r4 曾将两层同时标为 v2；该开发配置已撤回。后续发布的 parser 拒绝 JSON `v: 2`，不把它作为 v1 别名。registry、active-version-set、运行数据身份和两端向量一起重新生成；旧 tag 保留原样，旧开发状态不得混用。
 
-未来正式网若将状态机升级到 v3/v4，必须另行实现并测试升级前历史语义、激活边界和重放兼容；保留框架不表示当前已实现这些未知版本。
+未来正式网若将状态机升级到 v3/v4，必须另行实现并测试升级前历史语义、激活边界和重放兼容；保留框架不表示当前已实现这些未知版本。 存量 pass 默认保留、跨版本继承兼容声明及例外权益处置的提案要求见 [UIP-0017](./UIP-0017-miner-pass-upgrade-and-legacy-rights.md)；该草案不改变本次开发网重置边界。
 
 若 qualification 完全由已有已承诺历史派生，缓存不是独立共识状态；若新增不可派生字段或改变规范编码，则必须定义其 commitment、版本和快照恢复规则。不能只升级一个版本字符串。尤其当前 commit 版本还关联 balance-history，必须区分 pass mutation 编码与上游快照协议的影响，避免无必要地改变 BTC 基础数据身份。
 
