@@ -14,6 +14,7 @@
 
 ```bash
 usdb-node upgrade-plan
+usdb-node upgrade-plan --details
 usdb-node upgrade-plan --json
 ```
 
@@ -24,7 +25,14 @@ usdb-node upgrade-plan --json
 usdb-node upgrade-plan --from-kit /absolute/path/to/old-kit
 ```
 
-输出包含旧/新 release、runtime ID、变化字段、各组件的 `REUSE` / `REBUILD` 和阻断原因，不包含 RPC 密码或私钥。
+默认输出先显示兼容结论、各组件的 `REUSE` / `REBUILD` 表格及主要变化，再列出本次计划对应的下一步命令。
+相同目录不重复打印，重复的 ID 差异不会占据摘要。`--details` 展示完整路径、runtime ID 和字段变化；
+`--json` 保持完整计划结构，便于自动化采集。`upgrade-release` 的预览同样支持这两个选项。
+输出不包含 RPC 密码或私钥；预检和建议命令都不会自动执行升级。
+
+兼容计划提示 `activate-release`；可执行的重建计划提示 `down` 和带 `--backup-dir`、`--execute` 的 `upgrade-release`，
+占位备份路径必须替换为实际的新私有目录。存在阻断项时只提示先解决问题，不给出执行命令。
+恢复预览会显示保存的操作状态，未完成时提示对应的 `--resume`，已经完成或回退时给出相应后续步骤。
 不要用发布号大小、同一个 Chain ID，或相同 genesis block hash 来代替这项检查：genesis 配置及 BTC 规则历史也可能改变。
 
 | 结果 | 下一步 |

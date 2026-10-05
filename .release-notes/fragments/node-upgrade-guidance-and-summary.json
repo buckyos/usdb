@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-upgrade-guidance-and-summary",
+  "type": "changed",
+  "scopes": [
+    "deployment",
+    "node-runtime",
+    "documentation"
+  ],
+  "summary": "Show concise upgrade plans and compatibility-specific installer guidance",
+  "details": [
+    "The installer now starts existing-node upgrades with upgrade-plan and distinguishes compatible activation, explicit rebuild/reset, blocked plans and interrupted-operation recovery.",
+    "Human-readable upgrade previews use a component table and deduplicated change summary, with full paths and hashes available through --details. The complete --json plan and compatibility decisions are unchanged.",
+    "Preview recommendations follow the plan and saved operation state, preserve explicitly selected kit/configuration/source paths, and do not execute node operations. Blocked plans never recommend activation or rebuild execution."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

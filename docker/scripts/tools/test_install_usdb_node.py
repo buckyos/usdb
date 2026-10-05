@@ -99,6 +99,16 @@ class InstallUsdbNodeTests(unittest.TestCase):
         self.assertIn("usdb-node up", first.stdout)
         self.assertIn("usdb-node status", first.stdout)
         self.assertIn("does not run these commands automatically", first.stdout)
+        guidance = first.stdout.split("Existing node upgrade within the same network bundle:", 1)[1]
+        self.assertLess(guidance.index("usdb-node upgrade-plan"), guidance.index("usdb-node activate-release"))
+        self.assertIn("upgrade-plan --details", guidance)
+        self.assertIn("upgrade-plan --json", guidance)
+        self.assertIn("compatible + PASSED:", guidance)
+        self.assertIn("data_rebuild / network_reset + PASSED:", guidance)
+        self.assertIn("upgrade-release --backup-dir", guidance)
+        self.assertIn("upgrade-release --resume", guidance)
+        self.assertIn("BLOCKED: resolve", guidance)
+        self.assertNotIn("Then continue with the installed target release:", guidance)
         for stage in range(1, 6):
             self.assertIn(f"[{stage}/5]", first.stderr)
         self.assertIn("Downloading " + f"{RELEASE_ID}-node-kit.tar.gz", first.stderr)

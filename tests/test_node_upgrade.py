@@ -5,6 +5,7 @@ from dataclasses import replace
 import io
 import json
 import os
+import shlex
 from pathlib import Path
 import socket
 import sys
@@ -377,8 +378,125 @@ class UpgradeTests(unittest.TestCase):
             value = json.loads(result.stdout)
             self.assertEqual(value['classification'], 'network_reset')
             self.assertEqual(value['target_kit'], str(target))
+        for action in ('upgrade-plan', 'upgrade-release'):
+            for flags in ([], ['--details']):
+                result = subprocess.run([sys.executable, '-B', str(script), '--node-env', str(self.f.env_path),
+                                         action, '--from-kit', str(self.f.source_kit), *flags],
+                                        cwd=self.root, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('Next steps (not executed)', result.stdout)
+                self.assertEqual('Runtime ID (source)' in result.stdout, bool(flags))
         self.assertEqual(before, self.f.env_path.read_bytes())
         self.assertFalse((self.f.config / upgrade.PENDING).exists())
+
+    def preview(self, *arguments, layout=None):
+        args = node.build_parser().parse_args(list(arguments))
+        self.output.seek(0)
+        self.output.truncate()
+        code = node._execute_command(layout or self.f.target, args)
+        return code, self.output.getvalue()
+
+    def test_concise_preview_explains_rebuild_without_raw_hashes_or_duplicate_paths(self):
+        value = self.plan()
+        before = self.f.env_path.read_bytes()
+        code, output = self.preview('upgrade-plan')
+        self.assertEqual(code, 0)
+        self.assertIn('Preflight: PASSED', output)
+        self.assertIn('Component', output)
+        self.assertIn('Bitcoin Core', output)
+        self.assertIn('USDB indexer', output)
+        self.assertIn('Changes: genesis configuration; BTC activation registry', output)
+        self.assertNotIn(value['previous_compatibility_id'], output)
+        self.assertNotIn(value['components'][0]['source'], output)
+        self.assertIn('upgrade-release --backup-dir', output)
+        self.assertIn('--execute', output)
+        self.assertNotIn('activate-release', output)
+        self.assertIn('mining must be reauthorized', output)
+        self.assertEqual(before, self.f.env_path.read_bytes())
+        self.assertFalse(self.f.backup.exists())
+
+    def test_details_and_json_retain_complete_diagnostics(self):
+        value = self.plan()
+        for action in ('upgrade-plan', 'upgrade-release'):
+            with self.subTest(action=action):
+                code, output = self.preview(action, '--details')
+                self.assertEqual(code, 0)
+                self.assertIn(value['previous_compatibility_id'], output)
+                for item in value['components']:
+                    self.assertIn(item['source'], output)
+                    self.assertIn(item['target'], output)
+                self.assertIn('network.genesis_sha256', output)
+                code, output = self.preview(action, '--json')
+                self.assertEqual(json.loads(output), value)
+                self.assertNotIn('Next steps', output)
+
+    def test_blocked_plan_never_suggests_activation_or_execution(self):
+        target = next(Path(i['target']) for i in self.plan()['components'] if i['service'] == 'usdb_indexer')
+        target.mkdir()
+        for action in ('upgrade-plan', 'upgrade-release'):
+            code, output = self.preview(action)
+            self.assertEqual(code, 2)
+            self.assertIn('Preflight: BLOCKED', output)
+            self.assertIn('Target dataset already exists', output)
+            self.assertNotIn('--execute', output)
+            self.assertNotIn('activate-release', output)
+        with self.assertRaisesRegex(ValueError, 'Upgrade plan is blocked'):
+            self.preview('upgrade-release', '--execute')
+        self.assertIn('Target dataset already exists', self.output.getvalue())
+        self.assertFalse(self.f.backup.exists())
+
+    def test_compatible_preview_routes_to_activate_without_rebuild_or_controller_install(self):
+        target = replace(self.f.target, network_identity=self.f.old['network_bundle'],
+                         runtime_compatibility=self.f.old['runtime_compatibility'])
+        code, output = self.preview('upgrade-plan', layout=target)
+        self.assertEqual(code, 0)
+        self.assertIn('usdb-node activate-release', output)
+        self.assertNotIn('upgrade-release', output)
+        self.assertNotIn('controller install', output)
+        self.assertNotIn('mining must be reauthorized', output)
+
+    def test_resume_guidance_uses_saved_operation_and_terminal_state(self):
+        self.stage()
+        record = session.read(self.f.backup)
+        for phase in ('staged', 'rolling_back', 'applied', 'rolled_back'):
+            with self.subTest(phase=phase):
+                record['phase'] = phase
+                core.atomic_json(self.f.backup / 'upgrade.json', record)
+                code, output = self.preview('upgrade-release', '--resume', str(self.f.backup))
+                self.assertEqual(code, 0)
+                self.assertNotIn('--backup-dir', output)
+                if phase in ('staged', 'rolling_back'):
+                    self.assertIn('--resume ' + str(self.f.backup), output)
+                    self.assertIn('--execute', output)
+                    self.assertEqual('--rollback' in output, phase == 'rolling_back')
+                elif phase == 'applied':
+                    self.assertIn('Upgrade already applied', output)
+                    self.assertIn('usdb-node controller install', output)
+                    self.assertNotIn('--execute', output)
+                    _, rollback = self.preview('upgrade-release', '--resume', str(self.f.backup), '--rollback')
+                    self.assertIn('--rollback --execute', rollback)
+                    self.assertNotIn('  usdb-node up\n', rollback)
+                else:
+                    self.assertIn('Use the original kit', output)
+                    self.assertNotIn('  usdb-node up\n', output)
+                    self.assertNotIn('--execute', output)
+
+    def test_recommendations_preserve_custom_paths_and_shell_quote_arguments(self):
+        # Presentation must not redirect an explicitly scoped command to another installed node.
+        source = self.root / "old kit ' $(false)"
+        backup = self.root / 'backup space'
+        config = self.root / 'private config/node.env'
+        value = self.plan()
+        with mock.patch.object(upgrade, 'plan', return_value=value):
+            code, output = self.preview('--kit-root', str(self.f.target_kit), '--node-env', str(config),
+                                        'upgrade-release', '--from-kit', str(source), '--backup-dir', str(backup))
+        self.assertEqual(code, 0)
+        line = next(line for line in output.splitlines() if line.startswith('  usdb-node ') and '--backup-dir' in line)
+        command = shlex.split(line)
+        for flag, expected in (('--kit-root', self.f.target_kit), ('--node-env', config),
+                               ('--from-kit', source), ('--backup-dir', backup)):
+            self.assertEqual(command[command.index(flag) + 1], str(expected))
+        self.assertFalse(backup.exists())
 
 
 if __name__=='__main__':

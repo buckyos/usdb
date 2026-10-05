@@ -258,17 +258,34 @@ Next steps for a first node install:
        usdb-node status
 
 Existing node upgrade within the same network bundle:
-  If the node is still running, stop it before activation:
-    usdb-node down
-  Then continue with the installed target release:
-    usdb-node activate-release
-    usdb-node doctor
-    usdb-node up
-    usdb-node status
+  1. Keep the old kit and inspect compatibility with the installed target release:
+       usdb-node upgrade-plan
+     Optional full paths/hashes: usdb-node upgrade-plan --details
+     Machine-readable output:   usdb-node upgrade-plan --json
+     If the old kit cannot be identified, add --from-kit /absolute/path/to/old-kit.
+  2. Follow the plan's recommended commands; do not run setup again:
+     compatible + PASSED:
+       usdb-node down
+       usdb-node activate-release
+       usdb-node doctor
+       usdb-node up
+       usdb-node status
+     data_rebuild / network_reset + PASSED:
+       Review the reset/rebuild with the network operator, then stop the whole node:
+       usdb-node down
+       usdb-node upgrade-release --backup-dir /absolute/path/to/new-private-upgrade-backup --execute
+       Replace the backup path with a NEW private directory outside node data/config/kit paths.
+       After success, refresh the controller for background operation using your existing options:
+       usdb-node controller install
+       usdb-node doctor
+       usdb-node up
+       usdb-node status
+     BLOCKED: resolve the reported blockers before activation or rebuilding.
 
-  Routine upgrades do not require a separate controller install.
-  up checks the installed controller and monitor, refreshes recognized standard
-  units, and preserves controller options and existing autostart settings.
+  Interrupted rebuild: use the SAME target kit and saved backup directory:
+    usdb-node upgrade-release --resume /absolute/path/to/upgrade-backup --execute
+  Compatible upgrades do not require a separate controller install.
+  up refreshes recognized standard controller/monitor units and preserves their options.
   If the controller was never installed, run usdb-node controller install,
   or keep using up --foreground for intentional foreground operation.
   Custom systemd settings require review; follow the reported diagnostics.

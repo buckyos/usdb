@@ -198,26 +198,115 @@ def plan(layout, node, from_kit=None):
                 rollback_boundary="Only before starting services; all old datasets remain preserved")
 
 
-def show(value):
+SERVICE_LABELS = {"bitcoin_core": "Bitcoin Core", "balance_history": "balance-history",
+                  "usdb_indexer": "USDB indexer", "usdb_chain": "USDB chain", "control_plane": "control-plane"}
+CHAIN_LABELS = {"bundle_id": "network bundle", "chain_id": "Chain ID", "network_id": "P2P network ID",
+                "genesis_block_hash": "genesis block", "genesis_sha256": "genesis configuration",
+                "btc_network_id": "Bitcoin network", "btc_index_origin_height": "BTC index origin",
+                "btc_rules_scope": "BTC rules scope", "btc_activation_registry_id": "BTC activation registry"}
+
+
+def show(value, *, details=False):
+    """Keep the decision readable; full identifiers and paths are opt-in diagnostics."""
     print(f"USDB upgrade: {value['source_release']} -> {value['target_release']}")
-    print(f"Compatibility: {value['classification']}; executable={value['executable']}")
-    print(f"Runtime ID: {value['previous_compatibility_id']} -> {value['target_compatibility_id']}")
-    for item in value["components"]:
-        print(f"  {item['action'].upper()} {item['service']}: {item['reason']}")
-        print(f"    {item['source']} -> {item['target']}")
-    for item in value["differences"]:
-        print(f"  Changed {item['field']}: {item['previous']} -> {item['target']}")
+    labels = {"compatible": "existing data can be reused", "data_rebuild": "incompatible data must be rebuilt",
+              "network_reset": "USDB chain must restart from genesis"}
+    print(f"Result: {value['classification']} - {labels[value['classification']]}")
+    print("Preflight: PASSED (execution still requires a stopped node)" if value["executable"] else "Preflight: BLOCKED")
     for reason in value["blockers"]:
-        print(f"  BLOCKED: {reason}")
+        print(f"  - {reason}")
+    print("\n  Component        Action   Data handling")
+    for item in value["components"]:
+        handling = "Keep existing data" if item["action"] == "reuse" else (
+            "New directory; old data kept" if item["source"] != item["target"] else "Archive old directory, then rebuild")
+        label = SERVICE_LABELS.get(item["service"], item["service"])
+        print(f"  {label:<16} {item['action'].upper():<8} {handling}")
+    if value["changed_chain_fields"]:
+        print("\nChanges: " + "; ".join(CHAIN_LABELS.get(k, k) for k in value["changed_chain_fields"]))
+    elif value["classification"] == "data_rebuild":
+        print("\nChanges: service data contracts")
     if value["classification"] == "network_reset":
-        print("Old USDB chain state, SourceDAO operation records and mining authorization will be isolated. Bitcoin/BH reuse is checked separately.")
-    print("No database migration or data deletion is performed. Rebuilds keep old datasets; wallets and node identity are preserved.")
+        print("On reset: old SourceDAO state will be isolated; mining must be reauthorized.")
+    print("Old data, wallets and node identity are retained; no automatic data deletion.")
+    if details:
+        print("\nDetails:")
+        print(f"  Runtime ID (source): {value['previous_compatibility_id']}")
+        print(f"  Runtime ID (target): {value['target_compatibility_id']}")
+        for item in value["components"]:
+            print(f"  {SERVICE_LABELS.get(item['service'], item['service'])}: {item['reason']}")
+            if item["source"] == item["target"]:
+                print(f"    Directory: {item['source']}")
+            else:
+                print(f"    Source: {item['source']}")
+                print(f"    Target: {item['target']}")
+        for item in value["differences"]:
+            if item["field"] != "runtime.compatibility_id":
+                print(f"  {item['field']}: {item['previous']} -> {item['target']}")
+    else:
+        print("Use --details for paths and hashes, or --json for the complete plan.")
+
+
+def show_next_steps(value, *, command=("usdb-node",), from_kit=None, backup=None,
+                    resume=False, rollback=False, phase=None):
+    """Recommend only the path allowed by this plan and its saved operation state."""
+    def emit(*arguments):
+        print("  " + shlex.join([*command, *map(str, arguments)]))
+
+    print("\nNext steps (not executed):")
+    if not value["executable"]:
+        print("  Resolve the blockers above, then rerun upgrade-plan. Do not activate or rebuild yet.")
+        return
+    if phase == "rolled_back":
+        print(f"  This operation was rolled back. Use the original kit: {value['source_kit']}")
+        print("  Plan a new operation if you want to upgrade again.")
+        return
+    if resume and (rollback or phase == "rolling_back"):
+        print("  Rollback is allowed only before new data/configuration has changed.")
+        emit("upgrade-release", "--resume", backup, "--rollback", "--execute")
+        print(f"  After rollback, use the original kit: {value['source_kit']}")
+        return
+    if resume and phase != "applied":
+        print("  Continue the saved operation with this target kit; services must remain stopped.")
+        emit("upgrade-release", "--resume", backup, "--execute")
+        return
+    if phase != "applied":
+        if value["classification"] == "network_reset":
+            print("  Coordinate this development-network reset with the network operator first.")
+        emit("down")
+        source = ["--from-kit", str(from_kit)] if from_kit else []
+        if value["classification"] == "compatible":
+            emit("activate-release", *source)
+        else:
+            if backup is None:
+                backup = "/absolute/path/to/new-private-upgrade-backup"
+                print("  Replace the backup path below with a NEW private directory outside node data/config/kit paths.")
+            emit("upgrade-release", *source, "--backup-dir", backup, "--execute")
+            print("  After it succeeds (services remain stopped):")
+    else:
+        print("  Upgrade already applied. Continue with the target kit:")
+    if value["classification"] != "compatible":
+        print("  For background operation, refresh the controller using your existing options:")
+        emit("controller", "install")
+    emit("doctor")
+    emit("up")
+    emit("status")
+
+
+def _command_prefix(args, node):
+    """Keep explicitly selected kit/configuration paths in copyable recommendations."""
+    result = ["usdb-node"]
+    if args.kit_root != node.KIT_ROOT:
+        result += ["--kit-root", str(args.kit_root)]
+    if args.node_env is not None:
+        result += ["--node-env", str(args.node_env)]
+    return result
 
 
 def add_parser(subparsers):
     """Expose preview separately from explicitly confirmed execution/recovery."""
     preview = subparsers.add_parser("upgrade-plan", help="Compare releases and preview component reuse/rebuild without changes")
     preview.add_argument("--from-kit", type=Path, help="old installed kit when automatic exact matching is unavailable")
+    preview.add_argument("--details", action="store_true", help="include full paths and hashes in human-readable output")
     preview.add_argument("--json", action="store_true")
     apply = subparsers.add_parser("upgrade-release", help="Preview or explicitly execute a recoverable component rebuild")
     apply.add_argument("--from-kit", type=Path)
@@ -225,6 +314,7 @@ def add_parser(subparsers):
     apply.add_argument("--resume", type=Path, help="resume an existing operation directory")
     apply.add_argument("--rollback", action="store_true", help="with --resume, restore the previous stopped state before services have started")
     apply.add_argument("--execute", action="store_true", help="require stopped services, private backup and interactive confirmation")
+    apply.add_argument("--details", action="store_true", help="include full paths and hashes in human-readable preview")
     apply.add_argument("--json", action="store_true", help="preview only")
 
 
@@ -233,25 +323,38 @@ def dispatch(args, layout, node):
     import node_upgrade_session as session
     if args.command == "upgrade-plan":
         value = plan(layout, node, args.from_kit)
-        print(json.dumps(value, indent=2, sort_keys=True)) if args.json else show(value)
+        if args.json:
+            print(json.dumps(value, indent=2, sort_keys=True))
+        else:
+            show(value, details=args.details)
+            show_next_steps(value, command=_command_prefix(args, node), from_kit=args.from_kit)
         return 0 if value["executable"] else 2
     core.require(not (args.execute and args.json), "--json is preview-only")
     core.require(not args.rollback or args.resume, "--rollback requires --resume")
     core.require(not args.resume or not (args.backup_dir or args.from_kit), "--resume cannot be combined with --backup-dir/--from-kit")
+    phase = None
     if args.resume:
         backup = core.absolute(args.resume)
         record = session.read(backup)
         value = record["plan"]
+        phase = record["phase"]
         core.require(value["target_kit"] == str(layout.kit_root) and value["target_manifest_sha256"] == sha(layout.manifest_path),
                      "Recovery requires the exact target release kit recorded in the journal")
     else:
         value = plan(layout, node, args.from_kit)
         backup = args.backup_dir
-    print(json.dumps(value, indent=2, sort_keys=True)) if args.json else show(value)
     if not args.execute:
-        if not args.json:
-            print("Preview only. Compatible updates use activate-release; rebuilds require down, then upgrade-release --backup-dir PATH --execute.")
+        if args.json:
+            print(json.dumps(value, indent=2, sort_keys=True))
+        else:
+            if args.resume:
+                print(f"Saved operation: {phase}")
+            show(value, details=args.details)
+            show_next_steps(value, command=_command_prefix(args, node), from_kit=args.from_kit,
+                            backup=backup, resume=bool(args.resume), rollback=args.rollback, phase=phase)
         return 0 if value["executable"] else 2
+    if not value["executable"]:
+        show(value, details=args.details)
     core.require(value["executable"], "Upgrade plan is blocked; no changes were made")
     core.require(value["classification"] != "compatible", "Use usdb-node activate-release for a compatible upgrade")
     core.require(sys.stdin.isatty() and sys.stdout.isatty(), "Upgrade execution requires an interactive terminal")
