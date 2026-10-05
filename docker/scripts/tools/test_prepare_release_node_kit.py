@@ -125,7 +125,8 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertEqual(command.returncode, 0, command.stderr)
         self.assertIn("--purge-data", command.stdout)
         self.assertIn("--execute", command.stdout)
-        for action, flag in (("upgrade-plan", "--from-kit"), ("upgrade-release", "--resume")):
+        for action, flag in (("upgrade-plan", "--from-kit"), ("upgrade-release", "--resume"),
+                             ("upgrade-status", "--backup-dir"), ("upgrade-cleanup", "--execute")):
             command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
                                       action, "--help"], cwd=self.root, capture_output=True, text=True)
             self.assertEqual(command.returncode, 0, command.stderr)
@@ -134,6 +135,10 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
                                   "--help"], cwd=self.root, capture_output=True, text=True)
         self.assertEqual(command.returncode, 0, command.stderr)
         self.assertIn("--rollback", command.stdout)
+        command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/node_upgrade_cleanup.py"),
+                                  "--help"], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(command.returncode, 0, command.stderr)
+        self.assertIn("--inspect", command.stdout)
         self.assertTrue((output / "docker/scripts/tools/usdb_mining.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_peers.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/chain_file_inspection.py").is_file())

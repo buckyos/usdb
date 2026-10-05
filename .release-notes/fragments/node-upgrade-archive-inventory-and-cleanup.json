@@ -1,0 +1,26 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-upgrade-archive-inventory-and-cleanup",
+  "type": "added",
+  "scopes": [
+    "deployment",
+    "node-runtime",
+    "documentation"
+  ],
+  "summary": "Inspect retained upgrade archives and explicitly clean unreferenced old data",
+  "details": [
+    "upgrade-status and preview-only upgrade-cleanup show retained dataset locations, allocated/logical sizes, private preservation estimates and known references. Existing r7 upgrade records are supported without repeating the upgrade.",
+    "Explicit cleanup requires stopped services and interactive confirmation. It checks standard account configurations, Docker mounts, registered/sibling/explicit legacy upgrade records, database locks and open processes, then hash-verifies private and unknown files before removing only the selected old archives.",
+    "Cleanup durably relinquishes rollback before deletion and can resume after partial removal. Recovery/configuration backups remain; current datasets, Bitcoin Core, balance-history, wallets and node identities are preserved. New upgrades register their recovery directory; unregistered legacy records and custom consumers require operator review."
+  ],
+  "operator_actions": [
+    "To reclaim old upgrade data after acceptance, inspect upgrade-status --backup-dir PATH, review legacy/custom references, stop the node and explicitly run upgrade-cleanup --backup-dir PATH --execute. Keep the recovery directory and original release kits."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

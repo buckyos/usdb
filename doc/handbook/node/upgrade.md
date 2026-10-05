@@ -117,3 +117,70 @@ usdb-node upgrade-release --resume /absolute/path/to/upgrade-backup --rollback -
 
 回退恢复旧配置、旧目录和原来的自启开关；新建数据也会隔离保留。随后必须使用原安装包，不能让目标包打开旧数据。
 一旦新服务已运行并写入数据，自动回退会拒绝丢弃这些新数据；需另行安排恢复。启动后不要把切回旧工具入口当作回滚。
+
+## 4. 查看旧数据与显式清理
+
+升级默认保留旧数据，不按时间或 release 数量自动删除。安装包含 `upgrade-status` / `upgrade-cleanup`
+的工具后，可以管理已有 r7 升级记录；不需要重新升级或重新创建备份目录。
+查看和清理均需保留记录对应的新旧安装包，工具会据此核对数据身份和路径。
+
+以原来指定的 `/data/usdb/r5` 为例：
+
+```bash
+usdb-node upgrade-status --backup-dir /data/usdb/r5
+usdb-node upgrade-status --backup-dir /data/usdb/r5 --json
+usdb-node upgrade-cleanup --backup-dir /data/usdb/r5
+```
+
+这些命令只读，显示每个旧目录的真实位置、文件逻辑大小和磁盘分配量、引用情况，以及备份目录的占用。
+读取容器所属目录或其他账号的标准节点配置时可能需要 sudo；提权后的预览仍不改动数据。
+目录分配量不等于最终能释放的空间：私密/未知文件要先复制保存，文件系统快照也可能继续占用物理空间。
+
+`--backup-dir` 是恢复记录和私密资料的存放位置，不是所有旧数据库的集中存放位置：
+
+| 位置 | 内容与用途 |
+| --- | --- |
+| `backup-dir/upgrade.json` | 新旧版本身份、数据路径、升级阶段和隔离记录 |
+| `backup-dir/private/node.env`、`private/config`、`private/secure` | 原配置、运维状态、RPC 凭据等校验备份，含敏感信息 |
+| 数据根中的旧 indexer 身份目录 | 原索引数据库；新版本使用另一个身份目录 |
+| `*.before-upgrade-<操作ID>` | 原 chain、control-plane、监控及旧链操作状态；在原文件系统改名保留 |
+| 清理后的 `backup-dir/cleanup.json`、`private/retained/` | 清理进度和追加的私密文件备份；日志记录原路径与备份编号的对应关系 |
+
+确认新节点同步、业务及挖矿配置符合预期，且不再需要旧数据回退后，安排一次停机并显式清理：
+
+```bash
+usdb-node down
+usdb-node upgrade-cleanup --backup-dir /data/usdb/r5 --execute
+usdb-node up
+usdb-node status --watch
+```
+
+执行要求交互终端、sudo 和包含网络名、升级操作 ID、主机名的确认短语。必须停止整个节点，不能只停 USDB chain
+或使用 `down --keep-bitcoin`。清理不会改变自启开关，也不会删除 Bitcoin Core、balance-history、Ord、快照材料、
+当前数据目录或备份目录本身。
+
+删除前会先复制并 SHA-256 校验旧 chain 中的 keystore、nodekey，以及已知数据库位置以外的文件。
+旧 control-plane、监控和操作记录整体保存在 `private/retained/`；未知文件默认保留。
+标准 indexer 数据库及 Geth 的派生链数据库允许删除；不要把私密文件放进这些数据库内部。
+自定义 indexer 数据布局不会被猜测为可重建数据，可能需要复制较多内容，应预留备份空间。
+
+**确认执行、进入 `cleanup_started` 后，本次升级永久放弃自动回退**，即使随后备份失败、尚未删除数据库也如此。
+旧 r7 恢复程序也会拒绝这个阶段。清理中断时保留全部记录，排除报错后重复同一条 `upgrade-cleanup ... --execute`，
+不能改用 `upgrade-release --rollback`。已删除目录若被重新创建，工具会拒绝再次删除。
+`cleaned` 表示本次旧数据已清理；恢复记录和私密备份仍需妥善保管，它们不再构成完整旧节点恢复材料。
+
+引用检查覆盖本机各账号标准路径 `~/.config/usdb/*/node.env`、全部 Docker 挂载（包括已停止容器）、
+已登记的升级记录，以及指定备份目录同级的其他升级记录；执行时还检查数据库锁和本机进程的打开文件、映射及工作目录。
+发现引用或无法完成检查时会阻断，不会把“没有检查到”当成“可以删除”。
+
+新版升级会把记录位置登记在数据根的 `.usdb-upgrades/`。r7 没有这个登记，因此位于其他目录的历史记录需显式补充，
+预览和执行都要带上相同参数，可重复使用：
+
+```bash
+usdb-node upgrade-cleanup --backup-dir /data/usdb/r5 \
+  --other-backup-dir /another/location/older-upgrade
+```
+
+其他未登记、已移动的历史记录，以及自定义配置路径、离线消费者仍需要管理员核对；工具不会遍历所有磁盘来证明不存在任何引用。
+不要删除登记文件来绕过冲突。多次升级通常从较早的已验收记录开始清理；记录缺失或共享使用关系不明确时，先恢复记录并厘清引用。
+当前命令只处理成功应用的升级；未完成、已回退操作留下的数据继续保留，需单独复核。

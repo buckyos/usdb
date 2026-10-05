@@ -6092,6 +6092,8 @@ def build_parser() -> argparse.ArgumentParser:
     node_uninstall.add_parser(subparsers)
     import node_upgrade
     node_upgrade.add_parser(subparsers)
+    import node_upgrade_archives
+    node_upgrade_archives.add_parser(subparsers)
 
     prepare_host_parser = subparsers.add_parser(
         "prepare-host",
@@ -6443,6 +6445,9 @@ def _operation_name(args: argparse.Namespace) -> str | None:
 
 
 def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
+    if args.command in {"upgrade-status", "upgrade-cleanup"}:
+        import node_upgrade_archives
+        return node_upgrade_archives.dispatch(args, layout, sys.modules[__name__])
     if args.command in {"upgrade-plan", "upgrade-release"}:
         import node_upgrade
         return node_upgrade.dispatch(args, layout, sys.modules[__name__])
@@ -6787,7 +6792,7 @@ def main() -> int:
         with operation_context:
             return _execute_command(layout, args)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        if args.command in {"up", "mining", "sourcedao", "peers", "version", "upgrade-plan", "upgrade-release"} and getattr(args, "json", False):
+        if args.command in {"up", "mining", "sourcedao", "peers", "version", "upgrade-plan", "upgrade-release", "upgrade-status", "upgrade-cleanup"} and getattr(args, "json", False):
             print(
                 json.dumps(
                     {

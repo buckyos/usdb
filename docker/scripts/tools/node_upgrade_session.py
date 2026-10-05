@@ -10,6 +10,7 @@ from contextlib import ExitStack
 import hashlib
 import os
 import re
+import shlex
 from pathlib import Path
 import socket
 import subprocess
@@ -62,6 +63,11 @@ def stage(value, root, node):
     core.sync_dir(root.parent)
     core.atomic_json(root / "upgrade.json", dict(schema_version=SCHEMA, plan=value, operation_id=uuid.uuid4().hex,
                                                 phase="staged", entries=None, created={}, backups={}, units={}, events=[]))
+    import node_upgrade_archives
+    import node_upgrade_cleanup
+    with ExitStack() as locks:
+        node_upgrade_cleanup.catalog_lock(value["data_root"], locks, (value["operator_uid"], value["operator_gid"]))
+        node_upgrade_archives.register(root)
     return root
 
 
@@ -98,6 +104,7 @@ class Session:
         """Re-derive all writable destinations; a journal is not authority for arbitrary paths."""
         value, state = self.plan, self.state
         core.require(re.fullmatch(r"[0-9a-f]{32}", state["operation_id"]), "Invalid operation ID")
+        core.require(state["phase"] not in {"cleanup_started", "cleaned"}, "Upgrade cleanup has relinquished rollback; use upgrade-status or resume upgrade-cleanup")
         core.require(state["phase"] in {"staged", "prepared", "rolling_back", *TERMINAL}, "Invalid operation phase")
         home = core.absolute(value["operator_home"])
         core.safe_path(home)
@@ -455,6 +462,8 @@ class Session:
             print("Cancelled; node data and configuration are unchanged.")
             return 0
         with ExitStack() as locks:
+            import node_upgrade_cleanup
+            node_upgrade_cleanup.catalog_lock(self.plan["data_root"], locks, (self.plan["operator_uid"], self.plan["operator_gid"]))
             core.lock_file(self.root / ".lock", locks) if (self.root / ".lock").exists() else self._new_lock(locks)
             locks.enter_context(self.node.node_operation_lock(self.layout, "upgrade-release"))
             # Re-read after locking: another completed operation may have advanced the journal.
@@ -485,6 +494,7 @@ class Session:
                 self.write_config()
                 self.finish("applied")
                 print(f"Upgrade prepared; services remain stopped. Recovery record: {self.root}")
+                print("Inspect retained data: " + shlex.join(["usdb-node", "upgrade-status", "--backup-dir", str(self.root)]))
                 print("Run usdb-node doctor, then usdb-node up. Reauthorize mining only after the new chain and pass are ready.")
         return 0
 

@@ -338,6 +338,8 @@ def dispatch(args, layout, node):
         record = session.read(backup)
         value = record["plan"]
         phase = record["phase"]
+        core.require(phase not in {"cleanup_started", "cleaned"},
+                     "Cleanup relinquished rollback for this record; use upgrade-status or resume upgrade-cleanup")
         core.require(value["target_kit"] == str(layout.kit_root) and value["target_manifest_sha256"] == sha(layout.manifest_path),
                      "Recovery requires the exact target release kit recorded in the journal")
     else:
