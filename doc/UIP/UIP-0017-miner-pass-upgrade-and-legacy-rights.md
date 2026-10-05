@@ -144,6 +144,8 @@ Test-Cases: See test requirements; implementation and acceptance remain pending
 
 未来落地需要同时覆盖 parser/state-machine 分派、按高度能量结算、继承兼容、历史查询、commit/快照/reorg，以及 USDB validator 的规则绑定。新增具体业务语义由相应定义 UIP 或独立升级 UIP 承担，不通过修改服务版本常量隐式实现。
 
+当前源码缺口、分批实施顺序及 fast/nightly/weekly 测试矩阵见[实施与测试计划](../usdb-indexer/miner-pass-upgrade-implementation-plan.md)。计划第 7 节记录已完成批次与本地验证；其余设计项不能视为已实现或已激活。
+
 # 安全性考虑
 
 默认保留可能延续旧规则下已形成的不当权益；因此它是升级默认策略，不是对已知漏洞权益的永久保证。例外处置必须评审误伤、继承绕过和双链 anchor 滞后。规则缺失或不支持时应停止处理，不能以可用性为由选择不一致结果。

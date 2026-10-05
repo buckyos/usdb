@@ -23,7 +23,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 use usdb_util::{
     ActivationRegistryError, ActiveVersionSet, BTCRpcClient, BTCRpcClientRef,
-    BtcActivationRegistry, BtcActivationRegistryCatalog, ConsecutiveFailureTracker,
+    BtcActivationRegistry, BtcActivationRegistryCatalog, BtcRuleContext, BtcRuleTimeline,
+    ConsecutiveFailureTracker,
 };
 
 #[path = "indexer/block_events.rs"]
@@ -145,6 +146,8 @@ impl ReorgRecoveryFaultInjector {
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
     activation_registry_catalog: BtcActivationRegistryCatalog,
+    // Immutable timeline caches; rebuilding them never changes the configured current pin.
+    rule_timelines: HashMap<String, BtcRuleTimeline>,
     btc_client: BTCRpcClientRef,
     balance_evidence_client: BalanceHistoryRpcClient,
     block_hint_provider: Arc<dyn BlockHintProvider>,
@@ -213,16 +216,16 @@ impl InscriptionIndexer {
     pub fn new(config: ConfigManagerRef, status: StatusManagerRef) -> Result<Self, String> {
         let activation_registry_catalog = config.activation_registry_catalog()?;
         let activation_registry = activation_registry_catalog.current_registry();
-        let startup_versions = activation_registry
-            .lookup_active_version_set(config.config().usdb.genesis_block_height)
+        let rule_timelines = Self::build_rule_timelines(&activation_registry_catalog)
             .map_err(|error| error.to_string())?;
-        startup_versions
-            .validate_btc_indexer()
+        let timeline = &rule_timelines[activation_registry_catalog.current_registry_id()];
+        let startup_rules = timeline
+            .indexer_context_at(config.config().usdb.genesis_block_height)
             .map_err(|error| error.to_string())?;
         info!(
             "Activation registry loaded: module=indexer, registry_id={}, active_version_set_id={}, block_height={}",
             activation_registry.activation_registry_id(),
-            startup_versions.active_version_set_id(),
+            startup_rules.active_version_set_id(),
             config.config().usdb.genesis_block_height
         );
 
@@ -256,23 +259,32 @@ impl InscriptionIndexer {
             .validate_paired_rules_binding(&rules_binding, energy_has_indexed_state)?;
         pass_energy_manager
             .validate_paired_rules_binding(&rules_binding, pass_has_indexed_state)?;
+        if let Some(persisted_height) = miner_pass_storage.get_synced_btc_block_height()? {
+            // Check the whole indexed history, even if an unsupported intermediate
+            // version later returns to the currently supported set. A pre-origin
+            // baseline is checked at its own height as before.
+            let start = config
+                .config()
+                .usdb
+                .genesis_block_height
+                .min(persisted_height);
+            timeline
+                .validate_indexer_range(start..=persisted_height)
+                .map_err(|error| error.to_string())?;
+            let persisted_rules = timeline
+                .indexer_context_at(persisted_height)
+                .map_err(|error| error.to_string())?;
+            info!(
+                "Persisted activation state validated: module=indexer, active_version_set_id={}, block_height={}",
+                persisted_rules.active_version_set_id(),
+                persisted_height
+            );
+        }
+
         miner_pass_storage.bind_rules(&rules_binding)?;
         pass_energy_manager.bind_rules(&rules_binding)?;
         miner_pass_storage
             .reconcile_snapshot_history_coverage(config.config().usdb.genesis_block_height)?;
-        if let Some(persisted_height) = miner_pass_storage.get_synced_btc_block_height()? {
-            let persisted_versions = activation_registry
-                .lookup_active_version_set(persisted_height)
-                .map_err(|error| error.to_string())?;
-            persisted_versions
-                .validate_btc_indexer()
-                .map_err(|error| error.to_string())?;
-            info!(
-                "Persisted activation state validated: module=indexer, active_version_set_id={}, block_height={}",
-                persisted_versions.active_version_set_id(),
-                persisted_height
-            );
-        }
 
         let miner_pass_manager = Arc::new(MinerPassManager::new(
             config.clone(),
@@ -303,6 +315,7 @@ impl InscriptionIndexer {
             balance_evidence_client,
             config,
             activation_registry_catalog,
+            rule_timelines,
             block_hint_provider,
             inscription_source,
 
@@ -350,6 +363,8 @@ impl InscriptionIndexer {
         let activation_registry_catalog = config
             .activation_registry_catalog()
             .expect("configured activation registry must be valid");
+        let rule_timelines = Self::build_rule_timelines(&activation_registry_catalog)
+            .expect("configured activation timelines must be valid");
         let btc_client = Arc::new(
             BTCRpcClient::new(
                 config.config().bitcoin.rpc_url(),
@@ -364,6 +379,7 @@ impl InscriptionIndexer {
             balance_evidence_client,
             config,
             activation_registry_catalog,
+            rule_timelines,
             block_hint_provider,
             inscription_source,
             transfer_tracker,
@@ -524,7 +540,48 @@ impl InscriptionIndexer {
         &mut self,
         catalog: BtcActivationRegistryCatalog,
     ) {
+        self.rule_timelines = Self::build_rule_timelines(&catalog)
+            .expect("replacement activation timelines must be valid");
         self.activation_registry_catalog = catalog;
+    }
+
+    fn build_rule_timelines(
+        catalog: &BtcActivationRegistryCatalog,
+    ) -> Result<HashMap<String, BtcRuleTimeline>, ActivationRegistryError> {
+        catalog
+            .registry_ids()
+            .iter()
+            .map(|id| {
+                Ok((
+                    id.clone(),
+                    BtcRuleTimeline::new(catalog.registry_by_id(id)?)?,
+                ))
+            })
+            .collect()
+    }
+
+    /// Resolve supported rules for one height under the configured current revision.
+    pub fn rule_context_at(
+        &self,
+        block_height: u32,
+    ) -> Result<BtcRuleContext, ActivationRegistryError> {
+        self.rule_context_at_with_registry(
+            self.activation_registry_catalog.current_registry_id(),
+            block_height,
+        )
+    }
+
+    /// Resolve supported rules under an exact retained revision. This does not establish
+    /// that a dataset's entire executed history is compatible with that revision.
+    pub fn rule_context_at_with_registry(
+        &self,
+        registry_id: &str,
+        block_height: u32,
+    ) -> Result<BtcRuleContext, ActivationRegistryError> {
+        // Keep the catalog's structured unknown-revision error contract.
+        self.activation_registry_catalog
+            .registry_by_id(registry_id)?;
+        self.rule_timelines[registry_id].indexer_context_at(block_height)
     }
 
     /// Resolves and validates the exact BTC-side version set active at one height.
@@ -532,11 +589,10 @@ impl InscriptionIndexer {
         &self,
         block_height: u32,
     ) -> Result<ActiveVersionSet, ActivationRegistryError> {
-        let active_versions = self
-            .activation_registry()
-            .lookup_active_version_set(block_height)?;
-        active_versions.validate_btc_indexer()?;
-        Ok(active_versions)
+        Ok(self
+            .rule_context_at(block_height)?
+            .active_version_set()
+            .clone())
     }
 
     /// Resolves one exact registry revision and validates its active version set.
@@ -545,12 +601,10 @@ impl InscriptionIndexer {
         registry_id: &str,
         block_height: u32,
     ) -> Result<ActiveVersionSet, ActivationRegistryError> {
-        let registry = self
-            .activation_registry_catalog
-            .registry_by_id(registry_id)?;
-        let active_versions = registry.lookup_active_version_set(block_height)?;
-        active_versions.validate_btc_indexer()?;
-        Ok(active_versions)
+        Ok(self
+            .rule_context_at_with_registry(registry_id, block_height)?
+            .active_version_set()
+            .clone())
     }
 
     pub fn pass_energy_manager(&self) -> &PassEnergyManagerRef {
@@ -1675,7 +1729,7 @@ impl InscriptionIndexer {
         let mut energy_finalized = false;
 
         // Version selection must succeed before any per-block state is mutated.
-        self.active_version_set_at(height).map_err(|error| {
+        let rules = self.rule_context_at(height).map_err(|error| {
             let msg = format!(
                 "Failed to resolve active protocol versions before block sync: module=indexer, block_height={}, error={}",
                 height, error
@@ -1734,7 +1788,7 @@ impl InscriptionIndexer {
         let evidence =
             MintEvidenceContext::new(self.btc_client.clone(), height, block_hint.clone());
         let collected = self
-            .collect_block_inscription_mints(height, block_hint.clone(), &evidence)
+            .collect_block_inscription_mints(&rules, block_hint.clone(), &evidence)
             .await;
         let collected_mints = match collected {
             Ok(collected_mints) => collected_mints,
@@ -1758,7 +1812,11 @@ impl InscriptionIndexer {
                     .await);
             }
         };
-        let mint_context = BlockMintContext { evidence, balances };
+        let mint_context = BlockMintContext {
+            rules,
+            evidence,
+            balances,
+        };
         let transfer_track_seeds = Self::build_transfer_track_seeds(&collected_mints.valid_items);
         let process_transfers_begin = Instant::now();
         let transfer_items = match self
@@ -2154,6 +2212,7 @@ impl InscriptionIndexer {
         item: &InscriptionNewItem,
         mint_context: &BlockMintContext,
     ) -> Result<(), String> {
+        mint_context.require_height(item.block_height)?;
         // If it's a mint operation, process the pass minting
         let mint_content = item.content.as_mint().unwrap();
         let mint_info = PassMintInscriptionInfo {
@@ -2206,6 +2265,7 @@ impl InscriptionIndexer {
     ) -> Result<usize, String> {
         let mut processed = 0usize;
         for item in invalid_mints {
+            mint_context.require_height(item.mint_block_height)?;
             self.miner_pass_manager.on_invalid_mint_pass(&item).await?;
             {
                 let evidence = &mint_context.evidence;

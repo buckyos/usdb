@@ -805,22 +805,34 @@ async fn audit_query_enforces_selected_state_and_detects_missing_or_stale_data()
 
 #[tokio::test]
 async fn unsupported_future_rule_pairs_stop_before_block_mutation() {
-    for unknown in [false, true] {
+    for (family, value) in [
+        (
+            "pass_state_machine_version",
+            "uip-0002-pass-state-machine:v1",
+        ),
+        (
+            "pass_state_machine_version",
+            "uip-0002-pass-state-machine:v999",
+        ),
+        (
+            "inscription_schema_version",
+            "uip-0001-miner-pass-inscription:v2",
+        ),
+        (
+            "energy_formula_version",
+            "uip-0003-pass-energy-formula:v999",
+        ),
+    ] {
         let mut catalog: serde_json::Value = serde_json::from_str(CATALOG).unwrap();
         let records = catalog["registries"][0]["records"].as_array_mut().unwrap();
         let mut activation = records
             .iter()
-            .find(|r| r["version_family"] == "pass_state_machine_version")
+            .find(|r| r["version_family"] == family)
             .unwrap()
             .clone();
         activation["activation_height"] = 10.into();
         activation["supersedes"] = activation["version_value"].clone();
-        activation["version_value"] = if unknown {
-            "uip-0002-pass-state-machine:v999"
-        } else {
-            "uip-0002-pass-state-machine:v1"
-        }
-        .into();
+        activation["version_value"] = value.into();
         records.push(activation);
         let registry: usdb_util::BtcActivationRegistry =
             serde_json::from_value(catalog["registries"][0].clone()).unwrap();
@@ -838,8 +850,9 @@ async fn unsupported_future_rule_pairs_stop_before_block_mutation() {
         p.sync(9, 9).await.unwrap();
         let error = p.sync(10, 10).await.unwrap_err();
         assert!(
-            error.contains("Unsupported MinerPass rule combination"),
-            "{error}"
+            error.contains("Unsupported MinerPass rule combination")
+                || error.contains("version not supported"),
+            "{family}={value}: {error}"
         );
         assert_eq!(
             p.indexer
@@ -872,6 +885,102 @@ async fn unsupported_future_rule_pairs_stop_before_block_mutation() {
         assert!(!p.indexer.has_active_block_mutation_collection_for_test());
         p.cleanup();
     }
+}
+
+#[tokio::test]
+async fn startup_rejects_unsupported_intermediate_history_before_reconciling_metadata() {
+    use crate::index::InscriptionIndexer;
+    use crate::index::energy::PassEnergyManager;
+    use usdb_util::{BtcActivationRegistry, ENERGY_FORMULA_VERSION_V1};
+
+    let mut catalog: serde_json::Value = serde_json::from_str(CATALOG).unwrap();
+    let records = catalog["registries"][0]["records"].as_array_mut().unwrap();
+    let mut activation = records
+        .iter()
+        .find(|r| r["version_family"] == "energy_formula_version")
+        .unwrap()
+        .clone();
+    let unsupported = "uip-0003-pass-energy-formula:v999";
+    activation["activation_height"] = 10.into();
+    activation["supersedes"] = ENERGY_FORMULA_VERSION_V1.into();
+    activation["version_value"] = unsupported.into();
+    records.push(activation.clone());
+    activation["activation_height"] = 20.into();
+    activation["supersedes"] = unsupported.into();
+    activation["version_value"] = ENERGY_FORMULA_VERSION_V1.into();
+    records.push(activation);
+    let registry: BtcActivationRegistry =
+        serde_json::from_value(catalog["registries"][0].clone()).unwrap();
+    catalog["current_registry_id"] = registry.activation_registry_id().into();
+    let batch = MintBlock::new(
+        9,
+        vec![MintSpec::standard(117, cold_recipient(117), 0, vec![])],
+        false,
+    );
+    let p = Pipeline::with_catalog("unsupported-history", &[&batch], 9, &catalog.to_string()).await;
+    p.sync(9, 9).await.unwrap();
+    assert_eq!(
+        p.indexer.rule_context_at(9).unwrap().active_version_set(),
+        p.indexer.rule_context_at(20).unwrap().active_version_set()
+    );
+    // Simulate durable progress written by a binary supporting an intermediate rule.
+    // An older binary must refuse this history even though both endpoints are supported.
+    p.indexer
+        .miner_pass_storage()
+        .update_synced_btc_block_height(20)
+        .unwrap();
+    p.indexer
+        .pass_energy_manager()
+        .set_synced_block_height_for_test(20)
+        .unwrap();
+    let db = rusqlite::Connection::open(
+        p.config
+            .data_dir()
+            .join(crate::constants::MINER_PASS_DB_FILE),
+    )
+    .unwrap();
+    // Reconciliation would repair this stale cursor; rejection must happen first.
+    db.execute(
+        "UPDATE state SET value=8 WHERE name='snapshot_history_next_height'",
+        [],
+    )
+    .unwrap();
+    let metadata = || {
+        db.prepare(
+            "SELECT name, CAST(value AS TEXT) FROM state \
+             UNION ALL SELECT name, value FROM state_text ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    };
+    let before = metadata();
+    let Pipeline {
+        root,
+        config,
+        indexer,
+        status,
+        ..
+    } = p;
+    drop(indexer);
+    let error = InscriptionIndexer::new(config.clone(), status)
+        .err()
+        .expect("Unsupported intermediate history must reject startup");
+    assert!(error.contains(unsupported), "{error}");
+    assert_eq!(metadata(), before);
+    let energy = PassEnergyManager::new(config).unwrap();
+    assert_eq!(energy.get_synced_block_height_for_test().unwrap(), Some(20));
+    assert_eq!(energy.get_pending_block_height_for_test().unwrap(), None);
+    energy
+        .validate_rules_binding(&usdb_util::IndexerRulesBinding::new(&registry, 9))
+        .unwrap();
+    drop(energy);
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
@@ -921,5 +1030,67 @@ async fn pipeline_first_opening_source_query_is_read_only_and_rejects_lost_evide
         before.audit
     );
     drop(rpc);
+    p.cleanup();
+}
+
+#[tokio::test]
+async fn pipeline_context_preserves_pinned_registry_and_mint_audit_identity() {
+    let old = MintBlock::new(
+        9,
+        vec![MintSpec::standard(92, cold_recipient(92), 0, vec![])],
+        false,
+    );
+    let catalog = include_str!("fixtures/miner-pass-v2/catalog-staged.json");
+    let p = Pipeline::with_catalog("timeline-context", &[&old], 9, catalog).await;
+    p.sync(9, 9).await.unwrap();
+    let current_id = p
+        .indexer
+        .activation_registry_catalog()
+        .current_registry_id()
+        .to_string();
+    let default_context = p.indexer.rule_context_at(9).unwrap();
+    assert_eq!(default_context.activation_registry_id(), current_id);
+    assert_eq!(
+        default_context.scope().rules_scope(),
+        "miner-pass-v2-fixture"
+    );
+    assert_eq!(default_context.btc_height(), 9);
+    for id in p.indexer.activation_registry_catalog().registry_ids() {
+        let context = p.indexer.rule_context_at_with_registry(id, 9).unwrap();
+        assert_eq!(context.activation_registry_id(), id);
+        assert_eq!(
+            context.active_version_set(),
+            &p.indexer
+                .activation_registry_catalog()
+                .registry_by_id(id)
+                .unwrap()
+                .lookup_active_version_set(9)
+                .unwrap()
+        );
+    }
+    assert!(matches!(
+        p.indexer
+            .rule_context_at_with_registry("unknown-registry", 9),
+        Err(usdb_util::ActivationRegistryError::ActivationRecordNotFound(_))
+    ));
+    let audit = p
+        .rpc()
+        .get_pass_mint_audit(GetPassMintAuditParams {
+            inscription_id: old.mints[0].inscription_id.to_string(),
+            at_height: Some(9),
+            context: None,
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        audit.active_version_set_id,
+        default_context.active_version_set_id()
+    );
+    assert_eq!(
+        p.indexer
+            .activation_registry_catalog()
+            .current_registry_id(),
+        current_id
+    );
     p.cleanup();
 }

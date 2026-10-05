@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bitcoincore_rpc::bitcoin::{Block, OutPoint, hashes::Hash};
 use ord::InscriptionId;
 use ordinals::SatPoint;
-use usdb_util::BtcScriptHash;
+use usdb_util::{BtcRuleContext, BtcScriptHash};
 
 use super::{CollectedMintItems, InscriptionIndexer, InvalidPassMintInscriptionInfo};
 use crate::btc::mint_evidence::{MintEvidenceContext, MintSatOutcome};
@@ -18,18 +18,38 @@ use crate::inscription::{
 
 /// Shared chain and balance evidence for all ordered mint events in a block.
 pub(super) struct BlockMintContext {
+    pub(super) rules: BtcRuleContext,
     pub(super) evidence: MintEvidenceContext,
     // Blocks with no schema/sat-valid candidates need no balance RPC.
     pub(super) balances: Option<TransactionBalanceContext>,
 }
 
+impl BlockMintContext {
+    // Ordered events must never be interpreted with another block's supported rules.
+    pub(super) fn require_height(&self, height: u32) -> Result<(), String> {
+        if self.rules.btc_height() != height {
+            let msg = format!(
+                "Mint rule context height mismatch: event_height={height}, context_height={}, registry_id={}, network_id={}, rules_scope={}",
+                self.rules.btc_height(),
+                self.rules.activation_registry_id(),
+                self.rules.scope().network_id,
+                self.rules.scope().rules_scope()
+            );
+            error!("{msg}");
+            return Err(msg);
+        }
+        Ok(())
+    }
+}
+
 impl InscriptionIndexer {
     pub(super) async fn collect_block_inscription_mints(
         &self,
-        height: u32,
+        rules: &BtcRuleContext,
         block: Arc<Block>,
         evidence: &MintEvidenceContext,
     ) -> Result<CollectedMintItems, String> {
+        let height = rules.btc_height();
         let discovered = self
             .inscription_source
             .load_block_mint_batch(

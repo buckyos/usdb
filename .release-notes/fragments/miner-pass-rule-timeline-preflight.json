@@ -1,0 +1,26 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-rule-timeline-preflight",
+  "type": "changed",
+  "scopes": [
+    "indexer",
+    "consensus"
+  ],
+  "summary": "Validate every indexed BTC rule interval before resuming the indexer",
+  "details": [
+    "Startup now rejects persisted history containing an unsupported intermediate rule interval, even when the origin and final height use supported versions. This check runs before rules binding and snapshot-history cursor reconciliation.",
+    "An immutable registry timeline supplies supported block contexts, interval inspection and historical-prefix comparison without changing existing registry or active-version-set identities.",
+    "Production still supports mint schema v1, MinerPass state machine v2 and the current v1 formulas. This foundation does not enable new rule versions, cross-version settlement, RPC history reuse or in-place dataset registry upgrades."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/blob/main/doc/UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md",
+    "https://github.com/buckyos/usdb/blob/main/doc/usdb-indexer/miner-pass-upgrade-implementation-plan.md"
+  ]
+}

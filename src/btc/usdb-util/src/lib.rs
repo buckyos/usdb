@@ -1,4 +1,5 @@
 mod activation;
+mod activation_timeline;
 mod btc;
 mod config;
 mod constants;
@@ -14,6 +15,7 @@ mod strict_json;
 mod types;
 
 pub use activation::*;
+pub use activation_timeline::*;
 pub use btc::*;
 pub use config::*;
 pub use constants::*;
@@ -41,3 +43,7 @@ extern crate self as usdb_util;
 #[cfg(test)]
 #[path = "../../../../tests/miner_pass_rule_versions.rs"]
 mod miner_pass_rule_versions;
+
+#[cfg(test)]
+#[path = "../../../../tests/miner_pass_upgrade_rules.rs"]
+mod miner_pass_upgrade_rules;
