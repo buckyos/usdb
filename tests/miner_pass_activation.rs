@@ -1,7 +1,6 @@
 //! Activated parser, real ordered block execution, durable audit and cross-store recovery.
-#[path = "common/miner_pass_pipeline.rs"]
-mod pipeline;
 use crate::index::MinerPassState;
+use crate::index::test_miner_pipeline as pipeline;
 use crate::index::test_miner_state::{MintBlock, MintSpec, SpendKind, source_script};
 use crate::service::rpc::{GetPassMintAuditParams, UsdbIndexerRpc};
 use pipeline::*;

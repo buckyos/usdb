@@ -5,6 +5,7 @@ use super::{
 use bitcoincore_rpc::bitcoin::{Block, Network};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use usdb_util::BtcRuleContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareTarget {
@@ -255,13 +256,13 @@ impl InscriptionSource for CompareInscriptionSource {
 
     fn load_block_mints<'a>(
         &'a self,
-        block_height: u32,
+        rules: &'a BtcRuleContext,
         block_hint: Option<Arc<Block>>,
         network: Network,
     ) -> InscriptionSourceFuture<'a, Result<Vec<DiscoveredMint>, String>> {
         Box::pin(async move {
             let batch = self
-                .load_block_mint_batch(block_height, block_hint, network)
+                .load_block_mint_batch(rules, block_hint, network)
                 .await?;
             Ok(batch.valid_mints)
         })
@@ -269,11 +270,12 @@ impl InscriptionSource for CompareInscriptionSource {
 
     fn load_block_mint_batch<'a>(
         &'a self,
-        block_height: u32,
+        rules: &'a BtcRuleContext,
         block_hint: Option<Arc<Block>>,
         network: Network,
     ) -> InscriptionSourceFuture<'a, Result<DiscoveredMintBatch, String>> {
         Box::pin(async move {
+            let block_height = rules.btc_height();
             let primary_inscriptions = self
                 .primary
                 .load_block_inscriptions(block_height, block_hint.clone())
@@ -292,10 +294,10 @@ impl InscriptionSource for CompareInscriptionSource {
             }
 
             let primary_batch =
-                classify_usdb_mints_from_inscriptions(primary_inscriptions, network)?;
+                classify_usdb_mints_from_inscriptions(primary_inscriptions, network, rules)?;
             if self.target == CompareTarget::UsdbMint {
                 let shadow_batch =
-                    classify_usdb_mints_from_inscriptions(shadow_inscriptions, network)?;
+                    classify_usdb_mints_from_inscriptions(shadow_inscriptions, network, rules)?;
                 self.compare_block_mints(
                     block_height,
                     &primary_batch.valid_mints,

@@ -14,7 +14,14 @@ async fn apply(
     index: usize,
 ) -> Result<Option<MintOperationPath>, String> {
     h.manager
-        .on_mint_pass(&b.mints[index], &b.evidence, &b.balances)
+        .on_mint_pass(
+            &b.mints[index],
+            &b.evidence,
+            &b.balances,
+            &h.rules
+                .indexer_context_at(b.mints[index].mint_block_height)
+                .unwrap(),
+        )
         .await
 }
 
@@ -904,7 +911,14 @@ async fn v2_rejects_missing_block_guards_and_mismatched_balance_context_without_
         );
         let err = h
             .manager
-            .on_mint_pass(&b.mints[0], &b.evidence, &other.balances)
+            .on_mint_pass(
+                &b.mints[0],
+                &b.evidence,
+                &other.balances,
+                &h.rules
+                    .indexer_context_at(b.mints[0].mint_block_height)
+                    .unwrap(),
+            )
             .await
             .unwrap_err();
         for field in [
@@ -926,7 +940,14 @@ async fn v2_rejects_missing_block_guards_and_mismatched_balance_context_without_
         if other_height == 11 {
             let err = h
                 .manager
-                .on_mint_pass(&b.mints[0], &other.evidence, &other.balances)
+                .on_mint_pass(
+                    &b.mints[0],
+                    &other.evidence,
+                    &other.balances,
+                    &h.rules
+                        .indexer_context_at(b.mints[0].mint_block_height)
+                        .unwrap(),
+                )
                 .await
                 .unwrap_err();
             assert!(err.contains("mint_height=10, evidence_height=11"), "{err}");

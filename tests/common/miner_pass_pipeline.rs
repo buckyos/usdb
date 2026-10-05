@@ -234,7 +234,14 @@ impl Pipeline {
         cfg.balance_history.rpc_url = history_rpc.url.clone();
         cfg.usdb.genesis_block_height = origin;
         cfg.usdb.inscription_source = "bitcoind".into();
-        cfg.usdb.rules_scope = Some("miner-pass-v2-fixture".into());
+        cfg.usdb.rules_scope = Some(
+            BtcActivationRegistryCatalog::from_json(catalog)
+                .unwrap()
+                .current_registry()
+                .scope
+                .rules_scope()
+                .into(),
+        );
         cfg.usdb.activation_registry_id = Some(
             BtcActivationRegistryCatalog::from_json(catalog)
                 .unwrap()

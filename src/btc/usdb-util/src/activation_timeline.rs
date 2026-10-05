@@ -56,7 +56,7 @@ impl BtcRuleContext {
         self.btc_height
     }
 
-    /// Complete version set supported by the current indexer implementation.
+    /// Complete version set accepted by the timeline's compiled support checker.
     pub fn active_version_set(&self) -> &ActiveVersionSet {
         &self.versions
     }
@@ -94,6 +94,16 @@ impl BtcRuleTimeline {
     /// Validate and cache a registry without requiring support for future versions.
     /// All version families activated at the same height share one interval boundary.
     pub fn new(registry: &BtcActivationRegistry) -> Result<Self, ActivationRegistryError> {
+        Self::new_with_indexer_support(registry, ActiveVersionSet::validate_btc_indexer)
+    }
+
+    /// Cache support supplied by a compiled executor registry. The checker must validate
+    /// every required family; it cannot change selected versions or their identities.
+    /// This is a code-level extension point, not an operator-configurable rule override.
+    pub fn new_with_indexer_support(
+        registry: &BtcActivationRegistry,
+        check_support: impl Fn(&ActiveVersionSet) -> Result<(), ActivationRegistryError>,
+    ) -> Result<Self, ActivationRegistryError> {
         let result = (|| {
             registry.validate()?;
             let heights = registry
@@ -111,7 +121,7 @@ impl BtcRuleTimeline {
                     Ok(RuleEpoch {
                         start_height,
                         version_set_id: versions.active_version_set_id().into(),
-                        indexer_support: versions.validate_btc_indexer(),
+                        indexer_support: check_support(&versions),
                         versions: Arc::new(versions),
                     })
                 })
@@ -221,20 +231,18 @@ impl BtcRuleTimeline {
         heights: RangeInclusive<u32>,
     ) -> Result<Vec<BtcRuleSupportIssue>, ActivationRegistryError> {
         let intervals = self.intervals(heights)?;
-        Ok(intervals
-            .into_iter()
-            .filter_map(|interval| {
-                interval
-                    .active_version_set
-                    .validate_btc_indexer()
-                    .err()
-                    .map(|error| BtcRuleSupportIssue {
-                        start_height: interval.start_height,
-                        end_height: interval.end_height,
-                        error,
-                    })
-            })
-            .collect())
+        let mut issues = Vec::new();
+        for interval in intervals {
+            let epoch = &self.epochs[self.epoch_index(interval.start_height)?];
+            if let Err(error) = &epoch.indexer_support {
+                issues.push(BtcRuleSupportIssue {
+                    start_height: interval.start_height,
+                    end_height: interval.end_height,
+                    error: error.clone(),
+                });
+            }
+        }
+        Ok(issues)
     }
 
     /// Require support for every interval, including an unsupported intermediate epoch

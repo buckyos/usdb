@@ -5,6 +5,7 @@ pub(crate) mod energy_formula;
 mod indexer;
 mod pass;
 mod pass_commit;
+pub(crate) mod rules;
 #[cfg(test)]
 mod test;
 mod transfer;
@@ -50,3 +51,15 @@ mod miner_pass_activation;
 #[cfg(test)]
 #[path = "../../../../../tests/miner_pass_startup.rs"]
 mod miner_pass_startup;
+
+#[cfg(test)]
+#[path = "../../../../../tests/common/miner_pass_rules.rs"]
+pub(crate) mod test_miner_rules;
+
+#[cfg(test)]
+#[path = "../../../../../tests/miner_pass_upgrade_dispatch.rs"]
+mod miner_pass_upgrade_dispatch;
+
+#[cfg(test)]
+#[path = "../../../../../tests/common/miner_pass_pipeline.rs"]
+pub(crate) mod test_miner_pipeline;

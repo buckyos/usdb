@@ -545,6 +545,15 @@ impl InscriptionIndexer {
         self.activation_registry_catalog = catalog;
     }
 
+    /// Replace discovery in an isolated test without changing the canonical local reparse.
+    #[cfg(test)]
+    pub(crate) fn replace_inscription_source_for_test(
+        &mut self,
+        source: Arc<dyn InscriptionSource>,
+    ) {
+        self.inscription_source = source;
+    }
+
     fn build_rule_timelines(
         catalog: &BtcActivationRegistryCatalog,
     ) -> Result<HashMap<String, BtcRuleTimeline>, ActivationRegistryError> {
@@ -554,7 +563,10 @@ impl InscriptionIndexer {
             .map(|id| {
                 Ok((
                     id.clone(),
-                    BtcRuleTimeline::new(catalog.registry_by_id(id)?)?,
+                    BtcRuleTimeline::new_with_indexer_support(
+                        catalog.registry_by_id(id)?,
+                        crate::index::rules::validate_indexer_rules,
+                    )?,
                 ))
             })
             .collect()
@@ -2250,7 +2262,12 @@ impl InscriptionIndexer {
             )
         })?;
         self.miner_pass_manager
-            .on_mint_pass(&mint_info, &mint_context.evidence, balances)
+            .on_mint_pass(
+                &mint_info,
+                &mint_context.evidence,
+                balances,
+                &mint_context.rules,
+            )
             .await?;
 
         // Transfer tracking is handled by block-level staged state. We do not mutate
@@ -2266,7 +2283,9 @@ impl InscriptionIndexer {
         let mut processed = 0usize;
         for item in invalid_mints {
             mint_context.require_height(item.mint_block_height)?;
-            self.miner_pass_manager.on_invalid_mint_pass(&item).await?;
+            self.miner_pass_manager
+                .on_invalid_mint_pass_with_rules(&item, &mint_context.rules)
+                .await?;
             {
                 let evidence = &mint_context.evidence;
                 self.miner_pass_storage

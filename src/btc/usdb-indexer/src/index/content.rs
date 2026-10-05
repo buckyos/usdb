@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 
+use super::rules::{MintSchemaRules, require_event_context};
 use crate::btc::{ContentBody, OrdClient};
 use crate::config::ConfigManager;
 use crate::inscription::InscriptionOperation;
@@ -9,7 +10,7 @@ use bitcoincore_rpc::bitcoin::Network;
 use ord::InscriptionId;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
-use usdb_util::address_string_to_script_hash;
+use usdb_util::{BtcRuleContext, address_string_to_script_hash};
 
 const USDB_PROTOCOL_ID: &str = "usdb";
 const USDB_MINT_OP: &str = "mint";
@@ -400,6 +401,31 @@ impl InscriptionContentLoader {
         content: &str,
         network: Network,
     ) -> Result<ParsedMintContent, String> {
+        Self::classify_mint_str_with_schema(inscription_id, content, network, MintSchemaRules::V1)
+    }
+
+    /// Classify a reveal using the schema selected by its BTC-height context.
+    pub(crate) fn classify_mint_content_str_with_rules(
+        inscription_id: &InscriptionId,
+        content: &str,
+        network: Network,
+        rules: &BtcRuleContext,
+    ) -> Result<ParsedMintContent, String> {
+        require_event_context(rules, rules.btc_height(), network)?;
+        Self::classify_mint_str_with_schema(
+            inscription_id,
+            content,
+            network,
+            MintSchemaRules::at(rules)?,
+        )
+    }
+
+    fn classify_mint_str_with_schema(
+        inscription_id: &InscriptionId,
+        content: &str,
+        network: Network,
+        schema: MintSchemaRules,
+    ) -> Result<ParsedMintContent, String> {
         let scan = match Self::scan_top_level_object(content) {
             Ok(scan) => scan,
             Err(e) => {
@@ -429,7 +455,7 @@ impl InscriptionContentLoader {
             }));
         }
 
-        Self::classify_mint_object(inscription_id, &scan.object, network)
+        Self::classify_mint_object(inscription_id, &scan.object, network, schema)
     }
 
     pub fn parse_content(
@@ -477,20 +503,40 @@ impl InscriptionContentLoader {
             return Ok(ParsedMintContent::NotUsdbMint);
         }
 
-        Self::classify_mint_object(inscription_id, content, network)
+        Self::classify_mint_object(inscription_id, content, network, MintSchemaRules::V1)
     }
 
     fn classify_mint_object(
         inscription_id: &InscriptionId,
         content: &serde_json::Map<String, serde_json::Value>,
         network: Network,
+        schema: MintSchemaRules,
+    ) -> Result<ParsedMintContent, String> {
+        match schema {
+            MintSchemaRules::V1 => {
+                Self::classify_v1_mint_object(inscription_id, content, network, 1)
+            }
+            // Conformance changes only the wire marker; the v1 field grammar remains strict.
+            #[cfg(test)]
+            MintSchemaRules::Conformance901 => {
+                Self::classify_v1_mint_object(inscription_id, content, network, 901)
+            }
+        }
+    }
+
+    // Frozen v1 field grammar; new schema variants must explicitly select their own parser.
+    fn classify_v1_mint_object(
+        inscription_id: &InscriptionId,
+        content: &serde_json::Map<String, serde_json::Value>,
+        network: Network,
+        schema_version: u32,
     ) -> Result<ParsedMintContent, String> {
         for key in content.keys() {
             if key == "usdb_collab" {
                 return Ok(ParsedMintContent::Invalid(MintValidationError {
                     code: MintValidationErrorCode::InvalidUsdbCollab,
                     reason: format!(
-                        "usdb_collab is prohibited in USDB mint v{USDB_MINT_SCHEMA_VERSION} for inscription {}",
+                        "usdb_collab is prohibited in USDB mint v{schema_version} for inscription {}",
                         inscription_id
                     ),
                 }));
@@ -508,7 +554,7 @@ impl InscriptionContentLoader {
         }
 
         let version = match content.get("v").and_then(|value| value.as_u64()) {
-            Some(version) if version == USDB_MINT_SCHEMA_VERSION as u64 => USDB_MINT_SCHEMA_VERSION,
+            Some(version) if version == u64::from(schema_version) => schema_version,
             Some(version) => {
                 return Ok(ParsedMintContent::Invalid(MintValidationError {
                     code: MintValidationErrorCode::InvalidSchema,
@@ -540,7 +586,7 @@ impl InscriptionContentLoader {
                 return Ok(ParsedMintContent::Invalid(MintValidationError {
                     code: MintValidationErrorCode::InvalidSchema,
                     reason: format!(
-                        "USDB mint v{USDB_MINT_SCHEMA_VERSION} must contain either usdb_main or exactly one leader binding field for inscription {}",
+                        "USDB mint v{schema_version} must contain either usdb_main or exactly one leader binding field for inscription {}",
                         inscription_id
                     ),
                 }));

@@ -31,3 +31,7 @@ base64 = "0.22"
 
 [dev-dependencies]
 rusqlite = { version = "0.38", features = ["trace"] }
+
+[[test]]
+name = "miner_pass_production_dispatch"
+path = "../../../tests/miner_pass_production_dispatch.rs"

@@ -260,6 +260,22 @@ impl BtcActivationRegistryScope {
         self.rules_scope.as_deref().unwrap_or(LEGACY_RULES_SCOPE)
     }
 
+    /// Verifies that this rule scope is selected for `network`.
+    pub fn validate_network(&self, network: Network) -> Result<(), ActivationRegistryError> {
+        let (expected_type, expected_id) = BtcActivationRegistryScope::network_identity(network);
+        if self.network_type != expected_type || self.network_id != expected_id {
+            return Err(ActivationRegistryError::InvalidRecord(format!(
+                "BTC activation registry scope mismatch: selected network={}, expected_type={}, expected_id={}, actual_type={}, actual_id={}",
+                network,
+                expected_type.as_str(),
+                expected_id,
+                self.network_type.as_str(),
+                self.network_id
+            )));
+        }
+        Ok(())
+    }
+
     fn network_identity(network: Network) -> (ActivationNetworkType, &'static str) {
         match network {
             Network::Bitcoin => (ActivationNetworkType::Mainnet, "btc-mainnet"),
@@ -414,6 +430,23 @@ impl ActiveVersionSet {
 
     /// Validate every indexer family and reject every unsupported MinerPass rule pair.
     pub fn validate_btc_indexer(&self) -> Result<(), ActivationRegistryError> {
+        self.validate_btc_indexer_with_miner_pass(|schema, state| {
+            if schema != INSCRIPTION_SCHEMA_VERSION_V1 || state != PASS_STATE_MACHINE_VERSION_V2 {
+                return Err(ActivationRegistryError::InvalidRecord(format!(
+                    "Unsupported MinerPass rule combination; this binary requires schema v1 with state machine v2 and a fresh development network: inscription_schema_version={schema}, pass_state_machine_version={state}"
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    /// Validate shared indexer families with an explicit compiled MinerPass executor check.
+    /// The callback must reject schema/state pairs absent from its executor registry; this
+    /// does not relax energy, query, state-view or commitment support requirements.
+    pub fn validate_btc_indexer_with_miner_pass(
+        &self,
+        check_miner_pass: impl FnOnce(&str, &str) -> Result<(), ActivationRegistryError>,
+    ) -> Result<(), ActivationRegistryError> {
         if let Some(scope) = &self.scope {
             scope.validate()?;
         }
@@ -427,11 +460,7 @@ impl ActiveVersionSet {
         }
         let schema = self.require_string(VersionFamily::InscriptionSchemaVersion)?;
         let state = self.require_string(VersionFamily::PassStateMachineVersion)?;
-        if schema != INSCRIPTION_SCHEMA_VERSION_V1 || state != PASS_STATE_MACHINE_VERSION_V2 {
-            return Err(ActivationRegistryError::InvalidRecord(format!(
-                "Unsupported MinerPass rule combination; this binary requires schema v1 with state machine v2 and a fresh development network: inscription_schema_version={schema}, pass_state_machine_version={state}"
-            )));
-        }
+        check_miner_pass(schema, state)?;
         self.require_supported_string(
             VersionFamily::EnergyFormulaVersion,
             ENERGY_FORMULA_VERSION_V1,
@@ -628,20 +657,9 @@ impl BtcActivationRegistry {
         Ok(())
     }
 
-    /// Verifies that this registry is the embedded artifact selected for `network`.
+    /// Verifies that this registry is selected for `network`.
     pub fn validate_network(&self, network: Network) -> Result<(), ActivationRegistryError> {
-        let (expected_type, expected_id) = BtcActivationRegistryScope::network_identity(network);
-        if self.scope.network_type != expected_type || self.scope.network_id != expected_id {
-            return Err(ActivationRegistryError::InvalidRecord(format!(
-                "BTC activation registry scope mismatch: selected network={}, expected_type={}, expected_id={}, actual_type={}, actual_id={}",
-                network,
-                expected_type.as_str(),
-                expected_id,
-                self.scope.network_type.as_str(),
-                self.scope.network_id
-            )));
-        }
-        Ok(())
+        self.scope.validate_network(network)
     }
 
     /// Verifies that the selected rule history matches this immutable registry.

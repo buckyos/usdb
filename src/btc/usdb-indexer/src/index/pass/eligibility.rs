@@ -1,8 +1,9 @@
-//! UIP-0016 eligibility and transitions for the only supported MinerPass rule set.
+//! UIP-0016 state-machine execution with explicit event-height schema and admission selection.
 
 use std::collections::BTreeSet;
 
-use usdb_util::SourceAuthorization;
+use crate::index::rules::{MintSchemaRules, PassStateRules};
+use usdb_util::{BtcRuleContext, SourceAuthorization};
 
 use super::{
     MinerPassManager, MintOperationPath, MintStateValidationError, PassMintInscriptionInfo,
@@ -15,7 +16,7 @@ use crate::index::{MinerPassState, MintValidationErrorCode, PassBlockMutation};
 use crate::storage::{MinerPassInfo, MinerPassMintAudit, MintSourceAudit};
 
 impl MinerPassManager {
-    /// Apply a schema-v1 mint under state-machine v2 in ordered block context using actual chain evidence.
+    /// Apply a mint under explicitly selected schema/state rules using ordered chain evidence.
     /// The caller must derive payload fields from this inscription and enforce the active schema.
     /// Returns None for a recorded protocol Invalid, or the successful path. Data/I/O errors
     /// require the caller to abort the whole block, including energy, SQLite and tracker staging.
@@ -24,7 +25,11 @@ impl MinerPassManager {
         mint: &PassMintInscriptionInfo,
         evidence: &MintEvidenceContext,
         balances: &TransactionBalanceContext,
+        rules: &BtcRuleContext,
     ) -> Result<Option<MintOperationPath>, String> {
+        self.require_rule_context(mint.mint_block_height, rules)?;
+        let schema = MintSchemaRules::at(rules)?;
+        let state = PassStateRules::at(rules)?;
         let mut audit = MinerPassMintAudit {
             schema_version: "miner-pass-mint-audit:v1".into(),
             inscription_id: mint.inscription_id.to_string(),
@@ -39,9 +44,18 @@ impl MinerPassManager {
             error_reason: None,
         };
         let result = async {
-            let path = self
-                .apply_mint(mint, evidence, balances, &mut audit)
-                .await?;
+            let path = match state {
+                PassStateRules::V2 => {
+                    self.apply_mint_v2(mint, evidence, balances, &mut audit, schema, state)
+                        .await?
+                }
+                // This test contract retains v2 state representation and adds only admission checks.
+                #[cfg(test)]
+                PassStateRules::ConformanceNoNewCollab => {
+                    self.apply_mint_v2(mint, evidence, balances, &mut audit, schema, state)
+                        .await?
+                }
+            };
             audit.operation_path = path.map(|path| {
                 match path {
                     MintOperationPath::FirstOpening => "first_opening",
@@ -65,24 +79,28 @@ impl MinerPassManager {
         result.map_err(|err: String| {
             // Keep the same operation context in logs and in errors propagated to the block executor.
             let msg = format!(
-                "MinerPass v2 block processing failed: module=pass_manager, action=apply_mint, inscription_id={}, block_height={}, mint_txid={}, mint_owner={}, satpoint={}, error={err}",
+                "MinerPass v2 block processing failed: module=pass_manager, action=apply_mint, inscription_id={}, block_height={}, mint_txid={}, mint_owner={}, satpoint={}, registry_id={}, active_version_set_id={}, error={err}",
                 mint.inscription_id,
                 mint.mint_block_height,
                 mint.mint_txid,
                 mint.mint_owner,
-                mint.satpoint
+                mint.satpoint,
+                rules.activation_registry_id(),
+                rules.active_version_set_id()
             );
             error!("{msg}");
             msg
         })
     }
 
-    async fn apply_mint(
+    async fn apply_mint_v2(
         &self,
         mint: &PassMintInscriptionInfo,
         evidence: &MintEvidenceContext,
         balances: &TransactionBalanceContext,
         audit: &mut MinerPassMintAudit,
+        schema: MintSchemaRules,
+        state: PassStateRules,
     ) -> Result<Option<MintOperationPath>, String> {
         self.storage.require_block_savepoint()?;
         self.energy_manager
@@ -116,18 +134,34 @@ impl MinerPassManager {
                 mint.mint_txid, mint.inscription_id.txid
             ));
         }
-        if mint.mint_version != usdb_util::MINER_PASS_MINT_SCHEMA_VERSION {
+        if mint.mint_version != schema.payload_version() {
             return self
                 .reject_v2(
                     mint,
                     MintValidationErrorCode::InvalidSchema,
                     format!(
                         "MinerPass state machine v2 requires mint schema v{}: actual={}",
-                        usdb_util::MINER_PASS_MINT_SCHEMA_VERSION,
+                        schema.payload_version(),
                         mint.mint_version
                     ),
                 )
                 .await;
+        }
+        // A new admission restriction never revalidates existing passes or partially consumes prev.
+        match state {
+            PassStateRules::V2 => {}
+            #[cfg(test)]
+            PassStateRules::ConformanceNoNewCollab => {
+                if mint.pass_kind == crate::index::MinerPassKind::Collab {
+                    return self
+                        .reject_v2(
+                            mint,
+                            MintValidationErrorCode::InvalidUsdbCollab,
+                            "Conformance state rule rejects new collaboration mints".into(),
+                        )
+                        .await;
+                }
+            }
         }
         let sat = match evidence.locate_mint(mint.inscription_id)? {
             MintSatOutcome::Located(sat) => sat,

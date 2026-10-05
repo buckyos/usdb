@@ -53,7 +53,7 @@ impl InscriptionIndexer {
         let discovered = self
             .inscription_source
             .load_block_mint_batch(
-                height,
+                rules,
                 Some(block.clone()),
                 self.config.config().bitcoin.network(),
             )
@@ -62,7 +62,7 @@ impl InscriptionIndexer {
         // and source-local numbering must not change the v2 consensus event set.
         let batch = BitcoindInscriptionSource::new(self.btc_client.clone())
             .load_block_mint_batch(
-                height,
+                rules,
                 Some(block.clone()),
                 self.config.config().bitcoin.network(),
             )

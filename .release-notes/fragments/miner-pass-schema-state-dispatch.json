@@ -1,0 +1,26 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-schema-state-dispatch",
+  "type": "internal",
+  "scopes": [
+    "indexer",
+    "consensus",
+    "testing"
+  ],
+  "summary": "Route MinerPass parsing and state operations through reveal-height rule contexts",
+  "details": [
+    "Discovery, source comparison and canonical local parsing use the same height-selected schema. State operations validate their event context and select an explicit state-machine executor; stored passes are not reparsed under a new mint schema.",
+    "Production continues to accept only mint schema v1 with state machine v2 and the existing formulas. No network identities, persisted data formats or activation parameters change.",
+    "Isolated test executors cover schema and admission boundaries, existing pass inheritance and failed-block retry. An integration test launches the ordinary binary to verify that test-only rules cannot open business stores."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/blob/main/doc/UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md"
+  ]
+}

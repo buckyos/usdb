@@ -1,3 +1,4 @@
+mod dispatch;
 mod eligibility;
 
 use super::content::{MinerPassKind, MinerPassState, MintValidationErrorCode};

@@ -1,6 +1,6 @@
 # UIP-0017 多区间升级实施与测试计划
 
-状态：A 批次已完成本地实现与验证，待评审提交；B–G 尚未实施。
+状态：A 已提交为 `4dd2333`；B 已完成本地实现与验证，待评审提交；C–G 尚未实施。
 
 协议依据：[UIP-0017](../UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md) 第一版草案已由用户确认并提交为 `36726a5`；这不表示委员会流程完成或目标网络已激活。本文记录当前实现缺口、分批交付和测试验收，不分配正式 schema v2 / 状态机 v3，不改变现行网络参数。
 
@@ -14,7 +14,7 @@
 
 ## 2. 当前实现与缺口
 
-以下为制定计划时的源码核查结果；A 批次的交付与验证见第 7 节，其余仍为待实施内容。
+以下为制定计划时的源码核查结果；A/B 批次的交付与验证见第 7/8 节，其余仍为待实施内容。
 
 | 模块 | 已有基础 | 所需补充 |
 | --- | --- | --- |
@@ -165,4 +165,38 @@ weekly 在已有 world-sim/reorg/recovery 设施中扩展固定 seed 矩阵。�
 
 前缀比较目前是共享底层能力，完整 RPC 历史一致性防护留给 E；不能据此绕过精确 registry ID 的数据绑定。旧数据原地升级仍属 G，没有修改升级工具或触发网络重置。本批没有运行在线服务升级，也没有触发远端 CI。
 
-下一批 B 将上下文贯通 discovery、本地 schema 重解析和状态机执行入口；随后 C 实现分段结算，D/E 补齐状态恢复与查询一致性，F 完成真实服务及 nightly/weekly 验收。
+B 的后续交付见第 8 节。C 实现分段结算，D/E 补齐状态恢复与查询一致性，F 完成真实服务及 nightly/weekly 验收。
+
+## 8. B 批次交付与当前验证状态
+
+### 8.1 已实现
+
+- [rules.rs](../../src/btc/usdb-indexer/src/index/rules.rs) 明确区分编译期 schema 与状态机执行器，按 `BtcRuleContext` 独立选择。生产支持集合仍为 schema v1 / 状态机 v2；未注册的版本没有默认回退。
+- [source.rs](../../src/btc/usdb-indexer/src/inscription/source.rs)、compare source 和 indexer 本地重解析统一接收 reveal 高度的上下文，拒绝混入其它高度或 BTC 网络的铭文。保留原始 JSON 的严格校验，重复字段不会因版本分派而被重新序列化抹掉。无上下文的内容工具接口仍明确使用冻结的 v1 契约，不用于区块 discovery。
+- [content.rs](../../src/btc/usdb-indexer/src/index/content.rs) 固定 v1 字段语法并显式分派；payload `v` 的契约与默认夹具版本常量解耦，未来添加执行器必须同时声明对应解析路径。
+- mint、Invalid 记录、转移与 burn 都经过状态规则入口。mint 按当前 schema 处理新 payload，按当前状态机执行准入及 prev 校验；已有 pass 的铸造事实不按当前 schema 重解析。状态入口在写入前检查事件高度、BTC 网络、rules scope 及配置中固定的 registry ID。
+- 时间表允许使用编译期执行器能力检查，按同一检查缓存各区间的支持结果，startup、块前校验和版本查询保持一致。生产没有动态加载规则或通过配置开关放宽版本支持的入口。
+
+### 8.2 隔离执行器与验收（2026-10-05）
+
+仅在 `cfg(test)` 下注册两项 conformance 规则，且要求 `btc-regtest` 与 `miner-pass-upgrade-conformance` 同时匹配：schema 使用独立 wire marker `901` 和严格 v1 字段语法；状态规则保留 v2 生命周期，但拒绝新的协作 mint。它们不代表正式 JSON v2 或状态机 v3，也不修改公开 catalog。
+
+[miner_pass_upgrade_dispatch.rs](../../tests/miner_pass_upgrade_dispatch.rs) 新增 9 项测试，复用真实 SQLite/RocksDB 和 Core/BH RPC 夹具：
+
+- H-1/H/H+1 的 schema 切换；commit 在 H-1、reveal 在 H 时使用 H 的规则，compare 双源和本地重解析一致。
+- 新 schema 的铭文继承旧 schema 的 pass；在区块发布失败后完整回滚 pass/prev、审计、能量和进度，修复故障后重试成功。
+- 只收紧状态机准入时，旧协作证继续有效并增长，新协作 mint 失败不消费 prev，后续合规继承仍可消费旧证；payload 继续使用 v1。
+- 错误高度、网络、规则域、registry revision 被拒绝；测试规则不能越过 scope 或其它版本族的支持检查。
+- 外部来源使用陈旧 schema 分类时，本地 canonical 重解析拒绝该区块；不留下业务记录，恢复来源后可重试。
+- 新选择的 schema 仍拒绝重复键、未知字段、错误类型及撤回的 JSON v2。
+- 旧 schema 的 pass 在新 schema/state 区间正常转移或 burn；随后空块继续保持 Dormant/Burned，不重新激活。
+
+[miner_pass_production_dispatch.rs](../../tests/miner_pass_production_dispatch.rs) 通过 Cargo 集成测试直接启动普通、非 `cfg(test)` 的 `usdb-indexer` 二进制，分别验证 conformance schema/state 在打开 pass/energy 存储前被拒绝。测试只使用临时目录、不获取全局进程锁，并为自身子进程设置退出等待上限。
+
+本地验证：indexer 单元/管线测试 357 通过、10 忽略，普通二进制集成测试 1 通过；`usdb-util` 87 通过、2 忽略。workspace 编译、相关 crate 的 Clippy（全部 targets、warnings 视为错误）、格式和公共 API 文档构建通过。既有 Rust/Go BTC activation 及 testnet-v1 activation 黄金向量检查通过；新增集成 target 由现有 fast gate 的 `cargo test --workspace` 自动覆盖，尚未触发远端 CI。
+
+### 8.3 下一批与保留边界
+
+生产 registry、genesis、版本常量、持久化字段、identity 算法和现行能量公式保持不变。本批不要求数据重建或网络重置；尚未进行在线升级或远端 CI 验收。
+
+下一批 C 将当前能量/继承算法封装为明确的版本实现，再构建分段结算内核。当前测试中的能量增长与继承仍执行现有 v1 公式，不能视为三种增长公式及非恒等状态转换已经实现。完整多区间历史 RPC、reorg、快照及 Go validator 验收仍按 D–F 推进；原地更换数据集 registry 的 G 批次继续独立。

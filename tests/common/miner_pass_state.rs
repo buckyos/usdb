@@ -118,6 +118,7 @@ pub struct Harness {
     pub energy: Arc<PassEnergyManager>,
     pub manager: MinerPassManager,
     pub timeline: Arc<Timeline>,
+    pub rules: usdb_util::BtcRuleTimeline,
 }
 
 impl Harness {
@@ -146,6 +147,13 @@ impl Harness {
                 storage.get_synced_btc_block_height().unwrap().unwrap_or(0),
             )
             .unwrap();
+        let rules = usdb_util::BtcRuleTimeline::new(
+            config
+                .activation_registry_catalog()
+                .unwrap()
+                .current_registry(),
+        )
+        .unwrap();
         let manager = MinerPassManager::new(config, storage.clone(), energy.clone()).unwrap();
         Self {
             root,
@@ -154,6 +162,7 @@ impl Harness {
             energy,
             manager,
             timeline,
+            rules,
         }
     }
     pub fn begin(&self, height: u32) -> MinePassStorageSavePointGuard<'_> {

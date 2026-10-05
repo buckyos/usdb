@@ -1,3 +1,4 @@
+use crate::index::rules::require_event_context;
 use crate::index::{
     InscriptionContentLoader, MintValidationError, MintValidationErrorCode, ParsedMintContent,
     USDBInscription,
@@ -8,6 +9,7 @@ use ordinals::SatPoint;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use usdb_util::BtcRuleContext;
 
 pub type InscriptionSourceFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -72,40 +74,44 @@ pub trait InscriptionSource: Send + Sync {
         block_hint: Option<Arc<Block>>,
     ) -> InscriptionSourceFuture<'a, Result<Vec<DiscoveredInscription>, String>>;
 
+    /// Discover and classify with one reveal-height context shared with canonical reparse.
     fn load_block_mint_batch<'a>(
         &'a self,
-        block_height: u32,
+        rules: &'a BtcRuleContext,
         block_hint: Option<Arc<Block>>,
         network: Network,
     ) -> InscriptionSourceFuture<'a, Result<DiscoveredMintBatch, String>> {
         Box::pin(async move {
             let inscriptions = self
-                .load_block_inscriptions(block_height, block_hint)
+                .load_block_inscriptions(rules.btc_height(), block_hint)
                 .await?;
-            classify_usdb_mints_from_inscriptions(inscriptions, network)
+            classify_usdb_mints_from_inscriptions(inscriptions, network, rules)
         })
     }
 
+    /// Return schema-valid candidates; state-machine admission happens during block execution.
     fn load_block_mints<'a>(
         &'a self,
-        block_height: u32,
+        rules: &'a BtcRuleContext,
         block_hint: Option<Arc<Block>>,
         network: Network,
     ) -> InscriptionSourceFuture<'a, Result<Vec<DiscoveredMint>, String>> {
         Box::pin(async move {
             let batch = self
-                .load_block_mint_batch(block_height, block_hint, network)
+                .load_block_mint_batch(rules, block_hint, network)
                 .await?;
             Ok(batch.valid_mints)
         })
     }
 }
 
+/// Filter an explicit block context to its schema-valid discovered mints.
 pub fn map_usdb_mints_from_inscriptions(
     inscriptions: Vec<DiscoveredInscription>,
     network: Network,
+    rules: &BtcRuleContext,
 ) -> Result<Vec<DiscoveredMint>, String> {
-    let batch = classify_usdb_mints_from_inscriptions(inscriptions, network)?;
+    let batch = classify_usdb_mints_from_inscriptions(inscriptions, network, rules)?;
     Ok(batch.valid_mints)
 }
 
@@ -126,21 +132,26 @@ fn to_invalid_mint(
     }
 }
 
+/// Classify raw, unmodified payloads under one height/network context.
 pub fn classify_usdb_mints_from_inscriptions(
     inscriptions: Vec<DiscoveredInscription>,
     network: Network,
+    rules: &BtcRuleContext,
 ) -> Result<DiscoveredMintBatch, String> {
+    require_event_context(rules, rules.btc_height(), network)?;
     let mut batch = DiscoveredMintBatch::default();
     for inscription in inscriptions {
+        require_event_context(rules, inscription.block_height, network)?;
         let content_string = match &inscription.content_string {
             Some(value) => value.clone(),
             None => continue,
         };
 
-        match InscriptionContentLoader::classify_mint_content_str_with_network(
+        match InscriptionContentLoader::classify_mint_content_str_with_rules(
             &inscription.inscription_id,
             &content_string,
             network,
+            rules,
         )? {
             ParsedMintContent::NotUsdbMint => {}
             ParsedMintContent::Valid(content) => {
@@ -207,7 +218,12 @@ mod tests {
             content_string: Some(content_string),
         }];
 
-        let batch = classify_usdb_mints_from_inscriptions(inscriptions, Network::Regtest).unwrap();
+        let batch = classify_usdb_mints_from_inscriptions(
+            inscriptions,
+            Network::Regtest,
+            &crate::index::test_miner_rules::context(10),
+        )
+        .unwrap();
 
         assert_eq!(batch.valid_mints.len(), 1);
         assert!(batch.invalid_mints.is_empty());
@@ -239,7 +255,12 @@ mod tests {
             })
             .collect();
 
-        let batch = classify_usdb_mints_from_inscriptions(inscriptions, Network::Regtest).unwrap();
+        let batch = classify_usdb_mints_from_inscriptions(
+            inscriptions,
+            Network::Regtest,
+            &crate::index::test_miner_rules::context(10),
+        )
+        .unwrap();
 
         assert!(batch.valid_mints.is_empty());
         assert_eq!(batch.invalid_mints.len(), 2);
@@ -287,7 +308,12 @@ mod tests {
             })
             .collect();
 
-        let batch = classify_usdb_mints_from_inscriptions(inscriptions, Network::Regtest).unwrap();
+        let batch = classify_usdb_mints_from_inscriptions(
+            inscriptions,
+            Network::Regtest,
+            &crate::index::test_miner_rules::context(10),
+        )
+        .unwrap();
 
         assert_eq!(batch.valid_mints.len(), 3);
         assert!(batch.invalid_mints.is_empty());

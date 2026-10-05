@@ -199,6 +199,20 @@ async fn run_compare_ord_and_bitcoind_with_options(options: CompareRangeOptions)
     let mut scanned = 0u32;
     let mut total_items = 0usize;
 
+    let rule_timeline = if compare_target == CompareTarget::UsdbMint {
+        Some(
+            usdb_util::BtcRuleTimeline::new(
+                config
+                    .activation_registry_catalog()
+                    .unwrap()
+                    .current_registry(),
+            )
+            .unwrap(),
+        )
+    } else {
+        None
+    };
+
     for height in height_range {
         let block = Arc::new(
             btc_client
@@ -213,7 +227,15 @@ async fn run_compare_ord_and_bitcoind_with_options(options: CompareRangeOptions)
                 .unwrap_or_else(|e| panic!("Compare failed at block {}: {}", height, e))
                 .len(),
             CompareTarget::UsdbMint => compare_source
-                .load_block_mints(height, Some(block), config.config().bitcoin.network())
+                .load_block_mints(
+                    &rule_timeline
+                        .as_ref()
+                        .unwrap()
+                        .indexer_context_at(height)
+                        .unwrap(),
+                    Some(block),
+                    config.config().bitcoin.network(),
+                )
                 .await
                 .unwrap_or_else(|e| panic!("Compare failed at block {}: {}", height, e))
                 .len(),

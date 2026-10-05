@@ -176,11 +176,12 @@ impl<'a> BlockEventExecutor<'a> {
 
                             self.indexer
                                 .miner_pass_manager
-                                .on_pass_transfer(
+                                .on_pass_transfer_with_rules(
                                     &item.inscription_id,
                                     &addr,
                                     &item.satpoint,
                                     item.block_height,
+                                    &mint_context.rules,
                                 )
                                 .await?;
                         }
@@ -192,7 +193,11 @@ impl<'a> BlockEventExecutor<'a> {
 
                             self.indexer
                                 .miner_pass_manager
-                                .on_pass_burned(&item.inscription_id, item.block_height)
+                                .on_pass_burned_with_rules(
+                                    &item.inscription_id,
+                                    item.block_height,
+                                    &mint_context.rules,
+                                )
                                 .await?;
                         }
                     }
