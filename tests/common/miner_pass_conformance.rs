@@ -10,7 +10,10 @@ pub const CONFORMANCE_STATE: &str = "conformance-miner-pass-state:no-new-collab"
 pub const CONFORMANCE_ENERGY_DOUBLE: &str = "conformance-energy:double";
 pub const CONFORMANCE_ENERGY_TRIPLE: &str = "conformance-energy:triple";
 
-/// Add independent schema/state/energy boundaries in a scope accepted only by indexer test builds.
+pub const CONFORMANCE_EFFECTIVE: &str = "conformance-effective:quarter-collab";
+pub const CONFORMANCE_LEVEL: &str = "conformance-level:thousands";
+
+/// Add independent schema/state/raw/derived boundaries in a scope accepted only by indexer test builds.
 pub fn conformance_catalog(activations: &[(VersionFamily, u32, &str)]) -> String {
     let mut doc: serde_json::Value = serde_json::from_str(CATALOG).unwrap();
     doc["registries"][0]["scope"]["rules_scope"] = CONFORMANCE_SCOPE.into();

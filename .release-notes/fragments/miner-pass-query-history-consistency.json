@@ -1,0 +1,27 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-query-history-consistency",
+  "type": "fixed",
+  "scopes": [
+    "indexer",
+    "consensus",
+    "testing"
+  ],
+  "summary": "Keep historical MinerPass economic queries and Go validation consistent across activation intervals",
+  "details": [
+    "Economic RPCs select raw settlement, effective contribution, level and difficulty-factor contracts at the requested BTC height. Historical registry queries require equivalence throughout the indexed prefix, rejecting intermediate divergences even when the final active versions match.",
+    "Leaderboard caching now checks the durable branch as well as height. Candidate and collab pagination retains the exact historical registry and height and rejects continuations from a replaced branch.",
+    "Go checks the full registry prefix before constructing a current mining selector. Shared Rust-generated HTTP RPC vectors exercise independent Go derived-value validation and tamper rejection; additional formulas are restricted to isolated conformance builds and are rejected by ordinary binaries.",
+    "Production remains schema v1, state machine v2 and existing energy formulas. Public activation records, identity encodings and exact dataset bindings are unchanged; this does not enable in-place registry migration."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/blob/main/doc/UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md"
+  ]
+}

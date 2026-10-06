@@ -465,6 +465,37 @@ impl ActiveVersionSet {
         &self,
         check_executors: impl FnOnce(&str, &str, &str) -> Result<(), ActivationRegistryError>,
     ) -> Result<(), ActivationRegistryError> {
+        self.validate_btc_indexer_with_formula_executors(check_executors, |effective, level| {
+            for (family, value, expected) in [
+                (
+                    VersionFamily::EffectiveEnergyFormulaVersion,
+                    effective,
+                    EFFECTIVE_ENERGY_FORMULA_VERSION_V1,
+                ),
+                (
+                    VersionFamily::LevelFormulaVersion,
+                    level,
+                    LEVEL_FORMULA_VERSION_V1,
+                ),
+            ] {
+                if value != expected {
+                    return Err(ActivationRegistryError::VersionNotSupported {
+                        family,
+                        value: value.into(),
+                    });
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Check compiled raw and derived formula executors independently. Shared query,
+    /// state-view and commitment contracts remain strict; callbacks must reject unknown rules.
+    pub fn validate_btc_indexer_with_formula_executors(
+        &self,
+        check_executors: impl FnOnce(&str, &str, &str) -> Result<(), ActivationRegistryError>,
+        check_derived: impl FnOnce(&str, &str) -> Result<(), ActivationRegistryError>,
+    ) -> Result<(), ActivationRegistryError> {
         if let Some(scope) = &self.scope {
             scope.validate()?;
         }
@@ -480,13 +511,9 @@ impl ActiveVersionSet {
         let state = self.require_string(VersionFamily::PassStateMachineVersion)?;
         let energy = self.require_string(VersionFamily::EnergyFormulaVersion)?;
         check_executors(schema, state, energy)?;
-        self.require_supported_string(
-            VersionFamily::EffectiveEnergyFormulaVersion,
-            EFFECTIVE_ENERGY_FORMULA_VERSION_V1,
-        )?;
-        self.require_supported_string(
-            VersionFamily::LevelFormulaVersion,
-            LEVEL_FORMULA_VERSION_V1,
+        check_derived(
+            self.require_string(VersionFamily::EffectiveEnergyFormulaVersion)?,
+            self.require_string(VersionFamily::LevelFormulaVersion)?,
         )?;
         self.require_supported_string(
             VersionFamily::QuerySemanticsVersion,

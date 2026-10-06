@@ -188,6 +188,26 @@ impl PassEnergyManager {
         self.storage.clear_synced_block_height_for_test()
     }
 
+    /// Resolve derived rules at the query height under the immutable dataset registry.
+    pub(crate) fn economic_rules_at(
+        &self,
+        height: u32,
+    ) -> Result<super::economic_rules::EconomicRules, String> {
+        self.settlement
+            .context_at(height)
+            .and_then(|context| {
+                super::economic_rules::EconomicRules::from_versions(context.active_version_set())
+                    .map_err(|e| e.to_string())
+            })
+            .map_err(|error| {
+                let msg = format!(
+                    "Failed to select economic query rules: block_height={height}, error={error}"
+                );
+                error!("{msg}");
+                msg
+            })
+    }
+
     /// Reject v2 writes outside the pending energy block so errors remain recoverable.
     pub(crate) fn require_pending_block(&self, block_height: u32) -> Result<(), String> {
         let pending = self.storage.get_pending_block_height().map_err(|err| {

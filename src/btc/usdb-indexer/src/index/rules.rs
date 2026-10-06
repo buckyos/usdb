@@ -83,12 +83,15 @@ pub(crate) fn validate_indexer_rules(
 ) -> Result<(), ActivationRegistryError> {
     #[cfg(test)]
     if conformance_scope(versions) {
-        return versions.validate_btc_indexer_with_executors(|_, _, _| {
-            MintSchemaRules::from_versions(versions)?;
-            PassStateRules::from_versions(versions)?;
-            super::energy_settlement::EnergyRules::from_versions(versions)?;
-            Ok(())
-        });
+        return versions.validate_btc_indexer_with_formula_executors(
+            |_, _, _| {
+                MintSchemaRules::from_versions(versions)?;
+                PassStateRules::from_versions(versions)?;
+                super::energy_settlement::EnergyRules::from_versions(versions)?;
+                Ok(())
+            },
+            |_, _| super::economic_rules::EconomicRules::from_versions(versions).map(|_| ()),
+        );
     }
     versions.validate_btc_indexer()?;
     MintSchemaRules::from_versions(versions)?;

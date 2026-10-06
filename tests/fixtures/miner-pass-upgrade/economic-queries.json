@@ -1,0 +1,1533 @@
+{
+  "schema_version": "miner-pass-upgrade-economic-queries:v1",
+  "registry": {
+    "network_id": "btc-regtest",
+    "rules_scope": "miner-pass-upgrade-conformance",
+    "revision": 1,
+    "current": true,
+    "stable_lag_blocks": 10,
+    "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+    "activations": [
+      {
+        "btc_height": 0,
+        "active_version_set_id": "32a06d94dac77a1560936f6da4a44b35c9381fab6abfd5a531a7a908567b52ab",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "uip-0003-pass-energy-formula:v1",
+          "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        }
+      },
+      {
+        "btc_height": 10,
+        "active_version_set_id": "53e67071508ef421956b7ff0261302317bffc80fb46296f5f92904e95a7e49d8",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        }
+      },
+      {
+        "btc_height": 13,
+        "active_version_set_id": "1a53857f190f9d8478d28d85b1ba5debda56a0cabedffb1d7fde7b07a6d52d02",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        }
+      },
+      {
+        "btc_height": 16,
+        "active_version_set_id": "718edf591c4a2b76b19416903305e443f77bf6bc5dec4bfb7ee507ef2eacf375",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        }
+      },
+      {
+        "btc_height": 20,
+        "active_version_set_id": "b31c54cf7c276afc1456b787670f981cf338410980c13afe63c305db9fb4d279",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:triple",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        }
+      }
+    ]
+  },
+  "profiles": [
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 9,
+        "snapshot_id": "09ba06bb84f61b98da88440b0978db80a08db6e9c6bde47608d2c17010841f64",
+        "stable_block_hash": "e615df6b63a310873d164cc20bb53ef485b86ab3bd4710e6a136d5a17c148360",
+        "stable_lag": 10,
+        "local_state_commit": "f2994bec58115139e3f02e239b13e18a182ad20174750efc50a188e3a65c99b9",
+        "system_state_id": "215a7f0ae11738a12b6949e275b98e314bef8ebf4a567727f0cecadd84d7012f",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "uip-0003-pass-energy-formula:v1",
+          "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "32a06d94dac77a1560936f6da4a44b35c9381fab6abfd5a531a7a908567b52ab"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "999",
+        "collab_contribution": "0",
+        "effective_energy": "999",
+        "level": 0,
+        "difficulty_factor_bps": 10000,
+        "collab_breakdown_count": 1
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "199997800",
+        "active_miner_owner_count": 2
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 10,
+        "snapshot_id": "4d010b887273e20b43b455ac989a901f83fd89f4ae86682825a4ff35427f1077",
+        "stable_block_hash": "4b8414b308d66db261fb94c961b8ecfdb34a8ade4673baf4e65d1492cfd8b094",
+        "stable_lag": 10,
+        "local_state_commit": "fe15347e13c833dc42a4a4ada96cbd863c4aa30e623665d281e0b5ea34ff102a",
+        "system_state_id": "6c5d09d8c03190453d8ec10b3b883083d063c3b1c07dcfbdc87e6efc6d854ef6",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "53e67071508ef421956b7ff0261302317bffc80fb46296f5f92904e95a7e49d8"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "3996",
+        "collab_contribution": "999",
+        "effective_energy": "4995",
+        "level": 0,
+        "difficulty_factor_bps": 10000,
+        "collab_breakdown_count": 1
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "199997800",
+        "active_miner_owner_count": 2
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 11,
+        "snapshot_id": "0c3e5c44a8d1b5fcf9d5678b1f111e6f9e012b3c1f8f56fea4e8c39123c42b95",
+        "stable_block_hash": "db16e1be00ca7e83f1eb0635f8de1a762d23fa9156ef219c8031a921b8b64a7f",
+        "stable_lag": 10,
+        "local_state_commit": "f2aa3a375314598a4ed70b15a6f2457f133c591f8189a39227f5ce287aedfea8",
+        "system_state_id": "29f9d3c8c31626cdad914a1b25024daef1669f12499fe54618f6dbc51c3a0a04",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "53e67071508ef421956b7ff0261302317bffc80fb46296f5f92904e95a7e49d8"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "5994",
+        "collab_contribution": "1998",
+        "effective_energy": "7992",
+        "level": 0,
+        "difficulty_factor_bps": 10000,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299990700",
+        "active_miner_owner_count": 3
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 12,
+        "snapshot_id": "0e45c22d1f3be49323b1dda64973151a32df8c09a013a8db2b824b7fd309fe04",
+        "stable_block_hash": "a3ed89bd7f72852ae14abfed371d585987d946b96e86634dccbd0f977250dc4b",
+        "stable_lag": 10,
+        "local_state_commit": "36d9bf6e2fec9dd35c23b203823390c80a688e55bff0526671b2c92908bc8a4d",
+        "system_state_id": "cddd5007f7e9c99bbe6739250155a11a6f47fba97b0608f503be59d987609194",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "53e67071508ef421956b7ff0261302317bffc80fb46296f5f92904e95a7e49d8"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "7992",
+        "collab_contribution": "3996",
+        "effective_energy": "11988",
+        "level": 0,
+        "difficulty_factor_bps": 10000,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299995600",
+        "active_miner_owner_count": 4
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 13,
+        "snapshot_id": "f0877532fbf79bbf2cb42c33419adf6f345ba3ce27564c4736fd000fe54b7d2e",
+        "stable_block_hash": "aa161f5761360b867e7fbaa5d588af3d9148525606c474d1b77dfd20ba6198b7",
+        "stable_lag": 10,
+        "local_state_commit": "a72aa07af16c819c79b997df79c085ac237520c3cb31939be708fd86ed2ec2af",
+        "system_state_id": "3c74c2b5cb2959a96fe6cf694be11e49e370912ddce8e5f56123d056c6469742",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "1a53857f190f9d8478d28d85b1ba5debda56a0cabedffb1d7fde7b07a6d52d02"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "9990",
+        "collab_contribution": "2997",
+        "effective_energy": "12987",
+        "level": 0,
+        "difficulty_factor_bps": 10000,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299995600",
+        "active_miner_owner_count": 4
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 14,
+        "snapshot_id": "f0fe298969985577b4e8efe3d35a07ef2d58af4bce4afa18c8a29ae9bc181e5a",
+        "stable_block_hash": "b74f18504ca713088bab047c2f6222f1c84b8969d0c35104267788924d851b47",
+        "stable_lag": 10,
+        "local_state_commit": "2f91ba89fd656946c40b92a8cf2814e485cbb45530231aac1063ca47d34ac525",
+        "system_state_id": "edf21aed3b751b022e8c52c44a081706f7ccb91910cd351ada7ef3a4af81dd1c",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "1a53857f190f9d8478d28d85b1ba5debda56a0cabedffb1d7fde7b07a6d52d02"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "11988",
+        "collab_contribution": "3995",
+        "effective_energy": "15983",
+        "level": 0,
+        "difficulty_factor_bps": 10000,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299995600",
+        "active_miner_owner_count": 4
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 15,
+        "snapshot_id": "63f027f925e07ead12455f8e5c5c9c40855ad247a92b6dde133af6a4b7fa83f7",
+        "stable_block_hash": "7e46858438e8fef7caf8b3e70a513059787bea8ee7cfdd1ec829c271bd5a4a88",
+        "stable_lag": 10,
+        "local_state_commit": "adf798900e0a75a2a42d7df3878fde6edbcc847e72c480a7b7562477064973c5",
+        "system_state_id": "c80ffb6b0d04ffb00c72d0473d4c052cf33ca26fae941656bbeeabecc50384e1",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "1a53857f190f9d8478d28d85b1ba5debda56a0cabedffb1d7fde7b07a6d52d02"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "13986",
+        "collab_contribution": "4995",
+        "effective_energy": "18981",
+        "level": 0,
+        "difficulty_factor_bps": 10000,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299995600",
+        "active_miner_owner_count": 4
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 16,
+        "snapshot_id": "4d8935583512fab396521d840943bfac96594b0bf566486e702d1658f4687410",
+        "stable_block_hash": "a3bb7da24b3939399955fd1be48fe3903c9990af69f6d626dbcd1ee6906ce24a",
+        "stable_lag": 10,
+        "local_state_commit": "a591029ff1376ed2648eb0e87b9a9507c5133e010185d470301994fdebc093fb",
+        "system_state_id": "d4ac24137d9394870dba4a9a494273cb85a84956f391f0c4fd720a2ca2afbb7a",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "718edf591c4a2b76b19416903305e443f77bf6bc5dec4bfb7ee507ef2eacf375"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "15984",
+        "collab_contribution": "5993",
+        "effective_energy": "21977",
+        "level": 21,
+        "difficulty_factor_bps": 7900,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299995600",
+        "active_miner_owner_count": 4
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 17,
+        "snapshot_id": "728f33085c9ff1c7fcb6373bc45568445b689964294686148dad3be0b268eaad",
+        "stable_block_hash": "25008d32fe6315bb5450658f9da67b6173e67c8c491c21b0a1be6ae81f073757",
+        "stable_lag": 10,
+        "local_state_commit": "572bcb28ac4647f07d858cad7dd9e6bf7954baae524b76889cf016366ff2b28d",
+        "system_state_id": "ad1430a69922d31415c4d5299518eb08f2b724e0d9b5fe6aa9e096fdebcdddc8",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "718edf591c4a2b76b19416903305e443f77bf6bc5dec4bfb7ee507ef2eacf375"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "17982",
+        "collab_contribution": "6993",
+        "effective_energy": "24975",
+        "level": 24,
+        "difficulty_factor_bps": 7600,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299995600",
+        "active_miner_owner_count": 4
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 19,
+        "snapshot_id": "297ae35f02324edbf85bd351d7bbad53f85b6787362f8df1c29b5e9ae46e7532",
+        "stable_block_hash": "02aa0611c1ef8631c1bdb47a15163dc85bc5b6a808a32dfd9b68d014f3dc0fb3",
+        "stable_lag": 10,
+        "local_state_commit": "ffa4f97dc6e5a1cbe1d003ec5cd4a623a25031302be32a304cf5e3485b14fac1",
+        "system_state_id": "99b0a438c8a528386c76ca131624983b84708cc6254f044f36c8b36646ebc8e6",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "718edf591c4a2b76b19416903305e443f77bf6bc5dec4bfb7ee507ef2eacf375"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "21978",
+        "collab_contribution": "8991",
+        "effective_energy": "30969",
+        "level": 30,
+        "difficulty_factor_bps": 7000,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299995600",
+        "active_miner_owner_count": 4
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 20,
+        "snapshot_id": "604edfa7ae7af60e1421fa71b4173f007e8461170cb27befc211ab7f81b6a92a",
+        "stable_block_hash": "31a25d44b2c9a9c2f9822f91e25c9444fe7b94086d7e4781e0ceed7d51a00da7",
+        "stable_lag": 10,
+        "local_state_commit": "092ecc39871f94b325dee19bb505dee76e7838fe38cfc947360fe32fba16dcbf",
+        "system_state_id": "d88a8fdb025089b8b4e2b26eae1166b5f6b8a5c84d6ff8217c2ab118c5816b0e",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:triple",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "b31c54cf7c276afc1456b787670f981cf338410980c13afe63c305db9fb4d279"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "24975",
+        "collab_contribution": "10489",
+        "effective_energy": "35464",
+        "level": 35,
+        "difficulty_factor_bps": 6500,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299995600",
+        "active_miner_owner_count": 4
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 21,
+        "snapshot_id": "b7bee9d457ec28a5244aebe157d0d3d16436cfbfe434b025b2059716cedebbf4",
+        "stable_block_hash": "f5dbedfbec6f541c83ddd10dc1066ea34b1ceb127499ae36fccc372d2538ea05",
+        "stable_lag": 10,
+        "local_state_commit": "fa956c3119a7de10637b5317ceb6a6580ba47af883946e17dbf4c2ec7e3e4dd7",
+        "system_state_id": "092b3e9c5b64a8f18ff483599bd20bdd2a8dfd07e2859580d5bc6552f6e16e33",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:triple",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "b31c54cf7c276afc1456b787670f981cf338410980c13afe63c305db9fb4d279"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "27972",
+        "collab_contribution": "11987",
+        "effective_energy": "39959",
+        "level": 39,
+        "difficulty_factor_bps": 6100,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299995600",
+        "active_miner_owner_count": 4
+      }
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 22,
+        "snapshot_id": "becabe47f63eaee38d3e08302bd5a9e49ead8fd628577c6bddc6e99b01d9d0d9",
+        "stable_block_hash": "de57ee3abc53000ca2fecb6b510ab9b6b9348b6633d4b298ef96eaaadc9ae543",
+        "stable_lag": 10,
+        "local_state_commit": "6b04d5c92cebdaaaeb9ed1e8473d350afd40a45f312204fd186d296d185bcf4f",
+        "system_state_id": "b26a13b697a17d579c2903aeba170117f126c37d5b3c731d5f47e7a104feda26",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:triple",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "b31c54cf7c276afc1456b787670f981cf338410980c13afe63c305db9fb4d279"
+      },
+      "pass": {
+        "pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+        "owner_script_hash": "a95baa5a50eb8e17a17757bb0f744593677b99a4345a2ff31ff08448448909de",
+        "owner_btc_addr": null,
+        "state": "active",
+        "pass_kind": "standard",
+        "usdb_main": "0x1111111111111111111111111111111111111111",
+        "raw_energy": "30969",
+        "collab_contribution": "13485",
+        "effective_energy": "44454",
+        "level": 44,
+        "difficulty_factor_bps": 5600,
+        "collab_breakdown_count": 2
+      },
+      "miner_aggregate": {
+        "total_miner_btc_sats": "299995600",
+        "active_miner_owner_count": 4
+      }
+    }
+  ],
+  "breakdowns": [
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 9,
+        "snapshot_id": "09ba06bb84f61b98da88440b0978db80a08db6e9c6bde47608d2c17010841f64",
+        "stable_block_hash": "e615df6b63a310873d164cc20bb53ef485b86ab3bd4710e6a136d5a17c148360",
+        "stable_lag": 10,
+        "local_state_commit": "f2994bec58115139e3f02e239b13e18a182ad20174750efc50a188e3a65c99b9",
+        "system_state_id": "215a7f0ae11738a12b6949e275b98e314bef8ebf4a567727f0cecadd84d7012f",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "uip-0003-pass-energy-formula:v1",
+          "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "32a06d94dac77a1560936f6da4a44b35c9381fab6abfd5a531a7a908567b52ab"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 1,
+      "aggregate_collab_contribution": "0",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "0",
+          "collab_weight_bps": 5000,
+          "collab_contribution": "0",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 10,
+        "snapshot_id": "4d010b887273e20b43b455ac989a901f83fd89f4ae86682825a4ff35427f1077",
+        "stable_block_hash": "4b8414b308d66db261fb94c961b8ecfdb34a8ade4673baf4e65d1492cfd8b094",
+        "stable_lag": 10,
+        "local_state_commit": "fe15347e13c833dc42a4a4ada96cbd863c4aa30e623665d281e0b5ea34ff102a",
+        "system_state_id": "6c5d09d8c03190453d8ec10b3b883083d063c3b1c07dcfbdc87e6efc6d854ef6",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "53e67071508ef421956b7ff0261302317bffc80fb46296f5f92904e95a7e49d8"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 1,
+      "aggregate_collab_contribution": "999",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "1998",
+          "collab_weight_bps": 5000,
+          "collab_contribution": "999",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 11,
+        "snapshot_id": "0c3e5c44a8d1b5fcf9d5678b1f111e6f9e012b3c1f8f56fea4e8c39123c42b95",
+        "stable_block_hash": "db16e1be00ca7e83f1eb0635f8de1a762d23fa9156ef219c8031a921b8b64a7f",
+        "stable_lag": 10,
+        "local_state_commit": "f2aa3a375314598a4ed70b15a6f2457f133c591f8189a39227f5ce287aedfea8",
+        "system_state_id": "29f9d3c8c31626cdad914a1b25024daef1669f12499fe54618f6dbc51c3a0a04",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "53e67071508ef421956b7ff0261302317bffc80fb46296f5f92904e95a7e49d8"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "1998",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "0",
+          "collab_weight_bps": 5000,
+          "collab_contribution": "0",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "3996",
+          "collab_weight_bps": 5000,
+          "collab_contribution": "1998",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 12,
+        "snapshot_id": "0e45c22d1f3be49323b1dda64973151a32df8c09a013a8db2b824b7fd309fe04",
+        "stable_block_hash": "a3ed89bd7f72852ae14abfed371d585987d946b96e86634dccbd0f977250dc4b",
+        "stable_lag": 10,
+        "local_state_commit": "36d9bf6e2fec9dd35c23b203823390c80a688e55bff0526671b2c92908bc8a4d",
+        "system_state_id": "cddd5007f7e9c99bbe6739250155a11a6f47fba97b0608f503be59d987609194",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "53e67071508ef421956b7ff0261302317bffc80fb46296f5f92904e95a7e49d8"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "3996",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "1998",
+          "collab_weight_bps": 5000,
+          "collab_contribution": "999",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "5994",
+          "collab_weight_bps": 5000,
+          "collab_contribution": "2997",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 13,
+        "snapshot_id": "f0877532fbf79bbf2cb42c33419adf6f345ba3ce27564c4736fd000fe54b7d2e",
+        "stable_block_hash": "aa161f5761360b867e7fbaa5d588af3d9148525606c474d1b77dfd20ba6198b7",
+        "stable_lag": 10,
+        "local_state_commit": "a72aa07af16c819c79b997df79c085ac237520c3cb31939be708fd86ed2ec2af",
+        "system_state_id": "3c74c2b5cb2959a96fe6cf694be11e49e370912ddce8e5f56123d056c6469742",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "1a53857f190f9d8478d28d85b1ba5debda56a0cabedffb1d7fde7b07a6d52d02"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "2997",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "3996",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "999",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "7992",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "1998",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 14,
+        "snapshot_id": "f0fe298969985577b4e8efe3d35a07ef2d58af4bce4afa18c8a29ae9bc181e5a",
+        "stable_block_hash": "b74f18504ca713088bab047c2f6222f1c84b8969d0c35104267788924d851b47",
+        "stable_lag": 10,
+        "local_state_commit": "2f91ba89fd656946c40b92a8cf2814e485cbb45530231aac1063ca47d34ac525",
+        "system_state_id": "edf21aed3b751b022e8c52c44a081706f7ccb91910cd351ada7ef3a4af81dd1c",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "1a53857f190f9d8478d28d85b1ba5debda56a0cabedffb1d7fde7b07a6d52d02"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "3995",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "5994",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "1498",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "9990",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "2497",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 15,
+        "snapshot_id": "63f027f925e07ead12455f8e5c5c9c40855ad247a92b6dde133af6a4b7fa83f7",
+        "stable_block_hash": "7e46858438e8fef7caf8b3e70a513059787bea8ee7cfdd1ec829c271bd5a4a88",
+        "stable_lag": 10,
+        "local_state_commit": "adf798900e0a75a2a42d7df3878fde6edbcc847e72c480a7b7562477064973c5",
+        "system_state_id": "c80ffb6b0d04ffb00c72d0473d4c052cf33ca26fae941656bbeeabecc50384e1",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "1a53857f190f9d8478d28d85b1ba5debda56a0cabedffb1d7fde7b07a6d52d02"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "4995",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "7992",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "1998",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "11988",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "2997",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 16,
+        "snapshot_id": "4d8935583512fab396521d840943bfac96594b0bf566486e702d1658f4687410",
+        "stable_block_hash": "a3bb7da24b3939399955fd1be48fe3903c9990af69f6d626dbcd1ee6906ce24a",
+        "stable_lag": 10,
+        "local_state_commit": "a591029ff1376ed2648eb0e87b9a9507c5133e010185d470301994fdebc093fb",
+        "system_state_id": "d4ac24137d9394870dba4a9a494273cb85a84956f391f0c4fd720a2ca2afbb7a",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "718edf591c4a2b76b19416903305e443f77bf6bc5dec4bfb7ee507ef2eacf375"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "5993",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "9990",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "2497",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "13986",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "3496",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 17,
+        "snapshot_id": "728f33085c9ff1c7fcb6373bc45568445b689964294686148dad3be0b268eaad",
+        "stable_block_hash": "25008d32fe6315bb5450658f9da67b6173e67c8c491c21b0a1be6ae81f073757",
+        "stable_lag": 10,
+        "local_state_commit": "572bcb28ac4647f07d858cad7dd9e6bf7954baae524b76889cf016366ff2b28d",
+        "system_state_id": "ad1430a69922d31415c4d5299518eb08f2b724e0d9b5fe6aa9e096fdebcdddc8",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "718edf591c4a2b76b19416903305e443f77bf6bc5dec4bfb7ee507ef2eacf375"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "6993",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "11988",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "2997",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "15984",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "3996",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 19,
+        "snapshot_id": "297ae35f02324edbf85bd351d7bbad53f85b6787362f8df1c29b5e9ae46e7532",
+        "stable_block_hash": "02aa0611c1ef8631c1bdb47a15163dc85bc5b6a808a32dfd9b68d014f3dc0fb3",
+        "stable_lag": 10,
+        "local_state_commit": "ffa4f97dc6e5a1cbe1d003ec5cd4a623a25031302be32a304cf5e3485b14fac1",
+        "system_state_id": "99b0a438c8a528386c76ca131624983b84708cc6254f044f36c8b36646ebc8e6",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:double",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "718edf591c4a2b76b19416903305e443f77bf6bc5dec4bfb7ee507ef2eacf375"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "8991",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "15984",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "3996",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "19980",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "4995",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 20,
+        "snapshot_id": "604edfa7ae7af60e1421fa71b4173f007e8461170cb27befc211ab7f81b6a92a",
+        "stable_block_hash": "31a25d44b2c9a9c2f9822f91e25c9444fe7b94086d7e4781e0ceed7d51a00da7",
+        "stable_lag": 10,
+        "local_state_commit": "092ecc39871f94b325dee19bb505dee76e7838fe38cfc947360fe32fba16dcbf",
+        "system_state_id": "d88a8fdb025089b8b4e2b26eae1166b5f6b8a5c84d6ff8217c2ab118c5816b0e",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:triple",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "b31c54cf7c276afc1456b787670f981cf338410980c13afe63c305db9fb4d279"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "10489",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "18981",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "4745",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "22977",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "5744",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 21,
+        "snapshot_id": "b7bee9d457ec28a5244aebe157d0d3d16436cfbfe434b025b2059716cedebbf4",
+        "stable_block_hash": "f5dbedfbec6f541c83ddd10dc1066ea34b1ceb127499ae36fccc372d2538ea05",
+        "stable_lag": 10,
+        "local_state_commit": "fa956c3119a7de10637b5317ceb6a6580ba47af883946e17dbf4c2ec7e3e4dd7",
+        "system_state_id": "092b3e9c5b64a8f18ff483599bd20bdd2a8dfd07e2859580d5bc6552f6e16e33",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:triple",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "b31c54cf7c276afc1456b787670f981cf338410980c13afe63c305db9fb4d279"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "11987",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "21978",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "5494",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "25974",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "6493",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    },
+    {
+      "view_version": "uip-0006-usdb-economic-state-view:v1",
+      "external_state": {
+        "btc_height": 22,
+        "snapshot_id": "becabe47f63eaee38d3e08302bd5a9e49ead8fd628577c6bddc6e99b01d9d0d9",
+        "stable_block_hash": "de57ee3abc53000ca2fecb6b510ab9b6b9348b6633d4b298ef96eaaadc9ae543",
+        "stable_lag": 10,
+        "local_state_commit": "6b04d5c92cebdaaaeb9ed1e8473d350afd40a45f312204fd186d296d185bcf4f",
+        "system_state_id": "b26a13b697a17d579c2903aeba170117f126c37d5b3c731d5f47e7a104feda26",
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+        "activation_registry_id": "1fa6d9bac52ae25d5219b1435b1512c42ea470ff565d2b85f8be29a814a0f22a",
+        "active_version_set": {
+          "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+          "pass_state_machine_version": "uip-0002-pass-state-machine:v2",
+          "energy_formula_version": "conformance-energy:triple",
+          "effective_energy_formula_version": "conformance-effective:quarter-collab",
+          "level_formula_version": "conformance-level:thousands",
+          "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+          "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+          "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+          "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+          "scope": {
+            "network_id": "btc-regtest",
+            "rules_scope": "miner-pass-upgrade-conformance"
+          }
+        },
+        "active_version_set_id": "b31c54cf7c276afc1456b787670f981cf338410980c13afe63c305db9fb4d279"
+      },
+      "leader_pass_id": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0",
+      "leader_state": "active",
+      "leader_pass_kind": "standard",
+      "sort": "collab_pass_id_asc",
+      "total": 2,
+      "aggregate_collab_contribution": "13485",
+      "limit": 100,
+      "max_limit": 500,
+      "next_cursor": null,
+      "items": [
+        {
+          "collab_pass_id": "07e4b3dc622d1650b1cbd3a97a7a50a88703b71177b37be9d082e9ea563a0b9bi0",
+          "collab_owner_script_hash": "42f34ab209469428ffe0326d79989438f2cfb66192a55f6fb52c5495c3081cbc",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 11,
+          "collab_raw_energy": "24975",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "6243",
+          "leader_ref_kind": "leader_btc_addr",
+          "leader_ref_value": "bcrt1qt95lqr64arnwv42sgkd3n9q0ddpmxzj8lszzes"
+        },
+        {
+          "collab_pass_id": "e0059be85f810aed0f24b84de3267f476efaa6c56c507411a40d312dc5a8e1c3i0",
+          "collab_owner_script_hash": "648cfc600b72f1403c48513762681802fc103d7df2a07c52ff69a0371dd9ea06",
+          "collab_owner_btc_addr": null,
+          "record_block_height": 9,
+          "collab_raw_energy": "28971",
+          "collab_weight_bps": 2500,
+          "collab_contribution": "7242",
+          "leader_ref_kind": "leader_pass_id",
+          "leader_ref_value": "965d75369acaa68f317375b77cc85ab9ffa942dbda738cc390c1543b510c5444i0"
+        }
+      ]
+    }
+  ]
+}

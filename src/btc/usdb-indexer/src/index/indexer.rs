@@ -639,6 +639,26 @@ impl InscriptionIndexer {
             .clone())
     }
 
+    /// Prove that requested query identities describe this dataset's complete execution
+    /// prefix. This is read-only and never authorizes rewriting either store's binding.
+    pub fn ensure_query_registry_history(
+        &self,
+        registry_id: &str,
+        height: u32,
+    ) -> Result<(), ActivationRegistryError> {
+        self.activation_registry_catalog
+            .registry_by_id(registry_id)?;
+        let current = self.activation_registry_catalog.current_registry_id();
+        if registry_id == current {
+            return Ok(());
+        }
+        self.rule_timelines[current].ensure_same_history(
+            &self.rule_timelines[registry_id],
+            self.config.config().usdb.genesis_block_height.min(height),
+            height,
+        )
+    }
+
     /// Resolves one exact registry revision and validates its active version set.
     pub fn active_version_set_at_with_registry(
         &self,

@@ -145,6 +145,13 @@ impl EnergySettlement {
         Self { timeline }
     }
 
+    /// Resolve immutable execution context for derived queries over this same dataset.
+    pub(crate) fn context_at(&self, height: u32) -> Result<usdb_util::BtcRuleContext, String> {
+        self.timeline
+            .indexer_context_at(height)
+            .map_err(|error| error.to_string())
+    }
+
     fn rules_at(&self, height: u32) -> Result<EnergyRules, String> {
         self.timeline
             .indexer_context_at(height)

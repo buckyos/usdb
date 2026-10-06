@@ -1,4 +1,5 @@
 mod content;
+pub(crate) mod economic_rules;
 mod effective_energy;
 mod energy;
 pub(crate) mod energy_formula;
@@ -81,3 +82,10 @@ mod miner_pass_upgrade_recovery;
 #[cfg(test)]
 #[path = "../../../../../tests/common/miner_pass_upgrade.rs"]
 pub(crate) mod test_miner_upgrade;
+
+#[cfg(test)]
+#[path = "../../../../../tests/miner_pass_upgrade_queries.rs"]
+mod miner_pass_upgrade_queries;
+#[cfg(test)]
+#[path = "../../../../../tests/common/miner_pass_queries.rs"]
+pub(crate) mod test_miner_queries;

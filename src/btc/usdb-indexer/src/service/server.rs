@@ -5,9 +5,8 @@ use super::economic_cursor::{
 use super::rpc::*;
 use crate::config::ConfigManagerRef;
 use crate::index::{
-    COLLAB_WEIGHT_BPS, CandidateSetDerivationError, DerivedCollabBreakdownItem,
-    DerivedPassEnergyMode, Energy, InscriptionIndexer, MinerPassState, calc_difficulty_factor_bps,
-    calc_level_from_effective_energy,
+    CandidateSetDerivationError, DerivedCollabBreakdownItem, DerivedPassEnergyMode, Energy,
+    InscriptionIndexer, MinerPassState,
 };
 use crate::status::StatusManagerRef;
 use crate::storage::MinerPassSnapshotInfo;
@@ -102,9 +101,17 @@ type CurrentStateForErrorPayload = (
     Option<SystemStateInfo>,
 );
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LeaderboardState {
+    height: u32,
+    registry_id: String,
+    reorg_epoch: u64,
+    pass_commit: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 struct PassEnergyLeaderboardCacheEntry {
-    resolved_height: u32,
+    state: LeaderboardState,
     scope: String,
     top_k: usize,
     total: u64,
@@ -1208,6 +1215,28 @@ impl UsdbIndexerRpcServer {
                     .current_registry_id()
             })
             .to_string();
+        self.indexer
+            .ensure_query_registry_history(&registry_id, synced_height)
+            .map_err(|error| {
+                if matches!(error, ActivationRegistryError::ActivationRecordNotFound(_)) {
+                    return self.to_activation_error(synced_height, error);
+                }
+                let mut data = ConsensusRpcErrorData::new(USDB_INDEXER_SERVICE_NAME);
+                data.requested_height = Some(synced_height);
+                data.local_synced_height = self.synced_height().ok().flatten();
+                data.expected_state.activation_registry_id = Some(registry_id.clone());
+                data.actual_state.activation_registry_id = Some(
+                    self.indexer
+                        .activation_registry_catalog()
+                        .current_registry_id()
+                        .into(),
+                );
+                data.detail = Some(error.to_string());
+                Self::to_consensus_error(
+                    ConsensusRpcErrorCode::ActiveVersionSetMismatch,
+                    data.with_mismatch_field("activation_registry_id"),
+                )
+            })?;
         let active_version_set = self
             .indexer
             .active_version_set_at_with_registry(&registry_id, synced_height)
@@ -1864,14 +1893,17 @@ impl UsdbIndexerRpcServer {
         }
     }
 
-    fn encode_collab_breakdown_item(item: DerivedCollabBreakdownItem) -> CollabBreakdownItem {
+    fn encode_collab_breakdown_item(
+        item: DerivedCollabBreakdownItem,
+        weight_bps: u64,
+    ) -> CollabBreakdownItem {
         CollabBreakdownItem {
             collab_pass_id: item.collab_pass_id.to_string(),
             collab_owner_script_hash: item.collab_owner.to_string(),
             collab_owner_btc_addr: None,
             record_block_height: item.record_block_height,
             collab_raw_energy: encode_energy_decimal(item.collab_raw_energy),
-            collab_weight_bps: COLLAB_WEIGHT_BPS as u64,
+            collab_weight_bps: weight_bps,
             collab_contribution: encode_energy_decimal(item.collab_contribution),
             leader_ref_kind: item.leader_ref_kind,
             leader_ref_value: item.leader_ref_value,
@@ -2037,23 +2069,42 @@ impl UsdbIndexerRpcServer {
             })
     }
 
+    /// Pin display cache reuse to the dataset and durable branch, including same-height reorgs.
+    fn leaderboard_state(&self, height: u32) -> Result<LeaderboardState, JsonError> {
+        self.active_version_set_at(height)?;
+        let storage = self.indexer.miner_pass_storage();
+        Ok(LeaderboardState {
+            height,
+            registry_id: self
+                .indexer
+                .activation_registry_catalog()
+                .current_registry_id()
+                .into(),
+            reorg_epoch: storage
+                .get_upstream_reorg_epoch()
+                .map_err(Self::to_internal_error)?,
+            pass_commit: storage
+                .get_pass_block_commit(height)
+                .map_err(Self::to_internal_error)?
+                .map(|entry| entry.block_commit),
+        })
+    }
+
     fn try_get_cached_leaderboard_page(
         &self,
-        resolved_height: u32,
+        state: &LeaderboardState,
         scope: PassEnergyLeaderboardScope,
         top_k: usize,
         page: usize,
         page_size: usize,
     ) -> Result<Option<PassEnergyLeaderboardPage>, JsonError> {
+        let resolved_height = state.height;
         let offset = Self::pagination_offset(page, page_size)?;
         let cache = self.pass_energy_leaderboard_cache.lock().unwrap();
         let Some(entry) = &cache.latest else {
             return Ok(None);
         };
-        if entry.resolved_height != resolved_height
-            || entry.scope != scope.as_str()
-            || entry.top_k != top_k
-        {
+        if entry.state != *state || entry.scope != scope.as_str() || entry.top_k != top_k {
             return Ok(None);
         }
 
@@ -2092,7 +2143,7 @@ impl UsdbIndexerRpcServer {
 
     fn update_leaderboard_cache(
         &self,
-        resolved_height: u32,
+        state: &LeaderboardState,
         scope: PassEnergyLeaderboardScope,
         top_k: usize,
         total: u64,
@@ -2105,7 +2156,7 @@ impl UsdbIndexerRpcServer {
             .cloned()
             .collect::<Vec<PassEnergyLeaderboardItem>>();
         cache.latest = Some(PassEnergyLeaderboardCacheEntry {
-            resolved_height,
+            state: state.clone(),
             scope: scope.as_str().to_string(),
             top_k,
             total,
@@ -2238,12 +2289,16 @@ impl UsdbIndexerRpcServer {
                 ));
             }
         };
+        let rules = self
+            .indexer
+            .pass_energy_manager()
+            .economic_rules_at(resolved_height)
+            .map_err(Self::to_internal_error)?;
         let total_candidates = candidates.len() as u64;
         let mut ranked = Vec::with_capacity(candidates.len());
         for snapshot in candidates {
             let pass_id = snapshot.pass.pass.inscription_id;
-            let level = calc_level_from_effective_energy(snapshot.effective_energy);
-            let difficulty_factor_bps = calc_difficulty_factor_bps(level);
+            let (level, difficulty_factor_bps) = rules.level_and_factor(snapshot.effective_energy);
 
             ranked.push(RankedCandidateSetItem {
                 effective_energy: snapshot.effective_energy,
@@ -2356,8 +2411,12 @@ impl UsdbIndexerRpcServer {
                 )
             };
 
-        let level = calc_level_from_effective_energy(effective_energy);
-        let difficulty_factor_bps = calc_difficulty_factor_bps(level);
+        let (level, difficulty_factor_bps) = self
+            .indexer
+            .pass_energy_manager()
+            .economic_rules_at(query_height)
+            .map_err(Self::to_internal_error)?
+            .level_and_factor(effective_energy);
         Ok((
             PassEconomicProfile {
                 pass_id: pass.inscription_id.to_string(),
@@ -2912,8 +2971,12 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         };
 
         let record = snapshot.record;
-        let level = calc_level_from_effective_energy(snapshot.effective_energy);
-        let difficulty_factor_bps = calc_difficulty_factor_bps(level);
+        let (level, difficulty_factor_bps) = self
+            .indexer
+            .pass_energy_manager()
+            .economic_rules_at(query_height)
+            .map_err(Self::to_internal_error)?
+            .level_and_factor(snapshot.effective_energy);
 
         Ok(PassEnergySnapshot {
             inscription_id: record.inscription_id.to_string(),
@@ -3035,6 +3098,12 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             }
         };
 
+        let weight_bps = self
+            .indexer
+            .pass_energy_manager()
+            .economic_rules_at(query_height)
+            .map_err(Self::to_internal_error)?
+            .collab_weight_bps();
         let total = breakdown.items.len() as u64;
         let start = Self::collab_cursor_start(&breakdown.items, cursor.as_ref())?;
         let end = start
@@ -3043,7 +3112,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         let items = breakdown.items[start..end]
             .iter()
             .cloned()
-            .map(Self::encode_collab_breakdown_item)
+            .map(|item| Self::encode_collab_breakdown_item(item, weight_bps))
             .collect();
 
         let state_ref = self.revalidate_economic_query_context(query_height, &initial_state_ref)?;
@@ -3163,6 +3232,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         self.validate_pagination(params.page, params.page_size)?;
 
         let resolved_height = self.resolve_height(params.at_height)?;
+        let state = self.leaderboard_state(resolved_height)?;
         let scope = self.parse_leaderboard_scope(params.scope.as_deref())?;
         let call_start = Instant::now();
         let (cache_enabled, cache_top_k) = self.leaderboard_cache_settings();
@@ -3172,7 +3242,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         if offset >= cache_top_k {
             if should_use_cache
                 && let Some(cached_page) = self.try_get_cached_leaderboard_page(
-                    resolved_height,
+                    &state,
                     scope,
                     cache_top_k,
                     params.page,
@@ -3210,7 +3280,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         if should_use_cache
             && let Some(cached_page) = self.try_get_cached_leaderboard_page(
-                resolved_height,
+                &state,
                 scope,
                 cache_top_k,
                 params.page,
@@ -3245,14 +3315,15 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             params.page_size,
         )?;
 
+        if self.leaderboard_state(resolved_height)? != state {
+            return Err(Self::to_internal_error(format!(
+                "Leaderboard branch changed during derivation: block_height={resolved_height}, registry_id={}",
+                state.registry_id
+            )));
+        }
+
         if should_use_cache {
-            self.update_leaderboard_cache(
-                resolved_height,
-                scope,
-                cache_top_k,
-                capped_total,
-                capped_ranked,
-            );
+            self.update_leaderboard_cache(&state, scope, cache_top_k, capped_total, capped_ranked);
             info!(
                 "Pass energy leaderboard cache refreshed: module=rpc_server, scope={}, resolved_height={}, top_k={}, raw_total={}, capped_total={}, page={}, page_size={}, elapsed_ms={}",
                 scope.as_str(),
@@ -6117,7 +6188,7 @@ mod tests {
         {
             let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
             let entry = cache.latest.as_ref().expect("cache should be populated");
-            assert_eq!(entry.resolved_height, 120);
+            assert_eq!(entry.state.height, 120);
             assert_eq!(entry.total, 1);
             assert_eq!(entry.items.len(), 1);
         }
@@ -6140,7 +6211,7 @@ mod tests {
         {
             let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
             let entry = cache.latest.as_ref().expect("cache should be refreshed");
-            assert_eq!(entry.resolved_height, 121);
+            assert_eq!(entry.state.height, 121);
             assert_eq!(entry.total, 1);
         }
 
@@ -8982,7 +9053,7 @@ mod tests {
         {
             let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
             let entry = cache.latest.as_ref().expect("cache should exist");
-            assert_eq!(entry.resolved_height, 121);
+            assert_eq!(entry.state.height, 121);
             assert_eq!(entry.total, 4);
             assert_eq!(entry.items.len(), 4);
         }

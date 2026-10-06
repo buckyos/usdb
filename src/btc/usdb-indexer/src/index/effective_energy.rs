@@ -1,6 +1,7 @@
 use super::content::{MinerPassKind, MinerPassState};
+use super::economic_rules::EconomicRules;
 use super::energy::{PassEnergyManagerRef, PassEnergyResult};
-use super::energy_formula::{Energy, calc_collab_contribution, calc_standard_effective_energy};
+use super::energy_formula::Energy;
 use crate::storage::{MinerPassSnapshotInfo, MinerPassStorageRef, PassEnergyRecord};
 use bitcoincore_rpc::bitcoin::Network;
 use ord::InscriptionId;
@@ -105,6 +106,7 @@ pub struct DerivedCollabBreakdown {
 }
 
 struct CollabBreakdownCollector<'a> {
+    rules: EconomicRules,
     leader_pass_id: &'a InscriptionId,
     leader_owner: &'a BtcScriptHash,
     block_height: u32,
@@ -171,6 +173,7 @@ impl EffectiveEnergyResolver {
         block_height: u32,
         mode: DerivedPassEnergyMode,
     ) -> Result<Option<DerivedPassEnergySnapshot>, String> {
+        let rules = self.pass_energy_manager.economic_rules_at(block_height)?;
         let Some((record, raw_result)) =
             self.resolve_target_raw_energy(inscription_id, block_height, mode)?
         else {
@@ -214,7 +217,7 @@ impl EffectiveEnergyResolver {
                     )?;
                 (
                     collab_contribution,
-                    calc_standard_effective_energy(raw_result.energy, collab_contribution),
+                    rules.effective(raw_result.energy, collab_contribution),
                     collab_breakdown_count,
                 )
             } else {
@@ -242,6 +245,7 @@ impl EffectiveEnergyResolver {
         &self,
         block_height: u32,
     ) -> Result<Vec<DerivedCandidateEnergySnapshot>, CandidateSetDerivationError> {
+        let rules = self.pass_energy_manager.economic_rules_at(block_height)?;
         let standards = self.load_all_active_passes(block_height, MinerPassKind::Standard)?;
         if standards.is_empty() {
             return Ok(Vec::new());
@@ -361,7 +365,7 @@ impl EffectiveEnergyResolver {
                     detail: msg,
                 });
             }
-            let contribution = calc_collab_contribution(collab_raw.energy);
+            let contribution = rules.collab(collab_raw.energy);
             let aggregate = &mut collab_aggregates[leader_index];
             aggregate.0 = aggregate.0.saturating_add(contribution);
             aggregate.1 = aggregate.1.saturating_add(1);
@@ -405,10 +409,7 @@ impl EffectiveEnergyResolver {
                 record,
                 raw_energy: raw_result.energy,
                 collab_contribution,
-                effective_energy: calc_standard_effective_energy(
-                    raw_result.energy,
-                    collab_contribution,
-                ),
+                effective_energy: rules.effective(raw_result.energy, collab_contribution),
                 collab_breakdown_count,
             });
         }
@@ -467,6 +468,7 @@ impl EffectiveEnergyResolver {
         leader_pass_id: &InscriptionId,
         block_height: u32,
     ) -> Result<Option<DerivedCollabBreakdown>, String> {
+        self.pass_energy_manager.economic_rules_at(block_height)?;
         let Some(leader) = self
             .pass_storage
             .get_pass_snapshot_from_history_at_height(leader_pass_id, block_height)?
@@ -553,6 +555,7 @@ impl EffectiveEnergyResolver {
         let mut items = Vec::new();
 
         let mut collector = CollabBreakdownCollector {
+            rules: self.pass_energy_manager.economic_rules_at(block_height)?,
             leader_pass_id,
             leader_owner,
             block_height,
@@ -717,7 +720,7 @@ impl EffectiveEnergyResolver {
                     return Err(msg);
                 }
 
-                let collab_contribution = calc_collab_contribution(collab_raw.energy);
+                let collab_contribution = collector.rules.collab(collab_raw.energy);
                 *collector.aggregate = (*collector.aggregate).saturating_add(collab_contribution);
                 collector.items.push(DerivedCollabBreakdownItem {
                     collab_pass_id: collab_snapshot.pass.inscription_id,

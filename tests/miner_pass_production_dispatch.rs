@@ -3,8 +3,8 @@
 mod conformance;
 
 use conformance::{
-    CONFORMANCE_ENERGY_DOUBLE, CONFORMANCE_ENERGY_TRIPLE, CONFORMANCE_SCHEMA, CONFORMANCE_SCOPE,
-    CONFORMANCE_STATE, conformance_catalog,
+    CONFORMANCE_EFFECTIVE, CONFORMANCE_ENERGY_DOUBLE, CONFORMANCE_ENERGY_TRIPLE, CONFORMANCE_LEVEL,
+    CONFORMANCE_SCHEMA, CONFORMANCE_SCOPE, CONFORMANCE_STATE, conformance_catalog,
 };
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -23,6 +23,11 @@ fn ordinary_binary_rejects_conformance_executors_before_opening_stores() {
             VersionFamily::EnergyFormulaVersion,
             CONFORMANCE_ENERGY_TRIPLE,
         ),
+        (
+            VersionFamily::EffectiveEnergyFormulaVersion,
+            CONFORMANCE_EFFECTIVE,
+        ),
+        (VersionFamily::LevelFormulaVersion, CONFORMANCE_LEVEL),
     ] {
         let root = std::env::temp_dir().join(format!(
             "usdb-production-dispatch-{}-{}",
@@ -77,13 +82,16 @@ fn ordinary_binary_rejects_conformance_executors_before_opening_stores() {
             "Production binary did not reject {version}: {stdout}\n{stderr}"
         );
         assert!(!output.status.success(), "{version}: {stdout}\n{stderr}");
-        let expected_error = if family == VersionFamily::EnergyFormulaVersion {
-            "version not supported: energy_formula_version="
-        } else {
-            "Unsupported MinerPass rule combination"
+        let expected_error = match family {
+            VersionFamily::EnergyFormulaVersion
+            | VersionFamily::EffectiveEnergyFormulaVersion
+            | VersionFamily::LevelFormulaVersion => {
+                format!("version not supported: {}=", family.as_str())
+            }
+            _ => "Unsupported MinerPass rule combination".into(),
         };
         assert!(
-            stdout.contains(expected_error) && stdout.contains(version),
+            stdout.contains(&expected_error) && stdout.contains(version),
             "{stdout}\n{stderr}"
         );
         assert!(

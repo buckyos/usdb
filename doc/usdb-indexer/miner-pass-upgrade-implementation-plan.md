@@ -1,6 +1,6 @@
 # UIP-0017 多区间升级实施与测试计划
 
-状态：A 已提交为 `4dd2333`；B 已提交为 `72e6a87`；C 已提交为 `2ca2694`；D 已完成本地实现与验证，待评审提交；E–G 尚未实施。
+状态：A 已提交为 `4dd2333`；B 已提交为 `72e6a87`；C 已提交为 `2ca2694`；D 已提交为 `d901370`；E 已完成本地实现与验证，待评审提交；F–G 尚未实施。
 
 协议依据：[UIP-0017](../UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md) 第一版草案已由用户确认并提交为 `36726a5`；这不表示委员会流程完成或目标网络已激活。本文记录当前实现缺口、分批交付和测试验收，不分配正式 schema v2 / 状态机 v3，不改变现行网络参数。
 
@@ -14,7 +14,7 @@
 
 ## 2. 当前实现与缺口
 
-以下为制定计划时的源码核查结果；A–D 批次的交付与验证见第 7–10 节，E–G 仍为待实施内容。
+以下为制定计划时的源码核查结果；A–E 批次的交付与验证见第 7–11 节，F–G 仍为待实施内容。
 
 | 模块 | 已有基础 | 所需补充 |
 | --- | --- | --- |
@@ -251,7 +251,7 @@ C 交付时计划由 D 审查边界动作、规范状态表示/承诺及完整�
 - [rule_transition.rs](../../src/btc/usdb-indexer/src/index/rule_transition.rs) 为每条已注册 schema/state/energy 转换边声明策略。空块也在 pending-energy 与业务写入之前检查相邻边界；启动检查 origin 至持久化高度的整个路径。不能因为版本各自受支持，就默认两者之间存在兼容转换。
 - 现有 schema/state 转换只改变新操作的准入，保留已接受的铸造事实和存量权益。能量边界检查与分段结算共用 `EnergyTransition` 声明；测试 H1 使用非恒等表示转换，H2 使用显式恒等转换。
 - 本批注册的转换均可从稀疏 checkpoint、绑定的 registry 及历史余额唯一派生。保持已有能量编码：记录高度是该块完成后的规范状态，不新增每证版本字段、边界标记或全量 checkpoint；只读投影不写入记录，也不生成 mutation。
-- 承诺审查结论：现有 pass commit 承诺有序 mutation 与 BTC/BH 锚点，local/system state identity 另外绑定 registry、active set、pass commit 和余额快照。纯派生能量转换不需要新增 mutation 或修改这些编码；恢复验收同时比较能量值，不能只凭 commit 相同推断能量正确。未来若引入物化权益处置或不可派生字段，仍须由具体 UIP 明确动作、顺序及 storage/commit/state-view 版本，不能沿用本批的纯转换策略。
+- 承诺审查结论：现有 pass commit 承诺有序 mutation 与 BTC/BH 锚点，local/system state identity 绑定 active set（包含 rules scope）、pass commit 和余额快照；完整 registry ID 位于响应及查询上下文中，由历史前缀校验约束。纯派生能量转换不需要新增 mutation 或修改这些编码；恢复验收同时比较能量值，不能只凭 commit 相同推断能量正确。未来若引入物化权益处置或不可派生字段，仍须由具体 UIP 明确动作、顺序及 storage/commit/state-view 版本，不能沿用本批的纯转换策略。
 
 ### 10.2 启动与失败恢复修正
 
@@ -285,4 +285,35 @@ C 交付时计划由 D 审查边界动作、规范状态表示/承诺及完整�
 
 子进程退出跳过 Rust 析构，覆盖实际数据库的进程崩溃恢复，不宣称验证了断电或硬件写入持久性。checkpoint 用例是停止写入后的本地成对复制，不代替生产签名快照工具、跨服务 checkpoint 或在线节点升级验收。
 
-下一批 E 处理完整经济查询、历史 registry 前缀一致性、缓存/cursor 和 Go 联调；F 接入真实 Core/Ord/BH/indexer/Geth 与 nightly/weekly；G 处理数据集 registry 原地升级。本批没有部署节点，也没有触发远端 CI。
+D 交付时将完整经济查询、历史 registry 前缀一致性、缓存/cursor 和 Go 联调留给 E，其交付见第 11 节。F 接入真实 Core/Ord/BH/indexer/Geth 与 nightly/weekly；G 处理数据集 registry 原地升级。D 没有部署节点，也没有触发远端 CI。
+
+
+## 11. E 批次交付与当前验证状态
+
+### 11.1 完整经济查询与历史一致性
+
+- [economic_rules.rs](../../src/btc/usdb-indexer/src/index/economic_rules.rs) 将 effective 与 level 分为独立的版本选择入口。scalar energy、profile、miner candidate、candidate set、collab breakdown 与 aggregate 按查询 BTC 高度选择规则；raw 继续复用 C 的分段结算内核。协作逐证舍入后饱和求和，展示的 weight、level 与 difficulty factor 使用同一个已选择契约。
+- 查询指定旧 registry 时，先比较数据集 origin 至查询高度的完整 active-set 历史，再构造 local/system state。即使末端版本相同，中间曾有分歧也返回 `ACTIVE_VERSION_SET_MISMATCH`，包含 registry ID、查询高度和首个分歧高度；未知 registry 保留原有未知记录错误。该检查覆盖经济查询、state-ref 及 mint audit，不改变双库绑定、不采用新 revision 续写。
+- 保持既有 identity 编码：local/system state hash 绑定 active set、pass commit 与余额快照，完整 registry ID 由查询上下文独立绑定。因此两个 revision 的相同历史前缀可以得到相同 hash，但请求和 cursor 仍携带各自精确的 registry ID；不能只比较 hash 放宽分页身份。
+- leaderboard 缓存原先仅以高度、scope 和分页条件复用，现在还比较 registry ID、持久 reorg epoch 与该高度 pass commit，并在派生后复核。candidate/collab 的既有完整 external-state 缓存与 cursor 语义保持，新增跨高度推进和同高度重组测试。
+- `get_pass_energy_range` 继续返回已存储的稀疏 checkpoint；`exact` 要求目标高度存在记录，`at_or_before` 才做历史投影。纯查询和空升级块不额外物化 checkpoint。
+
+### 11.2 Rust / Go 联调与测试契约
+
+[miner_pass_upgrade_queries.rs](../../tests/miner_pass_upgrade_queries.rs) 使用真实 SQLite/RocksDB、生产区块执行路径和隔离 Core/BH RPC 夹具。在 C 的 raw H1=10 / H2=20 基础上，分别在 H=13 将逐协作权重从 50% 改为 25%，H=16 将 level 改为 `min(floor(effective/1000),50)`；difficulty factor 为 `10000-100*level`。这些是验证分派的测试契约，不是未来网络参数。
+
+覆盖两张 Leader、固定 pass 引用和地址引用两类协作、13 个查询高度，以及各版本族 H-1/H/H+1。raw 与独立逐块参考对照，其它字段用测试内的独立整数预期检查；profile/energy/candidate/collab/miner/aggregate/leaderboard 相互核对，查询前后比较完整存储指纹。另覆盖历史分歧后回到相同版本、相同前缀的分页持续读取、cursor revision/height 替换拒绝、缓存预热后的同高度重组、未知公式/错误作用域、整数舍入与饱和边界。
+
+共享夹具 [economic-queries.json](../../tests/fixtures/miner-pass-upgrade/economic-queries.json) 由真实 Rust RPC 方法生成并被 Rust 测试反向逐字段校验，Go 保存逐字节相同的副本。Go `internal/usdb` 通过实际 HTTP JSON-RPC 客户端消费这些响应，验证历史 selector、身份、effective/level/factor 与逐协作舍入；篡改数值编码、上界、派生值、registry、active set、BTC 高度和 system identity 均拒绝。
+
+Go current-selector builder 额外检查 chain-config origin 至当前 BTC 高度的完整 registry 前缀，不能因当前 active set 相同就接受曾分歧的服务。测试覆盖首次分歧高度、已结束的分歧区间、origin 之前的差异和最大高度。Go 不重放全部 BTC raw-energy 账本；累计正确性仍由 Rust 独立参考及完整索引证明。
+
+Rust 的新增公式仅存在于 `cfg(test)`；Go 仅在 `usdb_miner_pass_conformance` build tag 下注册，并且要求 `btc-regtest` 和专用 `miner-pass-upgrade-conformance` scope 同时匹配。普通 Rust 二进制及普通 Go 构建均验证拒绝测试公式。现有 fast gate 自动收集 Rust 查询用例，Go fast 新增该 tag 的测试，golden gate 比较两仓夹具一致性。
+
+### 11.3 验证与后续边界
+
+本地验证（2026-10-05）：indexer 单元/管线测试 382 通过、11 忽略，普通二进制集成测试 1 通过；`usdb-util` 87 通过、2 忽略。相关 crate 严格 Clippy、workspace 编译、格式、公共 API 文档构建通过。Go 1.26.0 下 `internal/usdb` 普通构建、`usdb_miner_pass_conformance` 和既有 activation/economic v2/v3 三组 tag 的测试通过，`internal/usdbacceptance`、`internal/usdbrelease` 回归通过。fast golden gate（包括新增向量逐字节检查）、ShellCheck、发布片段及共享技能检查通过。
+
+没有运行完整 fast 全组件任务、真实 Core/Ord/BH/indexer/Geth 服务集群或远端 CI，不能将 HTTP 夹具联调等同于 F 的跨服务验收。E 提交后仍须在发布准备时更新 Go 的 USDB compatibility lock 并完成相应 CI；本批没有提前冻结未提交源码。
+
+生产支持集合、公开 registry/genesis、wire 与 identity 编码、exact registry 数据绑定均保持现状，本批不要求重建或网络重置。F 继续处理真实服务及 nightly/weekly，G 继续独立处理原地 dataset registry 升级；尚未定义或激活任何正式新公式。
