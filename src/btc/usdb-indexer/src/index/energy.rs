@@ -183,6 +183,11 @@ impl PassEnergyManager {
         self.storage.set_synced_block_height(block_height)
     }
 
+    #[cfg(test)]
+    pub fn clear_synced_block_height_for_test(&self) -> Result<(), String> {
+        self.storage.clear_synced_block_height_for_test()
+    }
+
     /// Reject v2 writes outside the pending energy block so errors remain recoverable.
     pub(crate) fn require_pending_block(&self, block_height: u32) -> Result<(), String> {
         let pending = self.storage.get_pending_block_height().map_err(|err| {
@@ -270,6 +275,38 @@ impl PassEnergyManager {
     }
 
     pub fn reconcile_with_pass_synced_height(&self, pass_synced_height: u32) -> Result<(), String> {
+        // A lagging/inconsistent checkpoint pair is not a recoverable publication tail.
+        // Validate before truncation so rejecting it cannot delete committed energy rows.
+        let pending = self.storage.get_pending_block_height()?;
+        let synced = self.storage.get_synced_block_height()?;
+        let baseline = self
+            .config
+            .config()
+            .usdb
+            .genesis_block_height
+            .saturating_sub(1);
+        if synced.is_none() && pass_synced_height > baseline {
+            let msg = format!(
+                "Energy synced height is missing for committed pass history: module=energy, pass_synced_height={pass_synced_height}, baseline_height={baseline}, pending_height={pending:?}. Restore a consistent paired checkpoint or replay from origin."
+            );
+            error!("{msg}");
+            return Err(msg);
+        }
+        if synced.is_some_and(|height| height < pass_synced_height) {
+            let msg = format!(
+                "Energy synced height is behind pass synced height: module=energy, energy_synced_height={synced:?}, pass_synced_height={pass_synced_height}, pending_height={pending:?}. Restore a consistent paired checkpoint or replay from origin."
+            );
+            error!("{msg}");
+            return Err(msg);
+        }
+        if pending.is_some_and(|height| height <= pass_synced_height) {
+            let msg = format!(
+                "Pending energy block overlaps committed pass history: module=energy, pending_height={pending:?}, energy_synced_height={synced:?}, pass_synced_height={pass_synced_height}. Refusing to truncate committed history."
+            );
+            error!("{msg}");
+            return Err(msg);
+        }
+
         // Step 1: recover incomplete block sync attempts from pending marker.
         if let Some(pending_height) = self.storage.get_pending_block_height()? {
             warn!(
@@ -300,14 +337,6 @@ impl PassEnergyManager {
                     energy_synced_height, pass_synced_height
                 );
                 self.storage.set_synced_block_height(pass_synced_height)?;
-            }
-            Some(energy_synced_height) if energy_synced_height < pass_synced_height => {
-                let msg = format!(
-                    "Energy synced height is behind pass synced height: module=energy, energy_synced_height={}, pass_synced_height={}. Please clear energy storage and resync from genesis.",
-                    energy_synced_height, pass_synced_height
-                );
-                error!("{}", msg);
-                return Err(msg);
             }
             Some(_) => {}
             None => {

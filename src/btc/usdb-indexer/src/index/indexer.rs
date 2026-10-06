@@ -42,6 +42,12 @@ pub(crate) use traits::{
     BalanceHistoryCommitApi, BlockHintProvider, IndexStatusApi, TransferTrackerApi,
 };
 
+#[cfg(test)]
+#[path = "../../../../../tests/common/miner_pass_faults.rs"]
+pub(crate) mod publication_faults;
+#[cfg(test)]
+use publication_faults::{FaultMode, FaultPoint, PublicationFaults};
+
 const REORG_RECOVERY_ENERGY_FAILURE_ENV: &str =
     "USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES";
 const REORG_RECOVERY_TRANSFER_RELOAD_FAILURE_ENV: &str =
@@ -165,6 +171,8 @@ pub struct InscriptionIndexer {
     status: Arc<dyn IndexStatusApi>,
 
     reorg_recovery_fault_injector: ReorgRecoveryFaultInjector,
+    #[cfg(test)]
+    publication_faults: PublicationFaults,
     // A failed outer SQLite publication must repair energy/tracker state before another block.
     block_publication_recovery_pending: AtomicBool,
 
@@ -268,9 +276,7 @@ impl InscriptionIndexer {
                 .usdb
                 .genesis_block_height
                 .min(persisted_height);
-            timeline
-                .validate_indexer_range(start..=persisted_height)
-                .map_err(|error| error.to_string())?;
+            super::rule_transition::validate_rule_history(timeline, start, persisted_height)?;
             let persisted_rules = timeline
                 .indexer_context_at(persisted_height)
                 .map_err(|error| error.to_string())?;
@@ -330,6 +336,8 @@ impl InscriptionIndexer {
             status,
             reorg_recovery_fault_injector,
             block_publication_recovery_pending: AtomicBool::new(false),
+            #[cfg(test)]
+            publication_faults: PublicationFaults::default(),
 
             should_stop: Arc::new(AtomicBool::new(false)),
         };
@@ -392,6 +400,8 @@ impl InscriptionIndexer {
             status,
             reorg_recovery_fault_injector: ReorgRecoveryFaultInjector::default(),
             block_publication_recovery_pending: AtomicBool::new(false),
+            #[cfg(test)]
+            publication_faults: PublicationFaults::default(),
             should_stop: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -458,8 +468,30 @@ impl InscriptionIndexer {
         )))
     }
 
+    /// Empty ledgers start immediately before their configured BTC origin, not at height zero.
+    fn durable_pass_height(&self) -> Result<u32, String> {
+        Ok(self
+            .miner_pass_storage
+            .get_committed_synced_btc_block_height()?
+            .unwrap_or_else(|| {
+                self.config
+                    .config()
+                    .usdb
+                    .genesis_block_height
+                    .saturating_sub(1)
+            }))
+    }
+
     pub async fn init(&self) -> Result<(), String> {
+        // Repair process-crash windows against durable SQLite before exposing paired state.
+        // Never adopt or rewrite another registry: new() already validated both bindings.
+        self.miner_pass_storage.require_committed_writer()?;
+        let height = self.durable_pass_height()?;
+        self.pass_energy_manager
+            .reconcile_with_pass_synced_height(height)?;
         self.transfer_tracker.init().await?;
+        self.resume_pending_upstream_reorg_recovery(self.config.config().usdb.genesis_block_height)
+            .await?;
 
         info!("Inscription transfer tracker initialized");
 
@@ -1021,6 +1053,9 @@ impl InscriptionIndexer {
             reorg_epoch, current_height, latest_height, rollback_target
         );
 
+        #[cfg(test)]
+        self.publication_faults
+            .hit(rollback_target, FaultPoint::ReorgPassRolledBack)?;
         self.resume_pending_upstream_reorg_recovery(genesis_block_height)
             .await?;
 
@@ -1096,6 +1131,9 @@ impl InscriptionIndexer {
                 error!("{}", msg);
                 msg
             })?;
+        #[cfg(test)]
+        self.publication_faults
+            .hit(pending_height, FaultPoint::ReorgEnergyRecovered)?;
         self.reorg_recovery_fault_injector
             .maybe_fail_transfer_reload(pending_height)
             .map_err(|e| {
@@ -1117,6 +1155,9 @@ impl InscriptionIndexer {
                 error!("{}", msg);
                 msg
             })?;
+        #[cfg(test)]
+        self.publication_faults
+            .hit(pending_height, FaultPoint::ReorgTrackerReloaded)?;
         self.miner_pass_storage
             .assert_no_data_after_block_height(pending_height)
             .map_err(|e| {
@@ -1631,6 +1672,22 @@ impl InscriptionIndexer {
                 return Err(error);
             }
 
+            #[cfg(test)]
+            if let Err(error) = self
+                .publication_faults
+                .hit(height, FaultPoint::TrackerPublished)
+            {
+                drop(savepoint_guard);
+                self.block_publication_recovery_pending
+                    .store(true, Ordering::SeqCst);
+                let recovery = self.recover_block_publication().await.err();
+                return Err(Self::merge_block_failure_with_recovery(
+                    error,
+                    recovery,
+                    "injected publication recovery",
+                ));
+            }
+
             // Persist synced height before committing savepoint so crash-recovery starts from durable progress.
             let update_synced_height_begin = Instant::now();
             if let Err(e) = self
@@ -1653,6 +1710,22 @@ impl InscriptionIndexer {
             }
             let update_synced_height_elapsed_ms = update_synced_height_begin.elapsed().as_millis();
 
+            #[cfg(test)]
+            if let Err(error) = self
+                .publication_faults
+                .hit(height, FaultPoint::HeightWritten)
+            {
+                drop(savepoint_guard);
+                self.block_publication_recovery_pending
+                    .store(true, Ordering::SeqCst);
+                let recovery = self.recover_block_publication().await.err();
+                return Err(Self::merge_block_failure_with_recovery(
+                    error,
+                    recovery,
+                    "injected publication recovery",
+                ));
+            }
+
             // Commit only after all block writes and synced-height update succeed.
             let commit_savepoint_begin = Instant::now();
             if let Err(e) = savepoint_guard.commit() {
@@ -1667,6 +1740,9 @@ impl InscriptionIndexer {
                 error!("{}", msg);
                 return Err(msg);
             }
+            #[cfg(test)]
+            self.publication_faults
+                .hit(height, FaultPoint::SqliteCommitted)?;
             self.status.set_block_processing_pending_height(None);
             let commit_savepoint_elapsed_ms = commit_savepoint_begin.elapsed().as_millis();
             let sync_single_block_elapsed_ms = sync_single_block_begin.elapsed().as_millis();
@@ -1695,14 +1771,37 @@ impl InscriptionIndexer {
     }
 
     #[cfg(test)]
+    pub(crate) fn arm_publication_fault_for_test(
+        &self,
+        height: u32,
+        point: FaultPoint,
+        mode: FaultMode,
+    ) {
+        self.publication_faults.arm(height, point, mode);
+    }
+
+    #[cfg(test)]
+    async fn publication_step_for_test(
+        &self,
+        height: u32,
+        point: FaultPoint,
+        staged: bool,
+        finalized: bool,
+    ) -> Result<(), String> {
+        match self.publication_faults.hit(height, point) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self
+                .recover_failed_block_sync(height, staged, finalized, error)
+                .await),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) async fn sync_blocks_for_test(
         &self,
         block_range: std::ops::RangeInclusive<u32>,
     ) -> Result<u32, String> {
-        let current_height = self
-            .miner_pass_storage
-            .get_synced_btc_block_height()?
-            .unwrap_or(0);
+        let current_height = self.durable_pass_height()?;
         self.pass_energy_manager
             .reconcile_with_pass_synced_height(current_height)?;
         self.sync_blocks(block_range).await
@@ -1750,6 +1849,16 @@ impl InscriptionIndexer {
             msg
         })?;
 
+        // Every boundary must have an explicit execution policy, even on an empty block.
+        // Registered transitions preserve accepted state and derive energy lazily; they add
+        // no query-dependent checkpoint or mutation to the canonical event stream.
+        let origin = self.config.config().usdb.genesis_block_height;
+        super::rule_transition::validate_rule_history(
+            &self.rule_timelines[self.activation_registry_catalog.current_registry_id()],
+            height.saturating_sub(1).max(origin).min(height),
+            height,
+        )?;
+
         // Mark energy sync as pending first so crashes can be detected and repaired on restart.
         self.pass_energy_manager
             .begin_block_sync(height)
@@ -1761,6 +1870,9 @@ impl InscriptionIndexer {
                 error!("{}", msg);
                 msg
             })?;
+        #[cfg(test)]
+        self.publication_step_for_test(height, FaultPoint::EnergyPending, false, false)
+            .await?;
         let mutation_collection_guard =
             match BlockMutationCollectionGuard::begin(&self.miner_pass_manager, height) {
                 Ok(guard) => guard,
@@ -1896,6 +2008,9 @@ impl InscriptionIndexer {
         };
         let process_invalid_mints_elapsed_ms = process_invalid_mints_begin.elapsed().as_millis();
 
+        #[cfg(test)]
+        self.publication_step_for_test(height, FaultPoint::EventsApplied, true, false)
+            .await?;
         let settle_balance_begin = Instant::now();
         let balance_settlement = match self
             .balance_monitor
@@ -1937,6 +2052,9 @@ impl InscriptionIndexer {
             }
         }
         let apply_energy_elapsed_ms = apply_energy_begin.elapsed().as_millis();
+        #[cfg(test)]
+        self.publication_step_for_test(height, FaultPoint::EnergyWritten, true, false)
+            .await?;
         if let Err(e) = self.pass_energy_manager.finalize_block_sync(height) {
             // Energy finalize must succeed before transfer staging commit to keep cross-store ordering.
             let msg = self
@@ -1945,6 +2063,9 @@ impl InscriptionIndexer {
             return Err(msg);
         }
         energy_finalized = true;
+        #[cfg(test)]
+        self.publication_step_for_test(height, FaultPoint::EnergyFinalized, true, true)
+            .await?;
         let mutation_collector = match mutation_collection_guard.take(height) {
             Ok(collector) => collector,
             Err(e) => {
@@ -1966,6 +2087,9 @@ impl InscriptionIndexer {
                 .await;
             return Err(msg);
         }
+        #[cfg(test)]
+        self.publication_step_for_test(height, FaultPoint::PassCommitWritten, true, true)
+            .await?;
         // Commit transfer tracker staged state only after energy metadata finalize succeeds.
         if let Err(e) = self.transfer_tracker.commit_staged_block(height).await {
             let msg = self
@@ -2024,10 +2148,7 @@ impl InscriptionIndexer {
     async fn recover_block_publication(&self) -> Result<(), String> {
         let result = async {
             self.miner_pass_storage.require_committed_writer()?;
-            let height = self
-                .miner_pass_storage
-                .get_committed_synced_btc_block_height()?
-                .unwrap_or(0);
+            let height = self.durable_pass_height()?;
             self.pass_energy_manager
                 .rollback_to_pass_synced_height(height)?;
             self.transfer_tracker.reload_from_storage().await?;
@@ -2059,9 +2180,7 @@ impl InscriptionIndexer {
         //    energy metadata has already advanced, so we must roll energy state back to the
         //    last durable pass synced height instead of using the pending marker path.
         let energy_recovery_result = if energy_finalized {
-            self.miner_pass_storage
-                .get_synced_btc_block_height()
-                .map(|height| height.unwrap_or(0))
+            self.durable_pass_height()
                 .map_err(|e| {
                     format!(
                         "failed to load pass synced height before energy rollback: {}",

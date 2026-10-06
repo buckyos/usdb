@@ -6,6 +6,7 @@ mod energy_settlement;
 mod indexer;
 mod pass;
 mod pass_commit;
+mod rule_transition;
 pub(crate) mod rules;
 #[cfg(test)]
 mod test;
@@ -68,3 +69,15 @@ pub(crate) mod test_miner_pipeline;
 #[cfg(test)]
 #[path = "../../../../../tests/miner_pass_upgrade_energy.rs"]
 mod miner_pass_upgrade_energy;
+
+#[cfg(test)]
+#[path = "../../../../../tests/common/miner_pass_energy_reference.rs"]
+pub(crate) mod test_energy_reference;
+
+#[cfg(test)]
+#[path = "../../../../../tests/miner_pass_upgrade_recovery.rs"]
+mod miner_pass_upgrade_recovery;
+
+#[cfg(test)]
+#[path = "../../../../../tests/common/miner_pass_upgrade.rs"]
+pub(crate) mod test_miner_upgrade;

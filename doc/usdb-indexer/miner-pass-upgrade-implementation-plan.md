@@ -1,6 +1,6 @@
 # UIP-0017 多区间升级实施与测试计划
 
-状态：A 已提交为 `4dd2333`；B 已提交为 `72e6a87`；C 已完成本地实现与验证，待评审提交；D–G 尚未实施。
+状态：A 已提交为 `4dd2333`；B 已提交为 `72e6a87`；C 已提交为 `2ca2694`；D 已完成本地实现与验证，待评审提交；E–G 尚未实施。
 
 协议依据：[UIP-0017](../UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md) 第一版草案已由用户确认并提交为 `36726a5`；这不表示委员会流程完成或目标网络已激活。本文记录当前实现缺口、分批交付和测试验收，不分配正式 schema v2 / 状态机 v3，不改变现行网络参数。
 
@@ -14,7 +14,7 @@
 
 ## 2. 当前实现与缺口
 
-以下为制定计划时的源码核查结果；A/B 批次的交付与验证见第 7/8 节，其余仍为待实施内容。
+以下为制定计划时的源码核查结果；A–D 批次的交付与验证见第 7–10 节，E–G 仍为待实施内容。
 
 | 模块 | 已有基础 | 所需补充 |
 | --- | --- | --- |
@@ -239,6 +239,50 @@ B 交付时的能量增长与继承仍执行现有 v1 公式；C 的分段结算
 
 ### 9.3 下一批与保留边界
 
-下一批 D 处理需要物化的边界动作、规范状态表示/承诺及完整故障、重组、快照恢复矩阵。本批测试转换是从已承诺历史可确定派生的 raw-energy 数值转换，没有实现批量取消存量权益；单个发布失败重试测试不代替 D 的完整恢复验收。
+C 交付时计划由 D 审查边界动作、规范状态表示/承诺及完整故障、重组、快照恢复矩阵，结果见第 10 节。本批测试转换是从已承诺历史可确定派生的 raw-energy 数值转换，没有实现批量取消存量权益；单个发布失败重试测试不代替 D 的完整恢复验收。
 
 现有 raw-energy 查询已共用内核，但完整历史 registry 前缀约束、缓存/cursor、effective/level 独立升级和 Go 联调仍属于 E。生产没有启用新的公式，也没有运行真实服务升级或远端 nightly/weekly；F、G 的验收和原地数据集升级限制保持不变。
+
+
+## 10. D 批次交付与当前验证状态
+
+### 10.1 边界执行与状态表示
+
+- [rule_transition.rs](../../src/btc/usdb-indexer/src/index/rule_transition.rs) 为每条已注册 schema/state/energy 转换边声明策略。空块也在 pending-energy 与业务写入之前检查相邻边界；启动检查 origin 至持久化高度的整个路径。不能因为版本各自受支持，就默认两者之间存在兼容转换。
+- 现有 schema/state 转换只改变新操作的准入，保留已接受的铸造事实和存量权益。能量边界检查与分段结算共用 `EnergyTransition` 声明；测试 H1 使用非恒等表示转换，H2 使用显式恒等转换。
+- 本批注册的转换均可从稀疏 checkpoint、绑定的 registry 及历史余额唯一派生。保持已有能量编码：记录高度是该块完成后的规范状态，不新增每证版本字段、边界标记或全量 checkpoint；只读投影不写入记录，也不生成 mutation。
+- 承诺审查结论：现有 pass commit 承诺有序 mutation 与 BTC/BH 锚点，local/system state identity 另外绑定 registry、active set、pass commit 和余额快照。纯派生能量转换不需要新增 mutation 或修改这些编码；恢复验收同时比较能量值，不能只凭 commit 相同推断能量正确。未来若引入物化权益处置或不可派生字段，仍须由具体 UIP 明确动作、顺序及 storage/commit/state-view 版本，不能沿用本批的纯转换策略。
+
+### 10.2 启动与失败恢复修正
+
+- 初始化时先依据已提交 SQLite 高度修复能量尾部，再初始化 tracker，并完成持久化的 reorg recovery。尚未提交首块的数据集统一使用 `origin - 1`（下界为 0）作为基线，避免首块失败后错误回退到高度 0、随后误报能量库落后。
+- 能量恢复先检查高度是否落后、已提交历史的高度标记是否缺失、pending 是否覆盖已提交 pass 历史，再进行尾部删除。上述不一致快照被拒绝，不会先删除已提交能量记录。
+- 保留精确 registry 的双库绑定，不允许通过改配置采用另一 revision。这里的高度检查不是任意损坏检测器；恢复仍要求来自同一次完整、验证过的成对快照。
+- 更新手工构造旧快照的测试夹具，显式设置 origin 和配对的能量进度；未放宽生产检查来适配不完整夹具。
+
+### 10.3 恢复矩阵与验证（2026-10-05）
+
+[miner_pass_upgrade_recovery.rs](../../tests/miner_pass_upgrade_recovery.rs) 增加 10 项父测试，以及仅供父进程精确调用的 ignored 子进程夹具。所有路径使用真实 SQLite/RocksDB、生产块执行与 upstream reorg 恢复流程，以及隔离的 Core/BH RPC 夹具。
+
+| 场景 | 覆盖与断言 |
+| --- | --- |
+| 无 pass 操作的 H1/H2 空块 | 独立逐块参考值、无额外能量 checkpoint、空 mutation root；重复重启不重复转换。 |
+| 缺少转换路径 | 即使无 pass，H 块和已有历史的启动检查仍拒绝；不留下该块进度、pending 或 commit。 |
+| 首块、H1、H2 发布窗口 | pending、事件执行、能量写入、能量 finalize、pass commit 写入、tracker 发布、SQLite 高度写入及提交后共 8 个阶段；每阶段分别返回错误和子进程直接退出，共 48 个组合。 |
+| 真实 SQLite 写入失败 | H2 多 prev 继承完成后，用数据库 trigger 拒绝高度写入；两库、prev、审计、余额与 commit 回滚，移除故障后重试。 |
+| 跨两次升级的 upstream reorg | 从 H2 后回到 H1 前，替换含协作 mint 和跨地址继承的分支；后续真实 UTXO 转移验证 tracker 已清除旧分支状态。 |
+| reorg 中断恢复 | SQLite rollback、能量回滚、tracker reload 三阶段分别错误返回与进程退出，共 6 个组合；持久标记驱动重启完成恢复，重复启动幂等。 |
+| 各区间 checkpoint 恢复 | H1-1、H1、H2-1、H2、H2+2 停止写入并复制成对数据库，恢复后跨区间追赶，与从 origin 重放一致。 |
+| 不一致能量元数据 | 高度落后、pending 覆盖已提交高度、缺少高度标记三种情况均拒绝，保留已有非零能量记录。 |
+
+恢复比较逐高度的 raw energy、精确稀疏记录、pass/owner/satpoint、prev 消费、mint audit、状态历史、余额快照、BTC/BH anchors、pass commit 和 local/system state identity。SQLite 本地历史行号与 reorg 运维计数不作为分支等价条件；reorg 次数另行断言。独立逐块参考函数移至 [tests/common/miner_pass_energy_reference.rs](../../tests/common/miner_pass_energy_reference.rs)，继续用于 C 和 D。
+
+本地验证：indexer 单元/管线测试 377 通过、11 忽略（其中新增 1 项只由父测试调用的退出夹具），普通二进制集成测试 1 通过；`usdb-util` 87 通过、2 忽略。相关 crate 的严格 Clippy、workspace 编译、格式、公共 API 文档构建、发布片段校验及共享技能同步检查通过。现有 fast gate 的 Rust 测试会自动收集本批父测试；未触发远端 CI。
+
+### 10.4 保留边界
+
+生产仍只支持 schema v1 / 状态机 v2 / 能量公式 v1，公开 registry、genesis、数据编码和 identity 算法不变，不要求重建或网络重置。新的故障注入器与额外公式均仅在测试构建存在，没有增加普通程序的故障环境变量开关。
+
+子进程退出跳过 Rust 析构，覆盖实际数据库的进程崩溃恢复，不宣称验证了断电或硬件写入持久性。checkpoint 用例是停止写入后的本地成对复制，不代替生产签名快照工具、跨服务 checkpoint 或在线节点升级验收。
+
+下一批 E 处理完整经济查询、历史 registry 前缀一致性、缓存/cursor 和 Go 联调；F 接入真实 Core/Ord/BH/indexer/Geth 与 nightly/weekly；G 处理数据集 registry 原地升级。本批没有部署节点，也没有触发远端 CI。

@@ -1,0 +1,26 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-pass-boundary-recovery",
+  "type": "fixed",
+  "scopes": [
+    "indexer",
+    "consensus",
+    "testing"
+  ],
+  "summary": "Validate rule transitions on empty blocks and recover paired MinerPass state before startup completes",
+  "details": [
+    "Boundary and startup checks require explicit schema, state and energy transition policies across the indexed history. Existing pure conversions remain derivable from sparse checkpoints without changing persisted or commitment encodings.",
+    "Startup repairs energy publication tails and pending reorg recovery before exposing initialized state. A dataset without a committed first block uses the configured origin baseline; inconsistent energy progress is rejected before truncating committed records.",
+    "Isolated tests cover publication errors and process exits at the first block and two upgrade boundaries, cross-boundary reorg recovery, coherent checkpoint restore, and exact comparison with clean replay. Production remains schema v1, state machine v2 and energy v1; new fault injection and formulas exist only in test builds."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/blob/main/doc/UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md"
+  ]
+}

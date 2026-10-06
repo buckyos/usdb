@@ -1228,8 +1228,13 @@ async fn test_sync_blocks_retry_without_reconcile_recovers_finalized_energy_fail
     let inscription_source: Arc<dyn InscriptionSource> = Arc::new(MockInscriptionSource::default());
     let transfer_tracker = Arc::new(MockTransferTracker::default().with_commit_failures(1));
 
-    let fixture = build_indexer_fixture_with_hint_provider(
+    let root = test_root_dir(
+        "indexer_behavior",
         "sync_blocks_retry_without_reconcile_finalized_energy_failure",
+    );
+    write_test_config(&root, block_height);
+    let fixture = build_indexer_fixture_with_hint_provider_at_root(
+        root,
         inscription_source,
         block_hint_provider,
         transfer_tracker,
@@ -1259,7 +1264,7 @@ async fn test_sync_blocks_retry_without_reconcile_recovers_finalized_energy_fail
             .pass_energy_manager
             .get_synced_block_height_for_test()
             .unwrap(),
-        Some(0)
+        Some(block_height - 1)
     );
     assert_eq!(fixture.transfer_tracker.commit_call_count(), 0);
     assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
@@ -1516,6 +1521,12 @@ async fn test_sync_once_rolls_back_when_upstream_height_regresses() {
         .upsert_balance_history_snapshot_anchor(&snapshot_from_commit(&old_upstream_commit_105))
         .unwrap();
 
+    // Seed a coherent pair; a committed pass tip always has finalized energy metadata.
+    fixture
+        .pass_energy_manager
+        .set_synced_block_height_for_test(105)
+        .unwrap();
+
     let synced = fixture.indexer.sync_once_for_test().await.unwrap();
 
     assert_eq!(synced, 100);
@@ -1614,6 +1625,12 @@ async fn test_sync_once_rolls_back_and_replays_same_height_reorg() {
     fixture
         .storage
         .upsert_balance_history_snapshot_anchor(&snapshot_from_commit(&old_commit_101))
+        .unwrap();
+
+    // Seed a coherent pair; a committed pass tip always has finalized energy metadata.
+    fixture
+        .pass_energy_manager
+        .set_synced_block_height_for_test(reorg_height)
         .unwrap();
 
     let synced = fixture.indexer.sync_once_for_test().await.unwrap();
@@ -1814,6 +1831,12 @@ async fn test_sync_once_resumes_pending_reorg_recovery_after_restart() {
     fixture1
         .storage
         .upsert_balance_history_snapshot_anchor(&snapshot_from_commit(&old_upstream_commit_105))
+        .unwrap();
+
+    // Seed a coherent pair; a committed pass tip always has finalized energy metadata.
+    fixture1
+        .pass_energy_manager
+        .set_synced_block_height_for_test(105)
         .unwrap();
 
     let first_err = fixture1.indexer.sync_once_for_test().await.unwrap_err();

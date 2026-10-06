@@ -4,8 +4,10 @@ use super::*;
 #[tokio::test]
 async fn failed_tracker_reload_blocks_retry_before_any_new_events() {
     let height = 330;
-    let fixture = build_indexer_fixture_with_hint_provider(
-        "publication_recovery_gate",
+    let root = test_root_dir("indexer_behavior", "publication_recovery_gate");
+    write_test_config(&root, height);
+    let fixture = build_indexer_fixture_with_hint_provider_at_root(
+        root,
         Arc::new(MockInscriptionSource::default()),
         Arc::new(MockBlockHintProvider::default().with_block(height, build_test_block(vec![]))),
         Arc::new(MockTransferTracker::default().with_reload_failures(3)),
@@ -28,7 +30,10 @@ async fn failed_tracker_reload_blocks_retry_before_any_new_events() {
         .sync_blocks_without_reconcile_for_test(height..=height)
         .await
         .unwrap_err();
-    assert!(error.contains("Injected mock transfer reload failure"));
+    assert!(
+        error.contains("Injected mock transfer reload failure"),
+        "{error}"
+    );
     assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
     assert_eq!(
         fixture

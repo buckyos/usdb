@@ -186,6 +186,10 @@ async fn backfill_shutdown_and_wrong_height_never_publish_history_readiness() {
     let fixture = indexer_fixture(root.clone(), 100, 101, provider.clone());
     fixture.storage.update_synced_btc_block_height(101).unwrap();
     fixture
+        .pass_energy_manager
+        .set_synced_block_height_for_test(101)
+        .unwrap();
+    fixture
         .storage
         .upsert_active_balance_snapshot(101, 0, 0)
         .unwrap();
@@ -390,6 +394,10 @@ async fn legacy_backfill_failure_and_restart_resume_committed_batches_without_ne
     let fixture = indexer_fixture(root.clone(), 100, 170, provider.clone());
     fixture.storage.update_synced_btc_block_height(170).unwrap();
     fixture
+        .pass_energy_manager
+        .set_synced_block_height_for_test(170)
+        .unwrap();
+    fixture
         .storage
         .upsert_active_balance_snapshot(170, 0, 0)
         .unwrap();
@@ -455,6 +463,10 @@ async fn legacy_backfill_rejects_an_anchor_from_another_chain() {
     let provider = Arc::new(MockBalanceHistoryCommitProvider::default());
     let fixture = indexer_fixture(root.clone(), 100, 101, provider.clone());
     fixture.storage.update_synced_btc_block_height(101).unwrap();
+    fixture
+        .pass_energy_manager
+        .set_synced_block_height_for_test(101)
+        .unwrap();
     fixture
         .storage
         .upsert_active_balance_snapshot(101, 0, 0)

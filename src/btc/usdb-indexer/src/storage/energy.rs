@@ -430,6 +430,12 @@ impl PassEnergyStorage {
         self.get_meta_u32(META_KEY_SYNCED_BLOCK_HEIGHT)
     }
 
+    /// Simulate an inconsistent restored metadata set without changing committed records.
+    #[cfg(test)]
+    pub fn clear_synced_block_height_for_test(&self) -> Result<(), String> {
+        self.delete_meta_key(META_KEY_SYNCED_BLOCK_HEIGHT)
+    }
+
     pub fn set_synced_block_height(&self, block_height: u32) -> Result<(), String> {
         self.set_meta_u32(META_KEY_SYNCED_BLOCK_HEIGHT, block_height)
     }

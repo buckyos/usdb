@@ -20,6 +20,7 @@ pub const CATALOG: &str = include_str!("../fixtures/miner-pass-v2/catalog.json")
 
 type Timeline = HashMap<BtcScriptHash, BTreeMap<u32, u64>>;
 
+#[derive(Clone)]
 pub struct History {
     pub values: Timeline,
     pub blocks: BTreeMap<u32, Block>,
@@ -32,9 +33,29 @@ impl History {
             block_height: height,
             btc_block_hash: self.blocks[&height].block_hash().to_string(),
             balance_delta_root: format!("{height:064x}"),
-            block_commit: format!("{:064x}", height + 100),
+            // Different canonical forks must produce different upstream commitments.
+            block_commit: bitcoincore_rpc::bitcoin::hashes::sha256::Hash::hash(
+                format!("fixture-bh:{height}:{}", self.blocks[&height].block_hash()).as_bytes(),
+            )
+            .to_string(),
             commit_protocol_version: "1.0.0".into(),
             commit_hash_algo: "sha256".into(),
+        }
+    }
+    pub fn snapshot(&self, height: u32) -> balance_history::SnapshotInfo {
+        let commit = self.commit(height);
+        balance_history::SnapshotInfo {
+            stable_height: height,
+            stable_block_hash: Some(commit.btc_block_hash),
+            latest_block_commit: Some(commit.block_commit),
+            balance_query_floor: 0,
+            history_query_floor: 0,
+            stable_lag: 10,
+            balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.into(),
+            balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+                .into(),
+            commit_protocol_version: commit.commit_protocol_version,
+            commit_hash_algo: commit.commit_hash_algo,
         }
     }
     fn reference(&self, height: u32) -> balance_history::HistoricalSnapshotStateRef {
@@ -269,6 +290,11 @@ impl Pipeline {
     }
 
     pub async fn reopen(self) -> Self {
+        self.while_stopped(|_| {}).await
+    }
+
+    /// Execute an isolated crash child or copy a coherent checkpoint with every store closed.
+    pub async fn while_stopped(self, action: impl FnOnce(&std::path::Path)) -> Self {
         let Self {
             root,
             config,
@@ -280,6 +306,7 @@ impl Pipeline {
         } = self;
         drop(indexer);
         drop(status);
+        action(&root);
         let status =
             Arc::new(StatusManager::new(config.clone(), Arc::new(IndexOutput::new())).unwrap());
         let indexer = Arc::new(InscriptionIndexer::new(config.clone(), status.clone()).unwrap());
@@ -308,6 +335,19 @@ impl Pipeline {
     pub async fn sync(&self, from: u32, to: u32) -> Result<u32, String> {
         self.indexer.sync_blocks_for_test(from..=to).await
     }
+    /// Use the ordinary upstream-reconciliation loop, including pending recovery and fork detection.
+    pub async fn sync_to(&self, height: u32) -> Result<u32, String> {
+        self.status
+            .set_balance_history_snapshot(Some(self.history.lock().unwrap().snapshot(height)));
+        self.indexer.sync_once_for_test().await
+    }
+
+    /// Change only the mock canonical upstream; local stores and tracker remain untouched.
+    pub fn follow_chain(&self, other: &Self) {
+        self.core.state.lock().unwrap().blocks = other.core.state.lock().unwrap().blocks.clone();
+        *self.history.lock().unwrap() = other.history.lock().unwrap().clone();
+    }
+
     pub fn cleanup(self) {
         let root = self.root.clone();
         drop(self);
@@ -344,6 +384,41 @@ pub fn replace_reveal(
     let mut block = chain::block(vec![tx]);
     block.header.prev_blockhash = original.header.prev_blockhash;
     batch.mints[0].inscription_id.txid = block.txdata[1].compute_txid();
+    let verbose = chain::verbose(height, &block, &coins);
+    batch
+        .core
+        .state
+        .lock()
+        .unwrap()
+        .blocks
+        .insert(height, (block, verbose));
+}
+
+/// Add a transfer to a block without substituting mocked transfer-tracker results.
+pub fn append_transaction(
+    batch: &mut MintBlock,
+    height: u32,
+    tx: bitcoincore_rpc::bitcoin::Transaction,
+    extra: HashMap<bitcoincore_rpc::bitcoin::OutPoint, usdb_util::SpentPrevout>,
+) {
+    let original = batch.core.state.lock().unwrap().blocks[&height].0.clone();
+    let inputs = batch
+        .core
+        .client
+        .get_block_prevouts(height, &original)
+        .unwrap();
+    let mut coins = extra;
+    for tx in original.txdata.iter().skip(1) {
+        for input in &tx.input {
+            coins.insert(
+                input.previous_output,
+                inputs.get(&input.previous_output).unwrap().clone(),
+            );
+        }
+    }
+    let mut block = original;
+    block.txdata.push(tx);
+    block.header.merkle_root = block.compute_merkle_root().unwrap();
     let verbose = chain::verbose(height, &block, &coins);
     batch
         .core

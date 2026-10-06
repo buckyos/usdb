@@ -100,19 +100,36 @@ impl EnergyRules {
 
     /// Every changed edge needs an explicit conversion or compatibility declaration.
     /// There is deliberately no inferred transitive or default identity conversion.
-    fn convert_from(self, previous: Self, energy: Energy) -> Result<Energy, String> {
+    pub(crate) fn transition_from(self, previous: Self) -> Result<EnergyTransition, String> {
         if self == previous {
-            return Ok(energy);
+            return Ok(EnergyTransition::Identity);
         }
         #[cfg(test)]
         match (previous, self) {
-            (Self::V1, Self::Double) => return Ok(energy.saturating_mul(2)),
-            (Self::Double, Self::Triple) => return Ok(energy),
+            (Self::V1, Self::Double) => return Ok(EnergyTransition::DoubleRepresentation),
+            (Self::Double, Self::Triple) => return Ok(EnergyTransition::Identity),
             _ => {}
         }
         Err(format!(
             "Missing raw-energy transition: previous={previous:?}, next={self:?}"
         ))
+    }
+}
+
+/// Registered pure conversions are derivable from the existing checkpoint and rule history.
+/// No conversion changes pass state, balance or age, or requires a new persisted marker.
+pub(crate) enum EnergyTransition {
+    Identity,
+    #[cfg(test)]
+    DoubleRepresentation,
+}
+impl EnergyTransition {
+    fn apply(self, energy: Energy) -> Energy {
+        match self {
+            Self::Identity => energy,
+            #[cfg(test)]
+            Self::DoubleRepresentation => energy.saturating_mul(2),
+        }
     }
 }
 
@@ -167,9 +184,10 @@ impl EnergySettlement {
             let mut energy = record.energy;
             for (index, interval) in intervals.iter().enumerate() {
                 let rules = self.rules_at(interval.start_height)?;
-                energy = rules.convert_from(previous, energy).map_err(|error| {
-                    format!("boundary_height={}, {error}", interval.start_height)
-                })?;
+                energy = rules
+                    .transition_from(previous)
+                    .map_err(|error| format!("boundary_height={}, {error}", interval.start_height))?
+                    .apply(energy);
                 // The first interval includes the checkpoint, whose block is already settled.
                 let blocks = interval.end_height - interval.start_height + u32::from(index != 0);
                 if record.state == MinerPassState::Active {

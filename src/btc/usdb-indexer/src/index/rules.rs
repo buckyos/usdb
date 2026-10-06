@@ -19,7 +19,9 @@ impl MintSchemaRules {
         Self::from_versions(rules.active_version_set()).map_err(|error| context_error(rules, error))
     }
 
-    fn from_versions(versions: &ActiveVersionSet) -> Result<Self, ActivationRegistryError> {
+    pub(crate) fn from_versions(
+        versions: &ActiveVersionSet,
+    ) -> Result<Self, ActivationRegistryError> {
         let family = VersionFamily::InscriptionSchemaVersion;
         let value = versions.require_string(family)?;
         match value {
@@ -57,7 +59,9 @@ impl PassStateRules {
         Self::from_versions(rules.active_version_set()).map_err(|error| context_error(rules, error))
     }
 
-    fn from_versions(versions: &ActiveVersionSet) -> Result<Self, ActivationRegistryError> {
+    pub(crate) fn from_versions(
+        versions: &ActiveVersionSet,
+    ) -> Result<Self, ActivationRegistryError> {
         let family = VersionFamily::PassStateMachineVersion;
         let value = versions.require_string(family)?;
         match value {
