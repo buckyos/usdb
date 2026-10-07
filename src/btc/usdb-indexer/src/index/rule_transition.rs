@@ -10,7 +10,7 @@ fn validate_transition(previous: &ActiveVersionSet, next: &ActiveVersionSet) -> 
     let after_schema = MintSchemaRules::from_versions(next).map_err(|e| e.to_string())?;
     match (before_schema, after_schema) {
         (MintSchemaRules::V1, MintSchemaRules::V1) => {}
-        #[cfg(test)]
+        #[cfg(any(test, feature = "miner-pass-conformance"))]
         (MintSchemaRules::V1, MintSchemaRules::Conformance901)
         | (MintSchemaRules::Conformance901, MintSchemaRules::V1)
         | (MintSchemaRules::Conformance901, MintSchemaRules::Conformance901) => {}
@@ -20,7 +20,7 @@ fn validate_transition(previous: &ActiveVersionSet, next: &ActiveVersionSet) -> 
     let after_state = PassStateRules::from_versions(next).map_err(|e| e.to_string())?;
     match (before_state, after_state) {
         (PassStateRules::V2, PassStateRules::V2) => {}
-        #[cfg(test)]
+        #[cfg(any(test, feature = "miner-pass-conformance"))]
         (PassStateRules::V2, PassStateRules::ConformanceNoNewCollab)
         | (PassStateRules::ConformanceNoNewCollab, PassStateRules::V2)
         | (PassStateRules::ConformanceNoNewCollab, PassStateRules::ConformanceNoNewCollab) => {}

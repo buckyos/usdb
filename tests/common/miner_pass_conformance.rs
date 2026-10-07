@@ -3,15 +3,11 @@ use usdb_util::{BtcActivationRegistry, VersionFamily};
 
 const CATALOG: &str = include_str!("../fixtures/miner-pass-v2/catalog.json");
 
-pub const CONFORMANCE_SCOPE: &str = "miner-pass-upgrade-conformance";
-pub const CONFORMANCE_SCHEMA: &str = "conformance-miner-pass-schema:901";
-pub const CONFORMANCE_STATE: &str = "conformance-miner-pass-state:no-new-collab";
-
-pub const CONFORMANCE_ENERGY_DOUBLE: &str = "conformance-energy:double";
-pub const CONFORMANCE_ENERGY_TRIPLE: &str = "conformance-energy:triple";
-
-pub const CONFORMANCE_EFFECTIVE: &str = "conformance-effective:quarter-collab";
-pub const CONFORMANCE_LEVEL: &str = "conformance-level:thousands";
+// Include the same declarations in the standalone integration-test crate too.
+mod versions {
+    include!("../../src/btc/usdb-indexer/src/index/conformance.rs");
+}
+pub use versions::*;
 
 /// Add independent schema/state/raw/derived boundaries in a scope accepted only by indexer test builds.
 pub fn conformance_catalog(activations: &[(VersionFamily, u32, &str)]) -> String {

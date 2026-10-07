@@ -9,13 +9,13 @@ use usdb_util::{
 #[derive(Clone, Copy)]
 enum EffectiveRules {
     V1,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "miner-pass-conformance"))]
     QuarterCollab,
 }
 #[derive(Clone, Copy)]
 enum LevelRules {
     V1,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "miner-pass-conformance"))]
     Thousands,
 }
 
@@ -32,8 +32,8 @@ impl EconomicRules {
         let value = set.require_string(family)?;
         let effective = match value {
             EFFECTIVE_ENERGY_FORMULA_VERSION_V1 => EffectiveRules::V1,
-            #[cfg(test)]
-            crate::index::test_miner_rules::CONFORMANCE_EFFECTIVE
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
+            crate::index::conformance::CONFORMANCE_EFFECTIVE
                 if super::rules::conformance_scope(set) =>
             {
                 EffectiveRules::QuarterCollab
@@ -49,8 +49,8 @@ impl EconomicRules {
         let value = set.require_string(family)?;
         let level = match value {
             LEVEL_FORMULA_VERSION_V1 => LevelRules::V1,
-            #[cfg(test)]
-            crate::index::test_miner_rules::CONFORMANCE_LEVEL
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
+            crate::index::conformance::CONFORMANCE_LEVEL
                 if super::rules::conformance_scope(set) =>
             {
                 LevelRules::Thousands
@@ -69,7 +69,7 @@ impl EconomicRules {
     pub(crate) fn collab_weight_bps(self) -> u64 {
         match self.effective {
             EffectiveRules::V1 => super::energy_formula::COLLAB_WEIGHT_BPS as u64,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             EffectiveRules::QuarterCollab => 2_500,
         }
     }
@@ -78,7 +78,7 @@ impl EconomicRules {
     pub(crate) fn collab(self, raw: Energy) -> Energy {
         match self.effective {
             EffectiveRules::V1 => calc_collab_contribution(raw),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             EffectiveRules::QuarterCollab => raw / 4,
         }
     }
@@ -87,7 +87,7 @@ impl EconomicRules {
     pub(crate) fn effective(self, raw: Energy, collab: Energy) -> Energy {
         match self.effective {
             EffectiveRules::V1 => calc_standard_effective_energy(raw, collab),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             EffectiveRules::QuarterCollab => raw.saturating_add(collab),
         }
     }
@@ -99,7 +99,7 @@ impl EconomicRules {
                 let level = calc_level_from_effective_energy(effective);
                 (level, calc_difficulty_factor_bps(level))
             }
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             LevelRules::Thousands => {
                 let level = (effective / 1_000).min(50) as u8;
                 (level, 10_000 - Energy::from(level) * 100)

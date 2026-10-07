@@ -9,7 +9,7 @@ use usdb_util::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MintSchemaRules {
     V1,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "miner-pass-conformance"))]
     Conformance901,
 }
 
@@ -26,7 +26,7 @@ impl MintSchemaRules {
         let value = versions.require_string(family)?;
         match value {
             INSCRIPTION_SCHEMA_VERSION_V1 => Ok(Self::V1),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             CONFORMANCE_SCHEMA if conformance_scope(versions) => Ok(Self::Conformance901),
             _ => Err(ActivationRegistryError::VersionNotSupported {
                 family,
@@ -39,7 +39,7 @@ impl MintSchemaRules {
     pub(crate) fn payload_version(self) -> u32 {
         match self {
             Self::V1 => 1,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             Self::Conformance901 => 901,
         }
     }
@@ -49,7 +49,7 @@ impl MintSchemaRules {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PassStateRules {
     V2,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "miner-pass-conformance"))]
     ConformanceNoNewCollab,
 }
 
@@ -66,7 +66,7 @@ impl PassStateRules {
         let value = versions.require_string(family)?;
         match value {
             PASS_STATE_MACHINE_VERSION_V2 => Ok(Self::V2),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             CONFORMANCE_STATE if conformance_scope(versions) => Ok(Self::ConformanceNoNewCollab),
             _ => Err(ActivationRegistryError::VersionNotSupported {
                 family,
@@ -81,7 +81,7 @@ impl PassStateRules {
 pub(crate) fn validate_indexer_rules(
     versions: &ActiveVersionSet,
 ) -> Result<(), ActivationRegistryError> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "miner-pass-conformance"))]
     if conformance_scope(versions) {
         return versions.validate_btc_indexer_with_formula_executors(
             |_, _, _| {
@@ -136,11 +136,11 @@ fn context_error(rules: &BtcRuleContext, error: ActivationRegistryError) -> Stri
 }
 
 // Test executors are absent from ordinary binaries and restricted even in test builds.
-#[cfg(test)]
-pub(crate) use crate::index::test_miner_rules::{
+#[cfg(any(test, feature = "miner-pass-conformance"))]
+pub(crate) use crate::index::conformance::{
     CONFORMANCE_SCHEMA, CONFORMANCE_SCOPE, CONFORMANCE_STATE,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "miner-pass-conformance"))]
 pub(crate) fn conformance_scope(versions: &ActiveVersionSet) -> bool {
     versions.scope().is_some_and(|scope| {
         scope.network_id == "btc-regtest" && scope.rules_scope == CONFORMANCE_SCOPE

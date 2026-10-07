@@ -50,7 +50,7 @@ impl MinerPassManager {
                         .await?
                 }
                 // This test contract retains v2 state representation and adds only admission checks.
-                #[cfg(test)]
+                #[cfg(any(test, feature = "miner-pass-conformance"))]
                 PassStateRules::ConformanceNoNewCollab => {
                     self.apply_mint_v2(mint, evidence, balances, &mut audit, schema, state)
                         .await?
@@ -150,7 +150,7 @@ impl MinerPassManager {
         // A new admission restriction never revalidates existing passes or partially consumes prev.
         match state {
             PassStateRules::V2 => {}
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             PassStateRules::ConformanceNoNewCollab => {
                 if mint.pass_kind == crate::index::MinerPassKind::Collab {
                     return self

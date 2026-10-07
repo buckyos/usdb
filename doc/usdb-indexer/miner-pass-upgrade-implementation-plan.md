@@ -1,6 +1,6 @@
 # UIP-0017 多区间升级实施与测试计划
 
-状态：A 已提交为 `4dd2333`；B 已提交为 `72e6a87`；C 已提交为 `2ca2694`；D 已提交为 `d901370`；E 已完成本地实现与验证，待评审提交；F–G 尚未实施。
+状态：A 已提交为 `4dd2333`；B 已提交为 `72e6a87`；C 已提交为 `2ca2694`；D 已提交为 `d901370`；E 已提交为 USDB `d3a20ef` / Go `7d19ebc59`；F 已完成本地实现与验证；G 尚未实施。
 
 协议依据：[UIP-0017](../UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md) 第一版草案已由用户确认并提交为 `36726a5`；这不表示委员会流程完成或目标网络已激活。本文记录当前实现缺口、分批交付和测试验收，不分配正式 schema v2 / 状态机 v3，不改变现行网络参数。
 
@@ -14,7 +14,7 @@
 
 ## 2. 当前实现与缺口
 
-以下为制定计划时的源码核查结果；A–E 批次的交付与验证见第 7–11 节，F–G 仍为待实施内容。
+以下为制定计划时的源码核查结果；A–F 批次的交付与验证见第 7–12 节，G 仍为待实施内容。
 
 | 模块 | 已有基础 | 所需补充 |
 | --- | --- | --- |
@@ -308,12 +308,118 @@ D 交付时将完整经济查询、历史 registry 前缀一致性、缓存/curs
 
 Go current-selector builder 额外检查 chain-config origin 至当前 BTC 高度的完整 registry 前缀，不能因当前 active set 相同就接受曾分歧的服务。测试覆盖首次分歧高度、已结束的分歧区间、origin 之前的差异和最大高度。Go 不重放全部 BTC raw-energy 账本；累计正确性仍由 Rust 独立参考及完整索引证明。
 
-Rust 的新增公式仅存在于 `cfg(test)`；Go 仅在 `usdb_miner_pass_conformance` build tag 下注册，并且要求 `btc-regtest` 和专用 `miner-pass-upgrade-conformance` scope 同时匹配。普通 Rust 二进制及普通 Go 构建均验证拒绝测试公式。现有 fast gate 自动收集 Rust 查询用例，Go fast 新增该 tag 的测试，golden gate 比较两仓夹具一致性。
+E 交付时 Rust 的新增公式仅存在于 `cfg(test)`；Go 仅在 `usdb_miner_pass_conformance` build tag 下注册，并且要求 `btc-regtest` 和专用 `miner-pass-upgrade-conformance` scope 同时匹配。普通 Rust 二进制及普通 Go 构建均验证拒绝测试公式。现有 fast gate 自动收集 Rust 查询用例，Go fast 新增该 tag 的测试，golden gate 比较两仓夹具一致性。
 
 ### 11.3 验证与后续边界
 
 本地验证（2026-10-05）：indexer 单元/管线测试 382 通过、11 忽略，普通二进制集成测试 1 通过；`usdb-util` 87 通过、2 忽略。相关 crate 严格 Clippy、workspace 编译、格式、公共 API 文档构建通过。Go 1.26.0 下 `internal/usdb` 普通构建、`usdb_miner_pass_conformance` 和既有 activation/economic v2/v3 三组 tag 的测试通过，`internal/usdbacceptance`、`internal/usdbrelease` 回归通过。fast golden gate（包括新增向量逐字节检查）、ShellCheck、发布片段及共享技能检查通过。
 
-没有运行完整 fast 全组件任务、真实 Core/Ord/BH/indexer/Geth 服务集群或远端 CI，不能将 HTTP 夹具联调等同于 F 的跨服务验收。E 提交后仍须在发布准备时更新 Go 的 USDB compatibility lock 并完成相应 CI；本批没有提前冻结未提交源码。
+E 交付时未运行完整 fast 全组件任务、真实 Core/Ord/BH/indexer/Geth 服务集群或远端 CI，HTTP 夹具联调不等同于 F 的跨服务验收。E 已分别提交为 USDB `d3a20ef` 与 Go `7d19ebc59`，Go compatibility lock 已指向该 USDB 提交；F 的后续未提交工作尚未冻结为发布依赖。
 
 生产支持集合、公开 registry/genesis、wire 与 identity 编码、exact registry 数据绑定均保持现状，本批不要求重建或网络重置。F 继续处理真实服务及 nightly/weekly，G 继续独立处理原地 dataset registry 升级；尚未定义或激活任何正式新公式。
+
+
+## 12. F 批次：真实服务与 CI 验收
+
+### 12.1 隔离构建与激活时间表
+
+USDB `miner-pass-conformance` Cargo feature 和 Go `usdb_miner_pass_conformance` build tag
+显式启用已有的合成规则执行器，同时要求 `btc-regtest` 与
+`miner-pass-upgrade-conformance` rules scope。普通构建不包含这些执行器；feature
+不启用 `cfg(test)` 的故障注入器。公开 registry、genesis、JSON schema v1 和状态机 v2
+保持现状，不新增生产激活点。
+
+[服务 catalog](../../tests/fixtures/miner-pass-upgrade/live-catalog.json) 使用 origin=1、stable lag=10，
+与 C–E 的算术测试契约相同，激活高度移到真实 coinbase 成熟和铸造之后：
+
+| BTC 高度 | 独立变化 |
+| --- | --- |
+| 160 | raw energy 表示先乘 2，随后每 unit 每块增长 2。 |
+| 163 | 协作贡献逐证 floor 的权重从 50% 改为 25%。 |
+| 166 | level 改为 `min(effective_energy / 1000, 50)`，factor 随对应 level 计算。 |
+| 170 | 新 mint 的 JSON `v` 接受集合改为测试专用 901；已接受的 v1 pass 保留。 |
+| 172 | 拒绝新协作 mint；不取消旧协作证。 |
+| 180 | raw energy 表示显式恒等转换，增长改为 3，继承保留比例改为 75%。 |
+
+Rust 测试检查 catalog 与共享声明一致；`generate_go_btc_activation_golden` 生成 Go 副本，
+fast golden gate 检查同源。Go 普通构建不注册这个服务 catalog，带 tag 的构建才注册。
+
+### 12.2 真实链路与独立对照
+
+Go `scripts/usdb/run_miner_pass_upgrade_services.sh` 启动隔离的 Bitcoin Core、Ord、
+balance-history、indexer、Geth miner 和独立 validator。铭文通过真实 commit/reveal 产生；
+indexer 使用 Core 来源并启用 Ord shadow compare/fail-fast。验收包括：
+
+- 普通 indexer 在 159 正常工作，遇到未知的 160 规则后不推进；切换隔离构建继续处理。
+  普通 Geth 拒绝测试专用 registry，不把合成规则带入发布程序。
+- Leader、固定 pass ID 协作及 BTC 地址协作跨六个独立激活点。查询覆盖各边界的
+  H-1/H/H+1、profile、scalar energy、候选集、协作明细、聚合、mint audit 和状态身份。
+- Python 直接重建 Core 规范交易的 owner 余额，逐块独立计算增长、非恒等转换、
+  余额减少 penalty、协作逐证舍入、level 和 factor；包含入金与部分支出。
+- Geth 在 BTC=159、165、182 三段实际出块；独立 validator 同步到相同 head，
+  另用整数参考计算检查 difficulty、K、发行总账和 coinbase 奖励。
+- 新 schema 跨地址继承旧 schema 的 Leader，独立检查源能量结算与 75% floor；
+  收紧规则后的新协作 mint 无效，旧协作证仍可转移为 Dormant 或 burn。
+  无效 mint 的 scalar energy 必须返回 `ENERGY_NOT_FOUND`，而不是创建虚假的零值记录。
+- 进程强杀重启、159/165 成对 checkpoint 追赶、从 origin 重建，与连续运行的
+  历史和最终查询逐字段比较。checkpoint 是停止写入后的 SQLite/RocksDB 成对复制。
+- BTC 从 160 开始替换分支，越过所有升级点和后续生命周期操作；Ord 同时检查高度和
+  规范 block hash。在线 rollback 与新库从 origin 重放一致，旧分支 USDB headers
+  无法通过新分支的 external-state 校验。
+
+真实联调发现并修复了 Go quote-disabled 分支的分派遗漏：原来 profile 已按 BTC 查询高度
+验证 level/factor，但 quote 层又使用固定 v1 公式重算。现在该分支保留**已经由本地规则验证**
+的 profile level/factor，并复制能量值，供 miner/validator 共用。现行 v1 的数值不变；
+显式 quote policy 的候选能量计算仍属于其自身契约。
+
+### 12.3 CI 与复现入口
+
+nightly 新增 `miner-pass-upgrade` shard。weekly 新增 `miner-pass-upgrade-soak`，默认
+seed=41/42/43，分别执行 3/2/3 轮跨全部边界的重组。seed 改变入金、部分支出金额和重组轮数；
+操作顺序与激活时间表固定。它补充现有 world-soak 和 D 的故障注入矩阵，不把已有 world-soak
+的成功结果当作多区间升级覆盖。
+
+在 Go 仓库配置 `BITCOIN_BIN_DIR`、`ORD_BIN` 和发布工具链 `USDB_GO_BIN` 后运行：
+
+```bash
+USDB_LONG_CI_WORK_DIR=/tmp/miner-pass-nightly-work \
+USDB_LONG_CI_OUTPUT_DIR=/tmp/miner-pass-nightly-output \
+  scripts/usdb/run_long_ci.sh nightly miner-pass-upgrade
+
+USDB_LONG_CI_WORK_DIR=/tmp/miner-pass-weekly-work \
+USDB_LONG_CI_OUTPUT_DIR=/tmp/miner-pass-weekly-output \
+  scripts/usdb/run_long_ci.sh weekly miner-pass-upgrade-soak
+```
+
+可拆分 `--prepare-only` / `--run-only`，两步使用同一个 work root。准备阶段分别构建普通和
+隔离二进制，记录源码 revision、未提交差异/新增文件摘要、feature/tag 和 binary SHA-256；
+运行前检查二进制仍与清单匹配。每个 scenario 必须使用空目录。输出保存场景参数、工具版本、
+配置、查询快照、独立继承值、Geth 区块和奖励核算、逐轮重组快照、拒绝日志及最终报告；
+清理检查成功后才写 `status=passed`。long CI 的 diagnostics 收集并上传这些文件。
+
+### 12.4 验收与保留边界
+
+本地验收（2026-10-05）：
+
+- Rust：普通构建和 feature 构建分别 383 项通过、11 项忽略；普通二进制拒绝集成测试
+  1 项通过；`usdb-util` 87 项通过、2 项忽略。两种构建的严格 Clippy、workspace check 和 fmt 通过。
+- Go：普通构建、MinerPass tag、已有 activation/economic tag 和组合 tag 的
+  `internal/usdb`、`consensus/ethash` 测试通过；发布 Go 1.18.5 下还通过
+  `internal/usdbacceptance`、`core/usdbstate`、相关 miner/Geth 回归与 vet。
+- Python：验收辅助 8 项、long CI 编排 17 项、奖励校验 5 项通过；golden gate、
+  ShellCheck、YAML 解析、发布片段和共享技能同步检查通过。
+- 真实 nightly：独立模型、schema/状态变化、精确继承、validator、奖励、重启、
+  checkpoint/origin 重放和重组通过。最后一轮加强了旧程序明确报错后才检查 H-1 的断言，
+  以及重组后新证不存在的检查，再次通过；该轮实际出块 17 个。
+- 真实 weekly：seed=41/42/43 分别完成 3/2/3 轮重组，实际出块 15/18/22 个；全部通过。
+  这里的区块数来自本地 PoW 运行记录，不作为 CI 固定预期。
+- 普通构建的既有 `run_usdb_profile_e2e.sh`（启用 MinerPass v2 生命周期场景）通过，
+  完成 8 个区块的 payload、difficulty、奖励总账和独立 validator 检查。
+
+未触发远端 CI、推送、部署或修改在线网络；未声称运行了完整 fast 的全部组件。
+发布片段由 Go 仓库持有：`.release-notes/fragments/miner-pass-verified-difficulty-routing.json`，
+建议提交 trailer 为 `Release-Note: miner-pass-verified-difficulty-routing`。
+
+这组测试没有更换一个已有数据集的 registry identity，也不实现生产签名快照或在线节点升级。
+原地 registry 升级仍留给 G，普通运行继续要求精确的双库身份绑定。当前生产公式和数据编码
+没有变化，不要求重建或网络重置；具体未来规则的 UIP、公共激活记录、发布和节点切换仍须独立完成。

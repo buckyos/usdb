@@ -1,3 +1,5 @@
+#[cfg(any(test, feature = "miner-pass-conformance"))]
+mod conformance;
 mod content;
 pub(crate) mod economic_rules;
 mod effective_energy;

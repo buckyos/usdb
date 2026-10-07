@@ -1,4 +1,5 @@
-//! The actual non-test binary must reject the executors accepted only by cfg(test) pipelines.
+#![cfg(not(feature = "miner-pass-conformance"))]
+//! The ordinary binary rejects contracts reserved for explicit regtest test builds.
 #[path = "common/miner_pass_conformance.rs"]
 mod conformance;
 

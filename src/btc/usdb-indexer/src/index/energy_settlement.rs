@@ -15,9 +15,9 @@ use usdb_util::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EnergyRules {
     V1,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "miner-pass-conformance"))]
     Double,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "miner-pass-conformance"))]
     Triple,
 }
 
@@ -30,14 +30,14 @@ impl EnergyRules {
         let value = versions.require_string(family)?;
         match value {
             ENERGY_FORMULA_VERSION_V1 => Ok(Self::V1),
-            #[cfg(test)]
-            crate::index::test_miner_rules::CONFORMANCE_ENERGY_DOUBLE
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
+            crate::index::conformance::CONFORMANCE_ENERGY_DOUBLE
                 if super::rules::conformance_scope(versions) =>
             {
                 Ok(Self::Double)
             }
-            #[cfg(test)]
-            crate::index::test_miner_rules::CONFORMANCE_ENERGY_TRIPLE
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
+            crate::index::conformance::CONFORMANCE_ENERGY_TRIPLE
                 if super::rules::conformance_scope(versions) =>
             {
                 Ok(Self::Triple)
@@ -53,9 +53,9 @@ impl EnergyRules {
         let growth = calc_growth_delta(balance, blocks);
         match self {
             Self::V1 => growth,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             Self::Double => growth.saturating_mul(2),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             Self::Triple => growth.saturating_mul(3),
         }
     }
@@ -68,7 +68,7 @@ impl EnergyRules {
                 record.active_block_height,
                 height,
             ),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             Self::Double | Self::Triple => {
                 let lost = (record.owner_balance / 100_000).saturating_sub(balance / 100_000);
                 let rate = if self == Self::Double { 2 } else { 3 };
@@ -91,9 +91,9 @@ impl EnergyRules {
     fn inherit(self, energy: Energy) -> Energy {
         match self {
             Self::V1 => calc_inheritable_energy(energy),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             Self::Double => energy / 10 * 9 + energy % 10 * 9 / 10,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             Self::Triple => energy / 4 * 3 + energy % 4 * 3 / 4,
         }
     }
@@ -104,7 +104,7 @@ impl EnergyRules {
         if self == previous {
             return Ok(EnergyTransition::Identity);
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "miner-pass-conformance"))]
         match (previous, self) {
             (Self::V1, Self::Double) => return Ok(EnergyTransition::DoubleRepresentation),
             (Self::Double, Self::Triple) => return Ok(EnergyTransition::Identity),
@@ -120,14 +120,14 @@ impl EnergyRules {
 /// No conversion changes pass state, balance or age, or requires a new persisted marker.
 pub(crate) enum EnergyTransition {
     Identity,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "miner-pass-conformance"))]
     DoubleRepresentation,
 }
 impl EnergyTransition {
     fn apply(self, energy: Energy) -> Energy {
         match self {
             Self::Identity => energy,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             Self::DoubleRepresentation => energy.saturating_mul(2),
         }
     }

@@ -517,7 +517,7 @@ impl InscriptionContentLoader {
                 Self::classify_v1_mint_object(inscription_id, content, network, 1)
             }
             // Conformance changes only the wire marker; the v1 field grammar remains strict.
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             MintSchemaRules::Conformance901 => {
                 Self::classify_v1_mint_object(inscription_id, content, network, 901)
             }

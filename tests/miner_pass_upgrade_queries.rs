@@ -473,3 +473,48 @@ fn derived_rules_reject_unknown_contracts_and_preserve_integer_boundaries() {
         assert!(timeline.indexer_context_at(22).is_err());
     }
 }
+
+#[test]
+fn live_service_catalog_is_explicit_and_matches_the_shared_contract() {
+    use crate::index::test_miner_rules::*;
+    let catalog = conformance_catalog(&[
+        (
+            VersionFamily::EnergyFormulaVersion,
+            160,
+            CONFORMANCE_ENERGY_DOUBLE,
+        ),
+        (
+            VersionFamily::EnergyFormulaVersion,
+            180,
+            CONFORMANCE_ENERGY_TRIPLE,
+        ),
+        (
+            VersionFamily::EffectiveEnergyFormulaVersion,
+            163,
+            CONFORMANCE_EFFECTIVE,
+        ),
+        (VersionFamily::LevelFormulaVersion, 166, CONFORMANCE_LEVEL),
+        (
+            VersionFamily::InscriptionSchemaVersion,
+            170,
+            CONFORMANCE_SCHEMA,
+        ),
+        (
+            VersionFamily::PassStateMachineVersion,
+            172,
+            CONFORMANCE_STATE,
+        ),
+    ]);
+    let value: Value = serde_json::from_str(&catalog).unwrap();
+    if let Some(path) = std::env::var_os("USDB_WRITE_LIVE_UPGRADE_CATALOG") {
+        std::fs::write(path, serde_json::to_string_pretty(&value).unwrap() + "\n").unwrap();
+    } else {
+        assert_eq!(
+            value,
+            serde_json::from_str::<Value>(include_str!(
+                "fixtures/miner-pass-upgrade/live-catalog.json"
+            ))
+            .unwrap()
+        );
+    }
+}

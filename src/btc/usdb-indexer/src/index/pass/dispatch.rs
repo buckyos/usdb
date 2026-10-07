@@ -43,7 +43,7 @@ impl MinerPassManager {
         self.require_rule_context(height, rules)?;
         match PassStateRules::at(rules)? {
             PassStateRules::V2 => Ok(()),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
             PassStateRules::ConformanceNoNewCollab => Ok(()),
         }
     }

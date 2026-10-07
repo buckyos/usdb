@@ -3,6 +3,10 @@ name = "usdb-indexer"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Isolated regtest acceptance only; never enabled by release builds.
+miner-pass-conformance = []
+
 [dependencies]
 usdb-util = { path = "../usdb-util" }
 rust-rocksdb = "0.45"
