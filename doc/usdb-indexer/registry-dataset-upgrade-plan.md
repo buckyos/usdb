@@ -1,6 +1,6 @@
 # Registry 数据集接管方案与验收
 
-状态：按 2026-10-07 讨论确定实施边界。G1 已提交为 `073f13d`；G2 已实现并完成本地验证，G3 真实服务整体验收仍待执行。对应 UIP-0017 实施计划 G；不改变网络参数或分配新的业务规则版本。
+状态：按 2026-10-07 讨论确定实施边界。G1 已提交为 `073f13d`；G2 已提交为 USDB `a3dd955` / Go `44ae78a51`；G3 已完成本地真实容器和服务矩阵验收、尚未提交，结果见第 5 节。对应 UIP-0017 实施计划 G；不改变网络参数或分配新的业务规则版本。
 
 ## 1. 约束
 
@@ -74,7 +74,7 @@ G1 实现位置：`storage/rules_upgrade.rs`、双库私有元数据 API 与 `In
 - `cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer-checkpoint-tool --offline`：18 通过。
 - `cargo test --manifest-path src/btc/Cargo.toml -p usdb-util --offline`：87 通过、2 忽略。
 - workspace `cargo check`、`cargo clippy --workspace --all-targets --all-features --offline -- -D warnings`、`cargo fmt --all -- --check` 与 `git diff --check` 通过。
-- 现有 fast CI 的 `cargo test --workspace` 自动发现这些测试；尚未触发远端 CI。G3 新接管场景的真实 Core/Ord/BH/indexer/Geth 联调仍待实施，不能用这批隔离数据库测试代替。
+- 现有 fast CI 的 `cargo test --workspace` 自动发现这些测试；尚未触发远端 CI。G1 交付时，G3 的真实 Core/Ord/BH/indexer/Geth 接管联调尚待实施；现已补齐的结果见第 5 节。
 
 测试通过不代表已发布、已部署或目标网络已激活。
 
@@ -89,6 +89,74 @@ G1 实现位置：`storage/rules_upgrade.rs`、双库私有元数据 API 与 `In
 
 本地覆盖包括真实 SQLite/RocksDB 的只读 WAL 查询、全部接管中断点、late upgrade 与源缺失；真实 LevelDB 的 header-only 越界、genesis/配置错误、目录只读、损坏拒绝和 CLI apply；节点工具则验证发布 bundle、双检查顺序、两次 apply/目录移动/初始化标记/node.env 各阶段恢复、保存凭证变更与目录替换拒绝、仅 chain checkpoint 升级和清理保护。节点协调测试注入服务调用结果，不能代替 G3 的真实容器和跨链运行验收。
 
-当前 Go CI 依赖锁推进到已提交的 G1 `073f13df271113e27fc4d7f61ac5d91d95cb9374`；G2 提交后需再将锁更新到对应 USDB 提交，才进行成对发布资格验证。
+G2 的 Go CI 依赖锁已推进到 USDB `a3dd9553f0d2ef274018f8ff93b79a7c43c137d4`。G3 提交后仍需按 USDB → Go 依赖锁的顺序冻结，才可进行成对发布资格验证。
 
-G2 本地验证：indexer 单元 395 通过 / 12 原有忽略，生产分派集成 1 通过；checkpoint 18 通过；util 87 通过 / 2 忽略；升级/清理 Python 74 通过，节点管理 127 通过，网络/配置 68 通过，节点打包 1 通过。工作区 check、Clippy（all targets/all features、warnings as errors）、格式检查通过。Go 1.26 兼容工具链下 `internal/usdbupgrade`、LevelDB、USDB verifier、params、fork ID 和相关 Geth CLI 测试以及 vet 通过；Go 1.18 发布工具链和远端 CI 尚待成对提交后验证。
+G2 本地验证：indexer 单元 395 通过 / 12 原有忽略，生产分派集成 1 通过；checkpoint 18 通过；util 87 通过 / 2 忽略；升级/清理 Python 74 通过，节点管理 127 通过，网络/配置 68 通过，节点打包 1 通过。工作区 check、Clippy（all targets/all features、warnings as errors）、格式检查通过。Go 1.26 兼容工具链下 `internal/usdbupgrade`、LevelDB、USDB verifier、params、fork ID 和相关 Geth CLI 测试以及 vet 通过；G2 交付时尚未验证 Go 1.18 发布工具链；G3 已补齐该工具链验证，远端 CI 仍待成对提交。
+
+
+## 5. G3：真实容器与跨服务验收
+
+### 5.1 执行路径
+
+Go 的 `scripts/usdb/run_miner_pass_upgrade_services.sh` 继续承载 nightly
+`miner-pass-upgrade` 和 weekly `miner-pass-upgrade-soak`（seed 41/42/43）。准备阶段编译
+普通/合成规则 indexer、普通/合成规则 Geth 和 BH，并以已编译二进制及宿主动态库构建
+只用于测试的 scratch 镜像；不下载基础镜像、不推送镜像。执行前验证二进制摘要、镜像
+ID 与构建凭证，避免在服务启动后才发现工具缺失或被替换。
+
+`live-source-catalog.json` 只包含原规则；`live-catalog.json` 保留原 revision 并追加原有
+多区间合成规则。两者仅适用于 BTC regtest 与专用 conformance scope。公开 catalog、
+网络参数、JSON schema 和生产规则版本均不改变。
+
+真实 Core/Ord 铸造 Leader 与两类协作 pass，BH/indexer 按旧 registry 索引至 BTC 159，
+Geth 挖出一段旧 checkpoint 下的历史。停机后，以当时 USDB head + 1 作为追加 checkpoint，
+调用生产 `node_protocol_upgrade.execute`，其两个离线服务命令均在真实 Docker 容器中
+执行，使用只读根目录、隔离网络和预检只读数据卷；不注入服务结果。
+
+`tests/common/protocol_upgrade_live.py` 提供校验过的 regtest 包和持久化会话适配器。
+它不放宽公开网络 allowlist，也不模拟宿主 systemd、sudo 或安装流程。宿主会话边界继续
+由 G2 节点工具测试覆盖；已发布包在真实运维主机上的安装、停机、升级和观察验收仍是发布前
+单独步骤，不能用此 regtest 验收替代。
+
+### 5.2 新增矩阵与证据
+
+- BTC 159 原库接管后跨 160/163/166/170/172/180 续写；目录 inode 不变、原目录名消失，
+  证明移动活跃数据集而非复制或重建。Geth 三类 head 与 genesis 保持不变。
+- 真实子进程分别在 Geth apply、indexer apply、目录发布、初始化标记发布后立即退出。
+  每次从磁盘日志重新加载，沿相同目标恢复；完成后重复执行仍幂等。
+- BTC 旧规则已经执行至 160 的 indexer，以及 USDB 已经达到目标 checkpoint 的旧链，
+  分别在两个预检阶段拒绝。逐文件摘要证明两个数据库均未变化，未开始任何元数据写入。
+- 所有历史查询固定旧 registry 的 BTC 159 上下文，升级前后逐字段相等，包括审计、能量、
+  profile、候选集、协作、聚合和 state ref。独立 validator 验证新旧 checkpoint 的完整历史。
+- 独立奖励参考按 USDB checkpoint 选 registry，并按 BTC anchor 选公式；价格区间身份同样
+  按完整 chain checkpoint 切换，即使价格公式本身没有改变。
+- 保留已有 schema/继承/协作/转移/burn、普通构建拒绝合成规则、进程重启、旧/中段 checkpoint
+  追赶、从 origin 重放、跨多区间重组和旧分支 header 拒绝；weekly 三个 seed 分别执行
+  3/2/3 次深重组。
+
+报告升级为 `miner-pass-live-upgrade:v2`，包含源码/构建/镜像身份、两个服务的预检凭证、
+会话事件、各拒绝原因及文件摘要、前后查询、奖励与重放对比证据。
+长时 CI 原有 diagnostics 会保留这些 JSON/JSONL/log 文件。
+
+### 5.3 联调发现的只读 freezer 缺口
+
+G2 的 LevelDB 夹具未创建实际运行节点的 `ancient/chain`。真实只读容器暴露了 Geth
+仍以读写方式打开 `FLOCK` 和 table `.meta` 的问题。本批改为在既有锁文件上获取互斥锁、
+只读打开元数据，并在只读模式明确拒绝不完整 index、metadata 或 content；不创建目录、
+不初始化旧 metadata、不截断或清理残留文件。读锁仍排斥运行中的 writer。
+
+回归同时覆盖空 freezer 的真实节点、已写入 ancient 的 genesis、只读文件权限、锁互斥、
+缺失/空 metadata、损坏 index 和 dangling content。缺失旧 metadata 属于需要用原节点
+诊断/初始化的情况，不自动归类为重建或网络重置。
+
+### 5.4 本地验证（2026-10-07）
+
+- 完整真实服务场景 seed 0 已通过；weekly 41/42/43 通过原 CI 入口全部通过，分别完成 3/2/3 次深重组。
+- 使用发布 Go 1.18.5、Bitcoin Core 28.1、Ord 0.23.3 和当前 Rust 构建。
+- indexer 395 通过 / 12 原有忽略，普通生产分派集成 1 通过；util 87 通过 / 2 原有忽略。
+- Go rawdb、离线接管、LevelDB、USDB verifier、params、fork ID、合成规则 tag、Geth CLI
+  与 vet 通过；节点协调 13 个测试、CI 分派 17 个、查询辅助 9 个、奖励参考 5 个通过。
+- Rust workspace check、严格 Clippy、格式、Rust/Go golden 一致性、ShellCheck、发布片段
+  和 diff 检查通过。
+
+以上为本地隔离验收，未触发远端 CI，未推送、发布或修改在线节点。

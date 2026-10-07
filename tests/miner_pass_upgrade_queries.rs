@@ -505,7 +505,23 @@ fn live_service_catalog_is_explicit_and_matches_the_shared_contract() {
             CONFORMANCE_STATE,
         ),
     ]);
-    let value: Value = serde_json::from_str(&catalog).unwrap();
+    let source: Value = serde_json::from_str(&conformance_catalog(&[])).unwrap();
+    let mut value: Value = serde_json::from_str(&catalog).unwrap();
+    value["registries"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, source["registries"][0].clone());
+    if let Some(path) = std::env::var_os("USDB_WRITE_LIVE_SOURCE_CATALOG") {
+        std::fs::write(path, serde_json::to_string_pretty(&source).unwrap() + "\n").unwrap();
+    } else {
+        assert_eq!(
+            source,
+            serde_json::from_str::<Value>(include_str!(
+                "fixtures/miner-pass-upgrade/live-source-catalog.json"
+            ))
+            .unwrap()
+        );
+    }
     if let Some(path) = std::env::var_os("USDB_WRITE_LIVE_UPGRADE_CATALOG") {
         std::fs::write(path, serde_json::to_string_pretty(&value).unwrap() + "\n").unwrap();
     } else {
