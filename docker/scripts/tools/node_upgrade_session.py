@@ -127,8 +127,10 @@ class Session:
         old, new = source["runtime_compatibility"], self.layout.runtime_compatibility
         chain_changes = [k for k in upgrade.CHAIN_FIELDS if source["network_bundle"].get(k) != self.layout.network_identity.get(k)]
         service_changes = {s for s in old["services"] if old["services"][s] != new["services"][s]}
-        reset = bool(chain_changes or "usdb_chain" in service_changes)
-        classification = "network_reset" if reset else "data_rebuild" if service_changes else "compatible"
+        import node_protocol_upgrade
+        protocol = node_protocol_upgrade.candidate(value["source_kit"], source, self.layout)
+        reset = not protocol and bool(chain_changes or "usdb_chain" in service_changes)
+        classification = "protocol_upgrade" if protocol else "network_reset" if reset else "data_rebuild" if service_changes else "compatible"
         core.require(value["schema_version"] == upgrade.SCHEMA and value["executable"] and not value["blockers"]
                      and value["classification"] == classification != "compatible", "Journal is not an executable rebuild")
         core.require(source["network_bundle"]["bundle_id"] == value["bundle"] == self.layout.bundle_id, "Cross-bundle rebuild is unsupported")
@@ -146,9 +148,10 @@ class Session:
             core.require(key in PERSISTENT_DATA_SERVICES and key not in seen, "Unknown/duplicate component")
             seen.add(key)
             service = PERSISTENT_DATA_SERVICES[key]
-            rebuild = service in service_changes or (reset and service in {"usdb_indexer", "usdb_chain", "control_plane"})
+            rebuild = not protocol and (service in service_changes or (reset and service in {"usdb_indexer", "usdb_chain", "control_plane"}))
+            action = "adopt" if protocol and service == "usdb_indexer" and service in service_changes else "rebuild" if rebuild else "reuse"
             core.require(item["service"] == service and item["source"] == str(old_paths[key])
-                         and item["target"] == str(new_paths[key]) and item["action"] == ("rebuild" if rebuild else "reuse"),
+                         and item["target"] == str(new_paths[key]) and item["action"] == action,
                          f"Journal component path/action mismatch: {service}")
             if rebuild:
                 targets.add(item["target"])
@@ -172,6 +175,11 @@ class Session:
                          "Unexpected created dataset in upgrade journal")
             core.safe_path(path)
             core.safe_path(Path(info["temporary"]))
+        if protocol:
+            core.require(not state["entries"] and not state["created"], "Protocol upgrades cannot archive or rebuild databases")
+            node_protocol_upgrade.validate(self)
+        else:
+            core.require("protocol" not in state, "Unexpected protocol journal on a rebuild")
         allowed_units = {Path(p).name for p in self.runtime["units"]}
         core.require(set(state["units"]) <= allowed_units and all(v["mode"] in {"enabled", "enabled-runtime"} for v in state["units"].values()),
                      "Unexpected service activation in upgrade journal")
@@ -196,6 +204,9 @@ class Session:
         print(f"Upgrade {phase}: {path}", flush=True)
 
     def check(self):
+        if self.plan["classification"] == "protocol_upgrade":
+            import node_protocol_upgrade
+            node_protocol_upgrade.validate(self)
         core.safe_path(self.layout.node_env)
         if "node.env" in self.state["backups"]:
             self.original_env()
@@ -390,6 +401,8 @@ class Session:
         self.event("configuration_ready", self.layout.node_env)
 
     def rollback(self):
+        core.require(not self.state.get("protocol", {}).get("writes_started"),
+                     "Protocol metadata writes already started; resume forward with the same target kit, no automatic rollback")
         if self.state["entries"] is None:
             core.require(upgrade.sha(self.layout.node_env) == self.plan["env_sha256"], "Configuration changed before preparation")
             self.finish("rolled_back")
@@ -479,8 +492,17 @@ class Session:
             for path in (self.layout.node_env.parent / "monitor/run.lock", self.layout.node_env.parent / "sourcedao/.operation.lock"):
                 if path.exists():
                     core.lock_file(path, locks)
-            for item in self.plan["components"]:
-                core.acquire_locks(Path(item["source"]), locks)
+            protocol = self.plan["classification"] == "protocol_upgrade"
+            if protocol:
+                # Probe locks now, then let each offline service hold its native DB locks.
+                # Keeping OFD locks here would prevent the service from opening its database.
+                with ExitStack() as probes:
+                    for item in self.plan["components"]:
+                        path = Path(item["target"]) if Path(item["target"]).exists() else Path(item["source"])
+                        core.acquire_locks(path, probes)
+            else:
+                for item in self.plan["components"]:
+                    core.acquire_locks(Path(item["source"]), locks)
             self.stop_autostart()
             core.atomic_json(self.pending, self.pending_value())
             self.own(self.pending)
@@ -489,13 +511,20 @@ class Session:
             else:
                 self.prepare()
                 self.remove_stopped_containers()
-                self.isolate()
-                self.initialize()
+                if protocol:
+                    import node_protocol_upgrade
+                    node_protocol_upgrade.execute(self)
+                else:
+                    self.isolate()
+                    self.initialize()
                 self.write_config()
                 self.finish("applied")
                 print(f"Upgrade prepared; services remain stopped. Recovery record: {self.root}")
                 print("Inspect retained data: " + shlex.join(["usdb-node", "upgrade-status", "--backup-dir", str(self.root)]))
-                print("Run usdb-node doctor, then usdb-node up. Reauthorize mining only after the new chain and pass are ready.")
+                if protocol:
+                    print("History and mining settings retained. Run usdb-node doctor, then usdb-node up and usdb-node status --watch.")
+                else:
+                    print("Run usdb-node doctor, then usdb-node up. Reauthorize mining only after the new chain and pass are ready.")
         return 0
 
     def _new_lock(self, stack):

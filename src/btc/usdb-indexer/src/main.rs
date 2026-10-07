@@ -7,6 +7,7 @@ mod constants;
 mod index;
 mod inscription;
 mod output;
+mod registry_upgrade;
 mod service;
 mod status;
 mod storage;
@@ -26,6 +27,9 @@ use std::sync::Arc;
 #[command(version = "0.1.0")]
 #[command(about = "USDB Indexer", long_about = None)]
 struct UsdbIndexerCli {
+    #[command(subcommand)]
+    command: Option<registry_upgrade::Command>,
+
     /// Override service root directory (default: ~/.usdb/usdb-indexer)
     #[arg(long)]
     root_dir: Option<PathBuf>,
@@ -38,6 +42,17 @@ struct UsdbIndexerCli {
 #[tokio::main]
 async fn main() {
     let cli = UsdbIndexerCli::parse();
+
+    if let Some(registry_upgrade::Command::RegistryUpgrade(args)) = cli.command {
+        match args.run() {
+            Ok(report) => println!("{report}"),
+            Err(error) => {
+                eprintln!("Indexer registry upgrade refused: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     // Acquire application lock to prevent multiple instances unless explicitly disabled.
     let _lock_guard = if cli.skip_process_lock {

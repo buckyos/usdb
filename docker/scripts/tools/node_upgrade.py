@@ -39,7 +39,7 @@ def ensure_no_pending(layout) -> None:
     core.safe_path(path)
     if path.exists():
         value = core.read_json(path)
-        raise ValueError("UPGRADE_PENDING: finish or roll back the saved upgrade before starting or changing this node; "
+        raise ValueError("UPGRADE_PENDING: finish the saved upgrade before starting or changing this node; rollback is limited to its documented boundary; "
                          f"usdb-node upgrade-release --resume {shlex.quote(value['backup_dir'])} --execute")
 
 
@@ -155,8 +155,10 @@ def plan(layout, node, from_kit=None):
     for service in ("bitcoin_core", "balance_history"):
         if service in changed_contracts:
             blocked.append(f"{service} contract changed: an explicit source-data migration/rebuild procedure is required")
-    reset = bool(changed_chain or "usdb_chain" in changed_contracts)
-    classification = "network_reset" if reset else "data_rebuild" if changed_contracts else "compatible"
+    import node_protocol_upgrade
+    protocol = node_protocol_upgrade.candidate(source_root, source, layout)
+    reset = not protocol and bool(changed_chain or "usdb_chain" in changed_contracts)
+    classification = "protocol_upgrade" if protocol else "network_reset" if reset else "data_rebuild" if changed_contracts else "compatible"
     if classification == "compatible":
         blocked = [b for b in blocked if not b.startswith("Ord version migration")]
     if reset and new_network.get("bundle_status") != "development-resettable":
@@ -178,12 +180,13 @@ def plan(layout, node, from_kit=None):
         marker = old / DATASET_IDENTITY_FILE
         core.require(core.read_json(marker) == build_dataset_identity(service, old_contract),
                      f"Source dataset marker mismatch: service={service}, path={old}")
-        rebuild = service in changed_contracts or (reset and service in {"usdb_indexer", "usdb_chain", "control_plane"})
-        if rebuild and old != new and new.exists():
+        adopt = protocol and service == "usdb_indexer" and service in changed_contracts
+        rebuild = not protocol and (service in changed_contracts or (reset and service in {"usdb_indexer", "usdb_chain", "control_plane"}))
+        if (rebuild or adopt) and old != new and new.exists():
             blocked.append(f"Target dataset already exists; preserve and inspect it instead of overwriting: {new}")
-        components.append(dict(service=service, env_key=key, action="rebuild" if rebuild else "reuse",
+        components.append(dict(service=service, env_key=key, action="adopt" if adopt else "rebuild" if rebuild else "reuse",
                                source=str(old), target=str(new), marker_sha256=sha(marker),
-                               reason="consensus history changed" if reset and service in {"usdb_indexer", "usdb_chain", "control_plane"}
+                               reason="verify executed history before retaining dataset" if adopt else "consensus history changed" if reset and service in {"usdb_indexer", "usdb_chain", "control_plane"}
                                else "service contract changed" if rebuild else "service contract unchanged"))
     return dict(schema_version=SCHEMA, classification=classification, executable=not blocked, blockers=blocked,
                 source_release=source["release_id"], target_release=layout.release_id, bundle=layout.bundle_id,
@@ -195,7 +198,7 @@ def plan(layout, node, from_kit=None):
                 differences=changes(old_contract, new_contract, "runtime") + changes(
                     {k: old_network.get(k) for k in CHAIN_FIELDS}, {k: new_network.get(k) for k in CHAIN_FIELDS}, "network"),
                 components=components, mining_action="disable and reauthorize on the new chain" if reset else "preserve",
-                rollback_boundary="Only before starting services; all old datasets remain preserved")
+                rollback_boundary="Before metadata writes only; afterwards resume forward" if protocol else "Only before starting services; all old datasets remain preserved")
 
 
 SERVICE_LABELS = {"bitcoin_core": "Bitcoin Core", "balance_history": "balance-history",
@@ -210,14 +213,15 @@ def show(value, *, details=False):
     """Keep the decision readable; full identifiers and paths are opt-in diagnostics."""
     print(f"USDB upgrade: {value['source_release']} -> {value['target_release']}")
     labels = {"compatible": "existing data can be reused", "data_rebuild": "incompatible data must be rebuilt",
-              "network_reset": "USDB chain must restart from genesis"}
+              "network_reset": "USDB chain must restart from genesis",
+              "protocol_upgrade": "retain history after both offline service checks pass"}
     print(f"Result: {value['classification']} - {labels[value['classification']]}")
     print("Preflight: PASSED (execution still requires a stopped node)" if value["executable"] else "Preflight: BLOCKED")
     for reason in value["blockers"]:
         print(f"  - {reason}")
     print("\n  Component        Action   Data handling")
     for item in value["components"]:
-        handling = "Keep existing data" if item["action"] == "reuse" else (
+        handling = "Move existing data after registry checks" if item["action"] == "adopt" else "Keep existing data" if item["action"] == "reuse" else (
             "New directory; old data kept" if item["source"] != item["target"] else "Archive old directory, then rebuild")
         label = SERVICE_LABELS.get(item["service"], item["service"])
         print(f"  {label:<16} {item['action'].upper():<8} {handling}")
@@ -227,6 +231,9 @@ def show(value, *, details=False):
         print("\nChanges: service data contracts")
     if value["classification"] == "network_reset":
         print("On reset: old SourceDAO state will be isolated; mining must be reauthorized.")
+    if value["classification"] == "protocol_upgrade":
+        print("Database compatibility: PENDING offline checks at each service's actual committed height.")
+        print("After metadata writes begin, interrupted upgrades must resume forward; no automatic rollback or rebuild.")
     print("Old data, wallets and node identity are retained; no automatic data deletion.")
     if details:
         print("\nDetails:")
@@ -308,11 +315,11 @@ def add_parser(subparsers):
     preview.add_argument("--from-kit", type=Path, help="old installed kit when automatic exact matching is unavailable")
     preview.add_argument("--details", action="store_true", help="include full paths and hashes in human-readable output")
     preview.add_argument("--json", action="store_true")
-    apply = subparsers.add_parser("upgrade-release", help="Preview or explicitly execute a recoverable component rebuild")
+    apply = subparsers.add_parser("upgrade-release", help="Preview or execute a checked protocol upgrade or component rebuild")
     apply.add_argument("--from-kit", type=Path)
     apply.add_argument("--backup-dir", type=Path, help="new private operation directory outside data/configuration/release paths")
     apply.add_argument("--resume", type=Path, help="resume an existing operation directory")
-    apply.add_argument("--rollback", action="store_true", help="with --resume, restore the previous stopped state before services have started")
+    apply.add_argument("--rollback", action="store_true", help="with --resume, restore stopped state; unavailable after protocol metadata writes begin")
     apply.add_argument("--execute", action="store_true", help="require stopped services, private backup and interactive confirmation")
     apply.add_argument("--details", action="store_true", help="include full paths and hashes in human-readable preview")
     apply.add_argument("--json", action="store_true", help="preview only")
@@ -338,6 +345,8 @@ def dispatch(args, layout, node):
         record = session.read(backup)
         value = record["plan"]
         phase = record["phase"]
+        core.require(not (args.rollback and record.get("protocol", {}).get("writes_started")),
+                     "Protocol metadata writes already started; resume forward with --resume PATH --execute, rollback is unavailable")
         core.require(phase not in {"cleanup_started", "cleaned"},
                      "Cleanup relinquished rollback for this record; use upgrade-status or resume upgrade-cleanup")
         core.require(value["target_kit"] == str(layout.kit_root) and value["target_manifest_sha256"] == sha(layout.manifest_path),

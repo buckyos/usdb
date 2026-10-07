@@ -564,7 +564,10 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     activations = chain.get("usdbConsensus", {}).get("activations")
     require(isinstance(activations, list) and activations, "chain bootstrap activations are required")
     require(activations[0].get("block") == 0, "activation schedule must start at block 0")
-    require(activations[0].get("btcActivationRegistryId") == expected_registry, "activation registry mismatch")
+    # A normal upgrade retains the original block-zero binding and appends future
+    # checkpoints. Both identities remain release-frozen, never operator overrides.
+    require(activations[0].get("btcActivationRegistryId") == profile.get("genesis_registry", expected_registry), "genesis activation registry mismatch")
+    require(activations[-1].get("btcActivationRegistryId") == expected_registry, "current activation registry mismatch")
     versions = activations[0].get("versions")
     require(isinstance(versions, dict), "activation versions are required")
     require(versions.get("quotePolicyVersion") == 0, "testnet quote policy must be disabled")

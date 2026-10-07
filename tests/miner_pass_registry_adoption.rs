@@ -634,3 +634,193 @@ async fn rejects_cross_domain_metadata_and_malformed_journals_without_adopting()
         .await;
     p.cleanup();
 }
+
+fn offline(root: &Path, apply: bool) -> Result<String, String> {
+    use clap::Parser;
+    let mut args = vec![
+        "usdb-indexer".to_string(),
+        "registry-upgrade".to_string(),
+        "--data-dir".into(),
+        root.join("data").display().to_string(),
+        "--catalog".into(),
+        root.join("catalog.json").display().to_string(),
+        "--target-binding".into(),
+        root.join("binding.json").display().to_string(),
+    ];
+    if apply {
+        args.extend([
+            "--apply".into(),
+            "--expected-report".into(),
+            root.join("preflight.json").display().to_string(),
+        ]);
+    }
+    let cli = crate::UsdbIndexerCli::try_parse_from(args).map_err(|e| e.to_string())?;
+    let Some(crate::registry_upgrade::Command::RegistryUpgrade(command)) = cli.command else {
+        unreachable!()
+    };
+    command.run()
+}
+
+#[tokio::test]
+async fn offline_preflight_is_read_only_and_apply_resumes_all_durable_boundaries() {
+    for stop in [
+        None,
+        Some(AdoptionStage::Prepared),
+        Some(AdoptionStage::EnergyBound),
+        Some(AdoptionStage::Committed),
+    ] {
+        let (old, next) = catalogs();
+        let block = MintBlock::new(8, vec![], false);
+        let p = Pipeline::with_catalog("offline-adoption", &[&block], 8, &old).await;
+        p.sync_to(8).await.unwrap();
+        let p = p
+            .while_stopped(|root| {
+                select(root, &next);
+                let cfg = ConfigManager::load(Some(root.into())).unwrap();
+                let catalog = cfg.activation_registry_catalog().unwrap();
+                let target = IndexerRulesBinding::new(catalog.current_registry(), 8);
+                std::fs::write(root.join("binding.json"), target.to_json().unwrap()).unwrap();
+                let original_pass = std::fs::read(root.join("data/miner_pass.db")).unwrap();
+                let before_files = offline_files(&root.join("data"));
+                // Match the node tool's read-only bind mount. SQLite must read the WAL
+                // as well as the main DB without updating its shared-memory read marks.
+                let permissions = readonly_dataset(&root.join("data"));
+                let result = offline(root, false);
+                for (path, mode) in permissions {
+                    std::fs::set_permissions(path, mode).unwrap();
+                }
+                let report = result.unwrap();
+                assert_eq!(
+                    before_files,
+                    offline_files(&root.join("data")),
+                    "preflight changed dataset files"
+                );
+                assert_eq!(
+                    original_pass,
+                    std::fs::read(root.join("data/miner_pass.db")).unwrap(),
+                    "preflight changed SQLite bytes"
+                );
+                let pass = MinerPassStorage::open_read_only(&root.join("data")).unwrap();
+                let energy = PassEnergyStorage::open_read_only(&root.join("data")).unwrap();
+                assert!(pass.rules_metadata(JOURNAL_KEY).unwrap().is_none());
+                assert!(
+                    !pass
+                        .rules_metadata(INDEXER_RULES_BINDING_KEY)
+                        .unwrap()
+                        .unwrap()
+                        .contains(catalog.current_registry_id())
+                );
+                assert!(
+                    !energy
+                        .rules_binding()
+                        .unwrap()
+                        .unwrap()
+                        .contains(catalog.current_registry_id())
+                );
+                drop((pass, energy));
+                std::fs::write(root.join("preflight.json"), &report).unwrap();
+                if let Some(stop) = stop {
+                    assert!(
+                        coordinate(root, |stage| if stage == stop {
+                            Err("interrupted".into())
+                        } else {
+                            Ok(())
+                        })
+                        .is_err()
+                    );
+                }
+                assert_eq!(offline(root, true).unwrap(), report);
+                assert_eq!(offline(root, true).unwrap(), report);
+                let current: Value = serde_json::from_str(&offline(root, false).unwrap()).unwrap();
+                assert_eq!(
+                    current["adoption"]["source"], current["adoption"]["target"],
+                    "chain-only preflight must retain the indexer binding"
+                );
+                let mut changed: Value = serde_json::from_str(&report).unwrap();
+                changed["adoption"]["reorg_epoch"] = 999.into();
+                std::fs::write(root.join("preflight.json"), changed.to_string()).unwrap();
+                assert!(
+                    offline(root, true)
+                        .unwrap_err()
+                        .contains("differs from saved preflight")
+                );
+            })
+            .await;
+        drop(p);
+    }
+}
+
+#[tokio::test]
+async fn offline_rejects_late_or_missing_databases_without_rebinding() {
+    let (old, next) = catalogs();
+    let blocks: Vec<_> = (8..=10).map(|h| MintBlock::new(h, vec![], false)).collect();
+    let p =
+        Pipeline::with_catalog("offline-late", &blocks.iter().collect::<Vec<_>>(), 8, &old).await;
+    p.sync_to(10).await.unwrap();
+    let p = p
+        .while_stopped(|root| {
+            select(root, &next);
+            let catalog = BtcActivationRegistryCatalog::from_json(&next).unwrap();
+            std::fs::write(
+                root.join("binding.json"),
+                IndexerRulesBinding::new(catalog.current_registry(), 8)
+                    .to_json()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(
+                offline(root, false)
+                    .unwrap_err()
+                    .contains("requires rebuild")
+            );
+            let data = root.join("data");
+            std::fs::rename(&data, root.join("saved-data")).unwrap();
+            assert!(offline(root, false).is_err());
+            assert!(!data.exists());
+            std::fs::rename(root.join("saved-data"), &data).unwrap();
+            select(root, &old);
+        })
+        .await;
+    drop(p);
+}
+
+fn offline_files(root: &Path) -> Vec<(String, String)> {
+    fn visit(root: &Path, path: &Path, result: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, result);
+            } else {
+                result.push((path.strip_prefix(root).unwrap().display().to_string(), {
+                    use sha2::Digest;
+                    format!("{:x}", sha2::Sha256::digest(std::fs::read(path).unwrap()))
+                }));
+            }
+        }
+    }
+    let mut result = vec![];
+    visit(root, root, &mut result);
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    result
+}
+
+fn readonly_dataset(root: &Path) -> Vec<(std::path::PathBuf, std::fs::Permissions)> {
+    use std::os::unix::fs::PermissionsExt;
+    fn visit(path: &Path, modes: &mut Vec<(std::path::PathBuf, std::fs::Permissions)>) {
+        let metadata = std::fs::metadata(path).unwrap();
+        modes.push((path.to_owned(), metadata.permissions()));
+        if path.is_dir() {
+            for entry in std::fs::read_dir(path).unwrap() {
+                visit(&entry.unwrap().path(), modes);
+            }
+        }
+        std::fs::set_permissions(
+            path,
+            std::fs::Permissions::from_mode(if metadata.is_dir() { 0o555 } else { 0o444 }),
+        )
+        .unwrap();
+    }
+    let mut modes = vec![];
+    visit(root, &mut modes);
+    modes
+}

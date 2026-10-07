@@ -141,6 +141,8 @@ class Cleanup:
         self.root, self.node, self.extra = core.absolute(root), node, extra
         self.state = archives.load(self.root, node)
         self.plan = self.state["plan"]
+        core.require(self.plan["classification"] != "protocol_upgrade",
+                     "Protocol adoption retained live databases and created no obsolete dataset archive to clean")
         self.items = archives.candidates(self.state)
         self.path = self.root / "cleanup.json"
         core.safe_path(self.path)

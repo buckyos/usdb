@@ -315,11 +315,42 @@ impl MinerPassStorage {
         result.inspect_err(|e| error!("{e}"))
     }
 
+    /// Open an existing database without schema initialization or writable pragmas.
+    pub(crate) fn open_read_only(data_dir: &Path) -> Result<Self, String> {
+        let db_path = data_dir.join(crate::constants::MINER_PASS_DB_FILE);
+        let open = || {
+            Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|e| format!("Cannot inspect pass database {}: {e}", db_path.display()))
+        };
+        let conn = Mutex::new(open()?);
+        let committed_conn = Mutex::new(open()?);
+        Ok(Self {
+            db_path,
+            conn,
+            committed_conn,
+        })
+    }
+
     pub fn new(data_dir: &Path) -> Result<Self, String> {
+        Self::open(data_dir, true)
+    }
+
+    /// Upgrade execution may update metadata, but must never initialize a missing store.
+    pub(crate) fn open_existing(data_dir: &Path) -> Result<Self, String> {
+        Self::open(data_dir, false)
+    }
+
+    fn open(data_dir: &Path, create: bool) -> Result<Self, String> {
         let open_begin = Instant::now();
         let db_path = data_dir.join(crate::constants::MINER_PASS_DB_FILE);
 
-        let conn = Connection::open(&db_path).map_err(|e| {
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | if create {
+                OpenFlags::SQLITE_OPEN_CREATE
+            } else {
+                OpenFlags::empty()
+            };
+        let conn = Connection::open_with_flags(&db_path, flags).map_err(|e| {
             let msg = format!(
                 "Failed to open MinerPassStorage database at {:?}: {}",
                 db_path, e
@@ -381,8 +412,10 @@ impl MinerPassStorage {
             committed_conn: Mutex::new(committed_conn),
         };
         let schema_begin = Instant::now();
-        storage.init_db()?;
-        storage.init_mint_audit()?;
+        if create {
+            storage.init_db()?;
+            storage.init_mint_audit()?;
+        }
         info!(
             "Opened miner pass SQLite: path={}, journal_mode={}, synchronous=FULL, busy_timeout_ms={}, open_connection_elapsed_ms={}, schema_validation_elapsed_ms={}, total_elapsed_ms={}",
             storage.db_path.display(),

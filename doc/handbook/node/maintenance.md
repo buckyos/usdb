@@ -221,7 +221,7 @@ usdb-node up
 1. 记录当前版本、节点状态和目标版本，确认 SourceDAO 任务已结束，安排停机窗口及所需备份。
 2. 使用当前工具执行 `usdb-node down`，等待整个节点停止。
 3. 按[安装页第 2 步](install.md#2-下载并安装节点工具)安装目标版本工具。只执行工具安装，不继续首次 `setup`。
-4. 新工具支持 `upgrade-plan` 时，先运行它核对准确的旧包与目标包；只有 `compatible` 且 `executable=true` 才继续下面的原地激活。需要重建时改走[显式重建流程](upgrade.md)，保留旧包和数据。
+4. 新工具支持 `upgrade-plan` 时，先运行它核对准确的旧包与目标包；只有 `compatible` 且 `executable=true` 才继续下面的原地激活。协议接管或需要重建时改走[受控升级流程](upgrade.md)，保留旧包和数据。
    再完成配置中的版本切换，并查看 controller 是否需要额外操作：
 
 ```bash

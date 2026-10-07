@@ -60,7 +60,7 @@ def load(root, node):
     validator.state, validator.plan = copy.deepcopy(state), value
     if state["phase"] in CLEANUP_PHASES:
         validator.state["phase"] = "applied"
-    validator.layout = SimpleNamespace(node_env=Path(value["env_path"]), bundle_id=target["network_bundle"]["bundle_id"],
+    validator.layout = SimpleNamespace(kit_root=Path(value["target_kit"]), node_env=Path(value["env_path"]), bundle_id=target["network_bundle"]["bundle_id"],
                                        network_identity=target["network_bundle"], runtime_compatibility=target["runtime_compatibility"])
     validator.uid = value["operator_uid"]
     validator.runtime = session.runtime_plan(value)

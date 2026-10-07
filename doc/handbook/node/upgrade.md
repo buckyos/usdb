@@ -25,12 +25,12 @@ usdb-node upgrade-plan --json
 usdb-node upgrade-plan --from-kit /absolute/path/to/old-kit
 ```
 
-默认输出先显示兼容结论、各组件的 `REUSE` / `REBUILD` 表格及主要变化，再列出本次计划对应的下一步命令。
+默认输出先显示兼容结论、各组件的 `REUSE` / `ADOPT` / `REBUILD` 表格及主要变化，再列出本次计划对应的下一步命令。
 相同目录不重复打印，重复的 ID 差异不会占据摘要。`--details` 展示完整路径、runtime ID 和字段变化；
 `--json` 保持完整计划结构，便于自动化采集。`upgrade-release` 的预览同样支持这两个选项。
 输出不包含 RPC 密码或私钥；预检和建议命令都不会自动执行升级。
 
-兼容计划提示 `activate-release`；可执行的重建计划提示 `down` 和带 `--backup-dir`、`--execute` 的 `upgrade-release`，
+兼容计划提示 `activate-release`；可执行的协议升级或重建计划提示 `down` 和带 `--backup-dir`、`--execute` 的 `upgrade-release`，
 占位备份路径必须替换为实际的新私有目录。存在阻断项时只提示先解决问题，不给出执行命令。
 恢复预览会显示保存的操作状态，未完成时提示对应的 `--resume`，已经完成或回退时给出相应后续步骤。
 不要用发布号大小、同一个 Chain ID，或相同 genesis block hash 来代替这项检查：genesis 配置及 BTC 规则历史也可能改变。
@@ -38,6 +38,7 @@ usdb-node upgrade-plan --from-kit /absolute/path/to/old-kit
 | 结果 | 下一步 |
 | --- | --- |
 | `compatible` 且 `executable=true` | 按[日常维护](maintenance.md#升级节点)执行 `activate-release → doctor → up`；数据保留 |
+| `protocol_upgrade` 且 `executable=true` | 可进入停机执行；须由 indexer 和 Geth 分别检查实际数据库历史，通过后保留数据升级 |
 | `data_rebuild` 且 `executable=true` | 按下节显式重建不兼容的派生数据 |
 | `network_reset` 且 `executable=true` | 仅在网络运维方已协调重置开发网络后执行下节；USDB 链从头开始 |
 | `executable=false` 或校验错误 | 保留现场，先处理阻断原因；不能手改 ID 或 marker 绕过校验 |
@@ -55,9 +56,20 @@ usdb-node upgrade-plan --from-kit /absolute/path/to/old-kit
 
 新版本接管旧库时就应检查已有历史是否兼容，不等到激活高度才检查。数据库格式变更是另一项本地升级要求，不能把它与协议激活高度混为一谈。配置错误、缺少 registry 或 I/O 故障应先排查，不能直接清空数据。
 
-当前源码已增加 indexer 的历史兼容双库接管；完整 node kit 的目录身份、链配置和初始化标记升级仍需独立接入与验收。现阶段继续遵循目标安装包实际给出的 `upgrade-plan`，不要手改 registry ID、数据 marker 或 Geth 初始化标记来绕过保护，也不要把开发网络的 `network_reset` 当作正式网正常协议升级方案。
+支持 `protocol_upgrade` 的目标工具可以协调历史相容的 registry 追加与未来链 checkpoint 更新，包括仅更新链 checkpoint 的情况。`executable=true` 只说明发布配置和路径满足前提，不代表本机数据库已经通过检查。适用范围是现有标准数据布局和相同存储 schema；不提供任意数据库格式迁移。
 
-## 2. 显式重建不兼容部分
+执行使用下节同样的 `down`、`upgrade-release --backup-dir ... --execute` 流程，处理方式如下：
+
+1. 停机并禁用旧 controller 自启，备份私有配置，保存恢复日志。工具拉取目标版本的服务镜像，再以无网络、数据只读挂载运行两个离线检查。
+2. Indexer 检查 BTC 已提交历史及 SQLite/RocksDB 边界；Geth 检查本地完整区块、header 和 fast head 已经过的最高高度，要求创世区块不变、原有 checkpoints 完整保留。两个检查都通过后才开始写数据库元数据。
+3. 保存检查结果并接管 registry、更新 Geth chain config。registry 改变时，整个 indexer 目录在同一文件系统移动到新身份路径，索引内容保留；仅更新链 checkpoint 时 indexer 路径不变。USDB chain 原目录、钱包、节点身份、矿工设置及 SourceDAO 状态保留。
+4. 更新目录身份、Geth 初始化标记和节点配置。服务仍保持停止，由操作者执行 `doctor`、`up`、`status --watch`，观察同步及资格状态。
+
+`--backup-dir` 保存的是配置和恢复记录，包括两个服务的检查结果，不是数据库副本。协议升级不产生旧数据库归档，因此不需要对这次操作运行 `upgrade-cleanup`。不要直接用旧包启动已经接管的数据。
+
+如果旧客户端已执行不兼容区间，工具拒绝这次接管。遵循网络运维方的方案显式重建受影响的派生数据；未知 registry、配置错误或 I/O 故障要先诊断。工具不会自动清空或尝试局部修复旧协议分支，也不会将正式网升级解释为网络重置。不要手改 registry ID、数据 marker 或 Geth 初始化标记绕过校验。
+
+## 2. 执行升级或显式重建
 
 确认 SourceDAO、Mining、Peer 和资源切换任务均已完成，安排备份和停机窗口。执行时必须停止整个节点，不能使用 `down --keep-bitcoin`。
 工具会核对 systemd、容器、共享数据挂载及数据库锁，拒绝在仍有使用者时移动数据。
@@ -104,6 +116,8 @@ usdb-node peers status
 再按[矿工指引](mining.md)重新授权挖矿。该工具不会自动恢复旧链的矿工资格。
 
 ## 3. 中断恢复与回退
+
+对于 `protocol_upgrade`，**开始数据库元数据写入后只支持向前恢复**：始终用原目标包和原备份目录执行 `--resume ... --execute`。每个服务重新核对保存的高度和状态边界；已完成的写入可重复确认。此时 `--rollback` 会被拒绝，即使服务尚未启动。两个离线检查完成但尚未进入写入阶段时，才可取消并恢复旧配置。后面有关新数据未变更时回退的说明仅适用于重建流程。
 
 保留新旧安装包、升级备份目录、数据旁的隔离目录，以及 `.usdb-upgrade-pending.json`。
 出现 `UPGRADE_PENDING` 时，新工具会阻止启动或改变节点配置；不要删除标记绕过它。

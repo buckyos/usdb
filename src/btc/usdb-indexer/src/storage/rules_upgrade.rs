@@ -11,9 +11,9 @@ pub(crate) use usdb_util::INDEXER_REGISTRY_ADOPTION_KEY as JOURNAL_KEY;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Adoption {
-    source: IndexerRulesBinding,
-    target: IndexerRulesBinding,
+pub(crate) struct Adoption {
+    pub(crate) source: IndexerRulesBinding,
+    pub(crate) target: IndexerRulesBinding,
     height: Option<u32>,
     energy_height: Option<u32>,
     block_commit: Option<String>,
@@ -28,16 +28,14 @@ pub(crate) enum AdoptionStage {
     Committed,
 }
 
-/// Validate and, when necessary, finish an authorized forward registry adoption.
-/// Both database handles remain exclusively owned by the starting indexer.
-pub(crate) fn adopt_registry(
+/// Inspect a stopped paired-store boundary without changing any metadata.
+pub(crate) fn inspect_registry(
     pass: &MinerPassStorage,
     energy: &PassEnergyStorage,
     catalog: &BtcActivationRegistryCatalog,
     timelines: &HashMap<String, BtcRuleTimeline>,
     target: &IndexerRulesBinding,
-    mut boundary: impl FnMut(AdoptionStage) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<Option<Adoption>, String> {
     let result = (|| {
         pass.require_committed_writer()?;
         let raw_journal = pass.rules_metadata(JOURNAL_KEY)?;
@@ -57,7 +55,7 @@ pub(crate) fn adopt_registry(
             // Keep first-binding and ordinary block-crash recovery under their existing guards.
             pass.validate_paired_rules_binding(target, energy.has_indexed_state()?)?;
             energy.validate_paired_rules_binding(target, pass.has_indexed_state()?)?;
-            return Ok(());
+            return Ok(None);
         }
         let source = journal.as_ref().map(|v| &v.source).or(pass_binding.as_ref())
             .ok_or("Registry adoption requires both original database bindings; preserve data and inspect")?;
@@ -171,24 +169,6 @@ pub(crate) fn adopt_registry(
                 "Registry adoption boundary changed: saved={journal:?}, actual={intent:?}; preserve data and inspect"
             ));
         }
-        let encoded = match raw_journal {
-            Some(raw) => raw,
-            None => serde_json::to_string(&intent).map_err(|e| e.to_string())?,
-        };
-        if journal.is_none() {
-            pass.prepare_rules_upgrade(JOURNAL_KEY, &encoded)?;
-        }
-        boundary(AdoptionStage::Prepared)?;
-        if energy_binding.as_ref() == Some(source) {
-            energy.replace_rules_binding(source, target)?;
-        }
-        boundary(AdoptionStage::EnergyBound)?;
-        pass.finish_rules_upgrade(JOURNAL_KEY, &encoded, target)?;
-        boundary(AdoptionStage::Committed)?;
-        info!(
-            "Registry adoption completed: source={}, target={}, indexed_height={height:?}; historical records preserved",
-            source.activation_registry_id, target.activation_registry_id
-        );
         for issue in new_timeline
             .indexer_support_issues(
                 height.map_or(target.index_origin_height, |h| h.saturating_add(1))..=u32::MAX,
@@ -200,7 +180,7 @@ pub(crate) fn adopt_registry(
                 target.activation_registry_id, issue.start_height, issue.error
             );
         }
-        Ok(())
+        Ok(Some(intent))
     })();
     result.inspect_err(|e| {
         error!(
@@ -208,6 +188,124 @@ pub(crate) fn adopt_registry(
             target.activation_registry_id
         )
     })
+}
+
+/// Validate first, then journal and durably adopt the registry in both stores.
+pub(crate) fn adopt_registry(
+    pass: &MinerPassStorage,
+    energy: &PassEnergyStorage,
+    catalog: &BtcActivationRegistryCatalog,
+    timelines: &HashMap<String, BtcRuleTimeline>,
+    target: &IndexerRulesBinding,
+    mut boundary: impl FnMut(AdoptionStage) -> Result<(), String>,
+) -> Result<(), String> {
+    let Some(intent) = inspect_registry(pass, energy, catalog, timelines, target)? else {
+        return Ok(());
+    };
+    let raw = pass.rules_metadata(JOURNAL_KEY)?;
+    let encoded = raw
+        .clone()
+        .unwrap_or(serde_json::to_string(&intent).map_err(|e| e.to_string())?);
+    if raw.is_none() {
+        pass.prepare_rules_upgrade(JOURNAL_KEY, &encoded)?;
+    }
+    boundary(AdoptionStage::Prepared)?;
+    if parse_binding(energy.rules_binding()?, "energy")?.as_ref() == Some(&intent.source) {
+        energy.replace_rules_binding(&intent.source, target)?;
+    }
+    boundary(AdoptionStage::EnergyBound)?;
+    pass.finish_rules_upgrade(JOURNAL_KEY, &encoded, target)?;
+    boundary(AdoptionStage::Committed)?;
+    info!(
+        "Registry adoption completed: source={}, target={}, indexed_height={:?}; historical records preserved",
+        intent.source.activation_registry_id, target.activation_registry_id, intent.height
+    );
+    Ok(())
+}
+
+/// A chain-only checkpoint upgrade still checks the indexer's completed database boundary.
+pub(crate) fn inspect_current(
+    pass: &MinerPassStorage,
+    energy: &PassEnergyStorage,
+    target: &IndexerRulesBinding,
+    timeline: &BtcRuleTimeline,
+) -> Result<Adoption, String> {
+    let height = pass.get_committed_synced_btc_block_height()?;
+    let report = Adoption {
+        source: target.clone(),
+        target: target.clone(),
+        height,
+        energy_height: energy.get_synced_block_height()?,
+        block_commit: height
+            .map(|h| pass.get_pass_block_commit(h))
+            .transpose()?
+            .flatten()
+            .map(|v| v.block_commit),
+        reorg_epoch: pass.get_upstream_reorg_epoch()?,
+    };
+    verify_completed(pass, energy, &report)?;
+    if let Some(height) = height {
+        crate::index::rule_transition::validate_rule_history(
+            timeline,
+            target.index_origin_height.min(height),
+            height,
+        )?;
+    } else {
+        timeline
+            .indexer_context_at(target.index_origin_height)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(report)
+}
+
+/// Compare a saved preflight against a completed adoption without accepting a moved tip.
+pub(crate) fn verify_completed(
+    pass: &MinerPassStorage,
+    energy: &PassEnergyStorage,
+    expected: &Adoption,
+) -> Result<(), String> {
+    let height = pass.get_committed_synced_btc_block_height()?;
+    let actual = Adoption {
+        source: expected.source.clone(),
+        target: expected.target.clone(),
+        height,
+        energy_height: energy.get_synced_block_height()?,
+        block_commit: height
+            .map(|h| pass.get_pass_block_commit(h))
+            .transpose()?
+            .flatten()
+            .map(|v| v.block_commit),
+        reorg_epoch: pass.get_upstream_reorg_epoch()?,
+    };
+    let max_record = energy.peek_max_record_block_height()?;
+    let aligned = actual.height == actual.energy_height
+        || (actual.height.is_none()
+            && actual.energy_height == Some(expected.target.index_origin_height.saturating_sub(1)));
+    if !aligned
+        || max_record.is_some_and(|h| height.is_none_or(|tip| h > tip))
+        || (height.is_none() && pass.has_ledger_records()?)
+    {
+        return Err(format!(
+            "Registry preflight requires a completed paired block: boundary={actual:?}, max_energy_record={max_record:?}"
+        ));
+    }
+    if let Some(height) = height {
+        pass.assert_no_data_after_block_height(height)?;
+        pass.assert_balance_snapshot_consistency(height, expected.target.index_origin_height)?;
+    }
+    if &actual != expected
+        || pass.rules_metadata(JOURNAL_KEY)?.is_some()
+        || parse_binding(pass.rules_metadata(INDEXER_RULES_BINDING_KEY)?, "pass")?.as_ref()
+            != Some(&expected.target)
+        || parse_binding(energy.rules_binding()?, "energy")?.as_ref() != Some(&expected.target)
+        || energy.get_pending_block_height()?.is_some()
+        || pass.get_upstream_reorg_recovery_pending_height()?.is_some()
+    {
+        return Err(format!(
+            "Completed registry adoption differs from saved preflight: expected={expected:?}, actual={actual:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn parse_binding(raw: Option<String>, store: &str) -> Result<Option<IndexerRulesBinding>, String> {

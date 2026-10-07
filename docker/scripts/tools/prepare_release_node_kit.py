@@ -73,6 +73,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/node_rebuild.py",
     "docker/scripts/tools/node_uninstall.py",
     "docker/scripts/tools/node_upgrade.py",
+    "docker/scripts/tools/node_protocol_upgrade.py",
     "docker/scripts/tools/node_upgrade_session.py",
     "docker/scripts/tools/node_upgrade_archives.py",
     "docker/scripts/tools/node_upgrade_cleanup.py",

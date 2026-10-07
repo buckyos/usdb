@@ -1,6 +1,6 @@
 # UIP-0017 多区间升级实施与测试计划
 
-状态：A 已提交为 `4dd2333`；B 已提交为 `72e6a87`；C 已提交为 `2ca2694`；D 已提交为 `d901370`；E 已提交为 USDB `d3a20ef` / Go `7d19ebc59`；F 已提交为 USDB `8dfcf0c` / Go `5cb25c86c`；G 按[数据集接管方案](./registry-dataset-upgrade-plan.md)分 G1–G3 实施，本提交交付 G1 双库接管的实现和本地验证，节点工具完整接入尚未完成。
+状态：A 已提交为 `4dd2333`；B 已提交为 `72e6a87`；C 已提交为 `2ca2694`；D 已提交为 `d901370`；E 已提交为 USDB `d3a20ef` / Go `7d19ebc59`；F 已提交为 USDB `8dfcf0c` / Go `5cb25c86c`；G 按[数据集接管方案](./registry-dataset-upgrade-plan.md)分 G1–G3 实施，G1 已提交为 `073f13d`，G2 已实现停机工具接入并完成本地验证，G3 真实服务整体验收尚待执行。
 
 协议依据：[UIP-0017](../UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md) 第一版草案已由用户确认并提交为 `36726a5`；这不表示委员会流程完成或目标网络已激活。本文记录当前实现缺口、分批交付和测试验收，不分配正式 schema v2 / 状态机 v3，不改变现行网络参数。
 
@@ -83,7 +83,7 @@ pass 保留已接纳的铸造事实和状态历史。第一批不为每张 pass 
 
 接管检查在更新配置后打开旧库时执行，不等待新规则激活高度。已越过规则分歧点的旧库明确要求操作者重建受影响数据；不实现过期分支的局部回退工具，不按新准入规则重审旧证，不自动删除数据。缺失 catalog、混库、待恢复旧操作、配置或 I/O 错误分别报错，不能统一转换成重建。
 
-完整节点升级还涉及宿主数据目录身份、USDB chain checkpoint 配置和 Geth 初始化标记，按[独立方案](./registry-dataset-upgrade-plan.md)的 G2/G3 接入验收。在此之前，`upgrade-release` 的整网保护不放宽，不能将 G1 表述为整网免重建能力。
+完整节点升级还涉及宿主数据目录身份、USDB chain checkpoint 配置和 Geth 初始化标记，按[独立方案](./registry-dataset-upgrade-plan.md)的 G2/G3 接入验收。G2 已增加受控 `protocol_upgrade` 分支，原保护由实际数据库预检和恢复日志衔接；G3 真实服务整体验收与成对发布仍不可省略。
 
 ## 4. 分批实施顺序
 

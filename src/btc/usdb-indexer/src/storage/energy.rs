@@ -179,11 +179,38 @@ impl PassEnergyStorage {
             })
     }
 
+    /// Inspect an existing paired store without creating files or column families.
+    pub(crate) fn open_read_only(data_dir: &Path) -> Result<Self, String> {
+        let file = data_dir.join(crate::constants::PASS_ENERGY_DB_DIR);
+        let db =
+            DB::open_cf_for_read_only(&Options::default(), &file, [PASS_ENERGY_CF, META_CF], false)
+                .map_err(|e| format!("Cannot inspect energy database {}: {e}", file.display()))?;
+        Ok(Self {
+            file,
+            db,
+            #[cfg(test)]
+            point_gets_for_test: AtomicU64::new(0),
+            #[cfg(test)]
+            iterator_seeks_for_test: AtomicU64::new(0),
+            #[cfg(test)]
+            records_decoded_for_test: AtomicU64::new(0),
+        })
+    }
+
     pub fn new(data_dir: &Path) -> Result<Self, String> {
+        Self::open(data_dir, true)
+    }
+
+    /// Metadata adoption must never create a missing database or column family.
+    pub(crate) fn open_existing(data_dir: &Path) -> Result<Self, String> {
+        Self::open(data_dir, false)
+    }
+
+    fn open(data_dir: &Path, create: bool) -> Result<Self, String> {
         let open_begin = Instant::now();
         let db_path = data_dir.join(crate::constants::PASS_ENERGY_DB_DIR);
 
-        if db_path.exists() {
+        if create && db_path.exists() {
             std::fs::create_dir_all(&db_path).map_err(|e| {
                 let msg = format!(
                     "Could not create pass energy db directory at {}: {}",
@@ -197,8 +224,8 @@ impl PassEnergyStorage {
 
         // Default options
         let mut options = Options::default();
-        options.create_if_missing(true);
-        options.create_missing_column_families(true);
+        options.create_if_missing(create);
+        options.create_missing_column_families(create);
 
         // Define column families
         let cf_descriptors = vec![
