@@ -896,3 +896,33 @@ fn scoped_checkpoint_catalog_is_covered_by_signed_file_inventory() {
             .contains("inventory")
     );
 }
+
+#[test]
+fn checkpoint_rejects_pending_registry_adoption_even_with_matching_bindings() {
+    let fixture = build_fixture_with_scope("pending_registry_adoption", Some("checkpoint-test"));
+    let layout = IndexerDiskLayout::load(&fixture.source_root).unwrap();
+    validate_indexer_data(&layout, &fixture.manifest).unwrap();
+    let conn = Connection::open(layout.data_dir.join("miner_pass.db")).unwrap();
+    // A prepared intent precedes the first binding switch; even malformed intent is not a clean checkpoint.
+    conn.execute(
+        "INSERT INTO state_text(name,value) VALUES (?1, ?2)",
+        [usdb_util::INDEXER_REGISTRY_ADOPTION_KEY, "pending"],
+    )
+    .unwrap();
+    let error = validate_indexer_data(&layout, &fixture.manifest).unwrap_err();
+    assert!(error.contains("registry adoption is pending"), "{error}");
+    let retained: String = conn
+        .query_row(
+            "SELECT value FROM state_text WHERE name=?1",
+            [usdb_util::INDEXER_REGISTRY_ADOPTION_KEY],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, "pending");
+    conn.execute(
+        "DELETE FROM state_text WHERE name=?1",
+        [usdb_util::INDEXER_REGISTRY_ADOPTION_KEY],
+    )
+    .unwrap();
+    validate_indexer_data(&layout, &fixture.manifest).unwrap();
+}

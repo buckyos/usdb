@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 /// Metadata key persisted in both the pass SQLite store and energy RocksDB store.
 pub const INDEXER_RULES_BINDING_KEY: &str = "indexer_rules_binding";
 
+/// SQLite intent key for an interrupted paired-store registry adoption.
+/// Offline checkpoint validators must reject this marker even if both bindings still agree.
+pub const INDEXER_REGISTRY_ADOPTION_KEY: &str = "indexer_registry_adoption:v1";
+
 /// The complete rule and source identity that may write one indexer dataset.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,7 +20,7 @@ pub struct IndexerRulesBinding {
     pub rules_scope: String,
     /// First Bitcoin height included in this derived dataset.
     pub index_origin_height: u32,
-    /// Exact configured revision; switching datasets is explicit in this first implementation.
+    /// Exact adopted revision; changes require validated, journaled paired-store adoption.
     pub activation_registry_id: String,
 }
 

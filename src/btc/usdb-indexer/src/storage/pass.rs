@@ -164,6 +164,72 @@ pub struct SnapshotHistoryProgress {
 }
 
 impl MinerPassStorage {
+    /// Distinguish an initialized empty dataset from one with historical ledger rows.
+    pub(crate) fn has_ledger_records(&self) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM miner_passes UNION ALL SELECT 1 FROM pass_block_commits \
+             UNION ALL SELECT 1 FROM active_balance_snapshots UNION ALL SELECT 1 FROM miner_pass_state_history \
+             UNION ALL SELECT 1 FROM balance_history_snapshot_history UNION ALL SELECT 1 FROM miner_pass_mint_audit)",
+            [], |row| row.get(0),
+        ).map_err(|e| {
+            let msg = format!("Failed to inspect pass ledger before registry adoption: {e}");
+            error!("{msg}"); msg
+        })
+    }
+
+    /// Read an identity or adoption journal without modifying either database.
+    pub(crate) fn rules_metadata(&self, key: &str) -> Result<Option<String>, String> {
+        self.get_text_state(key)
+    }
+
+    /// Persist an adoption intent while the paired writer is stopped.
+    pub(crate) fn prepare_rules_upgrade(&self, key: &str, journal: &str) -> Result<(), String> {
+        self.require_committed_writer()?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO state_text(name, value) VALUES (?1, ?2)",
+            (key, journal),
+        )
+        .map(|_| ())
+        .map_err(|e| {
+            let msg = format!("Failed to prepare registry adoption intent: key={key}, error={e}");
+            error!("{msg}");
+            msg
+        })
+    }
+
+    /// Commit the new identity and remove the intent in one durable SQLite transaction.
+    pub(crate) fn finish_rules_upgrade(
+        &self,
+        key: &str,
+        journal: &str,
+        target: &IndexerRulesBinding,
+    ) -> Result<(), String> {
+        self.require_committed_writer()?;
+        let result = (|| {
+            let mut conn = self.conn.lock().unwrap();
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let stored: String = tx
+                .query_row(
+                    "SELECT value FROM state_text WHERE name = ?1",
+                    [key],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if stored != journal {
+                return Err("Registry adoption journal changed before SQLite commit".into());
+            }
+            Self::upsert_text_state_with_conn(&tx, INDEXER_RULES_BINDING_KEY, &target.to_json()?)?;
+            Self::delete_text_state_with_conn(&tx, key)?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit registry adoption: {e}"))
+        })();
+        result.inspect_err(|e| {
+            error!("Failed to finish pass registry adoption: target={target:?}, error={e}")
+        })
+    }
+
     fn check_rules_binding(
         conn: &Connection,
         expected: &IndexerRulesBinding,

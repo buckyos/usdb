@@ -70,6 +70,37 @@ pub struct PassEnergyStorage {
 }
 
 impl PassEnergyStorage {
+    /// Read the exact durable identity without adopting this database.
+    pub(crate) fn rules_binding(&self) -> Result<Option<String>, String> {
+        let result = (|| {
+            let meta = self
+                .db
+                .cf_handle(META_CF)
+                .ok_or("Missing energy metadata column family")?;
+            self.db
+                .get_cf(&meta, INDEXER_RULES_BINDING_KEY.as_bytes())
+                .map_err(|e| e.to_string())?
+                .map(|v| String::from_utf8(v).map_err(|e| e.to_string()))
+                .transpose()
+        })();
+        result.inspect_err(|e| {
+            error!(
+                "Failed to read energy rules binding: path={}, error={e}",
+                self.file.display()
+            )
+        })
+    }
+
+    /// Change only identity metadata after the coordinator has persisted its intent.
+    pub(crate) fn replace_rules_binding(
+        &self,
+        source: &IndexerRulesBinding,
+        target: &IndexerRulesBinding,
+    ) -> Result<(), String> {
+        self.validate_rules_binding(source)?;
+        self.write_rules_binding(target)
+    }
+
     /// Verify that energy history belongs to the same domain as the pass database.
     pub fn validate_rules_binding(&self, expected: &IndexerRulesBinding) -> Result<(), String> {
         self.validate_paired_rules_binding(expected, false)
@@ -124,6 +155,10 @@ impl PassEnergyStorage {
     /// Durably pin the energy dataset to the same revision as its paired pass store.
     pub fn bind_rules(&self, expected: &IndexerRulesBinding) -> Result<(), String> {
         self.validate_rules_binding(expected)?;
+        self.write_rules_binding(expected)
+    }
+
+    fn write_rules_binding(&self, expected: &IndexerRulesBinding) -> Result<(), String> {
         let meta = self
             .db
             .cf_handle(META_CF)
@@ -877,6 +912,14 @@ impl PassEnergyStorage {
         );
 
         Ok(())
+    }
+
+    /// Inspect the highest record before adoption without backfilling metadata.
+    pub(crate) fn peek_max_record_block_height(&self) -> Result<Option<u32>, String> {
+        match self.get_meta_u32(META_KEY_MAX_RECORD_BLOCK_HEIGHT)? {
+            Some(height) => Ok(Some(height)),
+            None => self.scan_max_record_block_height(),
+        }
     }
 
     pub fn get_max_record_block_height(&self) -> Result<Option<u32>, String> {

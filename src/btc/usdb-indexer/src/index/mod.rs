@@ -9,7 +9,7 @@ mod energy_settlement;
 mod indexer;
 mod pass;
 mod pass_commit;
-mod rule_transition;
+pub(crate) mod rule_transition;
 pub(crate) mod rules;
 #[cfg(test)]
 mod test;
@@ -91,3 +91,7 @@ mod miner_pass_upgrade_queries;
 #[cfg(test)]
 #[path = "../../../../../tests/common/miner_pass_queries.rs"]
 pub(crate) mod test_miner_queries;
+
+#[cfg(test)]
+#[path = "../../../../../tests/miner_pass_registry_adoption.rs"]
+mod miner_pass_registry_adoption;

@@ -260,7 +260,16 @@ impl InscriptionIndexer {
             activation_registry,
             config.config().usdb.genesis_block_height,
         );
-        // Preflight both stores before writing either identity. No automatic cross-domain migration.
+        // Only an append-only catalog with identical executed history can adopt an old revision.
+        crate::storage::rules_upgrade::adopt_registry(
+            &miner_pass_storage,
+            pass_energy_manager.startup_storage(),
+            &activation_registry_catalog,
+            &rule_timelines,
+            &rules_binding,
+            |_| Ok(()),
+        )?;
+        // Preserve first-binding and missing-peer protection after coordinated adoption.
         let pass_has_indexed_state = miner_pass_storage.has_indexed_state()?;
         let energy_has_indexed_state = pass_energy_manager.has_indexed_state()?;
         miner_pass_storage
@@ -484,7 +493,7 @@ impl InscriptionIndexer {
 
     pub async fn init(&self) -> Result<(), String> {
         // Repair process-crash windows against durable SQLite before exposing paired state.
-        // Never adopt or rewrite another registry: new() already validated both bindings.
+        // new() has already validated or completed a journaled adoption of both bindings.
         self.miner_pass_storage.require_committed_writer()?;
         let height = self.durable_pass_height()?;
         self.pass_energy_manager

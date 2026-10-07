@@ -108,6 +108,11 @@ impl PassEnergyManager {
             .validate_paired_rules_binding(expected, peer_has_indexed_state)
     }
 
+    /// Borrow the paired store only during startup, before block execution or RPC publication.
+    pub(crate) fn startup_storage(&self) -> &PassEnergyStorage {
+        &self.storage
+    }
+
     /// Persist the approved dataset identity before indexing begins.
     pub fn bind_rules(&self, expected: &usdb_util::IndexerRulesBinding) -> Result<(), String> {
         self.storage.bind_rules(expected)

@@ -297,7 +297,7 @@ impl Pipeline {
     pub async fn while_stopped(self, action: impl FnOnce(&std::path::Path)) -> Self {
         let Self {
             root,
-            config,
+            config: _,
             indexer,
             status,
             core,
@@ -307,6 +307,7 @@ impl Pipeline {
         drop(indexer);
         drop(status);
         action(&root);
+        let config = Arc::new(ConfigManager::load(Some(root.clone())).unwrap());
         let status =
             Arc::new(StatusManager::new(config.clone(), Arc::new(IndexOutput::new())).unwrap());
         let indexer = Arc::new(InscriptionIndexer::new(config.clone(), status.clone()).unwrap());

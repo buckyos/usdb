@@ -584,7 +584,7 @@ Rust `generate_go_release_manifest_golden --check` 必须保证 manifest 与 Go 
 - registry source / rules scope 与配置不匹配、current pin 不匹配或 catalog 缺失时 fail closed。
 - 同一 BTC source、同一公式版本、不同 scope 得到不同 registry、active set 和 local/system state identity；legacy golden 不变。
 - 同一 source 的两个 scope 可以采用不同升级日程；测试 scope 的 catalog 修改不改变另一 scope 的结果。
-- pass SQLite 与 energy RocksDB 同时校验 source/scope/origin/current ID；跨 scope、跨 origin、跨 revision 或混合双库均拒绝启动。
+- pass SQLite 与 energy RocksDB 同时校验 source/scope/origin/current ID；跨 scope、跨 origin、未经验证的 revision 切换或混合双库拒绝启动。仅可按[数据集接管方案](../usdb-indexer/registry-dataset-upgrade-plan.md)验证不可改写 catalog 的一致历史前缀后，前向协调切换精确绑定；中断须有匹配的持久化接管记录。
 - 新 scope 拒绝认领非空但尚未绑定的旧库；旧 legacy 库可按兼容路径记录首次绑定。
 - checkpoint 在安装前同时核对目标配置 pin、manifest registry ID、双库绑定和离线重算结果；跨 scope 失败关闭。
 - BTC registry 拒绝 USDB-chain version family。

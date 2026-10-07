@@ -203,6 +203,28 @@ pub fn validate_indexer_data(
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
+    if has_state_text {
+        let adoption_pending: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM state_text WHERE name=?1)",
+                [usdb_util::INDEXER_REGISTRY_ADOPTION_KEY],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to inspect registry adoption marker: path={}, error={e}",
+                    db_path.display()
+                )
+            })?;
+        if adoption_pending {
+            let msg = format!(
+                "Indexer registry adoption is pending: path={}; finish adoption with the recorded target configuration before checkpoint validation",
+                db_path.display()
+            );
+            log::error!("{msg}");
+            return Err(msg);
+        }
+    }
     let stored_binding: Option<String> = if has_state_text {
         conn.query_row(
             "SELECT value FROM state_text WHERE name=?1",
