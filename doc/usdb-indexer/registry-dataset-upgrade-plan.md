@@ -89,7 +89,7 @@ G1 实现位置：`storage/rules_upgrade.rs`、双库私有元数据 API 与 `In
 
 本地覆盖包括真实 SQLite/RocksDB 的只读 WAL 查询、全部接管中断点、late upgrade 与源缺失；真实 LevelDB 的 header-only 越界、genesis/配置错误、目录只读、损坏拒绝和 CLI apply；节点工具则验证发布 bundle、双检查顺序、两次 apply/目录移动/初始化标记/node.env 各阶段恢复、保存凭证变更与目录替换拒绝、仅 chain checkpoint 升级和清理保护。节点协调测试注入服务调用结果，不能代替 G3 的真实容器和跨链运行验收。
 
-G2 的 Go CI 依赖锁已推进到 USDB `a3dd9553f0d2ef274018f8ff93b79a7c43c137d4`。G3 提交后仍需按 USDB → Go 依赖锁的顺序冻结，才可进行成对发布资格验证。
+G2 的 Go CI 依赖锁已推进到 USDB `a3dd9553f0d2ef274018f8ff93b79a7c43c137d4`。G3 已按 USDB `4058c06` → Go `e9f23774a` 依赖锁的顺序提交；后续补强批次仍须按此顺序冻结后进行成对发布资格验证。
 
 G2 本地验证：indexer 单元 395 通过 / 12 原有忽略，生产分派集成 1 通过；checkpoint 18 通过；util 87 通过 / 2 忽略；升级/清理 Python 74 通过，节点管理 127 通过，网络/配置 68 通过，节点打包 1 通过。工作区 check、Clippy（all targets/all features、warnings as errors）、格式检查通过。Go 1.26 兼容工具链下 `internal/usdbupgrade`、LevelDB、USDB verifier、params、fork ID 和相关 Geth CLI 测试以及 vet 通过；G2 交付时尚未验证 Go 1.18 发布工具链；G3 已补齐该工具链验证，远端 CI 仍待成对提交。
 
@@ -160,3 +160,74 @@ G2 的 LevelDB 夹具未创建实际运行节点的 `ancient/chain`。真实只�
   和 diff 检查通过。
 
 以上为本地隔离验收，未触发远端 CI，未推送、发布或修改在线节点。
+
+
+## 6. 三阶段 schema 与连续升级补强
+
+G3 提交后的补强使用相同的执行器接口、区块原子提交和接管工具，不修改生产网络的
+规则、高度或数据格式。新增测试契约仍要求显式 conformance 构建、BTC regtest 和专用 scope。
+
+### 6.1 真正不同的 JSON grammar
+
+schema 901 保留平面字段；schema 902 必须将 `usdb_main` / `leader_pass_id` /
+`leader_btc_addr` 中恰好一个放入 `binding` 对象。902 独立检查结构、字段类型、未知字段和
+顶层／嵌套重复键，再复用地址、prev 和 pass-kind 的语义校验，归一到已有 `USDBMint`。
+它是测试 schema，不分配正式 JSON v2，不放宽生产二进制支持范围。
+
+`miner_pass_upgrade_dispatch.rs` 在 H1/H2 的 H-1/H/H+1 各送入三种实际 wire payload，
+通过 discovery、比较源和本地重解析检查接受集合。所有绑定形式、畸形结构、旧平面字段、
+错网络地址及重复键另有明确拒绝断言。旧证保留原 mint_version，跨 schema 继承不重审旧 payload。
+
+### 6.2 三个 registry revision
+
+`miner_pass_registry_adoption.rs` 使用真实 SQLite/RocksDB 与区块执行，覆盖：
+
+- R1 在 H1 前接管 R2，执行中间区间，再在 H2 前接管 R3。
+- 离线跳过 R2，在 H1 前直接接管完整历史的 R3。
+- R1 越过 H1 或 R2 越过 H2 后拒绝；业务状态及两库绑定不变。
+- 第二次接管在 prepared / energy-bound / committed 阶段中断后恢复。
+- 连续接管、跳版本和从头按 R3 重放的业务历史、能量及 commitment 完全一致；
+  R1/R2 的固定查询上下文只在各自兼容前缀内有效。
+
+### 6.3 同高度及相邻高度组合
+
+`common/miner_pass_epochs.rs` 声明共享场景；`miner_pass_upgrade_matrix.rs` 验证两组配置：
+
+| 配置 | 第一组升级 | 第二组升级 |
+| --- | --- | --- |
+| 同高度 | H10：schema 901、收紧新协作、双倍公式 | H20：schema 902、恢复新协作、三倍公式 |
+| 相邻高度 | H10：公式；H11：schema；H12：状态机 | H20：公式；H21：schema；H22：状态机 |
+
+操作包含真实余额变化、替换、两种旧 schema 的 Dormant/Active prev 继承、协作准入拒绝／
+重新开放及旧协作证转移。继承必须是非零能量，按独立逐块模型投影后逐 prev 折损求和。
+两组配置、两个 schema 边界、八个发布点分别注入普通错误和进程退出，共 64 个恢复组合；
+恢复后逐字段对照干净重放。另以真实上游分支切换跨越两次 schema 变化，验证回滚、重放和重启。
+
+### 6.4 真实服务与 nightly / weekly
+
+- `live-source-catalog.json` 为 R1；`live-middle-catalog.json` 保留 G3 的 R2；
+  `live-catalog.json` 完整保留前两版并追加 R3，BTC 210 启用嵌套 schema 902。
+- Core/Ord/BH/indexer/Geth 在 BTC 159 和 209 分别停机接管；每次追加当时 USDB head + 1
+  的 checkpoint，执行真实容器预检、apply、四处进程退出恢复及重复恢复。已有身份标记必须
+  与来源相符，第二次 staging 不覆盖旧标记来伪造一致性。
+- 铸造并保留 schema 1、901、902 铭文；902 继承旧证。R1/R2 固定历史查询在第二次升级前后
+  保持一致。新 validator 校验三个 chain 区间；独立奖励模型按两个 checkpoint 选择 registry。
+- 从 R1、R2 早段、R2 升级前及空库恢复到 R3，比较完整历史与最终状态；深重组跨全部升级点，
+  删除已脱离规范链的 901/902 铭文后与全新重放对照，旧 USDB header 必须拒绝。
+- 此场景将 BH undo 保留量设为 256，以覆盖超过默认 64 块的跨两次升级深重组；
+  原窗口不足时 BH 已按预期拒绝继续回滚。生产默认值不变。
+- 原 nightly / weekly 入口自动执行扩展后的场景；报告为 `miner-pass-live-upgrade:v3`，
+  `registry_adoptions` 保存两次接管的镜像、inode、BTC 高度和 USDB checkpoint 证据。
+
+随机操作序列、特殊存量权益撤销、持久化表示迁移不在本批范围；后两者仍须由具体 UIP 定义
+并补充相应业务向量。上述模拟验证可升级框架，不能替代未来真实新规则实现的验收。
+
+### 6.5 本地验证（2026-10-07）
+
+- indexer 403 项通过 / 12 项原有忽略，普通二进制隔离测试 1 项通过；util 87 项通过 / 2 项原有忽略。
+- workspace check、严格 Clippy、格式和 Rust/Go golden 一致性通过；前两版 catalog 与 G3 原件逐项相等。
+- Go 1.18.5 普通／conformance 构建的 USDB verifier、离线接管、params、fork ID 及相关 vet 通过。
+- 节点升级协调 13 项、CI 分派 17 项、服务辅助 10 项、奖励参考 6 项通过；ShellCheck、发布片段及 diff 校验通过。
+- 真实完整场景 seed 0 通过，包含两次真实容器接管与深重组；weekly 41/42/43 通过原 CI 入口全部通过，分别完成 3/2/3 次深重组。
+
+本批结果为本地隔离验收；未触发远端 CI、未推送、发布或操作在线节点。

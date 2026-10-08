@@ -1,6 +1,6 @@
 # UIP-0017 多区间升级实施与测试计划
 
-状态：A 已提交为 `4dd2333`；B 已提交为 `72e6a87`；C 已提交为 `2ca2694`；D 已提交为 `d901370`；E 已提交为 USDB `d3a20ef` / Go `7d19ebc59`；F 已提交为 USDB `8dfcf0c` / Go `5cb25c86c`；G 按[数据集接管方案](./registry-dataset-upgrade-plan.md)分 G1–G3 实施，G1 已提交为 `073f13d`，G2 已提交为 USDB `a3dd955` / Go `44ae78a51`；G3 已完成本地真实容器接管、跨服务续写与恢复矩阵验收，尚未提交；结果见[数据集接管方案第 5 节](./registry-dataset-upgrade-plan.md#5-g3真实容器与跨服务验收)。
+状态：A 已提交为 `4dd2333`；B 已提交为 `72e6a87`；C 已提交为 `2ca2694`；D 已提交为 `d901370`；E 已提交为 USDB `d3a20ef` / Go `7d19ebc59`；F 已提交为 USDB `8dfcf0c` / Go `5cb25c86c`；G 按[数据集接管方案](./registry-dataset-upgrade-plan.md)分 G1–G3 实施，G1 已提交为 `073f13d`，G2 已提交为 USDB `a3dd955` / Go `44ae78a51`；G3 已提交为 USDB `4058c06` / Go `e9f23774a`；后续三 schema / 两次接管 / 组合边界补强见数据集接管方案第 6 节；结果见[数据集接管方案第 5 节](./registry-dataset-upgrade-plan.md#5-g3真实容器与跨服务验收)。
 
 协议依据：[UIP-0017](../UIP/UIP-0017-miner-pass-upgrade-and-legacy-rights.md) 第一版草案已由用户确认并提交为 `36726a5`；这不表示委员会流程完成或目标网络已激活。本文记录当前实现缺口、分批交付和测试验收，不分配正式 schema v2 / 状态机 v3，不改变现行网络参数。
 

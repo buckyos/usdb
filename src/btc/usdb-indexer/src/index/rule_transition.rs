@@ -13,7 +13,12 @@ fn validate_transition(previous: &ActiveVersionSet, next: &ActiveVersionSet) -> 
         #[cfg(any(test, feature = "miner-pass-conformance"))]
         (MintSchemaRules::V1, MintSchemaRules::Conformance901)
         | (MintSchemaRules::Conformance901, MintSchemaRules::V1)
-        | (MintSchemaRules::Conformance901, MintSchemaRules::Conformance901) => {}
+        | (MintSchemaRules::Conformance901, MintSchemaRules::Conformance901)
+        | (MintSchemaRules::V1, MintSchemaRules::Conformance902)
+        | (MintSchemaRules::Conformance901, MintSchemaRules::Conformance902)
+        | (MintSchemaRules::Conformance902, MintSchemaRules::V1)
+        | (MintSchemaRules::Conformance902, MintSchemaRules::Conformance901)
+        | (MintSchemaRules::Conformance902, MintSchemaRules::Conformance902) => {}
     }
     // All registered schema edges affect new payloads only; stored mint facts stay accepted.
     let before_state = PassStateRules::from_versions(previous).map_err(|e| e.to_string())?;

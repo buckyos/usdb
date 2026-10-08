@@ -358,6 +358,16 @@ impl MintBlock {
                         serde_json::json!(spec.leader.map(|id| id.to_string()));
                 }
             }
+            if spec.version == 902 {
+                let fields = payload.as_object_mut().unwrap();
+                let mut binding = serde_json::Map::new();
+                for key in ["usdb_main", "leader_pass_id", "leader_btc_addr"] {
+                    if let Some(value) = fields.remove(key) {
+                        binding.insert(key.into(), value);
+                    }
+                }
+                fields.insert("binding".into(), binding.into());
+            }
             let script = Builder::new()
                 .push_int(0)
                 .push_opcode(OP_IF)

@@ -3,6 +3,8 @@
 pub const CONFORMANCE_SCOPE: &str = "miner-pass-upgrade-conformance";
 /// Synthetic JSON version, deliberately distinct from future production schema numbers.
 pub const CONFORMANCE_SCHEMA: &str = "conformance-miner-pass-schema:901";
+/// Independent nested-binding grammar used to exercise a second schema transition.
+pub const CONFORMANCE_SCHEMA_STRUCTURED: &str = "conformance-miner-pass-schema:902";
 /// Admission-only rule that preserves old collabs while rejecting new ones.
 pub const CONFORMANCE_STATE: &str = "conformance-miner-pass-state:no-new-collab";
 

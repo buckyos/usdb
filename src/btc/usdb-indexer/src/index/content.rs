@@ -455,7 +455,19 @@ impl InscriptionContentLoader {
             }));
         }
 
-        Self::classify_mint_object(inscription_id, &scan.object, network, schema)
+        match schema {
+            MintSchemaRules::V1 => {
+                Self::classify_v1_mint_object(inscription_id, &scan.object, network, 1)
+            }
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
+            MintSchemaRules::Conformance901 => {
+                Self::classify_v1_mint_object(inscription_id, &scan.object, network, 901)
+            }
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
+            MintSchemaRules::Conformance902 => {
+                Self::classify_structured_mint(inscription_id, content, network)
+            }
+        }
     }
 
     pub fn parse_content(
@@ -503,25 +515,70 @@ impl InscriptionContentLoader {
             return Ok(ParsedMintContent::NotUsdbMint);
         }
 
-        Self::classify_mint_object(inscription_id, content, network, MintSchemaRules::V1)
+        Self::classify_v1_mint_object(inscription_id, content, network, 1)
     }
 
-    fn classify_mint_object(
+    /// Test-only wire grammar: binding fields must be nested, with strict duplicate,
+    /// unknown-field and type checks before normalization into the shared semantic model.
+    #[cfg(any(test, feature = "miner-pass-conformance"))]
+    fn classify_structured_mint(
         inscription_id: &InscriptionId,
-        content: &serde_json::Map<String, serde_json::Value>,
+        content: &str,
         network: Network,
-        schema: MintSchemaRules,
     ) -> Result<ParsedMintContent, String> {
-        match schema {
-            MintSchemaRules::V1 => {
-                Self::classify_v1_mint_object(inscription_id, content, network, 1)
-            }
-            // Conformance changes only the wire marker; the v1 field grammar remains strict.
-            #[cfg(any(test, feature = "miner-pass-conformance"))]
-            MintSchemaRules::Conformance901 => {
-                Self::classify_v1_mint_object(inscription_id, content, network, 901)
-            }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct StructuredMint {
+            p: String,
+            op: String,
+            v: u32,
+            binding: TopLevelObjectScan,
+            #[serde(default)]
+            prev: Vec<String>,
         }
+        let invalid = |reason| {
+            ParsedMintContent::Invalid(MintValidationError {
+                code: MintValidationErrorCode::InvalidSchema,
+                reason: format!(
+                    "Invalid USDB mint schema 902 for inscription {inscription_id}: {reason}"
+                ),
+            })
+        };
+        let mint: StructuredMint = match serde_json::from_str(content) {
+            Ok(mint) => mint,
+            Err(error) => return Ok(invalid(error.to_string())),
+        };
+        if !mint.binding.duplicate_keys.is_empty() {
+            return Ok(invalid(format!(
+                "duplicate binding keys: {:?}",
+                mint.binding.duplicate_keys
+            )));
+        }
+        if mint.binding.object.len() != 1
+            || !mint.binding.object.keys().all(|key| {
+                matches!(
+                    key.as_str(),
+                    "usdb_main" | "leader_pass_id" | "leader_btc_addr"
+                )
+            })
+        {
+            return Ok(invalid(
+                "binding must contain exactly one supported binding field".into(),
+            ));
+        }
+        let mut normalized =
+            serde_json::json!({"p": mint.p, "op": mint.op, "v": mint.v, "prev": mint.prev});
+        normalized
+            .as_object_mut()
+            .unwrap()
+            .extend(mint.binding.object);
+        // Address, prev and pass-kind semantics are intentionally unchanged by this grammar.
+        Self::classify_v1_mint_object(
+            inscription_id,
+            normalized.as_object().unwrap(),
+            network,
+            902,
+        )
     }
 
     // Frozen v1 field grammar; new schema variants must explicitly select their own parser.
@@ -797,6 +854,13 @@ struct TopLevelObjectScan {
 impl TopLevelObjectScan {
     fn looks_like_usdb_mint(&self) -> bool {
         self.has_usdb_protocol && self.has_mint_operation
+    }
+}
+
+#[cfg(any(test, feature = "miner-pass-conformance"))]
+impl<'de> Deserialize<'de> for TopLevelObjectScan {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(TopLevelObjectVisitor)
     }
 }
 

@@ -95,3 +95,11 @@ pub(crate) mod test_miner_queries;
 #[cfg(test)]
 #[path = "../../../../../tests/miner_pass_registry_adoption.rs"]
 mod miner_pass_registry_adoption;
+
+#[cfg(test)]
+#[path = "../../../../../tests/common/miner_pass_epochs.rs"]
+pub(crate) mod test_miner_epochs;
+
+#[cfg(test)]
+#[path = "../../../../../tests/miner_pass_upgrade_matrix.rs"]
+mod miner_pass_upgrade_matrix;

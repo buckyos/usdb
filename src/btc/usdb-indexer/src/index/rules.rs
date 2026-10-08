@@ -11,6 +11,8 @@ pub(crate) enum MintSchemaRules {
     V1,
     #[cfg(any(test, feature = "miner-pass-conformance"))]
     Conformance901,
+    #[cfg(any(test, feature = "miner-pass-conformance"))]
+    Conformance902,
 }
 
 impl MintSchemaRules {
@@ -28,6 +30,10 @@ impl MintSchemaRules {
             INSCRIPTION_SCHEMA_VERSION_V1 => Ok(Self::V1),
             #[cfg(any(test, feature = "miner-pass-conformance"))]
             CONFORMANCE_SCHEMA if conformance_scope(versions) => Ok(Self::Conformance901),
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
+            CONFORMANCE_SCHEMA_STRUCTURED if conformance_scope(versions) => {
+                Ok(Self::Conformance902)
+            }
             _ => Err(ActivationRegistryError::VersionNotSupported {
                 family,
                 value: value.into(),
@@ -41,6 +47,8 @@ impl MintSchemaRules {
             Self::V1 => 1,
             #[cfg(any(test, feature = "miner-pass-conformance"))]
             Self::Conformance901 => 901,
+            #[cfg(any(test, feature = "miner-pass-conformance"))]
+            Self::Conformance902 => 902,
         }
     }
 }
@@ -138,7 +146,7 @@ fn context_error(rules: &BtcRuleContext, error: ActivationRegistryError) -> Stri
 // Test executors are absent from ordinary binaries and restricted even in test builds.
 #[cfg(any(test, feature = "miner-pass-conformance"))]
 pub(crate) use crate::index::conformance::{
-    CONFORMANCE_SCHEMA, CONFORMANCE_SCOPE, CONFORMANCE_STATE,
+    CONFORMANCE_SCHEMA, CONFORMANCE_SCHEMA_STRUCTURED, CONFORMANCE_SCOPE, CONFORMANCE_STATE,
 };
 #[cfg(any(test, feature = "miner-pass-conformance"))]
 pub(crate) fn conformance_scope(versions: &ActiveVersionSet) -> bool {

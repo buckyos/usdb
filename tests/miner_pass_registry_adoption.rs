@@ -824,3 +824,150 @@ fn readonly_dataset(root: &Path) -> Vec<(std::path::PathBuf, std::fs::Permission
     visit(root, &mut modes);
     modes
 }
+
+#[tokio::test]
+async fn two_successive_adoptions_and_offline_skip_match_final_registry_replay() {
+    use crate::index::test_miner_epochs::{Scenario, catalogs};
+    let revisions = catalogs(0);
+    let scenario = Scenario::new(0, false);
+    let clean = scenario
+        .pipeline("three-registry-clean", &revisions[2])
+        .await;
+    clean.sync_to(24).await.unwrap();
+    let expected = fingerprint(&clean, &scenario.ids, 24).await;
+    // Direct offline R1 -> R3 has not executed either changed interval yet.
+    for skip in [false, true] {
+        let mut p = scenario
+            .pipeline("three-registry-adopt", &revisions[0])
+            .await;
+        p.sync_to(9).await.unwrap();
+        for (revision, tip) in if skip {
+            vec![(2, 9)]
+        } else {
+            vec![(1, 9), (2, 19)]
+        } {
+            p.sync_to(tip).await.unwrap();
+            let before = without_query_identity(fingerprint(&p, &scenario.ids, tip).await);
+            p = p
+                .while_stopped(|root| select(root, &revisions[revision]))
+                .await;
+            assert_eq!(
+                without_query_identity(fingerprint(&p, &scenario.ids, tip).await),
+                before
+            );
+        }
+        p.sync_to(24).await.unwrap();
+        assert_eq!(
+            fingerprint(&p, &scenario.ids, 24).await,
+            expected,
+            "skip={skip}"
+        );
+        // Both historical revisions remain queryable only over their matching executed prefix.
+        for (revision, good, bad) in [(0, 9, 10), (1, 19, 20)] {
+            let catalog = BtcActivationRegistryCatalog::from_json(&revisions[revision]).unwrap();
+            let id = catalog.current_registry_id();
+            assert!(
+                p.rpc()
+                    .get_state_ref_at_height(params(
+                        json!({"block_height":good,"context":context(id,good)})
+                    ))
+                    .is_ok()
+            );
+            assert!(
+                p.rpc()
+                    .get_state_ref_at_height(params(
+                        json!({"block_height":bad,"context":context(id,bad)})
+                    ))
+                    .is_err()
+            );
+        }
+        p.reopen().await.cleanup();
+    }
+    clean.cleanup();
+}
+
+#[tokio::test]
+async fn three_revision_target_rejects_late_first_or_second_upgrade_without_writes() {
+    use crate::index::test_miner_epochs::{Scenario, catalogs};
+    let revisions = catalogs(0);
+    let scenario = Scenario::new(0, false);
+    for (source, tip, difference) in [(0, 10, 10), (0, 21, 10), (1, 20, 20), (1, 21, 20)] {
+        let p = scenario
+            .pipeline("three-registry-late", &revisions[source])
+            .await;
+        p.sync_to(tip).await.unwrap();
+        let before = fingerprint(&p, &scenario.ids, tip).await;
+        let p = p
+            .while_stopped(|root| {
+                select(root, &revisions[2]);
+                let error = attempt(root).unwrap_err();
+                assert!(
+                    error.contains("requires rebuild")
+                        && error.contains(&format!("first_difference_height={difference}")),
+                    "{error}"
+                );
+                let cfg = ConfigManager::load(Some(root.to_owned())).unwrap();
+                let expected = IndexerRulesBinding::new(
+                    BtcActivationRegistryCatalog::from_json(&revisions[source])
+                        .unwrap()
+                        .current_registry(),
+                    8,
+                );
+                let pass = MinerPassStorage::new(&cfg.data_dir()).unwrap();
+                pass.validate_rules_binding(&expected).unwrap();
+                assert!(pass.rules_metadata(JOURNAL_KEY).unwrap().is_none());
+                PassEnergyStorage::new(&cfg.data_dir())
+                    .unwrap()
+                    .validate_rules_binding(&expected)
+                    .unwrap();
+                select(root, &revisions[source]);
+            })
+            .await;
+        assert_eq!(fingerprint(&p, &scenario.ids, tip).await, before);
+        p.cleanup();
+    }
+}
+
+#[tokio::test]
+async fn second_adoption_recovers_every_durable_metadata_stage_after_first_epoch_execution() {
+    use crate::index::test_miner_epochs::{Scenario, catalogs};
+    let revisions = catalogs(0);
+    let scenario = Scenario::new(0, false);
+    let clean = scenario.pipeline("second-adopt-clean", &revisions[2]).await;
+    clean.sync_to(24).await.unwrap();
+    let expected = fingerprint(&clean, &scenario.ids, 24).await;
+    for point in [
+        AdoptionStage::Prepared,
+        AdoptionStage::EnergyBound,
+        AdoptionStage::Committed,
+    ] {
+        let p = scenario
+            .pipeline("second-adopt-recovery", &revisions[0])
+            .await;
+        p.sync_to(9).await.unwrap();
+        let p = p.while_stopped(|root| select(root, &revisions[1])).await;
+        p.sync_to(19).await.unwrap();
+        let p = p
+            .while_stopped(|root| {
+                select(root, &revisions[2]);
+                assert_eq!(
+                    coordinate(root, |stage| if stage == point {
+                        Err("second adoption interrupted".into())
+                    } else {
+                        Ok(())
+                    })
+                    .unwrap_err(),
+                    "second adoption interrupted"
+                );
+            })
+            .await;
+        p.sync_to(24).await.unwrap();
+        assert_eq!(
+            fingerprint(&p, &scenario.ids, 24).await,
+            expected,
+            "{point:?}"
+        );
+        p.cleanup();
+    }
+    clean.cleanup();
+}

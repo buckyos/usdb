@@ -107,31 +107,39 @@ def kit(root, genesis, catalog, block_hash, release):
     return manifest
 
 
-def stage(root, indexer, chain, genesis_path, source_catalog, target_catalog, block_hash, checkpoint, tools):
+def stage(root, indexer, chain, genesis_path, source_catalog, target_catalog, block_hash, checkpoint, tools, btc_height=159):
     root.mkdir(mode=0o700)
     source = core.read_json(source_catalog)
     target = core.read_json(target_catalog)
     genesis = core.read_json(genesis_path)
     assert genesis['config']['usdb']['btcNetworkId'] == 'btc-regtest'
-    assert genesis['config']['usdb']['activations'][0]['btcActivationRegistryId'] == source['current_registry_id']
-    previous = kit(root / 'source-kit', genesis, source, block_hash, 1)
+    assert genesis['config']['usdb']['activations'][-1]['btcActivationRegistryId'] == source['current_registry_id']
+    previous = kit(root / 'source-kit', genesis, source, block_hash, len(genesis['config']['usdb']['activations']))
     updated = copy.deepcopy(genesis)
     activations = updated['config']['usdb']['activations']
-    assert len(activations) == 1 and checkpoint > 0
-    activations.append(dict(activations[0], block=checkpoint, btcActivationRegistryId=target['current_registry_id']))
-    next_manifest = kit(root / 'target-kit', updated, target, block_hash, 2)
-    core.atomic_json(indexer / runtime.DATASET_IDENTITY_FILE, runtime.build_dataset_identity('usdb_indexer', previous['runtime_compatibility']))
+    assert checkpoint > activations[-1]['block']
+    activations.append(dict(activations[-1], block=checkpoint, btcActivationRegistryId=target['current_registry_id']))
+    next_manifest = kit(root / 'target-kit', updated, target, block_hash, len(activations))
+    dataset_marker = indexer / runtime.DATASET_IDENTITY_FILE
+    expected_marker = runtime.build_dataset_identity('usdb_indexer', previous['runtime_compatibility'])
+    if dataset_marker.exists():
+        assert core.read_json(dataset_marker) == expected_marker
+    else:
+        core.atomic_json(dataset_marker, expected_marker)
     marker = chain / 'bootstrap/ethw-init.done.json'
     marker.parent.mkdir(exist_ok=True)
-    core.atomic_json(marker, dict(genesis_sha256=previous['network_bundle']['genesis_sha256'],
-        genesis_file='/network/usdb-genesis.json', genesis_manifest_file='/network/usdb-genesis.manifest.json'))
+    if marker.exists():
+        assert core.read_json(marker)['genesis_sha256'] == previous['network_bundle']['genesis_sha256']
+    else:
+        core.atomic_json(marker, dict(genesis_sha256=previous['network_bundle']['genesis_sha256'],
+            genesis_file='/network/usdb-genesis.json', genesis_manifest_file='/network/usdb-genesis.manifest.json'))
     destination = indexer.with_name(indexer.name + '-adopted')
     plan = dict(source_kit=str(root / 'source-kit'), components=[
         dict(service='usdb_indexer', source=str(indexer), target=str(destination), action='adopt',
              marker_sha256=sha(indexer / runtime.DATASET_IDENTITY_FILE)),
         dict(service='usdb_chain', source=str(chain), target=str(chain), action='reuse')])
     core.atomic_json(root / 'fixture.json', dict(plan=plan, manifest=next_manifest, image=image_identity(tools),
-                     inode=core.stamp(indexer)[:2], checkpoint=checkpoint))
+                     inode=core.stamp(indexer)[:2], checkpoint=checkpoint, btc_height=btc_height))
     core.atomic_json(root / 'state.json', {})
     Session(root)
 
@@ -193,11 +201,12 @@ def exercise(root):
     item = protocol.component(session, 'usdb_indexer')
     assert not Path(item['source']).exists()
     assert core.stamp(Path(item['target']))[:2] == fixture['inode']
-    assert core.read_json(root / 'protocol/usdb_indexer.json')['adoption']['height'] == 159
+    assert core.read_json(root / 'protocol/usdb_indexer.json')['adoption']['height'] == fixture['btc_height']
     assert core.read_json(root / 'protocol/usdb_chain.json')['checked_height'] == fixture['checkpoint'] - 1
     restore_fixture_ownership(root)
     core.atomic_json(root / 'acceptance.json', dict(status='passed', crash_points=points, idempotent_resume=True,
-        source_inode=fixture['inode'], target_inode=core.stamp(Path(item['target']))[:2], image=fixture['image']))
+        source_inode=fixture['inode'], target_inode=core.stamp(Path(item['target']))[:2], image=fixture['image'],
+        btc_height=fixture['btc_height'], chain_checkpoint=fixture['checkpoint']))
 
 
 def refusal(root, expected):
@@ -228,6 +237,7 @@ def main():
         setup.add_argument('--' + name, type=Path, required=True)
     setup.add_argument('--genesis-hash', required=True)
     setup.add_argument('--checkpoint', type=int, required=True)
+    setup.add_argument('--btc-height', type=int, default=159)
     sub.add_parser('exercise').add_argument('root', type=Path)
     resume = sub.add_parser('resume')
     resume.add_argument('root', type=Path)
@@ -242,7 +252,7 @@ def main():
         print(image_identity(args.tools))
     elif args.command == 'stage':
         stage(args.root, args.indexer, args.chain, args.genesis, args.source_catalog, args.target_catalog,
-              args.genesis_hash, args.checkpoint, args.tools)
+              args.genesis_hash, args.checkpoint, args.tools, args.btc_height)
     elif args.command == 'resume':
         protocol.execute(Session(args.root, args.crash))
     elif args.command == 'exercise':

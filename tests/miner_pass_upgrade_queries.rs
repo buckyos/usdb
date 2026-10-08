@@ -505,32 +505,50 @@ fn live_service_catalog_is_explicit_and_matches_the_shared_contract() {
             CONFORMANCE_STATE,
         ),
     ]);
-    let source: Value = serde_json::from_str(&conformance_catalog(&[])).unwrap();
-    let mut value: Value = serde_json::from_str(&catalog).unwrap();
-    value["registries"]
-        .as_array_mut()
+    let source = conformance_catalog(&[]);
+    let middle = crate::index::test_miner_epochs::append_revision(&source, &catalog);
+    let mut last: Value = serde_json::from_str(&catalog).unwrap();
+    let records = last["registries"][0]["records"].as_array_mut().unwrap();
+    let mut schema = records
+        .iter()
+        .find(|r| r["version_value"] == CONFORMANCE_SCHEMA)
         .unwrap()
-        .insert(0, source["registries"][0].clone());
-    if let Some(path) = std::env::var_os("USDB_WRITE_LIVE_SOURCE_CATALOG") {
-        std::fs::write(path, serde_json::to_string_pretty(&source).unwrap() + "\n").unwrap();
-    } else {
-        assert_eq!(
+        .clone();
+    schema["activation_height"] = 210.into();
+    schema["supersedes"] = CONFORMANCE_SCHEMA.into();
+    schema["version_value"] = CONFORMANCE_SCHEMA_STRUCTURED.into();
+    records.push(schema);
+    let registry: usdb_util::BtcActivationRegistry =
+        serde_json::from_value(last["registries"][0].clone()).unwrap();
+    last["current_registry_id"] = registry.activation_registry_id().into();
+    let final_catalog =
+        crate::index::test_miner_epochs::append_revision(&middle, &last.to_string());
+    for (env, generated, checked) in [
+        (
+            "USDB_WRITE_LIVE_SOURCE_CATALOG",
             source,
-            serde_json::from_str::<Value>(include_str!(
-                "fixtures/miner-pass-upgrade/live-source-catalog.json"
-            ))
-            .unwrap()
-        );
-    }
-    if let Some(path) = std::env::var_os("USDB_WRITE_LIVE_UPGRADE_CATALOG") {
-        std::fs::write(path, serde_json::to_string_pretty(&value).unwrap() + "\n").unwrap();
-    } else {
-        assert_eq!(
-            value,
-            serde_json::from_str::<Value>(include_str!(
-                "fixtures/miner-pass-upgrade/live-catalog.json"
-            ))
-            .unwrap()
-        );
+            include_str!("fixtures/miner-pass-upgrade/live-source-catalog.json"),
+        ),
+        (
+            "USDB_WRITE_LIVE_MIDDLE_CATALOG",
+            middle,
+            include_str!("fixtures/miner-pass-upgrade/live-middle-catalog.json"),
+        ),
+        (
+            "USDB_WRITE_LIVE_UPGRADE_CATALOG",
+            final_catalog,
+            include_str!("fixtures/miner-pass-upgrade/live-catalog.json"),
+        ),
+    ] {
+        let value: Value = serde_json::from_str(&generated).unwrap();
+        if let Some(path) = std::env::var_os(env) {
+            std::fs::write(path, serde_json::to_string_pretty(&value).unwrap() + "\n").unwrap();
+        } else {
+            assert_eq!(
+                value,
+                serde_json::from_str::<Value>(checked).unwrap(),
+                "{env}"
+            );
+        }
     }
 }

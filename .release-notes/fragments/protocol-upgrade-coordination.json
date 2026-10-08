@@ -14,7 +14,7 @@
     "Stopped-node upgrades verify both indexer history and Geth checkpoints before changing either dataset. Only appended compatible rule revisions and future checkpoints are adopted; genesis and established history are preserved.",
     "Recovery resumes the same target after metadata writes start. Obsolete executed rules, missing identities and inconsistent stores are rejected without automatic deletion or rewind.",
     "Geth preflight reads existing ancient locks and metadata without writing, initializing or repairing freezer files. Missing or damaged metadata requires diagnosis using the original node before retrying.",
-    "Isolated real-container and multi-service tests cover interruption recovery, separate BTC and USDB late-upgrade rejection, historical queries, validator replay and nightly/weekly scenarios."
+    "Isolated real-container and multi-service tests cover two successive registry adoptions, skipped releases, three JSON schema epochs with an independent nested grammar, combined rule boundaries, interruption recovery, historical queries and nightly/weekly replay."
   ],
   "operator_actions": [
     "Stop services through the upgrade workflow and retain the saved upgrade session. Follow the reported diagnosis or explicit rebuild plan when a preflight refuses reuse."

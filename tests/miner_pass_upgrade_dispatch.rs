@@ -339,6 +339,11 @@ fn conformance_support_is_scoped_and_does_not_bypass_other_rule_families() {
             11,
             CONFORMANCE_STATE,
         ),
+        (
+            VersionFamily::InscriptionSchemaVersion,
+            12,
+            crate::index::test_miner_rules::CONFORMANCE_SCHEMA_STRUCTURED,
+        ),
     ]);
     let catalog = usdb_util::BtcActivationRegistryCatalog::from_json(&catalog).unwrap();
     let registry = catalog.current_registry();
@@ -371,7 +376,12 @@ fn conformance_support_is_scoped_and_does_not_bypass_other_rule_families() {
         }
         let timeline =
             BtcRuleTimeline::new_with_indexer_support(&changed, validate_indexer_rules).unwrap();
-        assert!(timeline.indexer_context_at(12).is_err());
+        for height in [10, 12] {
+            assert!(
+                timeline.indexer_context_at(height).is_err(),
+                "variation={variation}, height={height}"
+            );
+        }
     }
 }
 
@@ -683,4 +693,181 @@ async fn old_schema_passes_transfer_and_burn_under_new_rules_without_reactivatio
         );
     }
     p.cleanup();
+}
+
+#[test]
+fn structured_schema_has_an_independent_strict_grammar_and_normalizes_all_bindings() {
+    use crate::index::test_miner_rules::CONFORMANCE_SCHEMA_STRUCTURED;
+    use crate::index::{InscriptionContentLoader, ParsedMintContent, USDBInscription};
+    let catalog = conformance_catalog(&[
+        (
+            VersionFamily::InscriptionSchemaVersion,
+            10,
+            CONFORMANCE_SCHEMA,
+        ),
+        (
+            VersionFamily::InscriptionSchemaVersion,
+            20,
+            CONFORMANCE_SCHEMA_STRUCTURED,
+        ),
+    ]);
+    let rules = conformance_context(&catalog, 20);
+    let id = crate::index::test_miner_state::id(71);
+    let main = "0x1111111111111111111111111111111111111111";
+    let address =
+        bitcoincore_rpc::bitcoin::Address::from_script(&cold_recipient(72), Network::Regtest)
+            .unwrap()
+            .to_string();
+    for (key, value, kind) in [
+        ("usdb_main", main.to_string(), MinerPassKind::Standard),
+        ("leader_pass_id", id.to_string(), MinerPassKind::Collab),
+        ("leader_btc_addr", address, MinerPassKind::Collab),
+    ] {
+        let content = serde_json::json!({"p":"usdb", "op":"mint", "v":902, "binding": {key: value}, "prev":[id.to_string()]}).to_string();
+        let ParsedMintContent::Valid(USDBInscription::Mint(mint)) =
+            InscriptionContentLoader::classify_mint_content_str_with_rules(
+                &id,
+                &content,
+                Network::Regtest,
+                &rules,
+            )
+            .unwrap()
+        else {
+            panic!("valid nested binding rejected: {content}")
+        };
+        assert_eq!((mint.version, mint.pass_kind), (902, kind));
+        assert_eq!(mint.prev, vec![id.to_string()]);
+        assert_eq!(
+            match key {
+                "usdb_main" => mint.usdb_main,
+                "leader_pass_id" => mint.leader_pass_id.unwrap(),
+                _ => mint.leader_btc_addr.unwrap(),
+            },
+            value
+        );
+    }
+    let valid = format!(r#"{{"p":"usdb","op":"mint","v":902,"binding":{{"usdb_main":"{main}"}}}}"#);
+    for content in [
+        valid.replace("\"v\":902", "\"v\":901"),
+        valid.replace("\"v\":902", "\"v\":\"902\""),
+        valid.replace("\"v\":902", "\"v\":902,\"v\":902"),
+        valid.replace("\"binding\":{", "\"unknown\":0,\"binding\":{"),
+        valid.replace("\"usdb_main\":", "\"unknown\":0,\"usdb_main\":"),
+        valid.replace("\"usdb_main\":", "\"usdb_main\":null,\"usdb_main\":"),
+        valid.replace("\"usdb_main\":", "\"leader_pass_id\":null,\"usdb_main\":"),
+        valid.replace(&format!("\"{main}\""), "42"),
+        valid.replace(&format!("{{\"usdb_main\":\"{main}\"}}"), "[]"),
+        valid.replace(&format!("{{\"usdb_main\":\"{main}\"}}"), "{}"),
+        valid.replace(
+            &format!("\"binding\":{{\"usdb_main\":\"{main}\"}}"),
+            &format!("\"usdb_main\":\"{main}\""),
+        ),
+        valid.replace("\"binding\":{", "\"prev\":null,\"binding\":{"),
+        valid.replace(
+            &format!("\"usdb_main\":\"{main}\""),
+            "\"leader_btc_addr\":\"bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh\"",
+        ),
+    ] {
+        assert!(
+            matches!(
+                InscriptionContentLoader::classify_mint_content_str_with_rules(
+                    &id,
+                    &content,
+                    Network::Regtest,
+                    &rules
+                )
+                .unwrap(),
+                ParsedMintContent::Invalid(_)
+            ),
+            "{content}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn three_schema_epochs_classify_each_wire_grammar_at_both_reveal_boundaries() {
+    use crate::index::test_miner_rules::CONFORMANCE_SCHEMA_STRUCTURED;
+    let catalog = conformance_catalog(&[
+        (
+            VersionFamily::InscriptionSchemaVersion,
+            10,
+            CONFORMANCE_SCHEMA,
+        ),
+        (
+            VersionFamily::InscriptionSchemaVersion,
+            20,
+            CONFORMANCE_SCHEMA_STRUCTURED,
+        ),
+    ]);
+    let heights = [9, 10, 11, 19, 20, 21];
+    let batches: Vec<_> = heights
+        .into_iter()
+        .map(|height| {
+            let specs = [1, 901, 902]
+                .into_iter()
+                .enumerate()
+                .map(|(slot, version)| {
+                    let tag = (height * 3 + slot as u32) as u8;
+                    let mut spec = MintSpec::standard(tag, cold_recipient(tag), 0, vec![]);
+                    spec.version = version;
+                    spec
+                })
+                .collect();
+            MintBlock::new(height, specs, false)
+        })
+        .collect();
+    let empty: Vec<_> = (8..=21)
+        .filter(|h| !heights.contains(h))
+        .map(|h| MintBlock::new(h, vec![], false))
+        .collect();
+    let blocks: Vec<_> = batches.iter().chain(empty.iter()).collect();
+    let mut p = Pipeline::with_catalog("three-wire-epochs", &blocks, 8, &catalog).await;
+    let source: Arc<dyn InscriptionSource> =
+        Arc::new(BitcoindInscriptionSource::new(p.core.client.clone()));
+    Arc::get_mut(&mut p.indexer)
+        .unwrap()
+        .replace_inscription_source_for_test(Arc::new(CompareInscriptionSource::new_with_target(
+            source.clone(),
+            source,
+            true,
+            CompareTarget::UsdbMint,
+        )));
+    p.sync_to(21).await.unwrap();
+    for (height, batch) in heights.into_iter().zip(&batches) {
+        for (slot, version) in [1, 901, 902].into_iter().enumerate() {
+            let expected_version = if height < 10 {
+                1
+            } else if height < 20 {
+                901
+            } else {
+                902
+            };
+            let store = p.indexer.miner_pass_storage();
+            let id = batch.mints[slot].inscription_id;
+            let pass = store.get_pass_by_inscription_id(&id).unwrap().unwrap();
+            assert_eq!(
+                pass.state,
+                if version == expected_version {
+                    MinerPassState::Active
+                } else {
+                    MinerPassState::Invalid
+                },
+                "height={height}, version={version}"
+            );
+            assert_eq!(
+                store
+                    .get_mint_audit(&id)
+                    .unwrap()
+                    .unwrap()
+                    .error_code
+                    .as_deref(),
+                if version == expected_version {
+                    None
+                } else {
+                    Some("INVALID_SCHEMA")
+                }
+            );
+        }
+    }
+    p.reopen().await.cleanup();
 }

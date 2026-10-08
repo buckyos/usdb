@@ -5,7 +5,8 @@ mod conformance;
 
 use conformance::{
     CONFORMANCE_EFFECTIVE, CONFORMANCE_ENERGY_DOUBLE, CONFORMANCE_ENERGY_TRIPLE, CONFORMANCE_LEVEL,
-    CONFORMANCE_SCHEMA, CONFORMANCE_SCOPE, CONFORMANCE_STATE, conformance_catalog,
+    CONFORMANCE_SCHEMA, CONFORMANCE_SCHEMA_STRUCTURED, CONFORMANCE_SCOPE, CONFORMANCE_STATE,
+    conformance_catalog,
 };
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,6 +16,10 @@ use usdb_util::{BtcActivationRegistryCatalog, VersionFamily};
 fn ordinary_binary_rejects_conformance_executors_before_opening_stores() {
     for (family, version) in [
         (VersionFamily::InscriptionSchemaVersion, CONFORMANCE_SCHEMA),
+        (
+            VersionFamily::InscriptionSchemaVersion,
+            CONFORMANCE_SCHEMA_STRUCTURED,
+        ),
         (VersionFamily::PassStateMachineVersion, CONFORMANCE_STATE),
         (
             VersionFamily::EnergyFormulaVersion,
