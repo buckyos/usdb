@@ -207,7 +207,8 @@ EOF
   regtest_log "Changing a bound index origin must reject startup rather than silently truncate history"
   regtest_stop_usdb_indexer
   regtest_update_usdb_genesis_block_height "$retention_floor"
-  regtest_expect_usdb_startup_failure "Indexer rules binding mismatch"
+  # Registry adoption rejects origin changes before considering history compatibility.
+  regtest_expect_usdb_startup_failure "Registry adoption domain mismatch"
   regtest_update_usdb_genesis_block_height 1
   regtest_start_usdb_indexer
   regtest_wait_usdb_rpc_ready
