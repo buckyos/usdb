@@ -19,7 +19,7 @@ MIN_COMPOSE = (2, 33, 1)
 def add_options(parser, *, setup=False):
     """Use the same transport choices in setup and subsequent peer configuration."""
     parser.add_argument("--p2p-ip-family" if setup else "--ip-family", dest="p2p_ip_family",
-                        choices=FAMILIES, default="auto")
+                        choices=FAMILIES, default="auto", help="P2P transport: auto checks the host once; ipv4/ipv6 force one family, dual enables both")
     parser.add_argument("--advertise-ipv4", default="", help="Externally reachable IPv4 address, including a router's mapped address")
     parser.add_argument("--advertise-ipv6", default="auto",
                         help="auto follows current non-temporary global IPv6 addresses (default); an explicit IP pins the address")

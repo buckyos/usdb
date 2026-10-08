@@ -16,6 +16,7 @@
 | 安装普通节点并加入已有测试网 | [安装与入网](node/install.md) |
 | 判断同步是否正常、节点是否已经可用 | [状态与同步进度](node/status.md) |
 | 查询本机 enode、配置双栈或通过 IPv6 入网 | [节点地址与连接管理](node/peers.md) |
+| 查看完整配置、区分 setup/configure/config | [查看已保存的配置](node/maintenance.md#查看已保存的配置) |
 | 启用、停止 CPU 挖矿并核对本机产块 | [CPU 挖矿](node/mining.md) |
 | 网络开始出块后初始化 SourceDAO | [SourceDAO 初始化与验证](network-admin/sourcedao.md) |
 | 规划自己的测试网或独立网络，理解配置关系 | [进阶：创建自己的网络](custom-network/README.md) |

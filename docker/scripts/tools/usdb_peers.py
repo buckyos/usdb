@@ -363,14 +363,14 @@ def add_parser(subparsers):
             command.add_argument("enode", help="Complete enode URL; quote IPv6 addresses")
         if name == "check":
             command.add_argument("--timeout-secs", type=int, default=30, help="Total network probe budget, 1-120 seconds (default: 30)")
-        command.add_argument("--json", action="store_true")
+        command.add_argument("--json", action="store_true", help="print the operation result or observation as JSON")
         if name == "status":
-            command.add_argument("--watch", action="store_true")
-            command.add_argument("--refresh-secs", type=float, default=5)
+            command.add_argument("--watch", action="store_true", help="continuously observe peer connections until Ctrl+C")
+            command.add_argument("--refresh-secs", type=float, default=5, help="watch refresh interval in seconds (default: 5)")
         if name == "configure":
             p2p.add_options(command)
         if name == "enode":
-            command.add_argument("--family", choices=("all", "ipv4", "ipv6"), default="all")
+            command.add_argument("--family", choices=("all", "ipv4", "ipv6"), default="all", help="filter advertised enode candidates by address family (default: all)")
 
 
 def render_report(report, *, connected):

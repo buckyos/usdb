@@ -28,6 +28,37 @@ usdb-node -V
 安装器会切换 `usdb-node` 入口，所以安装新 release 后，这里立即显示新工具版本。`activate-release` 更新配置，
 服务在后续 `up` 时使用该配置。多个 release 可能复用相同镜像，因此工具不根据镜像反推“已激活发布号”；运行状态仍用 `status` 核对。
 
+## 查看已保存的配置
+
+```bash
+usdb-node config
+usdb-node config --json
+```
+
+`config` 按目录、网络端口、防火墙、资源预算、Bitcoin、快照、挖矿与可选服务等分组显示配置，
+标注每项来自 `node.env` 还是发布包的 `network.env`；另外显示监控策略及其默认值。
+容量在文本输出中使用易读单位，JSON 保留配置中的原始字符串。空值明确显示为 `(empty)`。
+
+这是**只读的已保存配置**，节点运行或停止时均可查看，不需要 sudo、Docker 或 RPC，也不触发快照下载或校验。
+配置文件可能已经修改而容器尚未更新；检查实际运行状态仍使用 `usdb-node status`。
+服务内部默认值和调用者 shell 环境覆盖不会展开。通知凭据、钱包和 systemd 单元内容不读取。
+
+密码、凭据、URL 中的认证信息/查询参数、任意附加启动参数及未识别字段的值默认隐藏；JSON 使用同样规则。
+所有已保存的键都会列出，未识别不等于无效。输出仍含数据路径和网络地址，分享时按需检查。
+未完成配置时会显示 `usdb-node setup` 指引；单纯查看配置不需要重新进入设置向导。
+
+三个命令的用途不同：
+
+| 命令 | 用途 |
+| --- | --- |
+| `setup` | 面向日常运维的交互式创建/编辑；首次默认安装 controller，编辑前需要 `down` |
+| `configure` | 面向脚本的非交互式首次配置入口；与 setup 共用底层配置逻辑，拒绝覆盖已有配置，不安装 controller |
+| `config` | 随时查看已保存的配置，不写入文件、不改变服务 |
+
+`configure --role full` 用于普通同步节点，`bootnode` 用于网络入口节点。`--miner-threads` 仅保存线程数，
+不会开启挖矿；`--miner-address` 是保留的兼容参数，首次 full/bootnode 配置应留空，节点就绪后使用 `mining enable --address`。
+其他选项说明通过 `usdb-node configure --help`、`usdb-node setup --help` 等查看。
+
 ## 日常检查
 
 ```bash

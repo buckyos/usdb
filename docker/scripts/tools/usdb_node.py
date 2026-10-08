@@ -6063,7 +6063,8 @@ def _add_resource_cap_arguments(parser: argparse.ArgumentParser) -> None:
                       ("ord-memory-cap", "USDB_ORD_MEMORY_CAP")):
         default = {"USDB_BTC_IBD_MEMORY_CAP": "32g balanced, 64g slow-disk",
                    "USDB_BTC_OVERLAP_MEMORY_CAP": "16g balanced, 32g slow-disk",
-                   "USDB_BTC_STEADY_MEMORY_CAP": "16g native balanced, 8g legacy, 32g slow-disk"}.get(key, CAP_DEFAULTS[key])
+                   "USDB_BTC_STEADY_MEMORY_CAP": "16g native balanced, 8g legacy, 32g slow-disk",
+                   "USDB_ORD_MEMORY_CAP": "32g for new adaptive policies; retain existing cap on recalculation"}.get(key, CAP_DEFAULTS[key])
         parser.add_argument(f"--{flag}", dest=key, default=None, metavar="BYTES",
                             help=f"automatic proportional allocation ceiling (default {default})")
 
@@ -6078,7 +6079,9 @@ def _resource_caps_from_args(args: argparse.Namespace) -> dict[str, str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, epilog=(
+        "Configuration: setup = interactive create/edit; configure = scripted first-time creation; "
+        "config = read-only saved settings (redacted). Use COMMAND --help for options."))
     parser.add_argument("--kit-root", type=Path, default=KIT_ROOT, help=argparse.SUPPRESS)
     parser.add_argument(
         "--node-env",
@@ -6093,6 +6096,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Read installed package metadata and configured image selection. Works before setup and while services are stopped.",
     )
     version.add_argument("--json", action="store_true", help="print machine-readable version information")
+    config = subparsers.add_parser("config", help="Show all saved node settings, grouped and redacted; no Docker/RPC required",
+        description="Read node.env, bundled network.env and monitor policy without changing files or contacting services. "
+                    "Secrets and unclassified values are hidden in both text and JSON. This does not prove running services adopted the configuration.")
+    config.add_argument("--json", action="store_true", help="print the same redacted saved configuration as JSON")
     import usdb_mining
     usdb_mining.add_parser(subparsers)
     import usdb_peers
@@ -6110,7 +6117,7 @@ def build_parser() -> argparse.ArgumentParser:
         "prepare-host",
         help="Check host prerequisites and offer explicit installation when needed",
     )
-    prepare_host_parser.add_argument("--docker-user", default=default_docker_user())
+    prepare_host_parser.add_argument("--docker-user", default=default_docker_user(), help="operator account needing Docker access (default: current login user)")
     prepare_host_parser.add_argument(
         "--docker-mirror", choices=("auto", "official", "tuna"), default="auto",
         help="Docker CE source: auto retries official then falls back to Tsinghua; explicit sources disable fallback",
@@ -6119,8 +6126,8 @@ def build_parser() -> argparse.ArgumentParser:
     host = subparsers.add_parser("host", help="Check or install host prerequisites")
     host_actions = host.add_subparsers(dest="host_action", required=True)
     for action in ("check", "install"):
-        host_action = host_actions.add_parser(action)
-        host_action.add_argument("--docker-user", default=default_docker_user())
+        host_action = host_actions.add_parser(action, help="Read-only prerequisite checks" if action == "check" else "Install supported host prerequisites")
+        host_action.add_argument("--docker-user", default=default_docker_user(), help="operator account needing Docker access (default: current login user)")
         if action == "install":
             host_action.add_argument(
                 "--docker-mirror", choices=("auto", "official", "tuna"), default="auto",
@@ -6134,7 +6141,8 @@ def build_parser() -> argparse.ArgumentParser:
                      "First setup previews data-disk capacity and requires a qualifying directory; "
                      "compatible retained Bitcoin stores reduce the required free space. "
                      "Edits preserve identity, data, release images and controller units. "
-                     "P2P flags apply to first setup; use peers configure for existing nodes."),
+                     "P2P flags apply to first setup; use peers configure for existing nodes. "
+                     "To inspect settings without editing, use usdb-node config."),
     )
     setup.add_argument(
         "--no-controller",
@@ -6158,43 +6166,48 @@ def build_parser() -> argparse.ArgumentParser:
     setup.set_defaults(p2p_ip_family=None, advertise_ipv4=None, advertise_ipv6=None,
                        advertise_port=None, advertise_discovery_port=None)
 
-    configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
+    configure = subparsers.add_parser("configure", help="Non-interactive first-time configuration for scripts; use setup for the wizard",
+        description="Create private node configuration and Bitcoin RPC credentials from command-line options. "
+                    "Refuses to overwrite an existing node and does not install the controller. "
+                    "Ordinary installs should use setup; view saved settings with config. "
+                    "Mining is enabled later with mining enable after readiness checks.")
     configure.add_argument("--monitor", choices=("on", "off"), default="on", help="Enable local node monitoring (default: on)")
     configure.add_argument("--minting", choices=("on", "off"), default="off", help="Enable optional private Ord and early Bitcoin txindex")
-    configure.add_argument("--data-root", type=Path, default=Path.home() / ".usdb")
-    configure.add_argument("--role", choices=("bootnode", "full"), default="full")
-    configure.add_argument("--miner-address", default="")
-    configure.add_argument("--miner-threads", type=int, default=1)
+    configure.add_argument("--data-root", type=Path, default=Path.home() / ".usdb", help="host directory for databases and snapshots (default: ~/.usdb); capacity is checked")
+    configure.add_argument("--role", choices=("bootnode", "full"), default="full", help="initial node role: full for normal synchronization, bootnode for a network entry node (default: full)")
+    configure.add_argument("--miner-address", default="", help="compatibility option; leave empty for full/bootnode, then use mining enable --address after startup")
+    configure.add_argument("--miner-threads", type=int, default=1, help="saved CPU worker count (default: 1); does not enable mining")
     configure.add_argument("--bootnodes", default=None,
                            help="Comma-separated seed enodes; omitted uses release defaults, '' explicitly disables seeds")
-    configure.add_argument("--nat", default="")
+    configure.add_argument("--nat", default="", help="advanced Geth NAT setting, e.g. extip:IPv4; normally use the advertise address options")
     usdb_p2p.add_options(configure, setup=True)
     configure.add_argument(
         "--bitcoin-rpc-user",
         help="advanced override; defaults to a bundle- and host-scoped username",
     )
-    configure.add_argument("--bitcoin-p2p", choices=("private", "public"), default="private")
+    configure.add_argument("--bitcoin-p2p", choices=("private", "public"), default="private", help="Bitcoin inbound P2P exposure (default: private/loopback); public listens on all host interfaces")
     configure.add_argument(
         "--bitcoin-profile",
         choices=tuple(BITCOIN_RESOURCE_PROFILES),
         default=None,
+        help="fixed Bitcoin memory profile for --resource-mode manual; auto mode manages it",
     )
-    configure.add_argument("--resource-mode", choices=("auto", "manual"), default="auto")
+    configure.add_argument("--resource-mode", choices=("auto", "manual"), default="auto", help="whole-node memory management (default: auto); manual retains explicit service budgets")
     _add_resource_cap_arguments(configure)
     resource_policy = subparsers.add_parser("set-resource-policy", help="Recalculate resource policy while all node containers are stopped")
-    resource_policy.add_argument("--mode", choices=("auto", "manual"), required=True)
+    resource_policy.add_argument("--mode", choices=("auto", "manual"), required=True, help="auto computes capped service budgets; manual preserves operator-controlled limits")
     _add_resource_cap_arguments(resource_policy)
     resource_preview = subparsers.add_parser("resources", help="Preview proportional resource budgets and caps for every phase")
-    resource_preview.add_argument("--json", action="store_true")
+    resource_preview.add_argument("--json", action="store_true", help="print resource budgets as JSON; these are ceilings, not live usage")
     minting_parser = subparsers.add_parser("set-minting", help="Enable or disable local Ord while stopped; retain index data")
-    minting_parser.add_argument("--enabled", choices=("on", "off"), required=True)
+    minting_parser.add_argument("--enabled", choices=("on", "off"), required=True, help="on enables Ord/txindex for local minting; off retains Ord data; requires a stopped node")
     minting_status = subparsers.add_parser("minting-status", help="Check optional txindex/Ord capabilities independently of node readiness")
-    minting_status.add_argument("--json", action="store_true")
+    minting_status.add_argument("--json", action="store_true", help="print optional minting backend observations as JSON")
     query_mode = subparsers.add_parser("set-query-mode", help="Change history retention and private HTTP tracing while the node is stopped")
-    query_mode.add_argument("--state-mode", choices=("full", "archive"))
-    query_mode.add_argument("--tracing", choices=("on", "off"))
+    query_mode.add_argument("--state-mode", choices=("full", "archive"), help="full permits pruning; archive retains future historical states (does not restore pruned data)")
+    query_mode.add_argument("--tracing", choices=("on", "off"), help="enable or disable private HTTP tracing for Explorer queries")
     query_preview = subparsers.add_parser("query-mode", help="Show configured query policy; does not verify historical coverage")
-    query_preview.add_argument("--json", action="store_true")
+    query_preview.add_argument("--json", action="store_true", help="print saved query policy as JSON")
     configure.add_argument(
         "--firewall-mode",
         choices=FIREWALL_MODES,
@@ -6209,15 +6222,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     role = subparsers.add_parser("set-role", help="Update only the local full/bootnode/miner role")
-    role.add_argument("--role", choices=("bootnode", "full", "miner"), required=True)
-    role.add_argument("--miner-address", default="")
-    role.add_argument("--miner-threads", type=int, default=1)
+    role.add_argument("--role", choices=("bootnode", "full", "miner"), required=True, help="target role; miner transitions require the managed mining enable/disable workflow")
+    role.add_argument("--miner-address", default="", help="compatibility option; use mining enable --address for a checked miner transition")
+    role.add_argument("--miner-threads", type=int, default=1, help="saved CPU worker count (default: 1); does not enable mining")
 
     firewall_mode = subparsers.add_parser(
         "set-firewall-mode",
         help="Select externally managed firewall policy or bundled UFW management",
     )
-    firewall_mode.add_argument("--mode", choices=FIREWALL_MODES, required=True)
+    firewall_mode.add_argument("--mode", choices=FIREWALL_MODES, required=True, help="external delegates firewall management; managed uses the bundled UFW policy")
 
     bitcoin_profile = subparsers.add_parser(
         "set-bitcoin-profile",
@@ -6307,11 +6320,11 @@ workflow:
 
     firewall = subparsers.add_parser("firewall", help="Check or apply the host UFW profile")
     firewall_actions = firewall.add_subparsers(dest="firewall_action", required=True)
-    firewall_check = firewall_actions.add_parser("check")
-    firewall_check.add_argument("--ssh-port", type=int)
-    firewall_apply = firewall_actions.add_parser("apply")
-    firewall_apply.add_argument("--ssh-port", type=int)
-    firewall_apply.add_argument("--confirm", action="store_true")
+    firewall_check = firewall_actions.add_parser("check", help="Read-only check of configured UFW rules")
+    firewall_check.add_argument("--ssh-port", type=int, help="operator SSH port to check; defaults to the saved node setting")
+    firewall_apply = firewall_actions.add_parser("apply", help="Apply bundled UFW rules while preserving operator SSH access")
+    firewall_apply.add_argument("--ssh-port", type=int, help="operator SSH port to retain; defaults to the saved node setting")
+    firewall_apply.add_argument("--confirm", action="store_true", help="confirm applying the selected UFW rules")
 
     up = subparsers.add_parser(
         "up",
@@ -6341,8 +6354,8 @@ workflow:
         action="store_true",
         help="run bootstrap in this terminal instead of submitting the installed controller",
     )
-    up.add_argument("--sync-timeout-secs", type=int, default=DEFAULT_SYNC_TIMEOUT_SECS)
-    up.add_argument("--skip-pull", action="store_true")
+    up.add_argument("--sync-timeout-secs", type=int, default=DEFAULT_SYNC_TIMEOUT_SECS, help=f"startup readiness wait timeout in seconds (default: {DEFAULT_SYNC_TIMEOUT_SECS})")
+    up.add_argument("--skip-pull", action="store_true", help="skip explicit image preparation; required images should already be cached locally")
     up.add_argument("--no-watch", action="store_true",
                     help="return after submitting startup; interactive up otherwise watches until Ctrl+C")
     status = subparsers.add_parser(
@@ -6391,8 +6404,9 @@ workflow:
         "--sync-timeout-secs",
         type=int,
         default=DEFAULT_SYNC_TIMEOUT_SECS,
+        help=f"startup readiness wait timeout saved in the controller (default: {DEFAULT_SYNC_TIMEOUT_SECS} seconds)",
     )
-    controller_install.add_argument("--skip-pull", action="store_true")
+    controller_install.add_argument("--skip-pull", action="store_true", help="configure the controller to skip explicit image preparation")
     controller_actions.add_parser(
         "stop",
         help="stop bootstrap orchestration without stopping Docker services",
@@ -6403,7 +6417,7 @@ workflow:
     )
     controller_actions.add_parser("status", help="show the systemd controller status")
     controller_logs = controller_actions.add_parser("logs", help="show controller journal logs")
-    controller_logs.add_argument("--follow", action="store_true")
+    controller_logs.add_argument("--follow", action="store_true", help="stream new controller journal entries until Ctrl+C")
     controller_run = controller_actions.add_parser(
         "run",
         help=argparse.SUPPRESS,
@@ -6412,12 +6426,13 @@ workflow:
         "--sync-timeout-secs",
         type=int,
         default=DEFAULT_SYNC_TIMEOUT_SECS,
+        help=f"startup readiness wait timeout in seconds (default: {DEFAULT_SYNC_TIMEOUT_SECS})",
     )
-    controller_run.add_argument("--skip-pull", action="store_true")
+    controller_run.add_argument("--skip-pull", action="store_true", help="skip explicit image preparation")
 
     logs = subparsers.add_parser("logs", help="Follow Bitcoin or runtime service logs")
-    logs.add_argument("--bitcoin", action="store_true")
-    logs.add_argument("service", nargs="*")
+    logs.add_argument("--bitcoin", action="store_true", help="follow the Bitcoin project (btc-node / btc-snapshot-bootstrap) instead of USDB services")
+    logs.add_argument("service", nargs="*", help="optional Compose service names; omit to follow all services in the selected project")
 
     down = subparsers.add_parser(
         "down",
@@ -6525,6 +6540,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             resource_management=args.resource_mode if editing else args.resource_mode or "auto",
             resource_caps=_resource_caps_from_args(args), p2p_options=usdb_p2p.options(args),
         )
+        print("View saved settings: usdb-node config (or usdb-node config --json).")
         if result.edited:
             return 0
         print(f"Configured {layout.release_id} node: {result.node_env}")
@@ -6590,6 +6606,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         )
         print(f"Configured {layout.release_id} node: {path}")
         print("Bitcoin RPC credentials were generated locally and were not printed.")
+        print("View saved settings: usdb-node config (or usdb-node config --json).")
         print(
             "Run usdb-node controller install before background up, "
             "or use usdb-node up --foreground for explicit foreground operation."
@@ -6796,6 +6813,9 @@ def main() -> int:
     try:
         if args.command == "version":
             return print_node_version(args.kit_root, args.node_env, json_output=getattr(args, "json", False))
+        if args.command == "config":
+            import node_config_view
+            return node_config_view.show(args.kit_root, args.node_env, sys.modules[__name__], json_output=args.json)
         layout = load_release_layout(args.kit_root, args.node_env)
         operation = _operation_name(args)
         operation_context = (
@@ -6804,7 +6824,7 @@ def main() -> int:
         with operation_context:
             return _execute_command(layout, args)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        if args.command in {"up", "mining", "sourcedao", "peers", "version", "upgrade-plan", "upgrade-release", "upgrade-status", "upgrade-cleanup"} and getattr(args, "json", False):
+        if args.command in {"up", "mining", "sourcedao", "peers", "version", "config", "upgrade-plan", "upgrade-release", "upgrade-status", "upgrade-cleanup"} and getattr(args, "json", False):
             print(
                 json.dumps(
                     {

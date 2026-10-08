@@ -1,0 +1,16 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-config-view-cli-help",
+  "type": "added",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Show saved node configuration offline and clarify operator command help",
+  "details": [
+    "usdb-node config and config --json show grouped saved node settings, bundled network settings and monitor policy with source labels. Both formats redact credentials, URL authentication/query data, arbitrary extra arguments and unknown values, without Docker, RPC, snapshot validation or configuration writes.",
+    "Help distinguishes the interactive setup wizard, scripted first-time configure and read-only config. Previously undocumented public options now explain their purpose, units or defaults, including data roots, roles, miner settings, P2P families and monitor thresholds."
+  ],
+  "operator_actions": [
+    "Use usdb-node config after setup to review saved settings. Use status separately to check whether running services have adopted them."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

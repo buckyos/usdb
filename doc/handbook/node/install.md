@@ -93,6 +93,9 @@ usdb-node setup
 
 工具会生成私有凭据、保存配置，并安装后台启动管理服务。sudo 提示要求当前运维账号的密码。首次部署采用默认后台方式，不使用 `--no-controller`。
 
+包含配置总览功能的版本，完成向导后可用 `usdb-node config` 查看全部已保存选项，或用 `config --json` 导出脱敏结果。
+查看配置无需重新执行 setup；命令区别见[查看已保存的配置](maintenance.md#查看已保存的配置)。
+
 包含后台防火墙修复的版本在选择 managed UFW 时，还会为当前账号和网络安装一条只允许读取 UFW 状态的 sudo 规则。
 因此 controller 可以在 SSH 断开或机器重启后继续校验防火墙；修改防火墙仍需要正常 sudo 认证。
 旧版本升级后，`usdb-node up` 会自动补齐这项权限，可能提示输入一次密码，无需额外执行 `controller install`。

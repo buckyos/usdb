@@ -100,7 +100,13 @@ class SetupEditTests(unittest.TestCase):
         self.assertEqual((env["USDB_CHAIN_GCMODE"], env["USDB_CHAIN_TRACING"]), ("archive", "1"))
         for phase in policy.PHASES:
             plan = policy.build_resource_plan(64 * policy.GIB, phase, env)
-            self.assertEqual(plan.limits["ORD_MEMORY_LIMIT"], 16 * policy.GIB)
+            if phase == "steady":
+                self.assertGreater(plan.limits["ORD_MEMORY_LIMIT"], 16 * policy.GIB)
+                self.assertLessEqual(plan.limits["ORD_MEMORY_LIMIT"], 32 * policy.GIB)
+                self.assertEqual(plan.limits["BH_MEMORY_LIMIT"], 4 * policy.GIB)
+            else:
+                self.assertEqual(plan.limits["ORD_MEMORY_LIMIT"], 16 * policy.GIB)
+            self.assertLessEqual(plan.ord_cache_bytes, plan.limits["ORD_MEMORY_LIMIT"] // 4)
             self.assertLessEqual(plan.total_bytes, 64 * policy.GIB)
         self.assertEqual(json.loads((minting.data_path(self.root / "data") / "identity.json").read_text()), minting.IDENTITY)
         for path, content in before.items():
@@ -274,7 +280,11 @@ class SetupEditTests(unittest.TestCase):
                         self.assertEqual(current["BTC_RESOURCE_PROFILE"], "managed-" + phase)
                         policy.validate_resource_environment(current, 64 * policy.GIB)
                         if active:
-                            self.assertEqual(int(current["ORD_MEMORY_LIMIT"]), 16 * policy.GIB)
+                            if phase == "steady":
+                                self.assertGreater(int(current["ORD_MEMORY_LIMIT"]), 16 * policy.GIB)
+                                self.assertLessEqual(int(current["ORD_MEMORY_LIMIT"]), 32 * policy.GIB)
+                            else:
+                                self.assertEqual(int(current["ORD_MEMORY_LIMIT"]), 16 * policy.GIB)
                             self.assertLessEqual(int(current["BTC_MEMORY_LIMIT"]), int(before["BTC_MEMORY_LIMIT"]))
                             self.assertLess(int(current["BH_MEMORY_LIMIT"]), int(before["BH_MEMORY_LIMIT"]))
                         else:
@@ -286,10 +296,10 @@ class SetupEditTests(unittest.TestCase):
         self.update(policy.build_resource_plan(64 * policy.GIB, "steady", env).environment())
         self.edit({"Enable local minting": "y"})
         text = self.output.getvalue()
-        self.assertIn("memory 16.0 GiB, index cache 8.0 GiB, free-disk reserve 50.0 GiB", text)
+        self.assertIn("memory 24.4 GiB, index cache 6.1 GiB, free-disk reserve 50.0 GiB", text)
         self.assertIn("phase=steady", text)
         self.assertIn("calculated budgets, not manual overrides", text)
-        self.assertIn("BH_MEMORY_LIMIT: 24.0 GiB -> 12.1 GiB", text)
+        self.assertIn("BH_MEMORY_LIMIT: 24.0 GiB -> 4.0 GiB", text)
         self.assertIn("BTC_DBCACHE_MB: 4.0 GiB -> 2.8 GiB", text)
         self.assertNotIn(str(4 * policy.GIB), text)
         self.assertFalse(any(prompt.startswith(("Adjust Ord", "ORD_")) for prompt in self.prompts))
@@ -298,6 +308,8 @@ class SetupEditTests(unittest.TestCase):
         self.edit({"Enable local minting": "y"})
         env = node.read_env(self.layout.node_env)
         env.pop("USDB_ORD_MEMORY_CAP")
+        env.pop("USDB_ORD_RESOURCE_POLICY")
+        env.pop("ORD_STEADY_INDEX_CACHE_BYTES", None)
         env.update(ORD_MEMORY_LIMIT=str(4 * policy.GIB), ORD_INDEX_CACHE_BYTES=str(policy.GIB))
         env.update(policy.build_resource_plan(64 * policy.GIB, "steady", env).environment())
         self.layout.node_env.write_text(node.upsert_env("", env))
@@ -309,8 +321,10 @@ class SetupEditTests(unittest.TestCase):
         node.set_resource_policy(self.layout, "auto", {})
         updated = node.read_env(self.layout.node_env)
         self.assertEqual(updated["USDB_RESOURCE_PHASE"], "steady")
+        self.assertEqual(updated["USDB_ORD_RESOURCE_POLICY"], "adaptive-v1")
+        # The legacy policy retains its inferred 16 GiB ceiling when recalculated.
         self.assertEqual(int(updated["ORD_MEMORY_LIMIT"]), 16 * policy.GIB)
-        self.assertEqual(int(updated["ORD_INDEX_CACHE_BYTES"]), 8 * policy.GIB)
+        self.assertEqual(int(updated["ORD_INDEX_CACHE_BYTES"]), 4 * policy.GIB)
         self.assertEqual(index.read_bytes(), b"existing Ord index")
 
     def test_readable_memory_prompts_keep_exact_custom_budgets_on_enter(self):

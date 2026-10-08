@@ -420,19 +420,35 @@ def add_parser(subparsers):
     import node_resource_history
     node_resource_history.add_parser(actions)
     for name in ("status", "alerts"):
-        action = actions.add_parser(name)
-        action.add_argument("--json", action="store_true")
+        action = actions.add_parser(name, help="Show monitor state and notification delivery" if name == "status" else "List local active and retained alerts")
+        action.add_argument("--json", action="store_true", help="print the monitor report as JSON")
     events = actions.add_parser("events", help="Query local event history without probing services")
-    events.add_argument("--json", action="store_true")
-    events.add_argument("--service")
-    events.add_argument("--severity", choices=("info", "warning", "critical"))
+    events.add_argument("--json", action="store_true", help="print matching event records as JSON")
+    events.add_argument("--service", help="filter by monitored service name")
+    events.add_argument("--severity", choices=("info", "warning", "critical"), help="filter by event severity")
     events.add_argument("--since", help="Timezone-qualified ISO timestamp")
     events.add_argument("--id", help="Show one event by its stable ID")
-    events.add_argument("--limit", type=int, default=100)
+    events.add_argument("--limit", type=int, default=100, help="maximum event records to return (default: 100)")
     configure = actions.add_parser("configure", help="Configure local monitoring while the node is stopped")
-    configure.add_argument("--enabled", choices=("on", "off"))
+    configure.add_argument("--enabled", choices=("on", "off"), help="enable or disable node monitoring; omitted retains the current setting")
+    descriptions = {
+        "interval_secs": "node observation interval in seconds",
+        "sample_timeout_secs": "maximum duration of one node observation in seconds",
+        "startup_grace_secs": "startup grace period before ordinary readiness alerts, in seconds",
+        "warning_after_secs": "continuous failure duration before a warning, in seconds",
+        "critical_after_secs": "continuous failure duration before a critical alert, in seconds",
+        "recovery_after_secs": "continuous healthy duration before recovery, in seconds",
+        "stall_after_secs": "progress stall threshold in seconds",
+        "retention_days": "number of days to retain local events",
+        "max_events": "maximum retained event count",
+        "resource_interval_secs": "resource sampling interval in seconds",
+        "resource_raw_days": "number of days to retain raw resource samples",
+        "resource_minute_days": "number of days to retain minute resource aggregates",
+        "resource_max_mib": "maximum local resource history size in MiB",
+    }
     for key in rules.DEFAULTS:
-        configure.add_argument("--" + key.replace("_", "-"), type=int)
+        configure.add_argument("--" + key.replace("_", "-"), type=int,
+                               help=f"{descriptions[key]}; omitted retains current value (initial default: {rules.DEFAULTS[key]})")
     actions.add_parser("run", help="Run the monitor in the foreground (also used by systemd)")
     sample_parser = actions.add_parser("sample", help="Collect one sanitized sample without modifying monitor state")
     sample_parser.add_argument("--incidents-only", action="store_true", help=argparse.SUPPRESS)

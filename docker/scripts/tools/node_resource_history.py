@@ -235,12 +235,12 @@ def timestamp(value):
 
 def add_parser(actions):
     parser = actions.add_parser("resources", help="Query/export local resource history without RPC")
-    parser.add_argument("--resolution", choices=("raw", "minute", "transitions"), default="raw")
+    parser.add_argument("--resolution", choices=("raw", "minute", "transitions"), default="raw", help="raw samples, minute aggregates or resource transitions (default: raw)")
     parser.add_argument("--since", help="Timezone-qualified ISO timestamp")
     parser.add_argument("--until", help="Timezone-qualified ISO timestamp")
     parser.add_argument("--session", help="Monitor session ID")
     parser.add_argument("--service", help="host or Compose service, e.g. btc-node or balance-history")
-    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--limit", type=int, default=100, help="maximum records per page (default: 100)")
     parser.add_argument("--before-id", type=int, help="Continue a previous page using next_before_id")
     parser.add_argument("--json", action="store_true", help="Export the complete bounded records as JSON")
 
