@@ -616,6 +616,29 @@ fn scale_leader_identity(index: usize) -> (String, BtcScriptHash) {
     (address.to_string(), owner)
 }
 
+// Bulk fixtures still publish each energy block through the normal commit boundary.
+fn commit_fixture_energy_records(server: &UsdbIndexerRpcServer, records: &[PassEnergyRecord]) {
+    let manager = server.indexer.pass_energy_manager();
+    let mut blocks = BTreeMap::<u32, Vec<PassEnergyRecord>>::new();
+    for record in records {
+        blocks
+            .entry(record.block_height)
+            .or_default()
+            .push(record.clone());
+    }
+    for (height, records) in blocks {
+        manager.begin_block_sync(height).unwrap();
+        manager
+            .insert_pass_energy_records_for_test(&records)
+            .unwrap();
+        manager.finalize_block_sync(height).unwrap();
+        assert_eq!(
+            manager.get_synced_block_height_for_test().unwrap(),
+            Some(height)
+        );
+    }
+}
+
 fn seed_scale_fixture(
     server: &UsdbIndexerRpcServer,
     pass_count: usize,
@@ -720,11 +743,7 @@ fn seed_scale_fixture(
         });
     }
     storage.savepoint_commit().unwrap();
-    server
-        .indexer
-        .pass_energy_manager()
-        .insert_pass_energy_records_for_test(&records)
-        .unwrap();
+    commit_fixture_energy_records(server, &records);
     seed_state_ref_context(server, QUERY_HEIGHT);
 
     let min_collab_per_leader = leaders
@@ -1825,11 +1844,7 @@ fn apply_churn_branch(
         ]);
     }
     storage.savepoint_commit().unwrap();
-    server
-        .indexer
-        .pass_energy_manager()
-        .insert_pass_energy_records_for_test(&energy_records)
-        .unwrap();
+    commit_fixture_energy_records(server, &energy_records);
 
     let projected_growth = calc_growth_delta(100_000, CHURN_REMINT_HEIGHT - QUERY_HEIGHT);
     let dormant_growth = calc_growth_delta(100_000, CHURN_DORMANT_HEIGHT - QUERY_HEIGHT);
@@ -2240,6 +2255,28 @@ fn test_economic_view_capacity_supplement() {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(default_churn_count);
+    run_economic_capacity_supplement(
+        pass_count,
+        page_limit,
+        leader_count,
+        cold_start_clients,
+        churn_count,
+    );
+}
+
+#[test]
+fn test_economic_view_capacity_small_reorg_restart() {
+    // Exercise the weekly fixture lifecycle in fast CI without the capacity workload.
+    run_economic_capacity_supplement(100, 17, 8, 4, 40);
+}
+
+fn run_economic_capacity_supplement(
+    pass_count: usize,
+    page_limit: usize,
+    leader_count: usize,
+    cold_start_clients: usize,
+    churn_count: usize,
+) {
     assert!(pass_count > 1);
     assert!((1..pass_count).contains(&leader_count));
     assert!((1..=ECONOMIC_PAGE_MAX_LIMIT).contains(&page_limit));
