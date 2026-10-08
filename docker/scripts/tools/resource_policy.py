@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 MIB = 1024**2
@@ -61,6 +61,8 @@ def resource_cap_defaults(env: dict[str, str]) -> dict[str, str]:
     if env.get("USDB_STORAGE_PROFILE") == "slow-disk":
         defaults.update(USDB_BTC_IBD_MEMORY_CAP="64g", USDB_BTC_OVERLAP_MEMORY_CAP="32g",
                         USDB_BTC_STEADY_MEMORY_CAP="32g")
+    if env.get("USDB_ORD_RESOURCE_POLICY") == "adaptive-v1":
+        defaults["USDB_ORD_MEMORY_CAP"] = "32g"
     return defaults
 
 
@@ -138,6 +140,7 @@ class ResourcePlan:
     storage_profile: str | None = None
     memory_percent: int | None = None
     ord_deferred: bool = False
+    ord_steady_cache_bytes: int | None = None
 
     @property
     def total_bytes(self) -> int:
@@ -169,10 +172,44 @@ class ResourcePlan:
             "BTC_DBCACHE_MB": str(self.dbcache_mib),
             **({"ORD_INDEX_CACHE_BYTES": str(self.ord_cache_bytes),
                 "USDB_ORD_MEMORY_CAP": str(self.ord_memory_cap)} if self.ord_cache_bytes is not None else {}),
+            **({"USDB_ORD_RESOURCE_POLICY": "adaptive-v1",
+                "ORD_STEADY_INDEX_CACHE_BYTES": str(self.ord_steady_cache_bytes)}
+               if self.ord_steady_cache_bytes is not None else {}),
         }
 
 
 def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> ResourcePlan:
+    """Reserve a bounded Ord catch-up ceiling without spending other services' minima."""
+    strategy = env.get("USDB_ORD_RESOURCE_POLICY", "fixed")
+    if strategy not in {"fixed", "adaptive-v1"}:
+        raise ValueError("USDB_ORD_RESOURCE_POLICY must be fixed or adaptive-v1")
+    if strategy == "adaptive-v1":
+        env = {"USDB_ORD_MEMORY_CAP": "32g", **env}
+    plan = _base_resource_plan(host_memory, phase, env)
+    if strategy != "adaptive-v1" or "ORD_MEMORY_LIMIT" not in plan.limits:
+        return plan
+    limits = dict(plan.limits)
+    cap = memory_bytes(env.get("USDB_ORD_MEMORY_CAP", "32g"), "USDB_ORD_MEMORY_CAP")
+    if phase == "steady":
+        current = limits["ORD_MEMORY_LIMIT"]
+        desired = min(cap, (host_memory - plan.external_services_bytes) // 2) // MIB * MIB
+        # BH has completed bootstrap. Donate only its excess above 4 GiB and
+        # genuinely unallocated pool space; Core and all other ceilings stay put.
+        unused = max(0, host_memory - plan.total_bytes) // MIB * MIB
+        donated = min(max(0, desired - current - unused), max(0, limits["BH_MEMORY_LIMIT"] - 4 * GIB))
+        limits["BH_MEMORY_LIMIT"] -= donated
+        limits["ORD_MEMORY_LIMIT"] = max(current, min(desired, current + unused + donated))
+    # The redb cache is not total Ord RSS. Leave room for the UTXO batch,
+    # address tables and charged filesystem pages, especially during commits.
+    cache = min(8 * GIB, limits["ORD_MEMORY_LIMIT"] // 4)
+    bh_cache = limits["BH_MEMORY_LIMIT"] * 5 // 8
+    return replace(plan, limits=limits, ord_cache_bytes=cache,
+                   ord_memory_cap=cap,
+                   ord_steady_cache_bytes=min(GIB, cache),
+                   utxo_cache_bytes=bh_cache // 4, balance_cache_bytes=bh_cache - bh_cache // 4)
+
+
+def _base_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> ResourcePlan:
     """Scale the 64 GiB plan proportionally and cap each heavy service independently."""
     if host_memory < MIN_HOST_MEMORY_BYTES:
         raise ValueError("automatic resources require at least 32 GB of effective host memory")

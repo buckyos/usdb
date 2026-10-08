@@ -86,7 +86,14 @@ def validate(env, *, require_current=False):
     if (limit < 2 * GIB and deferred != "1") or cache > limit // 2:
         raise ValueError("Ord requires at least 2 GiB RAM and cache no larger than half its memory limit")
     memory_bytes(env.get("ORD_MIN_FREE_BYTES", str(50 * GIB)), "ORD_MIN_FREE_BYTES")
-    interval = env.get("ORD_COMMIT_INTERVAL", "5000")
+    strategy = env.get("USDB_ORD_RESOURCE_POLICY", "fixed")
+    if strategy not in {"fixed", "adaptive-v1"}:
+        raise ValueError("USDB_ORD_RESOURCE_POLICY must be fixed or adaptive-v1")
+    if strategy == "adaptive-v1":
+        steady = memory_bytes(env.get("ORD_STEADY_INDEX_CACHE_BYTES", str(GIB)), "ORD_STEADY_INDEX_CACHE_BYTES")
+        if steady > cache:
+            raise ValueError("Ord steady cache must not exceed its catch-up cache")
+    interval = env.get("ORD_COMMIT_INTERVAL", "100")
     if not interval.isascii() or not interval.isdigit() or not 1 <= int(interval) <= 100000:
         raise ValueError("ORD_COMMIT_INTERVAL must be between 1 and 100000 blocks")
 
@@ -186,6 +193,10 @@ def progress(env, *, now_ms=None):
             from ord_observation import PHASES
             if report.get("index_phase") in PHASES:
                 result["index_phase"] = report["index_phase"]
+            if report.get("resource_profile") in {"fixed", "catchup", "steady"}:
+                result["resource_profile"] = report["resource_profile"]
+            if report.get("restart_reason") == "cache_profile":
+                result["restart_reason"] = "cache_profile"
             result["state"] = report["state"]
             result["backend_ready"] = (report["state"] == "READY" and report.get("canonical") is True
                                        and report.get("history_validated") is True

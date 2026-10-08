@@ -932,10 +932,16 @@ def _resource_policy_updates(mode: str, caps: dict[str, str]) -> dict[str, str]:
         caps["USDB_STORAGE_PROFILE"] = storage_hint(Path(caps["USDB_DATA_ROOT"]))["recommended_profile"]
     settings = {**resource_cap_defaults(caps), **caps, "USDB_RESOURCE_MODE": mode}
     if mode == "manual":
+        settings["USDB_ORD_RESOURCE_POLICY"] = "fixed"
         settings["ORD_STARTUP_DEFERRED"] = "0"
         if settings.get("USDB_MINTING_ENABLED") == "1" and memory_bytes(settings.get("ORD_MEMORY_LIMIT", "4g"), "ORD_MEMORY_LIMIT") < 2 * 1024**3:
             settings.update(ORD_MEMORY_LIMIT=str(4 * 1024**3), ORD_INDEX_CACHE_BYTES=str(1024**3))
     if mode == "auto":
+        # Explicit setup/recalculation opts in; merely activating a release
+        # continues to validate the old persisted allocation unchanged.
+        settings["USDB_ORD_RESOURCE_POLICY"] = "adaptive-v1"
+        if "USDB_ORD_MEMORY_CAP" not in caps:
+            settings["USDB_ORD_MEMORY_CAP"] = "32g"
         # Enabling txindex/Ord is not a rollback of completed synchronization.
         current_phase = caps.get("USDB_RESOURCE_PHASE", "bitcoin") if resource_mode(caps) == "auto" else "bitcoin"
         memory = effective_memory_bytes()
@@ -1119,7 +1125,8 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
                       "dbcache_mib": plan.dbcache_mib,
                       "utxo_cache_bytes": plan.utxo_cache_bytes,
                       "balance_cache_bytes": plan.balance_cache_bytes,
-                      "ord_cache_bytes": ord_cache})
+                      "ord_cache_bytes": ord_cache,
+                      "ord_steady_cache_bytes": plan.ord_steady_cache_bytes})
     report = {"mode": resource_mode(env), "effective_host_memory_bytes": memory,
               "storage_profile": env.get("USDB_STORAGE_PROFILE", "legacy"),
               "memory_percent": env.get("USDB_RESOURCE_MEMORY_PERCENT"),
@@ -1151,6 +1158,10 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
                 print("           BH/indexer/chain are not running or charged to this phase's memory pool.")
             if item["ord_deferred"]:
                 print("           Ord supervisor only; indexing waits for steady resources.")
+            elif item["ord_steady_cache_bytes"] is not None:
+                print(f"           Ord cache: catch-up {_human_bytes(item['ord_cache_bytes'])}, "
+                      f"caught-up {_human_bytes(item['ord_steady_cache_bytes'])}; "
+                      "container ceiling stays reserved for catch-up and file cache.")
 
 
 def detect_ssh_server_port(environment: dict[str, str] | None = None) -> int:
@@ -6606,6 +6617,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             for key in ("core_height", "history_height", "txindex_height", "ord_height", "ord_gap",
                         "index_phase", "processing_height", "commit_target_height", "commit_elapsed_secs",
                         "sample_read_bytes", "sample_write_bytes", "sample_elapsed_secs", "shutdown_elapsed_secs",
+                        "shutdown_started_at_ms", "resource_profile", "restart_reason",
                         "index_cache_bytes", "commit_interval", "disk_free_bytes", "index_file_bytes"):
                 if key in report:
                     print(f"  {key}: {report[key]}")

@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "ord-small-batches-adaptive-cache",
+  "type": "changed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Bound Ord indexing batches and stop USDB services before waiting for Ord",
+  "details": [
+    "Default Ord commit interval is 100 blocks instead of 5000; explicit operator overrides remain effective.",
+    "Explicit automatic resource setup/recalculation enables a larger bounded Ord catch-up allocation, preserving Core budgets, the system reserve and BH's steady minimum. The supervisor selects catch-up or steady application cache using sustained live chain observations and clean Ord-only restarts; container ceilings remain reserved for file cache and future catch-up.",
+    "Node shutdown stops control-plane, chain, indexer and BH before waiting indefinitely for Ord's clean database commit, keeping Bitcoin available until Ord exits. Progress distinguishes client wait from supervisor shutdown time and shows the commit target."
+  ],
+  "operator_actions": [
+    "Update both the node kit and services image after a clean shutdown. A currently running Ord process keeps its original batch size until restarted.",
+    "To opt an existing automatic configuration into adaptive Ord budgets, stop the node and run usdb-node set-resource-policy --mode auto --ord-memory-cap 32g, then inspect resources and doctor before up. Custom memory caps and explicit ORD_COMMIT_INTERVAL values are preserved unless changed."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": true, "restart_required": true},
+  "references": []
+}

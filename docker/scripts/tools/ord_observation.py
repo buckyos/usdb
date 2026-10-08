@@ -14,7 +14,7 @@ FIELDS = ("index_phase", "processing_height", "commit_target_height", "commit_el
           "last_commit_at_ms", "last_commit_duration_secs", "last_activity_at_ms",
           "process_read_bytes", "process_write_bytes", "sample_read_bytes", "sample_write_bytes",
           "sample_elapsed_secs", "shutdown_elapsed_secs", "ord_exit_code",
-          "index_cache_bytes", "commit_interval")
+          "index_cache_bytes", "commit_interval", "shutdown_started_at_ms", "resource_profile", "restart_reason")
 PHASES = {"STARTING", "RECOVERING", "PROCESSING", "COMMITTING", "IDLE"}
 
 

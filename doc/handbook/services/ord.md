@@ -24,7 +24,10 @@ usdb-node logs ord-server
 | `RECOVERING` | Ord 报告数据库恢复，完成后才继续索引 |
 | `STOPPING` | 已收到停止请求，仍在等待 Ord 完成当前工作并退出 |
 
-默认提交间隔为 5,000 个区块，其他提交条件可能让批次更短。比如已提交高度 589,999 不变时，
+默认提交间隔为 **100 个区块**，其他提交条件可能让批次更短。原先 5,000 的批次在地址索引阶段可能积累数百万条待写入记录，
+一次提交甚至耗时数小时。缩小批次主要控制内存峰值和停止等待时间，实际总吞吐量仍需根据磁盘实测。
+如果原配置显式设置了 `ORD_COMMIT_INTERVAL`，升级保留该值；停机后可在 `node.env` 中改成 `ORD_COMMIT_INTERVAL=100`。
+比如已提交高度 589,999 不变时，
 内部可能正在处理后续区块或提交该批次。`60%` 是区块高度覆盖率，不能据此估算剩余时间：后期区块的数据量不同。
 缺少阶段或读写数据时表示没有相应观测，不代表读写量为零。
 
@@ -32,19 +35,27 @@ usdb-node logs ord-server
 
 包含[磁盘资源档位](../node/resources.md)的新版本，新配置在 `bitcoin` / `overlap` 阶段只给 Ord 监督进程 512 MiB，
 显示 `WAITING_RESOURCES`，不启动索引或探测 Core。进入 steady、主节点采用对应预算后，再分配完整 Ord 额度。
-完整预算在 `balanced` 下约为扣除外部预留后内存的四分之一，`slow-disk` 下约八分之一，默认最低 4 GiB、最高 16 GiB；
-缓存为额度一半。普通档约 32/64 GiB 主机对应约 8/16 GiB，慢盘档约 4/8 GiB。
-其他服务和系统也占用整机内存池，配置检查拒绝超额方案。关闭 Ord 时不预留这份资源。
+新 setup 或显式重算自动资源策略时启用 `adaptive-v1`：
+
+- 进入节点 `steady` 阶段后，Ord 可使用已完成启动的 BH 超出 4 GiB 的预算及未分配额度，目标上限为扣除外部预留后内存的一半，受 `--ord-memory-cap` 限制。新配置默认上限 32 GiB；原来显式或已保存的上限继续保留。
+- 保留 Bitcoin、其他服务及系统的预算，整机各服务上限合计不能超额。关闭 Ord 时不预留这份资源。
+- **追块档 `catchup`**：应用缓存为 Ord 容器额度的四分之一，最高 8 GiB；其余空间供 UTXO 批次、其他内存和文件缓存使用。
+- **追平档 `steady`**：连续 60 秒通过当前 Bitcoin 锚点的链一致性检查后，应用缓存降到最多 1 GiB。Ord 只能在启动时设置缓存，因此这里会等待干净退出，再仅重启 Ord 子进程；本机铸造后端短暂不可用，Bitcoin 和 USDB 服务继续运行。
+- 追平后只有连续 5 分钟落后至少 1,000 blocks 才切回追块档。短暂 RPC 错误、普通新块到来不会切换；观察中断会重新计时。上次缓存档位作为下次启动的提示保存，不能代替就绪检查。
+
+容器**最大额度仍保留**，不会在追平时强行压低内存上限、驱逐文件缓存。缓存档位降低减少的是应用内存使用；
+保留额度不是实际占用，也不会把同一份预算同时分配给其他服务。`usdb-node resources` 显示两档缓存和容器预算，
+`status` / `minting-status --json` 显示实际缓存档位。手工资源模式使用固定配置。
 
 分配完整预算后仍需通过原有 Bitcoin 历史验证和 txindex 就绪检查。`WAITING_RESOURCES` 是计划中的等待，不是索引失败。
-旧配置没有磁盘档位时，继续按原算法在各阶段预留完整 Ord 额度。
+未重算的旧配置继续按原算法和固定缓存运行。
 
 已有配置不会仅因升级而改变。安装包含此改进的版本后，在原运维账号下执行：
 
 ```bash
 usdb-node down
 usdb-node activate-release
-usdb-node set-resource-policy --mode auto --storage-profile auto --memory-percent 90
+usdb-node set-resource-policy --mode auto --storage-profile auto --memory-percent 90 --ord-memory-cap 32g
 usdb-node resources
 usdb-node doctor
 usdb-node up
@@ -76,14 +87,23 @@ tail -n 30 "$HOME/.usdb/datasets/ord/btc-mainnet/ord-0.29.0/ord-events.jsonl"
 
 ## 停止时长时间等待
 
-使用 `usdb-node down`。新版先发送一次正常停止请求，等待 Ord 的当前批次结束，并每 15 秒显示等待信息；
-Bitcoin 在此期间继续运行。该路径不设自动强杀截止时间。
+使用 `usdb-node down`。停止顺序为：
+
+1. 停止节点后台编排和观察服务。
+2. 按依赖顺序停止 control-plane、USDB chain、indexer、BH，释放这部分负载。
+3. 对 Ord 发送正常停止请求，等待当前批次结束，每 15 秒显示一次进度；**Bitcoin 此时继续运行**。
+4. Ord 干净退出后清理运行时容器，最后停止 Bitcoin（`down --keep-bitcoin` 除外）。
+
+Ord 等待不设自动强杀截止时间。输出区分 `client wait`（当前命令等待时长）和 `shutdown elapsed`（监督进程记录的停止时长），
+同时显示请求时间、已提交高度、处理高度、提交目标及本批提交耗时。重新执行 `down` 不会把真正的停服时长重置为零；
+旧镜像缺少这些字段时，仅显示可用信息。
 
 若需要离开当前终端，可按 Ctrl+C；这只停止客户端等待，已经发送的停止请求仍然有效。回来后重新执行 `usdb-node down`。
 不要在等待期间执行升级激活、断电或反复重启来加速提交。
 
 长时间没有已提交高度变化时，查看当前处理/提交阶段、最近读写、数据盘空间及错误日志。
 有持续 I/O 时可能仍在提交；有 I/O 也不等于一定健康，应同时关注处理高度与错误。无活动或重复报错时保留上述日志再诊断。
-异常退出时 `down` 会停在 Ord 检查处并保留其容器；查看日志后，再次执行 `down` 可继续移除已停止的容器。
+异常退出时 `down` 会停在 Ord 检查处并保留其容器和 Bitcoin；这时 USDB chain、indexer、BH 已停止。
+查看日志后，再次执行 `down` 可继续移除已停止的容器。
 
 直接使用 `docker compose down`、`docker stop` 或主机关机不经过这条专门等待流程，仍可能触发各自的强制停止超时。

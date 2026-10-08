@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import subprocess
@@ -12,7 +13,7 @@ import time
 
 def shutdown_status(root: Path, elapsed: int) -> str:
     """Use bounded, allowlisted observations; tolerate older supervisors."""
-    text = f"Waiting for Ord graceful shutdown: elapsed={elapsed}s"
+    text = f"Waiting for Ord graceful shutdown: client wait={elapsed}s"
     try:
         path = root / "progress.json"
         if path.is_symlink() or path.stat().st_size > 8192:
@@ -24,9 +25,21 @@ def shutdown_status(root: Path, elapsed: int) -> str:
         if type(height) is int and height >= 0:
             text += f"; last committed height={height}"
         if fresh:
+            shutdown_elapsed = report.get("shutdown_elapsed_secs")
+            if type(shutdown_elapsed) is int and shutdown_elapsed >= 0:
+                text += f"; shutdown elapsed={shutdown_elapsed}s"
+            started = report.get("shutdown_started_at_ms")
+            if type(started) is int and 0 <= started <= time.time() * 1000:
+                text += "; requested=" + datetime.fromtimestamp(started / 1000, timezone.utc).isoformat()
             phase = report.get("index_phase")
             if phase in {"STARTING", "RECOVERING", "PROCESSING", "COMMITTING", "IDLE"}:
                 text += f"; phase={phase}"
+            for field, label in (("processing_height", "processing height"),
+                                 ("commit_target_height", "commit target"),
+                                 ("commit_elapsed_secs", "commit elapsed (s)")):
+                value = report.get(field)
+                if type(value) is int and value >= 0:
+                    text += f"; {label}={value}"
             read, written, seconds = (report.get(key) for key in
                                       ("sample_read_bytes", "sample_write_bytes", "sample_elapsed_secs"))
             if all(type(v) is int and v >= 0 for v in (read, written, seconds)) and seconds:

@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.request
 from ord_observation import OrdObservation, FIELDS as OBSERVATION_FIELDS
+from ord_resources import CachePolicy
 
 SCHEMA = "usdb-ord-progress:v1"
 STATES = {"WAITING_RESOURCES", "WAITING_CORE", "WAITING_HISTORY", "WAITING_TXINDEX", "BLOCKED_DISK",
@@ -119,11 +120,11 @@ def observe_ord(core, fetch=read_json, core_rpc=rpc):
     return result
 
 
-def ord_command(root):
+def ord_command(root, cache=None):
     """Only inscriptions and addresses are indexed; no redundant transaction/sat index."""
     return ["/opt/ord/bin/ord", "--chain", "mainnet", "--data-dir", str(root),
-            "--index-addresses", "--index-cache-size", os.environ.get("ORD_INDEX_CACHE_BYTES", "1073741824"),
-            "--commit-interval", os.environ.get("ORD_COMMIT_INTERVAL", "5000"),
+            "--index-addresses", "--index-cache-size", str(cache) if cache is not None else os.environ.get("ORD_INDEX_CACHE_BYTES", "1073741824"),
+            "--commit-interval", os.environ.get("ORD_COMMIT_INTERVAL", "100"),
             "server", "--address", "0.0.0.0", "--http", "--http-port", "28030"]
 
 
@@ -138,7 +139,10 @@ def publish(root, report):
 def stop_child(child, root=None, report=None, observation=None):
     """Allow Ord to flush its database on dependency loss and operator shutdown."""
     if child is not None and child.poll() is None:
-        started = time.monotonic()
+        if not hasattr(child, "usdb_shutdown_started"):
+            child.usdb_shutdown_started = time.monotonic()
+            child.usdb_shutdown_started_ms = int(time.time() * 1000)
+        started = child.usdb_shutdown_started
         progress_failed = False
         if observation:
             observation.event("shutdown_started", committed_height=(report or {}).get("ord_height"))
@@ -152,6 +156,7 @@ def stop_child(child, root=None, report=None, observation=None):
                 activity = observation.snapshot(child, (report or {}).get("ord_height")) if observation else {}
                 try:
                     publish(root, dict(report or {}, **activity, state="STOPPING", canonical=False,
+                                       shutdown_started_at_ms=child.usdb_shutdown_started_ms,
                                        shutdown_elapsed_secs=int(time.monotonic() - started)))
                 except OSError:
                     if not progress_failed:
@@ -192,9 +197,15 @@ def supervise():
     # Enable index milestones without verbose HTTP/RPC tracing or credentials.
     child_env["RUST_LOG"] = "warn,ord::index=info"
     cache = int(os.environ.get("ORD_INDEX_CACHE_BYTES", "1073741824"))
-    interval = int(os.environ.get("ORD_COMMIT_INTERVAL", "5000"))
+    interval = int(os.environ.get("ORD_COMMIT_INTERVAL", "100"))
     if cache <= 0 or not 1 <= interval <= 100000:
         raise ValueError("Ord cache must be positive and commit interval must be between 1 and 100000")
+    strategy = os.environ.get("USDB_ORD_RESOURCE_POLICY", "fixed")
+    if strategy not in {"fixed", "adaptive-v1"}:
+        raise ValueError("USDB_ORD_RESOURCE_POLICY must be fixed or adaptive-v1")
+    adaptive = strategy == "adaptive-v1"
+    steady_cache = int(os.environ.get("ORD_STEADY_INDEX_CACHE_BYTES", str(min(cache, 1024**3)))) if adaptive else cache
+    policy = CachePolicy(root, cache, steady_cache, adaptive)
     observation.event("supervisor_started", index_cache_bytes=cache, commit_interval=interval)
     try:
         while not stopped.is_set():
@@ -220,8 +231,9 @@ def supervise():
                 if report["state"] == "STARTING":
                     if child is None:
                         observation = OrdObservation(root)
-                        observation.event("process_started", index_cache_bytes=cache, commit_interval=interval)
-                        child = subprocess.Popen(ord_command(root), env=child_env,
+                        observation.event("process_started", index_cache_bytes=policy.cache,
+                                          resource_profile=policy.profile, commit_interval=interval)
+                        child = subprocess.Popen(ord_command(root, policy.cache), env=child_env,
                                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                                  text=True, encoding="utf-8", errors="replace")
                         observation.attach(child)
@@ -246,11 +258,28 @@ def supervise():
                         pass
             except (OSError, ValueError, KeyError, TypeError):
                 report["state"] = "UNAVAILABLE"
+            target = policy.target(report, time.monotonic())
+            if target is not None and child is not None and not stopped.is_set():
+                observation.event("resource_transition_started", from_profile=policy.profile,
+                                  to_profile=target, committed_height=report.get("ord_height"))
+                # Ord exposes its cache only as a startup option. Restart this
+                # child alone, at a small batch boundary, keeping Core untouched.
+                code = stop_child(child, root, dict(report, restart_reason="cache_profile"), observation)
+                child = None
+                if code:
+                    failed = True
+                    publish(root, dict(report, state="FAILED", canonical=False, ord_exit_code=code))
+                    return 1
+                policy.apply(target)
+                observation.event("resource_transition_finished", resource_profile=target,
+                                  index_cache_bytes=policy.cache)
+                observation = OrdObservation(root)
+                report = dict(report, state="STARTING", canonical=False)
             if report["state"] != previous:
                 print(f"Ord state: {previous or 'INIT'} -> {report['state']}", flush=True)
                 previous = report["state"]
             report.update(observation.snapshot(child, report.get("ord_height")),
-                          index_cache_bytes=cache, commit_interval=interval)
+                          index_cache_bytes=policy.cache, commit_interval=interval, resource_profile=policy.profile)
             publish(root, report)
             stopped.wait(10)
     finally:

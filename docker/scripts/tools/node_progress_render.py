@@ -262,7 +262,11 @@ def _minting_rows(minting: dict[str, Any], *, details: bool) -> list[_Row]:
         ord_row.info.append(f"Recent I/O: read {human_size(read)}, wrote {human_size(written)} over {seconds}s")
     if state == "STOPPING" and _height(minting.get("shutdown_elapsed_secs")):
         ord_row.info.append(f"Shutdown elapsed {duration_text(minting['shutdown_elapsed_secs'])}; waiting for Ord to exit")
-    if details and _height(minting.get("index_cache_bytes")):
+    if minting.get("restart_reason") == "cache_profile":
+        ord_row.info.append("Restarting only Ord to apply its cache profile; waiting for a clean database commit")
+    if minting.get("resource_profile") in {"catchup", "steady"}:
+        ord_row.info.append(f"Resource profile: {minting['resource_profile']}; container ceiling includes file-cache headroom")
+    if (details or minting.get("resource_profile") in {"catchup", "steady"}) and _height(minting.get("index_cache_bytes")):
         ord_row.info.append(f"Index cache: {human_size(minting['index_cache_bytes'])} | commit interval: {minting.get('commit_interval', 'unknown')} blocks")
     if details or state != "READY":
         ord_row.info.append(minting.get("guidance", ""))

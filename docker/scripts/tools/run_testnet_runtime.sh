@@ -447,6 +447,10 @@ case "${action}" in
     ;;
   down)
     require_node_env
+    # Release consensus consumers before the optional address-index flush. Keep
+    # Core available for both BH's final work and Ord's outstanding transaction.
+    echo "Stopping USDB services in dependency order; Bitcoin Core remains available for Ord."
+    quiesce_runtime_services usdb-control-plane usdb-chain usdb-indexer balance-history
     # Keep Core available until Ord finishes its outstanding transaction. The
     # regular Compose grace period must not kill a long address-index commit.
     if [[ "$(node_env_value USDB_MINTING_ENABLED)" == "1" ]]; then

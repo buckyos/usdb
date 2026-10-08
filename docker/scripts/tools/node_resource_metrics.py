@@ -297,7 +297,8 @@ def configuration(env):
                 result["limits"][service] = memory_bytes(env[key], key)
             except ValueError:
                 result["invalid"].append(key)
-    for key in ("BTC_DBCACHE_MB", "BH_SYNC_UTXO_MAX_CACHE_BYTES", "BH_SYNC_BALANCE_MAX_CACHE_BYTES"):
+    for key in ("BTC_DBCACHE_MB", "BH_SYNC_UTXO_MAX_CACHE_BYTES", "BH_SYNC_BALANCE_MAX_CACHE_BYTES",
+                "ORD_INDEX_CACHE_BYTES", "ORD_STEADY_INDEX_CACHE_BYTES"):
         if env.get(key, "").isdigit():
             result["caches"][key] = int(env[key])
     for key in ("USDB_RESOURCE_HOST_MEMORY_BYTES", "USDB_EXTERNAL_MEMORY_BUDGET", "BTC_MEMORY_SWAP_LIMIT", "BH_MEMORY_SWAP_LIMIT"):

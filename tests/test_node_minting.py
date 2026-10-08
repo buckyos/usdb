@@ -378,7 +378,10 @@ class MintingTests(unittest.TestCase):
                 ord_service = services["ord-server"]
                 self.assertFalse(ord_service.get("ports"))
                 self.assertEqual(int(ord_service["mem_limit"]), 16 * policy.GIB)
-                self.assertEqual(int(ord_service["environment"]["ORD_INDEX_CACHE_BYTES"]), 8 * policy.GIB)
+                self.assertEqual(int(ord_service["environment"]["ORD_INDEX_CACHE_BYTES"]), 4 * policy.GIB)
+                self.assertEqual(ord_service["environment"]["USDB_ORD_RESOURCE_POLICY"], "adaptive-v1")
+                self.assertEqual(int(ord_service["environment"]["ORD_STEADY_INDEX_CACHE_BYTES"]), policy.GIB)
+                self.assertEqual(int(ord_service["environment"]["ORD_COMMIT_INTERVAL"]), 100)
                 self.assertEqual(float(ord_service["cpus"]), 2)
                 self.assertEqual(ord_service["entrypoint"][-1], "/opt/usdb/docker/scripts/tools/ord_runtime.py")
                 self.assertNotIn("ord-server", services["usdb-chain"].get("depends_on", {}))

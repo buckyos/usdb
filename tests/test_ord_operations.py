@@ -17,11 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/too
 import ord_observation as observation
 import ord_runtime as runtime
 import ord_shutdown as shutdown
+from ord_resources import CachePolicy
 import resource_policy as policy
 import usdb_minting as minting
 import node_progress_render as render
 import control_plane_monitor as monitor
-from common.minting import Child
+from common.minting import Child, Loop, core_observation, disk_space
 
 
 class OrdOperationsTests(unittest.TestCase):
@@ -157,11 +158,13 @@ class OrdOperationsTests(unittest.TestCase):
         path.mkdir(parents=True)
         report = dict(schema_version=runtime.SCHEMA, state="STOPPING", observed_at_ms=1000,
                       ord_height=589999, index_phase="COMMITTING", commit_target_height=594999,
-                      shutdown_elapsed_secs=600, password="SECRET")
+                      shutdown_elapsed_secs=600, resource_profile="catchup", restart_reason="cache_profile", password="SECRET")
         (path / "progress.json").write_text(json.dumps(report))
         actual = minting.progress(env, now_ms=1001)
         self.assertEqual(actual["index_phase"], "COMMITTING")
         self.assertEqual(actual["shutdown_elapsed_secs"], 600)
+        self.assertEqual(actual["resource_profile"], "catchup")
+        self.assertEqual(actual["restart_reason"], "cache_profile")
         self.assertFalse(actual["backend_ready"])
         self.assertNotIn("SECRET", json.dumps(actual))
 
@@ -194,7 +197,7 @@ class OrdOperationsTests(unittest.TestCase):
         (self.root / "progress.json").write_text(json.dumps(dict(state="STOPPED", observed_at_ms=1)))
         self.assertIn("container exit is still pending", shutdown.shutdown_status(self.root, 600))
 
-    def test_shell_down_waits_for_ord_and_aborts_before_other_services_on_failure(self):
+    def test_shell_down_stops_consumers_before_ord_and_preserves_core_on_failure(self):
         # Exercise the actual shell -> Python -> Docker-client path without a daemon.
         fake = self.root / "docker"
         fake.write_text(f"#!{sys.executable}\n" + '''
@@ -204,15 +207,21 @@ args = sys.argv[1:]
 root = Path(os.environ['ORD_STOP_TEST_ROOT'])
 with (root / 'calls').open('a') as log: log.write(json.dumps(args) + '\\n')
 if args[0] == 'compose':
-    if 'ps' in args: print('ord-test')
+    if 'ps' in args: print(args[-1])
     elif 'down' not in args: raise SystemExit(5)
 elif args[0] == 'inspect':
-    stopped = (root / 'stopped').exists()
-    print(json.dumps(dict(Status='exited' if stopped else 'running', Running=not stopped,
-                         ExitCode=int(os.environ['ORD_STOP_TEST_EXIT']) if stopped else 0)))
+    stopped = (root / ('stopped-' + args[-1])).exists()
+    if args[2] == '{{.State.Status}}': print('exited' if stopped else 'running')
+    else: print(json.dumps(dict(Status='exited' if stopped else 'running', Running=not stopped,
+                              ExitCode=int(os.environ['ORD_STOP_TEST_EXIT']) if stopped else 0)))
+elif args[0] == 'update':
+    assert args[1] == '--restart=no'
+elif args[0] == 'kill':
+    assert args[1] == '--signal=SIGTERM' and args[-1] != 'ord-server'
+    (root / ('stopped-' + args[-1])).touch()
 elif args[0] == 'stop':
-    assert args == ['stop', '--timeout', '-1', 'ord-test']
-    (root / 'stopped').touch()
+    assert args == ['stop', '--timeout', '-1', 'ord-server']
+    (root / ('stopped-' + args[-1])).touch()
 else: raise SystemExit(6)
 ''')
         fake.chmod(0o755)
@@ -220,7 +229,8 @@ else: raise SystemExit(6)
         config.write_text(f"USDB_MINTING_ENABLED=1\nORD_DATA_HOST_DIR={self.root}\n")
         runner = Path(runtime.__file__).with_name("run_testnet_runtime.sh")
         for code in (0, 137):
-            (self.root / "stopped").unlink(missing_ok=True)
+            for marker in self.root.glob("stopped-*"):
+                marker.unlink()
             (self.root / "calls").unlink(missing_ok=True)
             env = {**os.environ, "PATH": f"{self.root}:{os.environ['PATH']}",
                    "USDB_TESTNET_NODE_ENV": str(config), "ORD_STOP_TEST_ROOT": str(self.root),
@@ -229,6 +239,11 @@ else: raise SystemExit(6)
                                     capture_output=True, text=True, timeout=10)
             calls = [json.loads(line) for line in (self.root / "calls").read_text().splitlines()]
             down = [i for i, args in enumerate(calls) if args[0] == "compose" and "down" in args]
+            stopped = [args[-1] for args in calls if args[0] == "kill"]
+            self.assertEqual(stopped, ["usdb-control-plane", "usdb-chain", "usdb-indexer", "balance-history"])
+            ord_stop = next(i for i, args in enumerate(calls) if args[0] == "stop")
+            self.assertTrue(all(i < ord_stop for i, args in enumerate(calls) if args[0] == "kill"))
+            self.assertFalse(any("btc-node" in args for args in calls))
             if code:
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(down)
@@ -236,6 +251,104 @@ else: raise SystemExit(6)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(down)
                 self.assertLess(next(i for i, args in enumerate(calls) if args[0] == "stop"), down[0])
+
+    def test_adaptive_budgets_keep_core_and_system_reserve_and_old_policies(self):
+        for host in (32_000_000_000, 65_720_652 * 1024, 128 * policy.GIB):
+            for storage in (None, "balanced", "slow-disk"):
+                for cap in ("4g", "16g", "32g"):
+                    env = dict(USDB_MINTING_ENABLED="1", SNAPSHOT_MODE="assumeutxo", USDB_ORD_MEMORY_CAP=cap)
+                    if storage:
+                        env["USDB_STORAGE_PROFILE"] = storage
+                    for phase in policy.PHASES:
+                        before = policy.build_resource_plan(host, phase, env)
+                        adaptive = dict(env, USDB_ORD_RESOURCE_POLICY="adaptive-v1")
+                        after = policy.build_resource_plan(host, phase, adaptive)
+                        self.assertLessEqual(after.total_bytes, host)
+                        self.assertEqual(after.reserve_bytes, before.reserve_bytes)
+                        self.assertEqual(after.limits["BTC_MEMORY_LIMIT"], before.limits["BTC_MEMORY_LIMIT"])
+                        self.assertGreaterEqual(after.limits["BH_MEMORY_LIMIT"], 4 * policy.GIB)
+                        self.assertLessEqual(after.limits["ORD_MEMORY_LIMIT"], policy.memory_bytes(cap, "cap"))
+                        self.assertLessEqual(after.ord_cache_bytes, after.limits["ORD_MEMORY_LIMIT"] // 4)
+                        policy.validate_resource_environment(dict(adaptive, **after.environment()), host)
+                        minting.validate({**minting.environment(self.root, True), **adaptive,
+                                          **after.environment(), "USDB_DATA_ROOT": str(self.root)})
+        node1 = policy.build_resource_plan(65_720_652 * 1024, "steady", dict(
+            USDB_MINTING_ENABLED="1", SNAPSHOT_MODE="assumeutxo", USDB_ORD_MEMORY_CAP="32g",
+            USDB_STORAGE_PROFILE="balanced", USDB_ORD_RESOURCE_POLICY="adaptive-v1"))
+        self.assertGreater(node1.limits["ORD_MEMORY_LIMIT"], 27 * policy.GIB)
+        self.assertEqual(node1.ord_steady_cache_bytes, policy.GIB)
+
+    def test_cache_tiers_require_sustained_canonical_readiness_and_large_backlog(self):
+        tier = CachePolicy(self.root, 8 * policy.GIB, policy.GIB, True)
+        for at in range(0, 100, 10):
+            self.assertIsNone(tier.target(dict(state="READY", canonical=False), at))
+        for at in range(100, 160, 10):
+            self.assertIsNone(tier.target(dict(state="READY", canonical=True), at))
+        self.assertEqual(tier.target(dict(state="READY", canonical=True), 160), "steady")
+        tier.apply("steady")
+        self.assertEqual(CachePolicy(self.root, 8 * policy.GIB, policy.GIB, True).cache, policy.GIB)
+        for at in range(170, 510, 10):
+            self.assertIsNone(tier.target(dict(state="INDEXING", ord_gap=1), at))
+        for at in range(510, 810, 10):
+            self.assertIsNone(tier.target(dict(state="INDEXING", ord_gap=1000), at))
+        self.assertEqual(tier.target(dict(state="INDEXING", ord_gap=1000), 810), "catchup")
+
+    def test_unknown_and_missing_probes_reset_cache_transition_window(self):
+        for gap in (dict(state="UNAVAILABLE"), dict(state="WAITING_CORE")):
+            tier = CachePolicy(self.root, 8 * policy.GIB, policy.GIB, True)
+            for at in range(0, 60, 10):
+                self.assertIsNone(tier.target(dict(state="READY", canonical=True), at))
+            self.assertIsNone(tier.target(gap, 60))
+            self.assertIsNone(tier.target(dict(state="READY", canonical=True), 70))
+            self.assertIsNone(tier.target(dict(state="READY", canonical=True), 140))
+
+    def test_adaptive_restart_waits_for_clean_exit_and_operator_stop_wins(self):
+        for exit_code, operator_stop in ((0, False), (1, False), (0, True)):
+            with self.subTest(exit_code=exit_code, operator_stop=operator_stop):
+                (self.root / "resource-profile.json").unlink(missing_ok=True)
+                loop, children = Loop(3), []
+                core = runtime.prerequisites(*core_observation(), now=1001)
+                def start(*args, **kwargs):
+                    self.assertTrue(all(c.poll() is not None for c in children))
+                    child = Child()
+                    def wait(timeout=None):
+                        child.code = exit_code
+                        if operator_stop:
+                            loop.set()
+                        return exit_code
+                    child.wait = wait
+                    children.append(child)
+                    return child
+                with mock.patch.dict(runtime.os.environ, dict(ORD_DATA_DIR=str(self.root), BTC_RPC_USER="user",
+                        BTC_RPC_PASSWORD="secret", USDB_ORD_RESOURCE_POLICY="adaptive-v1",
+                        ORD_INDEX_CACHE_BYTES=str(8 * policy.GIB), ORD_STEADY_INDEX_CACHE_BYTES=str(policy.GIB)), clear=True), \
+                        mock.patch.object(runtime.threading, "Event", return_value=loop), \
+                        mock.patch.object(runtime.signal, "signal"), \
+                        mock.patch.object(runtime, "observe_core", return_value=core), \
+                        mock.patch.object(runtime, "observe_ord", return_value=dict(core, state="READY", canonical=True)), \
+                        mock.patch.object(runtime.shutil, "disk_usage", return_value=disk_space()), \
+                        mock.patch.object(runtime.subprocess, "Popen", side_effect=start) as spawned, \
+                        mock.patch.object(CachePolicy, "target", side_effect=["steady", None, None]):
+                    self.assertEqual(runtime.supervise(), exit_code)
+                self.assertEqual(len(children), 1 if exit_code or operator_stop else 2)
+                self.assertTrue(all(c.signals == [signal.SIGINT] for c in children))
+                if len(children) == 2:
+                    args = spawned.call_args_list[-1].args[0]
+                    self.assertEqual(args[args.index("--index-cache-size") + 1], str(policy.GIB))
+                    self.assertEqual(args[args.index("--commit-interval") + 1], "100")
+                if exit_code:
+                    self.assertFalse((self.root / "resource-profile.json").exists())
+
+    def test_shutdown_displays_original_wait_and_commit_target(self):
+        with mock.patch.object(shutdown.time, "time", return_value=1000):
+            (self.root / "progress.json").write_text(json.dumps(dict(observed_at_ms=999000,
+                ord_height=494999, processing_height=499865, index_phase="COMMITTING",
+                commit_target_height=499865, commit_elapsed_secs=600,
+                shutdown_started_at_ms=400000, shutdown_elapsed_secs=600)))
+            line = shutdown.shutdown_status(self.root, 15)
+        for expected in ("client wait=15s", "shutdown elapsed=600s", "commit target=499865",
+                         "commit elapsed (s)=600", "last committed height=494999", "requested="):
+            self.assertIn(expected, line)
 
 
 if __name__ == "__main__":
