@@ -128,8 +128,8 @@ class ConfigViewTests(unittest.TestCase):
         walk(parser)
         commands = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction)).choices
         self.assertIn("Non-interactive", parser.format_help())
-        self.assertIn("does not install the controller", " ".join(commands["configure"].format_help().split()))
-        self.assertIn("usdb-node config", " ".join(commands["setup"].format_help().split()))
+        self.assertIn("does not install the controller", commands["configure"].description)
+        self.assertIn("usdb-node config", commands["setup"].description)
         self.assertEqual(parser.parse_args(["configure"]).role, "full")
 
 

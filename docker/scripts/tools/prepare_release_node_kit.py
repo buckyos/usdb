@@ -29,6 +29,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/usdb_minting.py",
     "docker/scripts/tools/usdb_setup.py",
     "docker/scripts/tools/node_config_view.py",
+    "docker/scripts/tools/node_network_switch.py",
     "docker/scripts/tools/node_storage.py",
     "docker/compose.p2p-dual.yml",
     "docker/compose.p2p-ipv6.yml",

@@ -383,6 +383,8 @@ def install_controller_unit(
     """Install and enable the restartable controller without starting node services."""
     if not layout.node_env.is_file():
         raise ValueError("configure the node before installing its bootstrap controller")
+    import node_network_switch
+    node_network_switch.reconcile(layout, sys.modules[__name__])
     context = _controller_install_context(launcher)
     content = render_controller_unit(
         layout, launcher=context.launcher, service_user=context.service_user, home=context.home,
@@ -1366,6 +1368,8 @@ def configure_node(
     minting_updates = usdb_minting.environment(root, minting, legacy_txindex="0" if native else "1")
     minting_updates.update({key: resource_updates[key] for key in ("ORD_MEMORY_LIMIT", "ORD_INDEX_CACHE_BYTES", "ORD_STARTUP_DEFERRED")
                             if key in resource_updates})
+    import node_network_switch
+    node_network_switch.reconcile(layout, sys.modules[__name__], data_root=root)
     usdb_minting.prepare({**resource_updates, **minting_updates, "USDB_DATA_ROOT": str(root)})
     secure_dir = network_secure_dir(root, layout.bundle_id)
     snapshot_dir = snapshot_artifact_dir(root)
@@ -1820,6 +1824,12 @@ def setup_node(
     print(f"Host firewall: {firewall_mode}", file=output)
     if manage_firewall:
         print(f"Operator SSH port preserved by UFW: {ssh_port}", file=output)
+    import node_network_switch
+    previous = node_network_switch.conflicts(layout, sys.modules[__name__], data_root)
+    if previous:
+        print("Shared data from existing networks: " + ", ".join(item["bundle"] for item in previous), file=output)
+        print("Saving will check that old containers are stopped, then disable supported old controller/monitor autostart "
+              "(sudo may be requested). Old configuration and data are retained. Custom units require review.", file=output)
     if not _prompt_yes_no(
         "Write this node configuration",
         default=True,
@@ -1962,16 +1972,10 @@ def _validate_node_release_images(layout: ReleaseLayout) -> None:
 
 
 def activate_release(layout: ReleaseLayout, *, from_kit: Path | None = None) -> None:
+    import node_network_switch
+    node_network_switch.require_selected_network(layout)
     if not layout.node_env.is_file():
-        raise ValueError(
-            "node is not configured; run 'usdb-node setup' first.\n"
-            "activate-release upgrades an already configured node.\n"
-            "For a first installation or after uninstall --purge-data, run:\n"
-            "  usdb-node setup\n"
-            "  usdb-node doctor\n"
-            "  usdb-node up\n"
-            "If reusing retained data, select the original Host data root during setup."
-        )
+        raise ValueError(node_network_switch.unconfigured_message(layout, sys.modules[__name__]))
     original = layout.node_env.read_text(encoding="utf-8")
     updates = {
         **layout.images,
@@ -6141,6 +6145,7 @@ def build_parser() -> argparse.ArgumentParser:
                      "First setup previews data-disk capacity and requires a qualifying directory; "
                      "compatible retained Bitcoin stores reduce the required free space. "
                      "Edits preserve identity, data, release images and controller units. "
+                     "First setup sharing data with a stopped older network retires its supported controller/monitor autostart (sudo may be needed). "
                      "P2P flags apply to first setup; use peers configure for existing nodes. "
                      "To inspect settings without editing, use usdb-node config."),
     )
@@ -6169,6 +6174,7 @@ def build_parser() -> argparse.ArgumentParser:
     configure = subparsers.add_parser("configure", help="Non-interactive first-time configuration for scripts; use setup for the wizard",
         description="Create private node configuration and Bitcoin RPC credentials from command-line options. "
                     "Refuses to overwrite an existing node and does not install the controller. "
+                    "Shared data requires stopped old services; supported old autostart is retired (sudo may be needed). "
                     "Ordinary installs should use setup; view saved settings with config. "
                     "Mining is enabled later with mining enable after readiness checks.")
     configure.add_argument("--monitor", choices=("on", "off"), default="on", help="Enable local node monitoring (default: on)")
@@ -6471,6 +6477,12 @@ def _operation_name(args: argparse.Namespace) -> str | None:
 
 
 def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
+    import node_network_switch
+    if args.command in {"setup", "configure", "up"} or (
+            args.command == "controller" and args.controller_action in {"run", "install"}) or (
+            args.command == "monitor" and args.monitor_action == "run") or (
+            args.command == "console" and args.console_action == "monitor"):
+        node_network_switch.require_selected_network(layout)
     if args.command in {"upgrade-status", "upgrade-cleanup"}:
         import node_upgrade_archives
         return node_upgrade_archives.dispatch(args, layout, sys.modules[__name__])
@@ -6707,6 +6719,10 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
     elif args.command == "up":
         if args.sync_timeout_secs <= 0:
             raise ValueError("sync timeout must be positive")
+        if not args.foreground and (args.sync_timeout_secs != DEFAULT_SYNC_TIMEOUT_SECS or args.skip_pull):
+            raise ValueError("background controller settings are frozen by controller install; "
+                             "reinstall it with the desired options or use up --foreground")
+        node_network_switch.reconcile(layout, sys.modules[__name__], mode="preview" if args.dry_run else "apply")
         if args.foreground:
             result, return_code = up_node(
                 layout,
@@ -6720,11 +6736,6 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
                 ),
             )
         else:
-            if args.sync_timeout_secs != DEFAULT_SYNC_TIMEOUT_SECS or args.skip_pull:
-                raise ValueError(
-                    "background controller settings are frozen by controller install; "
-                    "reinstall it with the desired options or use up --foreground"
-                )
             result, return_code = submit_up_to_controller(
                 layout,
                 dry_run=args.dry_run,
@@ -6779,6 +6790,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         elif args.controller_action == "run":
             if args.sync_timeout_secs <= 0:
                 raise ValueError("sync timeout must be positive")
+            node_network_switch.reconcile(layout, sys.modules[__name__], mode="check")
             return run_bootstrap_controller(
                 layout,
                 sync_timeout_secs=args.sync_timeout_secs,

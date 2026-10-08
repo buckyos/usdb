@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-cross-network-setup",
+  "type": "fixed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Explain cross-network setup and retire stopped old autostart when reusing node data",
+  "details": [
+    "The installer distinguishes selecting a tool from activating service images. upgrade-plan can discover an unambiguous prior network before target setup and show read-only data reuse; activate-release explains why a new network requires setup.",
+    "Setup, up and controller install inspect same-operator standard configurations that share data. After checking old containers are stopped, supported old controller and monitor units are disabled and verified before proceeding; configuration and datasets remain intact.",
+    "Running old controllers/containers, custom units, overrides and unobservable states block automatic retirement. Boot-time controller execution only checks and never requests sudo. A launcher/config network mismatch is rejected before starting services."
+  ],
+  "operator_actions": [
+    "For a different network, stop the old node with its original kit, install the target tool, inspect upgrade-plan and run setup using the original data root for compatible reuse. Complete the switch before reboot; the installer alone does not change autostart.",
+    "With this tool version, supported old autostart sharing data is retired during setup/up; a separate controller disable is unnecessary. Resolve custom unit or stopped-state blockers when reported."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

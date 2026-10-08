@@ -6,6 +6,32 @@
 它们用于已经配置的节点，不替代首次 `setup`。更新 release 不意味着每次都要卸载；实际动作取决于新旧网络身份和各服务的数据契约。
 旧工具不认识这些命令时，先安装包含该功能的目标版本。始终使用原运维账号，保留原数据根和旧安装包。
 
+## 安装工具、激活版本与切换网络
+
+一键安装完成后，`usdb-node` 命令立即指向新工具包，但已有 `node.env` 中的镜像和正在运行的服务不会因此更新。
+同一网络的兼容换版，由 `activate-release` 校验并更新镜像配置，再由 `up` 启动目标服务。
+
+从 `usdb-testnet-v0` 切到 `usdb-testnet-v1` 等不同网络时，目标使用独立配置目录，需要为它执行 `setup`。
+这不意味着清空全部数据：选择原来的 Host data root 后，兼容的 Bitcoin/BH 数据可复用；新网络的 indexer、链和治理状态按各自身份隔离。
+不要把旧 `node.env` 直接复制成新网络配置，也不要手改网络身份。
+
+包含跨网络提示改进的工具在目标配置不存在时，`upgrade-plan` 会查找原账号的标准配置目录；只有一个旧网络时自动给出只读比较，
+多个候选时提示使用 `--node-env` 选择。计划显示 `cross_bundle=true`、`executable=false`，表示不能用 `upgrade-release --execute`
+跨网络执行；输出会给出旧工具的停机命令、数据复用结果和目标网络的 `setup` 指引。
+存在其他数据契约阻断项时，先处理它们，不能据此直接复用。
+
+`down` 保留开机自启设置。新版本在目标网络首次 `setup` 保存配置前，会检查共享数据的旧网络容器已停止，并自动禁用可识别的旧 controller、
+node monitor 和旧 console monitor 自启；需要权限时会请求 sudo。`up` 和 `controller install` 也会补做检查，
+**普通跨网络切换不再要求额外记住 `controller disable`**。即使使用 `setup --no-controller` 或 `up --foreground`，共享数据仍需完成这项处理。
+
+这项自动处理只针对原账号标准配置中共享数据的旧网络，保留其配置、服务定义和全部数据。独立数据目录的其他网络不会被停用。
+旧 controller/容器仍运行、自定义单元、systemd 覆盖项、状态不可读或禁用失败时会阻断，并说明需要处理的对象；不会强制停止数据库服务。
+禁用中断后重试 `setup`/`up` 即可；已经禁用的旧单元保持禁用，后续配置失败也不会自动重新启用旧网络。
+
+安装器本身不修改 systemd；安装后尚未完成目标配置时，旧自启项可能仍存在，应在重启主机前完成切换。
+旧单元若通过公共入口调用新工具并携带旧网络配置，会收到明确的 `NETWORK_SELECTION_MISMATCH`，不会因此启动混用配置的服务。
+旧版工具尚未包含上述处理时，仍需使用旧安装包执行 `controller disable` 后再配置新网络。
+
 ## 1. 查看升级计划
 
 从网络运维方取得目标版本与升级通知。需要停机时先用原版本 `usdb-node down` 停止整个节点，
@@ -46,7 +72,7 @@ usdb-node upgrade-plan --from-kit /absolute/path/to/old-kit
 `activate-release` 同样核对旧包与目标包的完整共识身份；可使用 `activate-release --from-kit /absolute/path/to/old-kit`。
 缺少准确旧包时先恢复该包，不猜测兼容性。
 
-当前自动执行范围限于同一 bundle、Bitcoin Core/BH 契约不变、启动模式不变的重建。
+当前 `upgrade-release` 自动执行范围限于同一 bundle、Bitcoin Core/BH 契约不变、启动模式不变的重建。
 跨 bundle、旧全量同步切到 AssumeUTXO、paired checkpoint、同时需要迁移 Ord 的组合升级，以及正式网的规则迁移，需独立方案。
 链重置还要求目标网络明确标记 `development-resettable`。本机工具不能决定其他节点何时升级，也不能替代网络重置公告。
 

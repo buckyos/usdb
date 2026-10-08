@@ -241,6 +241,20 @@ if [[ -e "$launcher" && ! -L "$launcher" ]]; then
 fi
 ln -sfn "${release_dir}/docker/scripts/tools/usdb_node.py" "$launcher"
 echo "Installed launcher: $launcher"
+echo "Tool selected: ${release_id}. Existing node configuration and running service images were not activated or changed."
+target_bundle="${release_id%-r*}"
+if [[ ! -f "${HOME}/.config/usdb/${target_bundle}/node.env" ]]; then
+  for existing_config in "${HOME}/.config/usdb"/usdb-*-v*/node.env; do
+    [[ -f "$existing_config" ]] || continue
+    existing_bundle="${existing_config%/node.env}"
+    existing_bundle="${existing_bundle##*/}"
+    [[ "$existing_bundle" =~ ^usdb-(testnet|mainnet)-v[0-9]+$ && "$existing_bundle" != "$target_bundle" ]] || continue
+    echo "Existing network: ${existing_bundle}; target ${target_bundle} needs separate setup."
+    echo "Run usdb-node upgrade-plan to inspect data reuse, then stop the old node using its original kit."
+    echo "Complete target setup before reboot: down alone leaves old autostart enabled."
+    echo "setup checks and disables supported old controller/monitor autostart sharing data (sudo may be requested)."
+  done
+fi
 cat <<EOF
 
 Next steps for a first node install:

@@ -85,6 +85,7 @@ class InstallUsdbNodeTests(unittest.TestCase):
     def test_installs_and_reuses_an_identical_immutable_release(self) -> None:
         first = self.install()
         self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn("Existing node configuration and running service images were not activated or changed", first.stdout)
         launcher = self.bin_dir / "usdb-node"
         self.assertTrue(launcher.is_symlink())
         self.assertTrue(os.access(launcher.resolve(), os.X_OK))

@@ -103,7 +103,8 @@ def find_source(layout, env, node, from_kit=None):
     for parent in {layout.kit_root.parent, Path.home() / ".local/share/usdb/releases"}:
         core.safe_path(parent)
         if parent.is_dir():
-            candidates.update(p for p in parent.iterdir() if re.fullmatch(re.escape(layout.bundle_id) + r"-r[1-9][0-9]*", p.name))
+            # Exact manifest/config matching below also supports read-only cross-bundle previews.
+            candidates.update(p for p in parent.iterdir() if node.RELEASE_ID_RE.fullmatch(p.name))
     matches = []
     for path in sorted(candidates):
         try:
@@ -189,6 +190,8 @@ def plan(layout, node, from_kit=None):
                                reason="verify executed history before retaining dataset" if adopt else "consensus history changed" if reset and service in {"usdb_indexer", "usdb_chain", "control_plane"}
                                else "service contract changed" if rebuild else "service contract unchanged"))
     return dict(schema_version=SCHEMA, classification=classification, executable=not blocked, blockers=blocked,
+                cross_bundle=old_network["bundle_id"] != layout.bundle_id,
+                source_bundle=old_network["bundle_id"],
                 source_release=source["release_id"], target_release=layout.release_id, bundle=layout.bundle_id,
                 source_kit=str(source_root), target_kit=str(layout.kit_root), env_path=str(layout.node_env), data_root=str(root),
                 source_manifest_sha256=sha(source_root / "release/usdb-release-manifest.json"),
@@ -215,8 +218,13 @@ def show(value, *, details=False):
     labels = {"compatible": "existing data can be reused", "data_rebuild": "incompatible data must be rebuilt",
               "network_reset": "USDB chain must restart from genesis",
               "protocol_upgrade": "retain history after both offline service checks pass"}
-    print(f"Result: {value['classification']} - {labels[value['classification']]}")
-    print("Preflight: PASSED (execution still requires a stopped node)" if value["executable"] else "Preflight: BLOCKED")
+    if value.get("cross_bundle"):
+        print("Result: different network - target setup required; old network data stays preserved")
+    else:
+        print(f"Result: {value['classification']} - {labels[value['classification']]}")
+    separate_setup = value.get("cross_bundle") and len(value["blockers"]) == 1
+    print("Preflight: PASSED (execution still requires a stopped node)" if value["executable"]
+          else "Preflight: SEPARATE_SETUP_REQUIRED" if separate_setup else "Preflight: BLOCKED")
     for reason in value["blockers"]:
         print(f"  - {reason}")
     print("\n  Component        Action   Data handling")
@@ -229,7 +237,9 @@ def show(value, *, details=False):
         print("\nChanges: " + "; ".join(CHAIN_LABELS.get(k, k) for k in value["changed_chain_fields"]))
     elif value["classification"] == "data_rebuild":
         print("\nChanges: service data contracts")
-    if value["classification"] == "network_reset":
+    if value.get("cross_bundle"):
+        print("On network switch: old chain/governance state stays in its original directories; new-network mining requires authorization.")
+    elif value["classification"] == "network_reset":
         print("On reset: old SourceDAO state will be isolated; mining must be reauthorized.")
     if value["classification"] == "protocol_upgrade":
         print("Database compatibility: PENDING offline checks at each service's actual committed height.")
@@ -261,6 +271,19 @@ def show_next_steps(value, *, command=("usdb-node",), from_kit=None, backup=None
 
     print("\nNext steps (not executed):")
     if not value["executable"]:
+        if value.get("cross_bundle"):
+            print("  This selects a different network. Automatic upgrade execution is not supported across bundles.")
+            if len(value["blockers"]) != 1:
+                print("  Additional blockers require review before configuring the target; preserve old data and configuration.")
+                return
+            print("  Stop the old network with its original kit:")
+            print("  " + shlex.join([str(Path(value["source_kit"]) / "docker/scripts/tools/usdb_node.py"),
+                                    "--node-env", value["env_path"], "down"]))
+            print(f"  Configure the target network with its default config path; select Host data root: {value['data_root']}")
+            print("  " + shlex.join(["usdb-node", "--kit-root", value["target_kit"], "setup"]))
+            print("  setup checks and retires supported old autostart services sharing data; no separate controller disable is needed.")
+            print("  Reuse still requires matching dataset identities; inspect any additional blockers above before setup.")
+            return
         print("  Resolve the blockers above, then rerun upgrade-plan. Do not activate or rebuild yet.")
         return
     if phase == "rolled_back":
@@ -311,7 +334,9 @@ def _command_prefix(args, node):
 
 def add_parser(subparsers):
     """Expose preview separately from explicitly confirmed execution/recovery."""
-    preview = subparsers.add_parser("upgrade-plan", help="Compare releases and preview component reuse/rebuild without changes")
+    preview = subparsers.add_parser("upgrade-plan", help="Compare releases and preview data reuse; discovers an unambiguous old network before target setup",
+        description="Read-only compatibility and data reuse preview. If target setup is missing, discover an unambiguous old network configuration; "
+                    "use the global --node-env option to select among multiple configurations. Cross-network deployment requires separate setup, not automatic upgrade execution.")
     preview.add_argument("--from-kit", type=Path, help="old installed kit when automatic exact matching is unavailable")
     preview.add_argument("--details", action="store_true", help="include full paths and hashes in human-readable output")
     preview.add_argument("--json", action="store_true", help="print the read-only upgrade plan as JSON")
@@ -329,7 +354,13 @@ def dispatch(args, layout, node):
     """Delegate privileged filesystem changes to the installed, journal-bound runner."""
     import node_upgrade_session as session
     if args.command == "upgrade-plan":
-        value = plan(layout, node, args.from_kit)
+        source_layout = layout
+        if not layout.node_env.exists() and not layout.node_env.is_symlink():
+            if args.node_env is not None:
+                raise ValueError(f"Selected node configuration does not exist: {layout.node_env}; check --node-env or run setup")
+            import node_network_switch
+            source_layout = node_network_switch.preview_source(layout, node)
+        value = plan(source_layout, node, args.from_kit)
         if args.json:
             print(json.dumps(value, indent=2, sort_keys=True))
         else:
