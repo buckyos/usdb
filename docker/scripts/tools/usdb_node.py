@@ -4417,6 +4417,19 @@ def _container_start_failed(service: dict[str, Any] | None) -> bool:
     ))
 
 
+def _minting_startup_progress(services, *, observation_available=True):
+    """Record proven pre-start waits from the existing inventory, not readiness."""
+    result = {}
+    for key, name in (("bitcoin_not_started", "btc-node"), ("ord_not_started", "ord-server")):
+        service = services.get(name)
+        # Missing inventory or inspect details cannot prove a clean pending start.
+        result[key] = observation_available and (service is None or (
+            service.get("state") == "created" and service.get("details_available") is True
+            and not _container_start_failed(service) and service.get("oom_killed") is False
+            and service.get("restart_count") == 0 and service.get("started_at") is None))
+    return result
+
+
 def _control_plane_progress(services, *, observation_available=True):
     """Report the private console independently from chain consensus readiness."""
     if not observation_available:
@@ -5097,6 +5110,7 @@ def _collect_node_progress(layout: ReleaseLayout, *, controller_state: str | Non
         ),
         "components": components,
         "control_plane": _control_plane_progress(services),
+        "minting_startup": _minting_startup_progress(services),
     }
 
 

@@ -270,6 +270,9 @@ class NativeBundleTests(unittest.TestCase):
                 report = node.collect_node_progress(layout)
                 components = {item["id"]: item for item in report["components"]}
                 bitcoin = components["bitcoin"]
+                self.assertEqual(report["minting_startup"]["bitcoin_not_started"],
+                                 not services and inventory_error is None)
+                self.assertEqual(report["minting_startup"]["ord_not_started"], inventory_error is None)
                 self.assertEqual(bitcoin["state"], expected)
                 self.assertEqual(helper.called, should_probe)
                 self.assertFalse(bitcoin["background_validation"]["available"])

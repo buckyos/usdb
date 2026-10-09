@@ -264,6 +264,55 @@ class ProgressDisplayTests(unittest.TestCase):
         self.assertIn("Node READY", rendered)
         self.assertEqual(report["overall_state"], "READY")
 
+    def test_image_waits_require_proven_unstarted_containers_independently(self):
+        created = dict(state="created", details_available=True, exit_code=0, container_error="",
+                       oom_killed=False, restart_count=0, started_at=None)
+        cases = [({}, True, True, True),
+                 ({name: created for name in ("btc-node", "ord-server")}, True, True, True),
+                 ({"btc-node": dict(state="running")}, True, False, True),
+                 ({"ord-server": dict(state="running")}, True, True, False),
+                 ({}, False, False, False)]
+        for changes in (dict(state="running"), dict(state="exited", exit_code=0),
+                        dict(state="exited", exit_code=1), dict(state="dead"),
+                        dict(state="restarting"), dict(container_error="OCI startup failed"),
+                        dict(oom_killed=True), dict(restart_count=1), dict(details_available=False),
+                        dict(started_at="2026-10-09T00:00:00Z")):
+            cases.append(({name: {**created, **changes} for name in ("btc-node", "ord-server")},
+                          True, False, False))
+        for services, available, core_wait, ord_wait in cases:
+            with self.subTest(services=services, available=available):
+                report = dict(overall_state="INSTALLING", components=[],
+                    image_preparation=dict(phase="pulling"),
+                    minting_startup=NODE._minting_startup_progress(services, observation_available=available),
+                    minting=dict(enabled=True, state="UNAVAILABLE", backend_ready=False, transactions_enabled=False,
+                                 guidance="Cannot establish current readiness"))
+                original = copy.deepcopy(report)
+                for details in (False, True):
+                    rendered = " ".join(render_node_progress(report, details=details).split())
+                    self.assertIn("Bitcoin txindex " + ("WAITING" if core_wait else "UNAVAILABLE"), rendered)
+                    self.assertIn("Ord (optional) " + ("WAITING" if ord_wait else "UNAVAILABLE"), rendered)
+                    self.assertEqual("== Attention" in rendered, not (core_wait and ord_wait))
+                    if core_wait:
+                        self.assertIn("Waiting for container images before Bitcoin Core startup", rendered)
+                    if ord_wait:
+                        self.assertIn("Waiting for container images before Ord supervisor startup", rendered)
+                self.assertEqual(report, original)
+
+    def test_image_waits_never_replace_fresh_observations_or_explicit_failures(self):
+        for state in ("FAILED", "STOPPED", "BLOCKED_CONFIG", "BLOCKED_DISK", "UNAVAILABLE", "READY"):
+            with self.subTest(state=state):
+                report = dict(overall_state="INSTALLING", components=[], image_preparation=dict(phase="pulling"),
+                    minting_startup=NODE._minting_startup_progress({}),
+                    minting=dict(enabled=True, state=state, observed_at_ms=1000, guidance="Original diagnostic"))
+                rendered = " ".join(render_node_progress(report, details=True).split())
+                self.assertIn("Ord (optional) " + state, rendered)
+                self.assertIn("Original diagnostic", rendered)
+                self.assertNotIn("Waiting for container images", rendered)
+        report["minting"] = dict(enabled=False, state="DISABLED")
+        rendered = render_node_progress(report)
+        self.assertNotIn("Ord (optional)", rendered)
+        self.assertNotIn("Bitcoin txindex", rendered)
+
     def test_terminal_symbols_require_both_tty_and_unicode_encoding(self):
         with mock.patch.dict(NODE.os.environ, {"TERM": "xterm"}):
             for tty, encoding, supported in ((True, "utf-8", True), (True, "ascii", False),

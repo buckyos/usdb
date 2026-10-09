@@ -16,9 +16,44 @@ sys.path.insert(0, str(TOOLS))
 import assumeutxo_node as native
 import node_image_progress as images
 import usdb_node as node
+import usdb_minting as minting
+from common.node_progress import progress_fixture
 
 
 class ImageProgressTests(unittest.TestCase):
+    def test_optional_startup_waits_follow_live_images_and_end_with_preparation(self):
+        with progress_fixture({}) as layout:
+            env = dict(USDB_DATA_ROOT=str(layout.node_env.parent),
+                       **minting.environment(layout.node_env.parent, True))
+            layout.node_env.write_text(node.upsert_env(layout.node_env.read_text(), env))
+            def observe():
+                report = node.collect_node_progress(layout)
+                self.assertEqual(report["minting"]["state"], "UNAVAILABLE")
+                self.assertFalse(report["minting"]["backend_ready"])
+                self.assertFalse(report["minting"]["transactions_enabled"])
+                return " ".join(node.render_node_progress(report, width=180).split())
+
+            for phase in ("checking", "cached", "pulling"):
+                with images.ImagePreparation(layout) as preparation:
+                    preparation.set_group("runtime")
+                    preparation.record["phase"] = phase
+                    preparation._publish(force=True)
+                    live = images._path(layout).read_text()
+                    for label in ("Bitcoin txindex", "Ord (optional)"):
+                        self.assertIn(label + " WAITING", observe())
+                    for changes in (dict(binding=["old-release"]), dict(pid=2**31 - 1),
+                                    dict(phase="failed", last_error="pull exhausted")):
+                        images._path(layout).write_text(json.dumps({**json.loads(live), **changes}))
+                        rendered = observe()
+                        for label in ("Bitcoin txindex", "Ord (optional)"):
+                            self.assertIn(label + " UNAVAILABLE", rendered)
+                        if changes.get("phase") == "failed":
+                            self.assertIn("Container images FAILED", rendered)
+                            self.assertIn("pull exhausted", rendered)
+                    images._path(layout).write_text(live)
+                for label in ("Bitcoin txindex", "Ord (optional)"):
+                    self.assertIn(label + " UNAVAILABLE", observe())
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

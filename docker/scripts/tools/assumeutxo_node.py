@@ -668,4 +668,5 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
                 observed_at=observed_at, controller_state=(controller_state if controller_state is not None else node.controller_observed_state(layout)),
                 overall_state=overall, auxiliary_state="READY", components=components, resources=resources, mining=mining,
                 control_plane=node._control_plane_progress(services, observation_available=services_available),
+                minting_startup=node._minting_startup_progress(services, observation_available=services_available),
                 native_bootstrap=dict(core=core, download=download, activation=activation, import_progress=imported, balance_history=bootstrap))

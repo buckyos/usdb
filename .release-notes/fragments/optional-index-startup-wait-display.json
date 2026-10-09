@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "optional-index-startup-wait-display",
+  "type": "fixed",
+  "scopes": ["node-runtime"],
+  "summary": "Show expected txindex and Ord startup waits during live image preparation",
+  "details": [
+    "The status dashboard uses the existing container inventory to distinguish pending Core and Ord supervisor starts from unavailable observations of running or failed services.",
+    "Wait explanations require a live image preparation record and preserve explicit failures, fresh observations, raw progress states and capability checks. No extra Docker or RPC probes are added."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

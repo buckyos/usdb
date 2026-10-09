@@ -275,13 +275,24 @@ def _history_row(background: dict[str, Any], *, details: bool, probe_detail: str
                 percent=_coverage(background.get("height"), background.get("target")) if state == "SYNCING" else None)
 
 
-def _minting_rows(minting: dict[str, Any], *, details: bool) -> list[_Row]:
+def _minting_rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
+    minting = report.get("minting", {})
     if not minting.get("enabled"):
         return []
     state = minting["state"]
+    # An absent observation is expected only while a live image preparation and
+    # the same inventory prove a pending start. Keep fresh failures and raw
+    # capability flags intact; these rows never feed readiness or alert policy.
+    preparing = (report.get("image_preparation", {}).get("phase") in {"checking", "cached", "pulling"}
+                 and state == "UNAVAILABLE" and minting.get("observed_at_ms") is None)
+    startup = report.get("minting_startup", {})
+    core_wait = preparing and startup.get("bitcoin_not_started") is True
+    ord_wait = preparing and startup.get("ord_not_started") is True
     current, target = minting.get("txindex_height"), minting.get("core_height")
     # Height coverage is not proof of readiness, nor a time-completion estimate.
-    if state in {"UNAVAILABLE", "STOPPED", "FAILED"}:
+    if core_wait:
+        index_state = "WAITING"
+    elif state in {"UNAVAILABLE", "STOPPED", "FAILED"}:
         index_state = "UNAVAILABLE"
     elif _height(current) and _height(target):
         index_state = "READY" if minting.get("txindex_synced") is True and current >= target else "INDEXING"
@@ -296,9 +307,10 @@ def _minting_rows(minting: dict[str, Any], *, details: bool) -> list[_Row]:
         if minting.get("txindex_synced") is not True and current >= target:
             index.info.append("Waiting for Core to report txindex synced=true")
     elif index_state == "WAITING":
-        index.info.append("txindex observation deferred with the Ord supervisor during bootstrap" if state == "WAITING_RESOURCES"
+        index.info.append("Waiting for container images before Bitcoin Core startup" if core_wait else
+                          "txindex observation deferred with the Ord supervisor during bootstrap" if state == "WAITING_RESOURCES"
                           else "Index height not reported; check that Core adopted BTC_TXINDEX=1")
-    ord_row = _Row("Ord (optional)", state)
+    ord_row = _Row("Ord (optional)", "WAITING" if ord_wait else state)
     if _height(minting.get("ord_height")):
         ord_row.summary = f"committed height {minting['ord_height']:,}"
         if _height(minting.get("ord_gap")):
@@ -330,7 +342,8 @@ def _minting_rows(minting: dict[str, Any], *, details: bool) -> list[_Row]:
     if (details or minting.get("resource_profile") in {"catchup", "steady"}) and _height(minting.get("index_cache_bytes")):
         ord_row.info.append(f"Index cache: {human_size(minting['index_cache_bytes'])} | commit interval: {minting.get('commit_interval', 'unknown')} blocks")
     if details or state != "READY":
-        ord_row.info.append(minting.get("guidance", ""))
+        ord_row.info.append("Waiting for container images before Ord supervisor startup" if ord_wait
+                            else minting.get("guidance", ""))
     if details or state == "BLOCKED_DISK":
         disk = [(label, minting.get(key)) for label, key in
                 (("free", "disk_free_bytes"), ("reserve", "disk_required_bytes"), ("index", "index_file_bytes"))]
@@ -481,7 +494,7 @@ def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
         if isinstance(component.get("background_validation"), dict):
             probe = component.get("latest_probe_detail") or (component.get("detail") if component.get("observation_unavailable") else None)
             rows.append(_history_row(component["background_validation"], details=details, probe_detail=probe))
-    rows += _minting_rows(report.get("minting", {}), details=details)
+    rows += _minting_rows(report, details=details)
     mining = report.get("mining")
     if isinstance(mining, dict):
         row = _Row("Mining", mining["state"], attention=bool(mining.get("drift") or mining.get("observation_unavailable")))
