@@ -76,6 +76,10 @@ usdb-node mining status --watch
 
 ## 读懂预检输出
 
+挖矿后的日常观察可使用 `usdb-node status --watch`：顶部显示收益地址和当前候选 Pass，
+链服务下显示链头、本机最近出块及该块经验证的发行奖励和手续费收入。
+完整字段及历史 Pass、重组和不可用情况的解释见[矿工状态面板](status.md#矿工身份与出块收益)。
+
 `mining check` 显示 `state=READY`，表示本次预检通过，可以继续执行 `mining enable`。它不会自动开启挖矿，也不表示收益已经到账。`enable` 会重新检查当时的状态。
 
 ### 地址、资格和链状态

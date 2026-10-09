@@ -1,0 +1,21 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-status-identity-and-block-income",
+  "type": "added",
+  "scopes": ["node-runtime"],
+  "summary": "Show miner identity, current Pass, local block evidence and verified block income in the status dashboard",
+  "details": [
+    "Miner progress panels show the configured reward address and current candidate Pass at the top, with candidate energy, level and BTC evaluation height beside mining state.",
+    "Chain rows distinguish the network head from a local seal evidenced by recent container logs and canonical RPC checks. Block income includes verified miner issuance and miner fees; it is not account balance or cumulative income.",
+    "The optional mining.activity JSON projection uses bounded probes, a block-hash cache and failure backoff. Reorgs withdraw orphaned-block income; unavailable optional observations do not change readiness or mining authorization.",
+    "No protocol, database, service configuration or network identity changes are required. Existing chain releases without the economics RPC display income as unavailable."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

@@ -66,6 +66,65 @@ def _height(value: Any) -> bool:
     return type(value) is int and value >= 0
 
 
+def _identifier(value: str, details: bool) -> str:
+    """Keep full identifiers in details/JSON while fitting the routine dashboard."""
+    return value if details or len(value) <= 26 else value[:12] + "..." + value[-10:]
+
+
+def _block_age(timestamp: Any, observed_at: str) -> str:
+    """Use the report clock; rendering never samples clocks or performs RPC calls."""
+    if not _height(timestamp):
+        return "age unavailable"
+    try:
+        elapsed = int(datetime.fromisoformat(observed_at).timestamp()) - timestamp
+    except (ValueError, TypeError, OverflowError, OSError):
+        return "age unavailable"
+    return duration_text(elapsed) + " ago" if elapsed >= 0 else "timestamp ahead of observation"
+
+
+def _usdb_amount(atoms: str) -> str:
+    """Format decimal atom strings exactly, including one-atom rewards."""
+    whole, fraction = divmod(int(atoms), 10**18)
+    suffix = f"{fraction:018d}".rstrip("0")
+    return f"{whole:,}" + (f".{suffix}" if suffix else "")
+
+
+def _chain_mining_lines(report: dict[str, Any], component: dict[str, Any], *, details: bool) -> list[str]:
+    """Separate the network head, a proven local seal, and verified per-block income."""
+    if component.get("last_observed_at") or component.get("observation_unavailable"):
+        return []
+    lines = []
+    head = component.get("head") or {}
+    if head.get("hash"):
+        lines.append(f"Head: {_identifier(head['hash'], details)} | "
+                     f"{_block_age(head.get('timestamp'), report.get('observed_at', ''))}")
+    activity = (report.get("mining") or {}).get("activity")
+    if not activity:
+        return lines
+    seal, state = activity.get("local_seal"), activity.get("state")
+    if not seal:
+        lines.append("Local block: " + activity.get("detail", "unavailable"))
+        return lines
+    lines.append(f"Local block: #{seal['height']:,} | {_identifier(seal['hash'], details)} | {state} | "
+                 f"{_block_age(seal.get('timestamp'), report.get('observed_at', ''))}")
+    if state != "canonical":
+        lines.append(activity.get("detail", "Local block canonicality is not confirmed"))
+        return lines
+    reward = activity.get("reward") or {}
+    if reward.get("state") == "verified":
+        lines.append(f"Block income: {_usdb_amount(reward['total_atoms'])} USDB "
+                     f"(issuance {_usdb_amount(reward['emission_atoms'])} + fees {_usdb_amount(reward['fee_atoms'])})")
+        candidate = (report.get("mining") or {}).get("eligibility", {}).get("candidate", {}).get("pass", {})
+        if details or candidate.get("pass_id") != reward.get("pass_id"):
+            lines.append(f"Block Pass: {_identifier(reward['pass_id'], details)} | BTC height {reward['btc_height']:,}")
+    else:
+        lines.append("Block income: " + reward.get("detail", "unavailable"))
+    if details:
+        lines.append(f"Local seal checked: {activity.get('observed_at', 'unknown')} | "
+                     f"confirmations at sample: {activity.get('confirmations', '?')}")
+    return lines
+
+
 def _coverage(current: Any, total: Any) -> float | None:
     if _height(current) and _height(total) and total > 0:
         return min(100.0, 100 * current / total)
@@ -416,6 +475,8 @@ def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
                 row.info = explanations + row.info
             if details:
                 row.info += probes
+            if component["id"] == "usdb_chain":
+                row.info += _chain_mining_lines(report, component, details=details)
             rows.append(row)
         if isinstance(component.get("background_validation"), dict):
             probe = component.get("latest_probe_detail") or (component.get("detail") if component.get("observation_unavailable") else None)
@@ -429,6 +490,16 @@ def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
             row.summary = f"workers: {configured['USDB_MINER_THREADS']}"
         if details or row.attention or row.state not in _COMPLETE:
             row.info.append(mining.get("detail", ""))
+        candidate = mining.get("eligibility", {}).get("candidate", {})
+        profile = candidate.get("pass", {})
+        if profile:
+            row.info.append(f"Candidate: level {profile.get('level', '?')} | effective energy {profile.get('effective_energy', '?')} "
+                            f"| difficulty factor {profile.get('difficulty_factor_bps', '?')} bps")
+            height = candidate.get("external_state", {}).get("btc_height")
+            if _height(height):
+                row.info.append(f"Pass evaluated at BTC height {height:,} | eligible candidates {candidate.get('matching_candidate_count', '?')}")
+            if details:
+                row.info.append(f"Raw energy {profile.get('raw_energy', '?')} | collaboration {profile.get('collab_contribution', '?')}")
         rows.append(row)
     return rows
 
@@ -463,6 +534,15 @@ def render_node_progress(report: dict[str, Any], *, phase: str = "observe", widt
     elif report.get("network"):
         network = report["network"]
         append(f"Network: {network['name']} | Chain ID: {network.get('chain_id')}")
+
+    configured = mining.get("configured", {})
+    if configured.get("USDB_NODE_ROLE") == "miner" and configured.get("USDB_MINER_ADDRESS"):
+        append(f"Miner address: {configured['USDB_MINER_ADDRESS']}")
+        profile = mining.get("eligibility", {}).get("candidate", {}).get("pass", {})
+        if profile.get("pass_id"):
+            append(f"Candidate Pass: {profile['pass_id']} | {profile.get('state', '?')}/{profile.get('pass_kind', '?')}")
+        else:
+            append("Candidate Pass: unavailable (see Mining status)")
 
     rows = _rows(report, details=details)
     for group in ("Attention", "Work in progress", "Node services", "Preparation"):

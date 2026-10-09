@@ -4820,6 +4820,10 @@ def _mining_progress(layout, services, chain_component, components, overall):
             overall = "BLOCKED"
         elif mining.get("observation_unavailable") and overall == "READY":
             overall = "WAITING"
+        from node_mining_activity import OBSERVER
+        activity = OBSERVER.observe(layout, mining, chain_component, services.get("usdb-chain", {}))
+        if activity is not None:
+            mining["activity"] = activity
     return mining, overall
 
 

@@ -71,6 +71,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/node_notifications.py",
 
     "docker/scripts/tools/node_progress_render.py",
+    "docker/scripts/tools/node_mining_activity.py",
     "docker/scripts/tools/node_doctor.py",
     "docker/scripts/tools/node_image_progress.py",
     "docker/scripts/tools/node_controller_status.py",
