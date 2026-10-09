@@ -15,6 +15,12 @@ ADDRESS = "0x4ddc71108239dbb30aa288b93ab1d18539ec863a"
 PASS_ID = "1f" * 32 + "i0"
 
 
+def genesis_peer(genesis, identity="11" * 32):
+    """An inbound eth peer whose handshake advertises the requested genesis."""
+    return {"id": identity, "network": {"inbound": True},
+            "protocols": {"eth": {"version": 67, "head": genesis}}}
+
+
 class MiningFixture:
     """Run the real state machine against private files and fake service boundaries."""
     def __enter__(self):
@@ -56,6 +62,7 @@ class MiningFixture:
         self.calls = []
         self.rpc_calls = []
         self.fail_rpc = None
+        self.peers = None
         self.fail_helper = None
         self.after_helper = None
         self.after_rpc = None
@@ -119,7 +126,9 @@ class MiningFixture:
         values = {"get_readiness": self.ready, "resolve_miner_candidate": self.candidate,
                   "eth_mining": self.runtime["environment"]["USDB_NODE_ROLE"] == "miner" if self.mining_override is None else self.mining_override,
                   "eth_coinbase": self.runtime["environment"].get("USDB_MINER_ADDRESS"),
-                  "admin_peers": [{"protocols": {"eth": {"version": 66, "head": "0x" + "11" * 32}}}],
+                  "admin_peers": self.peers if self.peers is not None else [
+                      genesis_peer(self.layout.network_identity["genesis_block_hash"], f"{index + 1:064x}")
+                      for index in range(self.chain["peers"])],
                   "eth_getWork": ["0x" + "01" * 32, "0x" + "02" * 32, "0x" + "03" * 32]}
         if method == "eth_getWork" and not self.work_available:
             raise ValueError("mining work not ready")

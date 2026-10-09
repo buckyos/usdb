@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "first-node-connected-genesis-bootstrap",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime", "testing"],
+  "summary": "Allow explicit network cold start with connected genesis peers and configured seeds",
+  "details": [
+    "First-node mining declaration accepts configured seeds and established eth peers reporting the expected genesis. Non-genesis heads, incomplete handshakes, invalid observations and changing peer counts block declaration with contextual diagnostics.",
+    "Queued operations recheck before stopping the original chain, including resumed STOPPING tasks. Rejection before runtime changes leaves the full node running and cannot grant remembered founder authority.",
+    "Existing founder records remain bound to network, dataset and node identity and can be reused with configured seeds after blocks have been produced. Ordinary joining never falls back to cold start automatically.",
+    "Peer heads are remote claims and do not prove the whole network is unstarted; explicit initializer coordination and all existing readiness, MinerPass and recovery checks remain required."
+  ],
+  "operator_actions": [
+    "Activate the updated node kit and retry mining check --address ADDRESS --first-node for a confirmed new or reset network. Review the plan before mining enable; no data reset or Seed removal is required for this fix."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": true},
+  "references": []
+}

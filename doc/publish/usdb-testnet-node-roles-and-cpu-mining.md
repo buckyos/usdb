@@ -160,7 +160,7 @@ GPU worker 本身不需要运行 Bitcoin、balance-history 或 usdb-indexer；�
 ## 6. 运行与应急控制
 
 长期角色通过 `usdb-node mining enable --address ADDRESS` / `mining disable` 管理。
-无 seed 的首节点增加 `--first-node`，默认一个 CPU worker；高级覆盖使用正整数 `--threads N`。
+初始化负责人增加 `--first-node` 声明 genesis 冷启动，新版允许保留 seed 及已确认报告同一 genesis 的连接。默认一个 CPU worker；高级覆盖使用正整数 `--threads N`。
 工具自动预检并只重建 chain；不要手工写入 miner 配置后调用旧 helper。
 
 `usdb-node mining status --watch` 展示持久任务、角色是否生效以及 work 状态；

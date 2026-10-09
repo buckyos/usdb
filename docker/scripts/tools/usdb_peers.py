@@ -82,7 +82,7 @@ def binding(layout, env):
 
 
 def remembered_first_node(layout, env, node_id=None):
-    """Display the zero-peer exception only for the acknowledged chain identity."""
+    """Recognize a founder only for the acknowledged chain and local node identity."""
     record = mining.read_state(layout).get("first_node")
     if not record:
         return False
@@ -96,7 +96,7 @@ def remembered_first_node(layout, env, node_id=None):
 def membership(layout, env, *, syncing, peer_count, node_id=None):
     """Separate process health from basic network membership, never mining approval."""
     seeds = mining.parse_seeds(env.get("USDB_BOOTNODES", ""))
-    founder = not seeds and remembered_first_node(layout, env, node_id)
+    founder = remembered_first_node(layout, env, node_id)
     if not seeds and not founder:
         return "WAITING", "SEED_REQUIRED", "configure a seed with usdb-node peers add ENODE"
     if peer_count == 0 and not founder:

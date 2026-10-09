@@ -486,14 +486,58 @@ def parse_seeds(value):
     return usdb_peers.parse_seeds(value)
 
 
+def first_node_peers(layout: node.ReleaseLayout, chain):
+    """Confirm the observed genesis peers, never claim the whole network is empty.
+
+    Peer heads are remote claims, not verified chain history. An explicit founder
+    declaration remains required, and an inconclusive observation must be retried.
+    """
+    if chain["height"] != 0:
+        raise ValueError(f"FIRST_NODE_CONFLICT: first declaration requires genesis; height={chain['height']}, peers={chain['peers']}; synchronize and use normal mining enable")
+    try:
+        peers = rpc(layout, "admin_peers")
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise ValueError(f"FIRST_NODE_PEERS_UNCONFIRMED: admin_peers failed; height=0, peers={chain['peers']}; retry after RPC recovers") from error
+    if not isinstance(peers, list):
+        raise ValueError("FIRST_NODE_PEERS_UNCONFIRMED: admin_peers returned an invalid peer list; retry the check")
+    genesis = chain["network"]["genesis_block_hash"]
+    for index, peer in enumerate(peers):
+        identity = peer.get("id") if isinstance(peer, dict) else None
+        label = identity if isinstance(identity, str) and re.fullmatch(r"[0-9a-f]{64}", identity) else f"index:{index}"
+        protocols = peer.get("protocols") if isinstance(peer, dict) else None
+        eth = protocols.get("eth") if isinstance(protocols, dict) else None
+        if not isinstance(eth, dict) or type(eth.get("version")) is not int or eth["version"] < 66:
+            raise ValueError(f"FIRST_NODE_PEERS_UNCONFIRMED: peer={label} has no established eth protocol; wait for handshake completion and retry")
+        head = eth.get("head")
+        if not isinstance(head, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", head):
+            raise ValueError(f"FIRST_NODE_PEERS_UNCONFIRMED: peer={label}, eth_version={eth['version']} has no valid head; retry after peer state is available")
+        if head.lower() != genesis:
+            raise ValueError(f"FIRST_NODE_CONFLICT: peer={label} advertises non-genesis head={head.lower()}, expected_genesis={genesis}; synchronize and inspect the existing chain before enabling mining")
+    # RPC calls are not atomic. Catch local advancement and peer-count changes
+    # while collecting the list instead of treating an empty/stale list as proof.
+    current = chain_view(layout)
+    if current["node_id"] != chain["node_id"]:
+        raise ValueError("NODE_IDENTITY_CHANGED: node identity changed during first-node check")
+    if current["height"] != 0 or current["syncing"] is not False:
+        raise ValueError(f"FIRST_NODE_CONFLICT: chain changed during first-node check; height={current['height']}, syncing={current['syncing']}; synchronize and retry")
+    if chain["peers"] != len(peers) or current["peers"] != len(peers):
+        raise ValueError(f"FIRST_NODE_PEERS_UNCONFIRMED: peer inventory changed; before={chain['peers']}, observed={len(peers)}, after={current['peers']}; retry the check")
+    return len(peers)
+
+
 def peer_check(layout: node.ReleaseLayout, env, chain, data_binding, first_node):
+    """Separate explicit network initialization from ordinary seed-based joining."""
     seeds = parse_seeds(env.get("USDB_BOOTNODES", ""))
     record = read_state(layout).get("first_node")
     remembered = (record and record.get("binding") == data_binding and record.get("node_id") == chain["node_id"])
     if chain["syncing"] is not False:
         raise ValueError("CHAIN_SYNCING: wait for chain synchronization before enabling mining")
-    if first_node and seeds:
-        raise ValueError("FIRST_NODE_CONFLICT: configured peers select joining an existing network")
+    if remembered:
+        return {"mode": "first-node", "record": record, "declaration": "recorded", "seed_count": len(seeds)}
+    if first_node:
+        count = first_node_peers(layout, chain)
+        return {"mode": "first-node", "record": {"binding": data_binding, "node_id": chain["node_id"]},
+                "declaration": "new", "genesis_peer_count": count, "seed_count": len(seeds)}
     if seeds:
         if chain["peers"] < 1:
             raise ValueError("PEERS_UNREACHABLE: check the seed, NAT and 31303/TCP+UDP; never fall back to first-node")
@@ -505,13 +549,7 @@ def peer_check(layout: node.ReleaseLayout, env, chain, data_binding, first_node)
                    for p in protocols):
             raise ValueError("PEERS_NOT_CONFIRMED: no established eth peer on the configured network")
         return {"mode": "join", "seed_count": len(seeds)}
-    if remembered:
-        return {"mode": "first-node", "record": record}
-    if not first_node:
-        raise ValueError("PEER_SOURCE_REQUIRED: configure USDB_BOOTNODES or explicitly use --first-node")
-    if chain["height"] != 0 or chain["peers"] != 0:
-        raise ValueError("FIRST_NODE_CONFLICT: first declaration requires genesis and no connected peers")
-    return {"mode": "first-node", "record": {"binding": data_binding, "node_id": chain["node_id"]}}
+    raise ValueError("PEER_SOURCE_REQUIRED: configure USDB_BOOTNODES or explicitly use --first-node")
 
 
 def preflight(layout: node.ReleaseLayout, address: str, *, threads: int = 1, first_node: bool = False,
@@ -560,9 +598,11 @@ def make_operation(layout: node.ReleaseLayout, target, plan=None):
     env = node.read_env(layout.node_env)
     old = read_state(layout)
     first_node = old.get("first_node")
-    if not first_node and old.get("phase") in {"STARTING", "ROLLING_BACK", "FAILED"}:
+    if (not first_node and old.get("phase") in {"STARTING", "ROLLING_BACK", "FAILED"}
+            and old.get("rollback") != "not_needed"):
         # The process may have sealed blocks before its RPC became observable.
         # Keep the acknowledged identity when cancelling that interrupted start.
+        # A plan rejected before changing the runtime granted no such authority.
         first_node = old.get("plan", {}).get("peer", {}).get("record")
     operation = {"operation_id": uuid.uuid4().hex, "release_id": layout.release_id,
                  "phase": "QUEUED", "original": role_config(env), "target": target,
@@ -757,6 +797,19 @@ def run_operation(layout: node.ReleaseLayout, *, wait_secs: float = 120) -> int:
                 operation["plan"] = fresh
             _phase(layout, operation, "STOPPING")
         if operation["phase"] == "STOPPING":
+            if (enabling and operation["plan"]["peer"]["mode"] == "first-node"
+                    and inspect_chain(layout, processes=False)["state"] == "running"):
+                # A slow eligibility check or an interrupted controller can leave
+                # the full node running long enough to learn about a first block.
+                # Reject before stopping it; no rollback/recreation is needed yet.
+                try:
+                    chain = chain_view(layout)
+                    peer = peer_check(layout, env, chain, operation["binding"], True)
+                    if peer["record"]["node_id"] != operation["plan"]["peer"]["record"]["node_id"]:
+                        raise ValueError("NODE_IDENTITY_CHANGED: node identity changed before first-node activation")
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    _phase(layout, operation, "FAILED", error=str(error), rollback="not_needed")
+                    return node.CONTROLLER_MANUAL_EXIT_CODE
             _stop(layout)
             _phase(layout, operation, "STOPPED")
         if operation["phase"] == "STOPPED":
@@ -999,6 +1052,13 @@ def print_report(report, *, output=sys.stdout):
         chain = report["chain"]
         print(f"Chain: {chain['network']['chain_id']} | genesis={chain['network']['genesis_block_hash']} | "
               f"height={chain['height']} | peers={chain['peers']}", file=output)
+    peer = report.get("peer", {})
+    if peer.get("mode") == "first-node":
+        if peer.get("declaration") == "new":
+            print(f"Cold start: explicit network initialization | genesis peers={peer['genesis_peer_count']} | configured seeds={peer['seed_count']} (preserved)", file=output)
+            print("Peer heads are reported observations; the network initializer must confirm this is a new or reset network.", file=output)
+        else:
+            print("Cold start: reusing the recorded founder identity for this network and chain dataset", file=output)
     if "configured" in report:
         print(f"Configured: {json.dumps(report['configured'], sort_keys=True)} | applied={report['applied']}", file=output)
     for key in ("operation", "bootstrap", "economics", "last_local_seal", "shareable_enode", "peer_guidance", "impact", "detail"):
@@ -1013,7 +1073,7 @@ def add_parser(subparsers):
         command = actions.add_parser(name, help="Read-only miner eligibility and resource checks" if name == "check" else "Enable mining after eligibility checks and confirmation")
         command.add_argument("--address", required=True, help="USDB miner reward address (0x-prefixed address associated with the selected MinerPass)")
         command.add_argument("--threads", type=int, default=1, help="CPU PoW workers (default: 1; must be positive)")
-        command.add_argument("--first-node", action="store_true", help="Explicitly acknowledge genesis cold start without peers")
+        command.add_argument("--first-node", action="store_true", help="Explicitly declare genesis cold start; configured seeds and confirmed genesis peers are allowed")
         command.add_argument("--expect-pass", help="Assert the protocol-selected pass ID without overriding selection")
         command.add_argument("--json", action="store_true", help="print mining checks or operation result as JSON")
         if name == "enable":

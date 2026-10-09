@@ -578,7 +578,7 @@ usdb-node mining enable \
 usdb-node mining status --watch
 ```
 
-没有 seed 的首节点才使用 `--first-node`。Joiner 在首次 `configure` 时传入 `--bootnodes` 和必要的
+初始化负责人使用 `--first-node` 声明 genesis 冷启动；新版允许保留 seed 及已确认报告同一 genesis 的连接。Joiner 在首次 `configure` 时传入 `--bootnodes` 和必要的
 `--nat`，连接同网 peer 并同步完成后省略 `--first-node` 启用 miner。默认 CPU worker 为 1，
 当前受管入口拒绝线程数 0，GPU remote sealer 不在本次范围。
 用 `mining disable` 持久回到 full；`--yes --json` 提供自动化提交与 operation ID。

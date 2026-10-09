@@ -223,8 +223,7 @@ class MiningTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "PEER_SOURCE_REQUIRED"):
                 MINING.preflight(f.layout, ADDRESS)
             f.update_env(USDB_BOOTNODES=SEED)
-            with self.assertRaisesRegex(ValueError, "FIRST_NODE_CONFLICT"):
-                MINING.preflight(f.layout, ADDRESS, first_node=True)
+            self.assertEqual(MINING.preflight(f.layout, ADDRESS, first_node=True)["peer"]["mode"], "first-node")
             with self.assertRaisesRegex(ValueError, "PEERS_UNREACHABLE"):
                 MINING.preflight(f.layout, ADDRESS)
             f.chain["peers"] = 1
