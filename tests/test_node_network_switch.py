@@ -50,6 +50,7 @@ class NetworkSwitchTests(unittest.TestCase):
         self.assertFalse(value["executable"])
         self.assertEqual(value["source_kit"], str(self.f.source_kit))
         self.assertEqual(value["source_bundle"], "usdb-testnet-v0")
+        self.assertEqual(value["source_selection"]["selected"], str(self.f.env_path))
         self.assertEqual([c["action"] for c in value["components"]], ["reuse", "reuse", "rebuild", "rebuild", "rebuild"])
         self.assertNotIn("private-", self.out.getvalue())
         self.assertEqual(before, {str(p): p.read_bytes() for p in self.f.root.rglob("*") if p.is_file()})
@@ -70,15 +71,36 @@ class NetworkSwitchTests(unittest.TestCase):
         self.assertIn("setup", str(error.exception))
         self.privileged.assert_not_called()
 
-    def test_multiple_sources_and_explicit_missing_config_require_selection(self):
+    def test_multiple_sources_default_to_latest_but_explicit_missing_config_is_rejected(self):
         extra = self.f.config.with_name("usdb-testnet-v2")
         extra.mkdir()
         (extra / "node.env").write_bytes(self.f.env_path.read_bytes())
-        with self.assertRaisesRegex(ValueError, "Multiple existing networks"):
-            switch.preview_source(self.f.target, node)
+        self.assertEqual(switch.preview_source(self.f.target, node).node_env, extra / "node.env")
         args = node.build_parser().parse_args(["--node-env", str(self.f.target.node_env), "upgrade-plan"])
         with self.assertRaisesRegex(ValueError, "Selected node configuration does not exist"):
             upgrade.dispatch(args, self.f.target, node)
+
+    def test_explicit_source_overrides_newest_default_and_json_stays_machine_readable(self):
+        for bundle in ("usdb-testnet-v2", "usdb-testnet-v10", "usdb-mainnet-v99"):
+            extra = self.f.config.with_name(bundle)
+            extra.mkdir()
+            (extra / "node.env").write_bytes(self.f.env_path.read_bytes())
+        self.assertEqual(switch.preview_source(self.f.target, node).node_env.parent.name, "usdb-testnet-v10")
+        args = node.build_parser().parse_args(["--node-env", str(self.f.env_path), "upgrade-plan", "--json"])
+        layout = replace(self.f.target, node_env=self.f.env_path)
+        self.assertEqual(upgrade.dispatch(args, layout, node), 2)
+        value = json.loads(self.out.getvalue())
+        self.assertEqual(value["source_bundle"], "usdb-testnet-v0")
+        self.assertNotIn("source_selection", value)
+        self.privileged.assert_not_called()
+
+    def test_equal_numeric_versions_require_explicit_source(self):
+        for bundle in ("usdb-testnet-v2", "usdb-testnet-v02"):
+            extra = self.f.config.with_name(bundle)
+            extra.mkdir()
+            (extra / "node.env").write_bytes(self.f.env_path.read_bytes())
+        with self.assertRaisesRegex(ValueError, "Multiple configurations have the latest network version"):
+            switch.preview_source(self.f.target, node)
 
     def test_retire_all_old_units_without_altering_configuration_or_data_is_idempotent(self):
         saved = {p: p.read_bytes() for p in self.f.root.rglob("*") if p.is_file()}

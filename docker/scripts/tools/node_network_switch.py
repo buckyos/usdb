@@ -14,36 +14,80 @@ import node_rebuild as core
 from runtime_compatibility import PERSISTENT_DATA_SERVICES, build_persistent_data_paths
 
 BUNDLE = re.compile(r"usdb-(?:testnet|mainnet)-v[0-9]+")
+SOURCE_ORDER = "same network family first, then highest numeric vN (not file time or release rN)"
+
+
+def configuration_directories(layout):
+    """Discover standard config locations, including directories with only recovery markers."""
+    roots = {Path.home() / ".config/usdb"}
+    if BUNDLE.fullmatch(layout.node_env.parent.name):
+        roots.add(layout.node_env.parent.parent)
+    directories = {layout.node_env.parent}
+    for root in sorted(roots):
+        core.safe_path(root)
+        if root.exists():
+            directories.update(p for p in root.iterdir() if BUNDLE.fullmatch(p.name))
+    return sorted(directories)
+
+
+def read_configuration(path, node):
+    """Read bounded operator-owned configuration as data; redact parser errors and values."""
+    try:
+        core.safe_path(path)
+        info = path.stat()
+        if not path.is_file() or info.st_uid != os.getuid() or info.st_size > 1024 * 1024:
+            raise ValueError("unsupported configuration")
+        env = node.read_env(path)
+        if not env.get("USDB_DATA_ROOT"):
+            raise ValueError("missing data root")
+        return env
+    except (OSError, ValueError):
+        raise ValueError(f"Cannot inspect network configuration {path}; check access and syntax. Values were not printed.") from None
 
 
 def configurations(layout, node):
     """Read only this operator's standard bundle configs; never expose env values in errors."""
-    roots = {Path.home() / ".config/usdb"}
-    if BUNDLE.fullmatch(layout.node_env.parent.name):
-        roots.add(layout.node_env.parent.parent)
     result = []
-    for root in sorted(roots):
-        if not root.exists():
+    for directory in configuration_directories(layout):
+        if not BUNDLE.fullmatch(directory.name) or directory.name == layout.bundle_id:
             continue
-        core.safe_path(root)
-        for directory in sorted(root.iterdir()):
-            if not BUNDLE.fullmatch(directory.name) or directory.name == layout.bundle_id:
-                continue
-            path = directory / "node.env"
-            if not path.exists() and not path.is_symlink():
-                continue
-            try:
-                core.safe_path(path)
-                info = path.stat()
-                if not path.is_file() or info.st_uid != os.getuid() or info.st_size > 1024 * 1024:
-                    raise ValueError("unsupported configuration")
-                env = node.read_env(path)
-                if not env.get("USDB_DATA_ROOT"):
-                    raise ValueError("missing data root")
-            except (OSError, ValueError):
-                raise ValueError(f"Cannot inspect network configuration {path}; check access and syntax before switching networks. Values were not printed.") from None
-            result.append(dict(bundle=directory.name, path=path, env=env))
+        path = directory / "node.env"
+        if path.exists() or path.is_symlink():
+            result.append(dict(bundle=directory.name, path=path, env=read_configuration(path, node)))
     return result
+
+
+def default_source(layout, previous):
+    """Choose a read-only comparison default, never an activation or compatibility verdict."""
+    family = layout.bundle_id.rsplit("-v", 1)[0]
+    choices = [item for item in previous if item["bundle"].rsplit("-v", 1)[0] == family] or previous
+    version = max(int(item["bundle"].rsplit("-v", 1)[1]) for item in choices)
+    newest = [item for item in choices if int(item["bundle"].rsplit("-v", 1)[1]) == version]
+    if len(newest) != 1:
+        commands = [shlex.join(["usdb-node", "--node-env", str(item["path"]), "upgrade-plan"]) for item in newest]
+        raise ValueError("Multiple configurations have the latest network version; select a source explicitly:\n  " + "\n  ".join(commands))
+    return newest[0]
+
+
+def source_selection(previous, selected):
+    """Expose the default and alternatives without leaking configuration values."""
+    family = selected["bundle"].rsplit("-v", 1)[0]
+    alternatives = sorted((item for item in previous if item != selected), reverse=True,
+        key=lambda item: (item["bundle"].rsplit("-v", 1)[0] == family,
+                          int(item["bundle"].rsplit("-v", 1)[1])))
+    return dict(reason=SOURCE_ORDER, selected=str(selected["path"]),
+                candidates=[dict(bundle=item["bundle"], path=str(item["path"])) for item in [selected, *alternatives]])
+
+
+def source_selection_lines(selection):
+    """Use the same explanation in installer advice and human-readable upgrade plans."""
+    lines = ["Source selection: " + selection["reason"]]
+    for item in selection["candidates"]:
+        label = "Default" if item["path"] == selection["selected"] else "Alternative"
+        lines.append(f"  {label}: {item['bundle']} | {item['path']}")
+        if label == "Alternative":
+            lines.append("    " + shlex.join(["usdb-node", "--node-env", item["path"], "upgrade-plan"]))
+    return lines
 
 
 def unconfigured_message(layout, node):
@@ -64,15 +108,12 @@ def unconfigured_message(layout, node):
             "If reusing retained data, select the original Host data root during setup.")
 
 
-def preview_source(layout, node):
-    """Select an unambiguous prior config for read-only planning, never for execution."""
-    previous = configurations(layout, node)
-    if len(previous) == 1:
-        return replace(layout, node_env=previous[0]["path"])
+def preview_source(layout, node, *, candidates=None):
+    """Select the newest prior network for read-only planning, never for execution."""
+    previous = configurations(layout, node) if candidates is None else candidates
     if not previous:
         raise ValueError(unconfigured_message(layout, node))
-    commands = ["usdb-node --node-env " + shlex.quote(str(item["path"])) + " upgrade-plan" for item in previous]
-    raise ValueError("Multiple existing networks found; select the source explicitly for this read-only comparison:\n  " + "\n  ".join(commands))
+    return replace(layout, node_env=default_source(layout, previous)["path"])
 
 
 def require_selected_network(layout):

@@ -73,6 +73,7 @@ jobs:
           python3 tests/test_node_setup_edit.py
           python3 tests/test_node_config_view.py
           python3 tests/test_node_network_switch.py
+          python3 tests/test_node_install_guidance.py
           python3 tests/test_node_storage.py
           python3 tests/test_node_resource_profiles.py
           python3 tests/test_node_image_progress.py

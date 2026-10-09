@@ -242,67 +242,13 @@ fi
 ln -sfn "${release_dir}/docker/scripts/tools/usdb_node.py" "$launcher"
 echo "Installed launcher: $launcher"
 echo "Tool selected: ${release_id}. Existing node configuration and running service images were not activated or changed."
-target_bundle="${release_id%-r*}"
-if [[ ! -f "${HOME}/.config/usdb/${target_bundle}/node.env" ]]; then
-  for existing_config in "${HOME}/.config/usdb"/usdb-*-v*/node.env; do
-    [[ -f "$existing_config" ]] || continue
-    existing_bundle="${existing_config%/node.env}"
-    existing_bundle="${existing_bundle##*/}"
-    [[ "$existing_bundle" =~ ^usdb-(testnet|mainnet)-v[0-9]+$ && "$existing_bundle" != "$target_bundle" ]] || continue
-    echo "Existing network: ${existing_bundle}; target ${target_bundle} needs separate setup."
-    echo "Run usdb-node upgrade-plan to inspect data reuse, then stop the old node using its original kit."
-    echo "Complete target setup before reboot: down alone leaves old autostart enabled."
-    echo "setup checks and disables supported old controller/monitor autostart sharing data (sudo may be requested)."
-  done
+# Advice is read-only and optional: an unreadable old configuration must not
+# turn a successfully installed immutable kit into an installation failure.
+echo
+if ! python3 -B "${release_dir}/docker/scripts/tools/node_install_guidance.py" \
+  --kit-root "$release_dir" --bin-dir "$bin_dir"; then
+  echo "Tool installation succeeded; deployment advice could not be completed."
+  echo "Inspect local configuration before setup or activation: usdb-node upgrade-plan"
 fi
-cat <<EOF
-
-Next steps for a first node install:
-  1. Ensure ${bin_dir} is in PATH:
-       export PATH="${bin_dir}:\$PATH"
-  2. Check or install supported host prerequisites:
-       usdb-node prepare-host
-     If Docker group membership changes, log out and back in before continuing.
-  3. Configure node identity, data paths, snapshot, firewall, and the systemd controller:
-       usdb-node setup
-     Use setup --no-controller only for explicit foreground or non-systemd operation.
-  4. Run the explicit read-only preflight, then bring the node to READY:
-       usdb-node doctor
-       usdb-node up
-       usdb-node status
-
-Existing node upgrade within the same network bundle:
-  1. Keep the old kit and inspect compatibility with the installed target release:
-       usdb-node upgrade-plan
-     Optional full paths/hashes: usdb-node upgrade-plan --details
-     Machine-readable output:   usdb-node upgrade-plan --json
-     If the old kit cannot be identified, add --from-kit /absolute/path/to/old-kit.
-  2. Follow the plan's recommended commands; do not run setup again:
-     compatible + PASSED:
-       usdb-node down
-       usdb-node activate-release
-       usdb-node doctor
-       usdb-node up
-       usdb-node status
-     data_rebuild / network_reset + PASSED:
-       Review the reset/rebuild with the network operator, then stop the whole node:
-       usdb-node down
-       usdb-node upgrade-release --backup-dir /absolute/path/to/new-private-upgrade-backup --execute
-       Replace the backup path with a NEW private directory outside node data/config/kit paths.
-       After success, refresh the controller for background operation using your existing options:
-       usdb-node controller install
-       usdb-node doctor
-       usdb-node up
-       usdb-node status
-     BLOCKED: resolve the reported blockers before activation or rebuilding.
-
-  Interrupted rebuild: use the SAME target kit and saved backup directory:
-    usdb-node upgrade-release --resume /absolute/path/to/upgrade-backup --execute
-  Compatible upgrades do not require a separate controller install.
-  up refreshes recognized standard controller/monitor units and preserves their options.
-  If the controller was never installed, run usdb-node controller install,
-  or keep using up --foreground for intentional foreground operation.
-  Custom systemd settings require review; follow the reported diagnostics.
-
-The installer does not run these commands automatically.
-EOF
+echo
+echo "The installer does not run these commands automatically."

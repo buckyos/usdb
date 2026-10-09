@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -92,6 +93,12 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertTrue((output / "docker/compose.p2p-ipv6.yml").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_p2p.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_node.py").is_file())
+        command = subprocess.run([sys.executable, "-B", str(output / "docker/scripts/tools/node_install_guidance.py"),
+                                  "--kit-root", str(output), "--bin-dir", str(self.root / "bin")],
+                                 env={**os.environ, "HOME": str(self.root / "empty-home")},
+                                 cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(command.returncode, 0, command.stderr + command.stdout)
+        self.assertIn("no standard node configuration found", command.stdout)
         self.assertTrue((output / "docker/scripts/tools/node_progress_render.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/node_doctor.py").is_file())
         command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),

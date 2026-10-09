@@ -1,0 +1,18 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-install-guidance",
+  "type": "changed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Tailor post-install instructions to local network configuration and saved upgrade state",
+  "details": [
+    "The installer reads local configuration and small upgrade metadata to show one applicable path for initial setup, an existing target network, a new network configuration, or unfinished upgrade recovery. Advice failures do not fail a successful tool installation.",
+    "When multiple prior configurations exist, installation advice and upgrade-plan prefer the target network family and the highest numeric vN. The selected source, ordering rule and explicit alternatives are shown; version order does not establish compatibility or select an executable upgrade.",
+    "Pending markers and registered unfinished upgrade journals take precedence over normal installation advice. Recovery previews use the recorded target kit and backup directory rather than the newly selected launcher. No service probes or mutations occur during installation advice."
+  ],
+  "operator_actions": [
+    "Read the scenario-specific next step after installation. Use upgrade-plan for existing configurations and data reuse; override the comparison source with --node-env PATH when needed.",
+    "If a saved upgrade is detected, review its recovery preview with the exact original target kit before setup or activation."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

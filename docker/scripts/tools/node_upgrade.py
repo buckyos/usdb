@@ -334,9 +334,10 @@ def _command_prefix(args, node):
 
 def add_parser(subparsers):
     """Expose preview separately from explicitly confirmed execution/recovery."""
-    preview = subparsers.add_parser("upgrade-plan", help="Compare releases and preview data reuse; discovers an unambiguous old network before target setup",
-        description="Read-only compatibility and data reuse preview. If target setup is missing, discover an unambiguous old network configuration; "
-                    "use the global --node-env option to select among multiple configurations. Cross-network deployment requires separate setup, not automatic upgrade execution.")
+    preview = subparsers.add_parser("upgrade-plan", help="Compare releases and preview data reuse; defaults to the newest prior network before target setup",
+        description="Read-only compatibility and data reuse preview. If target setup is missing, prefer the same network family, then the highest numeric vN; "
+                    "use the global --node-env option to override the comparison source. Version order does not establish compatibility. "
+                    "Cross-network deployment requires separate setup, not automatic upgrade execution.")
     preview.add_argument("--from-kit", type=Path, help="old installed kit when automatic exact matching is unavailable")
     preview.add_argument("--details", action="store_true", help="include full paths and hashes in human-readable output")
     preview.add_argument("--json", action="store_true", help="print the read-only upgrade plan as JSON")
@@ -355,12 +356,20 @@ def dispatch(args, layout, node):
     import node_upgrade_session as session
     if args.command == "upgrade-plan":
         source_layout = layout
+        selection = None
         if not layout.node_env.exists() and not layout.node_env.is_symlink():
             if args.node_env is not None:
                 raise ValueError(f"Selected node configuration does not exist: {layout.node_env}; check --node-env or run setup")
             import node_network_switch
-            source_layout = node_network_switch.preview_source(layout, node)
+            candidates = node_network_switch.configurations(layout, node)
+            source_layout = node_network_switch.preview_source(layout, node, candidates=candidates)
+            selected = next(item for item in candidates if item["path"] == source_layout.node_env)
+            selection = node_network_switch.source_selection(candidates, selected)
+            if not args.json:
+                print("\n".join(node_network_switch.source_selection_lines(selection)))
         value = plan(source_layout, node, args.from_kit)
+        if selection is not None:
+            value["source_selection"] = selection
         if args.json:
             print(json.dumps(value, indent=2, sort_keys=True))
         else:
