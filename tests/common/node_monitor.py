@@ -30,6 +30,20 @@ def incident(identity="b" * 32):
                 latched=True, evidence_status="available", detected_at="2026-09-24T00:00:00+00:00")])
 
 
+def core_startup_report(at=BASE, *, progressed=BASE, started=BASE):
+    """A live Core process returning -28 while a log stage has no numeric counter."""
+    value = report(at)
+    core = value["observations"]["services"]["bitcoin"]
+    core.update(probe_status="unavailable", rpc_available=False, readiness=node_observation.readiness(None))
+    core["runtime"].update(health="unhealthy", exit_code=0,
+                           started_at=datetime.fromtimestamp(started / 1000, timezone.utc).isoformat())
+    component = next(c for c in value["components"] if c["id"] == "bitcoin")
+    component.update(state="STARTING", startup_progress=dict(phase="validating_snapshot", rpc_code=-28,
+        process_started_at_ms=started, stage_started_at_ms=started, last_progress_at_ms=progressed))
+    value["overall_state"] = "STARTING"
+    return value
+
+
 def bootstrap_report(at=BASE, *, phase="replaying", updated=None, **options):
     """A live native BH bootstrap with a closed RPC port and its real journal age."""
     value = report(at, **options)

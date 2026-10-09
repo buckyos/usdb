@@ -1,0 +1,22 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "bitcoin-core-startup-progress",
+  "type": "fixed",
+  "scopes": ["deployment", "node-runtime", "testing"],
+  "summary": "Explain Bitcoin Core initialization and distinguish warmup from stalled startup",
+  "details": [
+    "Node progress shows current-process block index loading, AssumeUTXO validation, chainstate reinitialization and block verification stages, with elapsed time and downstream waiting reasons. Bounded read-only log observations never authorize readiness or estimate unreported progress.",
+    "The monitor distinguishes explicit RPC warmup from service failure only for a live container without exit or OOM evidence that has not previously served RPC in the observed run. Repeated warmup does not renew progress or resolve existing health alerts; absent progress uses the existing stall threshold and a separate STARTUP_STALLED alert.",
+    "Regression tests cover snapshot finalization, counters, log rotation, restarts, monitor continuity, real faults, alert recovery and isolated node-kit packaging."
+  ],
+  "operator_actions": [
+    "Activate the updated node kit through the normal upgrade flow and use status --watch plus monitor alerts to inspect initialization. Existing datasets and network identities remain compatible."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

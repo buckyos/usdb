@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import node_observation
+import bitcoin_startup_progress
 
 DEFAULTS = dict(interval_secs=30, sample_timeout_secs=25, startup_grace_secs=120,
                 warning_after_secs=120, critical_after_secs=600, recovery_after_secs=60,
@@ -36,6 +37,17 @@ def bootstrap_rpc_pending(component, runtime, at, max_age):
         counter = progress["verification_scanned"]
     return (counter is not None and updated is not None and updated >= started
             and -5000 <= at - updated <= max_age)
+
+
+def core_startup_pending(component, runtime, at):
+    """Accept warmup evidence only from this live container, with bounded timestamps."""
+    progress = bitcoin_startup_progress.project(component.get("startup_progress"))
+    started = bitcoin_startup_progress.running_since(runtime)
+    if (not progress or started is None or component.get("state") != "STARTING"
+            or progress["process_started_at_ms"] != int(started * 1000)
+            or progress["last_progress_at_ms"] > at):
+        return {}
+    return progress
 
 
 def evaluate(store, report, at, config):
@@ -100,6 +112,10 @@ def evaluate(store, report, at, config):
             if available and phase == "READY":
                 store.put("ever_running:" + service, True)
             runtime_identity = dict(container_id=runtime.get("container_id"), started_at=runtime.get("started_at"))
+            core_rpc_ready = available and service == "bitcoin" and (
+                item.get("rpc_available") is True or known and readiness.get("rpc_alive") is True or phase == "READY")
+            if core_rpc_ready:
+                store.put("core_rpc_started_run", runtime_identity)
             if service == "balance_history" and (known and readiness.get("rpc_alive") is True or available and phase == "READY"):
                 store.put("bootstrap_rpc_started_run", runtime_identity)
             health_bad = None
@@ -113,7 +129,7 @@ def evaluate(store, report, at, config):
                     health_bad = True
                 elif readiness.get("rpc_alive") is False:
                     health_bad = True
-                elif (known and readiness.get("rpc_alive") is True) or (not readiness and (item.get("probe_status") == "available" or phase == "READY")):
+                elif core_rpc_ready or (known and readiness.get("rpc_alive") is True) or (not readiness and (item.get("probe_status") == "available" or phase == "READY")):
                     health_bad = False
                 elif phase in {"FAILED", "BLOCKED"}:
                     health_bad = True
@@ -132,6 +148,24 @@ def evaluate(store, report, at, config):
                     if bootstrap_rpc_pending(component, runtime, at, config["stall_after_secs"] * 1000):
                         health_bad = False
                         evidence["reason"] = "native_bootstrap_rpc_pending"
+            if service == "bitcoin":
+                startup = (core_startup_pending(component, runtime, at)
+                           if available and item.get("rpc_available") is False
+                           and store.get("core_rpc_started_run") != runtime_identity else {})
+                startup_stalled = False if core_rpc_ready else None
+                startup_evidence = {}
+                if startup:
+                    idle_ms = at - startup["last_progress_at_ms"]
+                    startup_evidence = {**startup, "no_progress_secs": idle_ms // 1000,
+                                        "reason": "no_observed_startup_progress"}
+                    if not warming:
+                        startup_stalled = idle_ms >= config["stall_after_secs"] * 1000
+                    # Warmup is neither service failure nor evidence of recovery
+                    # from an existing health alert. Repeated -28 is not progress.
+                    health_bad = None
+                condition("bitcoin:startup", service, "STARTUP_STALLED", startup_stalled,
+                          warning_ms=0, critical_ms=max(config["critical_after_secs"], config["stall_after_secs"]) * 1000,
+                          evidence=startup_evidence)
             condition(service + ":health", service, "SERVICE_UNAVAILABLE", health_bad, evidence=evidence)
 
             ready = readiness.get("consensus_ready") if known else None

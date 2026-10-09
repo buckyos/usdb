@@ -180,6 +180,8 @@ def project(value) -> dict:
             item["runtime"] = runtime(source["runtime"])
         if source.get("probe_status") in ("available", "unavailable", "not_observed"):
             item["probe_status"] = source["probe_status"]
+        if name == "bitcoin" and type(source.get("rpc_available")) is bool:
+            item["rpc_available"] = source["rpc_available"]
         item["peer_count"] = quantity(source.get("peer_count"))
         head = source.get("head")
         if isinstance(head, dict) and quantity(head.get("number")) is not None and re.fullmatch(r"0x[0-9a-fA-F]{64}", str(head.get("hash", ""))):
@@ -213,6 +215,9 @@ def attach(report, layout, node) -> dict:
             item.update(head=component["head"], peer_count=component.get("peer_count"), probe_status="available")
         if component.get("observation_unavailable"):
             item["probe_status"] = "unavailable"
+        if name == "bitcoin" and type(component.get("rpc_available")) is bool:
+            item["rpc_available"] = component["rpc_available"]
+            item["probe_status"] = "available" if component["rpc_available"] else "unavailable"
         services[name] = item
     report["observations"] = project({"schema_version": SCHEMA, "observed_at": now(), "services": services,
                                       "incidents": observe_incidents(layout, node)})

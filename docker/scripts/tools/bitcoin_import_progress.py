@@ -77,6 +77,14 @@ def _observe(line, state, base_hash, since):
 
 
 def read_import_progress(path: Path, base_hash: str, since: float | None) -> dict:
+    """Observe only import records for the requested snapshot and process."""
+    if not re.fullmatch(r"[0-9a-f]{64}", base_hash):
+        return {}
+    return read_log_progress(path, since, ("import", base_hash),
+                             lambda line, state, start: _observe(line, state, base_hash, start))
+
+
+def read_log_progress(path: Path, since: float | None, scope: tuple, observe) -> dict:
     """Read a bounded tail once, then appended bytes; reset on restart, truncation or rotation.
 
     `since` binds observations to the current Core process and activation attempt.
@@ -85,10 +93,8 @@ def read_import_progress(path: Path, base_hash: str, since: float | None) -> dic
     """
     if type(since) not in (int, float) or not math.isfinite(since) or since <= 0:
         return {}
-    if not re.fullmatch(r"[0-9a-f]{64}", base_hash):
-        return {}
     since = math.floor(since)  # Core's default log timestamps have second precision.
-    key = (str(path), base_hash, since)
+    key = (str(path), scope, since)
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, "rb") as source:
@@ -112,8 +118,7 @@ def read_import_progress(path: Path, base_hash: str, since: float | None) -> dic
             lines = content.split(b"\n")
             cached["partial"] = lines.pop()[-4096:]
             for line in lines:
-                if b"[snapshot]" in line or b"FlushSnapshotToDisk:" in line:
-                    _observe(line.decode("utf-8", errors="replace"), cached["state"], base_hash, since)
+                observe(line.decode("utf-8", errors="replace"), cached["state"], since)
             _CACHE[key] = cached
             _CACHE.move_to_end(key)
             while len(_CACHE) > 8:

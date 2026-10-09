@@ -14,6 +14,7 @@ import time
 
 from control_plane_resources import ResourceCollector
 import node_observation
+import bitcoin_startup_progress
 from node_resource_metrics import capture_probes
 
 SCHEMA = "usdb-console-monitor:v1"
@@ -49,10 +50,12 @@ def project(report: dict, now_ms: int) -> dict:
     result["components"] = []
     for component in report.get("components", [])[:32]:
         item = select(component, COMPONENT_FIELDS)
-        item["background_validation"] = select(component.get("background_validation"), ("height", "target", "validated", "available", "waiting_for_start"))
+        item["background_validation"] = select(component.get("background_validation"), ("height", "target", "validated", "available", "waiting_for_start", "waiting_for_initialization"))
         item["file_preparation"] = select(component.get("file_preparation"), ("state", "download_complete", "sha256_verified", "size_bytes", "completed_bytes", "total_bytes", "base_height"))
         if component.get("id") == "balance_history":
             item["bootstrap_progress"] = node_observation.bootstrap_progress(component.get("bootstrap_progress"))
+        if component.get("id") == "bitcoin":
+            item["startup_progress"] = bitcoin_startup_progress.project(component.get("startup_progress"))
         result["components"].append(item)
     if report.get("control_plane"):
         result["components"].append(select(report["control_plane"], COMPONENT_FIELDS))

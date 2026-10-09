@@ -83,7 +83,7 @@ def _component_row(component: dict[str, Any], *, details: bool) -> _Row:
         state = "UNAVAILABLE"
     background = component.get("background_validation")
     native_bitcoin = component["id"] == "bitcoin" and isinstance(background, dict)
-    label = "Bitcoin foreground" if native_bitcoin and component.get("progress_phase") != "pre_snapshot_ibd" else component["label"]
+    label = "Bitcoin foreground" if native_bitcoin and component.get("progress_phase") not in {"pre_snapshot_ibd", "initializing"} else component["label"]
     row = _Row(label, state, preparation=component["id"] in {"snapshot", "script_registry"})
     healthy = state in _COMPLETE
     current, total = component.get("current"), component.get("total")
@@ -165,7 +165,7 @@ def _component_row(component: dict[str, Any], *, details: bool) -> _Row:
             row.info.append(f"Last pull error ({download.get('last_error_at', 'unknown')}): {download['last_error']}")
         row.info += [f"Stage elapsed={duration_text(component['stage_elapsed_secs'])} | ETA=-- (not estimated)",
                      "Layer progress: usdb-node controller logs --follow"]
-    elif str(progress_phase).startswith("core_") and "stage_elapsed_secs" in component:
+    elif (str(progress_phase).startswith("core_") or progress_phase == "initializing") and "stage_elapsed_secs" in component:
         row.info.append(f"Stage elapsed={duration_text(component['stage_elapsed_secs'])} | ETA=-- (not reported by Core)")
     timing = component.get("timing")
     elapsed = component.get("service_elapsed_secs")
@@ -195,6 +195,8 @@ def _history_row(background: dict[str, Any], *, details: bool, probe_detail: str
             summary = f"STALE {background['height']}/{background['target']} (last observed syncing)"
         else:
             summary = "STALE: last waiting for snapshot activation"
+    elif background.get("waiting_for_initialization"):
+        state, summary = "WAITING", "WAITING for Core initialization; validation status not yet available"
     elif background.get("waiting_for_start"):
         state, summary = "WAITING", "WAITING for Core startup"
     elif not background.get("available"):

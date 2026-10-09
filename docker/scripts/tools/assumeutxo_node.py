@@ -11,6 +11,7 @@ import subprocess
 import time
 
 import usdb_node as node
+import bitcoin_startup_progress
 from bitcoin_import_progress import read_import_progress, timestamp
 from bitcoin_release import UTXO_SIZE
 
@@ -421,10 +422,12 @@ def _balance_history_progress(item, readiness, bootstrap, core, activation, *, b
     return item
 
 
-def _chain_wait_details(core, loader, readiness):
+def _chain_wait_details(core, loader, readiness, startup=None):
     """Describe every unmet startup gate; an unknown Core probe must not hide data waits."""
     details = []
-    if core.get("error") or core.get("rpc_available") is False:
+    if startup:
+        details.append("Waiting for " + bitcoin_startup_progress.detail(startup))
+    elif core.get("error") or core.get("rpc_available") is False:
         label = ("Bitcoin Core readiness check failed" if core.get("error_kind") == "identity_or_configuration"
                  else "Bitcoin Core readiness unknown")
         details.append(label + ": " + (core.get("error") or "Core RPC unavailable"))
@@ -481,6 +484,9 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
         core = dict(error=str(error), error_kind="identity_or_configuration")
     unavailable = (core.get("error_kind") != "identity_or_configuration"
                    and (core.get("error_kind") in {"rpc_unavailable", "probe_failed"} or core.get("rpc_available") is False))
+    observed_time = time.time()
+    startup = bitcoin_startup_progress.observe(core, node.node_observation.runtime(btc_service),
+        Path(env["BTC_NODE_DATA_HOST_DIR"]) / "debug.log", observed_time)
     artifact = Path(env["BTC_ASSUMEUTXO_ARTIFACT_HOST_DIR"]) / "mainnet-935000-utxos.dat"
     download = read_progress(artifact.with_name(artifact.name + ".download") / "progress.json")
     activation = read_progress(Path(env["BTC_ASSUMEUTXO_STATE_HOST_DIR"]) / "activation.json")
@@ -554,6 +560,10 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
             snapshot.update(state="STARTING", display_state="UNAVAILABLE", progress_phase="observation_unavailable",
                             observation_unavailable=True, detail="Snapshot completion not confirmed; Core probe unavailable",
                             current=None, total=None, progress_percent=None)
+        if startup and snapshot["state"] in {"WAITING", "STARTING"}:
+            snapshot.update(state="WAITING", detail="Waiting for Core initialization before confirming snapshot baseline")
+            snapshot.pop("display_state", None)
+            snapshot.pop("observation_unavailable", None)
     snapshot["observation_identity"] = [layout.release_id, services.get("btc-node", {}).get("started_at"),
                                         activation.get("started_at")]
     components = [snapshot, node._component_progress("script_registry", "SKIPPED", "Native observed-script registry is maintained by balance-history")]
@@ -569,7 +579,13 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
         bitcoin.update(state="WAITING", detail="Bitcoin Core container has not started")
     bitcoin["observation_identity"] = [layout.release_id, env["BTC_NODE_DATA_HOST_DIR"],
                                         services.get("btc-node", {}).get("started_at")]
-    if unavailable:
+    bitcoin["rpc_available"] = False if unavailable else True if not not_started and not core.get("error") else None
+    if startup:
+        bitcoin.update(state="STARTING", progress_phase="initializing", startup_progress=startup,
+                       detail=bitcoin_startup_progress.detail(startup),
+                       current=None, total=None, progress_percent=startup.get("progress_percent"),
+                       stage_elapsed_secs=max(0, int(observed_time - startup["stage_started_at_ms"] / 1000)))
+    elif unavailable:
         bitcoin.update(observation_unavailable=True, display_state="UNAVAILABLE")
     if pre_snapshot:
         bitcoin["label"] = "Bitcoin (IBD)"
@@ -580,7 +596,7 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
     bitcoin["background_validation"] = dict(height=core.get("background_height"),
         target=int(env["BH_ASSUMEUTXO_BASE_HEIGHT"]), validated=core.get("history_validated") is True,
         available=not not_started and not core.get("error") and core.get("rpc_available") is not False,
-        waiting_for_start=not_started)
+        waiting_for_start=not_started, waiting_for_initialization=bool(startup))
     if node._container_start_failed(btc_service) or (btc_service or {}).get("state") in {"dead", "exited", "restarting", "paused"}:
         bitcoin.update(state="FAILED", detail="Core is not running; inspect its persistent log")
         bitcoin.pop("display_state", None)
@@ -617,9 +633,12 @@ def collect_native_progress(layout, *, controller_state: str | None = None) -> d
                 stable_lag=node.btc_registry_stable_lag_blocks(layout.network_identity["btc_activation_registry_id"]),
                 max_height=int(env.get("BH_SYNC_MAX_SYNC_BLOCK_HEIGHT", 0xFFFFFFFF)))
         item["readiness"] = node.node_observation.readiness(readiness)
+        if startup and item["state"] == "WAITING" and services.get(service) is None:
+            item["detail"] = ("Waiting for Bitcoin Core initialization before native service startup" if component == "balance_history"
+                              else "Waiting for balance-history after Bitcoin Core initialization")
         components.append(item)
     chain = node._chain_component(layout, env, services.get("usdb-chain"))
-    waiting_details = (_chain_wait_details(core, loader, readiness_reports)
+    waiting_details = (_chain_wait_details(core, loader, readiness_reports, startup)
                        if chain["state"] == "WAITING" and services.get("usdb-chain") is None else None)
     gate = node._chain_startup_gate_component(services)
     if gate and (gate["state"] == "FAILED" or chain["state"] not in {"FAILED", "BLOCKED"}):

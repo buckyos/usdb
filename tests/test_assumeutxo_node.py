@@ -294,6 +294,49 @@ class NativeBundleTests(unittest.TestCase):
                     self.assertNotIn("display_state", bitcoin)
                     self.assertEqual(report["overall_state"], "FAILED")
 
+    def test_core_warmup_shows_current_stage_elapsed_and_downstream_waits(self):
+        import bitcoin_import_progress
+        from control_plane_monitor import project
+        layout = native_kit(self.root)
+        self.configure(layout)
+        env = node.read_env(layout.node_env)
+        log = Path(env["BTC_NODE_DATA_HOST_DIR"]) / "debug.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("2026-10-09T07:33:03Z [snapshot] computing UTXO stats for background chainstate to validate snapshot - this could take a few minutes\n")
+        now = bitcoin_import_progress.timestamp("2026-10-09T07:36:03Z")
+        services = {"btc-node": dict(state="running", health="unhealthy", details_available=True,
+            container_id="a" * 64, started_at="2026-10-09T07:32:57Z", oom_killed=False, exit_code=0)}
+        core = dict(error="Core RPC is warming up", error_kind="rpc_unavailable", rpc_available=False,
+                    rpc_failure=dict(kind="warmup", code=-28))
+        with mock.patch.object(node, "_collect_compose_services", return_value=services), \
+             mock.patch.object(native, "core_progress", return_value=core), \
+             mock.patch.object(native.time, "time", return_value=now), \
+             mock.patch.object(node, "_read_service_readiness", return_value=(None, "RPC unavailable")), \
+             mock.patch.object(node, "_chain_component", return_value=node._component_progress("usdb_chain", "WAITING", "not started")), \
+             mock.patch.object(node, "_resource_progress", return_value=({}, False)), \
+             mock.patch.object(node, "controller_observed_state", return_value="active"):
+            report = node.collect_node_progress(layout)
+        components = {item["id"]: item for item in report["components"]}
+        bitcoin = components["bitcoin"]
+        self.assertEqual(bitcoin["state"], "STARTING")
+        self.assertEqual(bitcoin["stage_elapsed_secs"], 180)
+        self.assertIsNone(bitcoin["progress_percent"])
+        self.assertNotIn("observation_unavailable", bitcoin)
+        self.assertFalse(bitcoin["background_validation"]["available"])
+        self.assertEqual(report["native_bootstrap"]["core"], core)
+        self.assertFalse(report["observations"]["services"]["bitcoin"]["rpc_available"])
+        self.assertIn("Bitcoin Core initialization", components["balance_history"]["detail"])
+        self.assertIn("balance-history after Bitcoin Core", components["usdb_indexer"]["detail"])
+        self.assertIn("validating AssumeUTXO snapshot", components["usdb_chain"]["startup_wait_details"][0])
+        for details in (False, True):
+            rendered = node.render_node_progress(report, details=details, width=180)
+            self.assertIn("Stage elapsed=00:03:00", rendered)
+            self.assertIn("RPC warmup (-28)", rendered)
+            self.assertIn("WAITING for Core initialization", rendered)
+            self.assertNotIn("UNAVAILABLE", rendered)
+        exported = next(c for c in project(report, int(now * 1000))["components"] if c["id"] == "bitcoin")
+        self.assertEqual(exported["startup_progress"], bitcoin["startup_progress"])
+
     def test_chain_wait_explains_foreground_gap_even_when_both_data_services_are_ready(self):
         layout = native_kit(self.root)
         self.configure(layout)
