@@ -79,6 +79,12 @@ async fn main() {
         cli.skip_process_lock
     );
 
+    let shutdown = usdb_util::shutdown_signal("usdb-indexer").unwrap_or_else(|error| {
+        eprintln!("{error}");
+        log_handle.shutdown();
+        std::process::exit(1);
+    });
+
     let output = output::IndexOutput::new();
     let output = Arc::new(output);
 
@@ -159,32 +165,11 @@ async fn main() {
         None
     };
 
-    // Create a Future to wait for Ctrl+C (SIGINT) signal
-    use tokio::signal;
-    let sigint = signal::ctrl_c();
-
-    // Create a Future to wait for SIGTERM signal (sent by kill command by default)
-    #[cfg(unix)]
-    let sigterm = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("Failed to create SIGTERM signal handler")
-            .recv()
-            .await;
-    };
-
-    // On non-Unix systems, we only rely on Ctrl+C
-    #[cfg(not(unix))]
-    let sigterm = std::future::pending();
-
     output.println("Starting USDB Indexer...");
     tokio::select! {
-        _ = sigint => {
-            output.println("Received Ctrl+C, shutting down...");
-            status_manager.set_shutdown_requested(true);
-            indexer.stop();
-        }
-        _ = sigterm => {
-            output.println("Received SIGTERM, shutting down...");
+        biased;
+        reason = shutdown => {
+            output.println(&format!("Received {reason}, shutting down..."));
             status_manager.set_shutdown_requested(true);
             indexer.stop();
         }

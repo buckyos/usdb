@@ -9,6 +9,15 @@ use std::sync::Arc;
 pub async fn run_native_bootstrap(
     config: Arc<BalanceHistoryConfig>,
 ) -> Result<Option<crate::bootstrap::NativeBootstrapState>, String> {
+    let shutdown = usdb_util::shutdown_signal("balance-history native bootstrap")?;
+    run_native_bootstrap_until_shutdown(config, shutdown).await
+}
+
+/// Keep one registered signal subscription through bootstrap and daemon startup.
+async fn run_native_bootstrap_until_shutdown(
+    config: Arc<BalanceHistoryConfig>,
+    shutdown: impl std::future::Future<Output = &'static str>,
+) -> Result<Option<crate::bootstrap::NativeBootstrapState>, String> {
     if config.bootstrap.is_none() {
         return Ok(None);
     }
@@ -20,30 +29,15 @@ pub async fn run_native_bootstrap(
             stop.load(std::sync::atomic::Ordering::Relaxed)
         })
     });
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .map_err(|e| e.to_string())?
-            .recv()
-            .await;
-        Ok::<(), String>(())
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<Result<(), String>>();
     tokio::select! {
+        biased;
+        reason = shutdown => {
+            info!("Native bootstrap shutdown requested: signal={reason}, waiting_for=worker");
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            worker.await.map_err(|e| format!("Native bootstrap shutdown failed: {e}"))??;
+            Err("Native bootstrap cancelled before service startup".to_string())
+        }
         result = &mut worker => result.map_err(|e| format!("Native bootstrap worker failed: {e}"))?,
-        signal = tokio::signal::ctrl_c() => {
-            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-            signal.map_err(|e| e.to_string())?;
-            worker.await.map_err(|e| format!("Native bootstrap shutdown failed: {e}"))??;
-            Err("Native bootstrap cancelled before service startup".to_string())
-        }
-        signal = terminate => {
-            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-            signal?;
-            worker.await.map_err(|e| format!("Native bootstrap shutdown failed: {e}"))??;
-            Err("Native bootstrap cancelled before service startup".to_string())
-        }
     }
 }
 
@@ -76,6 +70,13 @@ pub async fn run_service(
         max_block_height,
         skip_process_lock
     );
+
+    let shutdown = usdb_util::shutdown_signal("balance-history").unwrap_or_else(|error| {
+        eprintln!("{error}");
+        log_handle.shutdown();
+        std::process::exit(1);
+    });
+    tokio::pin!(shutdown);
 
     let status = crate::status::SyncStatusManager::new();
     let status = Arc::new(status);
@@ -130,7 +131,8 @@ pub async fn run_service(
 
     let config = Arc::new(config);
 
-    if let Err(error) = run_native_bootstrap(config.clone()).await {
+    if let Err(error) = run_native_bootstrap_until_shutdown(config.clone(), shutdown.as_mut()).await
+    {
         output.eprintln(&error);
         log_handle.shutdown();
         std::process::exit(1);
@@ -169,28 +171,11 @@ pub async fn run_service(
         rpc_server.get_listen_url()
     ));
 
-    use tokio::signal;
-    let sigint = signal::ctrl_c();
-
-    #[cfg(unix)]
-    let sigterm = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("Failed to create SIGTERM signal handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let sigterm = std::future::pending();
-
     tokio::select! {
-        _ = sigint => {
+        biased;
+        reason = shutdown => {
             output.status().set_shutdown_requested(true);
-            output.println("Received Ctrl+C, shutting down...");
-        }
-        _ = sigterm => {
-            output.status().set_shutdown_requested(true);
-            output.println("Received SIGTERM, shutting down...");
+            output.println(&format!("Received {reason}, shutting down..."));
         }
         _ = shutdown_rx.changed() => {
             output.status().set_shutdown_requested(true);

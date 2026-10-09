@@ -13,11 +13,11 @@ use crate::models::{
 };
 use crate::rpc_client::{RpcClient, decode_hex_quantity};
 use axum::Json;
+use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, get_service, post};
-use axum::{Router, serve};
 use bitcoincore_rpc::bitcoin::Network;
 use serde::Deserialize;
 use serde_json::Value;
@@ -166,7 +166,9 @@ const USDB_INDEXER_PROXY_METHODS: &[&str] = &[
 ];
 const MAX_WORLD_SIM_WALLET_NAME_BYTES: usize = 64;
 
+/// Serve the console until a stop signal, preserving in-flight requests during shutdown.
 pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
+    let shutdown = usdb_util::shutdown_signal("usdb-control-plane")?;
     config.validate().map_err(|e| {
         let msg = format!(
             "Refusing to start with invalid control-plane configuration: {}",
@@ -274,7 +276,7 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
         "Starting USDB control plane: listen_addr={}, console_root={}",
         listen_addr, console_root_label
     );
-    serve(
+    crate::shutdown::serve_until_shutdown(
         tokio::net::TcpListener::bind(listen_addr)
             .await
             .map_err(|e| {
@@ -283,6 +285,7 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
                 msg
             })?,
         app,
+        shutdown,
     )
     .await
     .map_err(|e| {

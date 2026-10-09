@@ -5,6 +5,7 @@ mod monitor;
 mod notifications;
 mod rpc_client;
 mod server;
+mod shutdown;
 
 #[macro_use]
 extern crate log;
@@ -56,7 +57,7 @@ async fn main() {
     let log_config = usdb_util::current_process_log_config!(USDB_CONTROL_PLANE_SERVICE_NAME)
         .with_service_root_dir(root_dir.clone())
         .enable_console(false);
-    let _log_handle = usdb_util::init_log(log_config).unwrap_or_else(|error| {
+    let log_handle = usdb_util::init_log(log_config).unwrap_or_else(|error| {
         eprintln!("Failed to initialize USDB control-plane logging: {error}");
         std::process::exit(1);
     });
@@ -66,6 +67,7 @@ async fn main() {
         Err(e) => {
             error!("Failed to load control-plane config: {}", e);
             eprintln!("Failed to load control-plane config: {}", e);
+            log_handle.shutdown();
             std::process::exit(1);
         }
     };
@@ -73,6 +75,8 @@ async fn main() {
     if let Err(e) = server::run_server(config).await {
         error!("USDB control plane exited with error: {}", e);
         eprintln!("USDB control plane exited with error: {}", e);
+        log_handle.shutdown();
         std::process::exit(1);
     }
+    log_handle.shutdown();
 }

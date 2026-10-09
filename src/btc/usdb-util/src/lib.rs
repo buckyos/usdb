@@ -11,6 +11,7 @@ mod log_util;
 mod mem;
 mod reward_formula;
 mod rpc_diagnostics;
+mod shutdown;
 mod strict_json;
 mod types;
 
@@ -27,6 +28,7 @@ pub use log_util::*;
 pub use mem::*;
 pub use reward_formula::*;
 pub use rpc_diagnostics::*;
+pub use shutdown::*;
 pub use strict_json::*;
 pub use types::*;
 

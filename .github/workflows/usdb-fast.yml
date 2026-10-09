@@ -105,6 +105,12 @@ jobs:
       - name: Run Rust fast gate
         run: src/btc/scripts/run_fast_ci.sh
 
+      - name: Check control-plane graceful shutdown as Docker PID 1
+        run: |
+          cargo build --manifest-path src/btc/Cargo.toml -p usdb-control-plane
+          docker pull ubuntu:24.04
+          python3 tests/run_control_plane_shutdown.py
+
       - name: Check Bitcoin artifact distribution and bootstrap
         env:
           PYTHONDONTWRITEBYTECODE: "1"

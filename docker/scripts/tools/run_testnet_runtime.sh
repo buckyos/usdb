@@ -192,7 +192,11 @@ quiesce_runtime_services() {
         sleep 1
         elapsed=$((elapsed + 1))
         if ((elapsed % 15 == 0)); then
-          echo "Resource transition: waiting for ${service} to flush and stop (${elapsed}s)" >&2
+          if [[ "${service}" == "usdb-control-plane" ]]; then
+            echo "Resource transition: waiting for ${service} to finish active HTTP requests and stop (${elapsed}s); inspect control-plane logs for shutdown progress" >&2
+          else
+            echo "Resource transition: waiting for ${service} to flush and stop (${elapsed}s)" >&2
+          fi
         fi
       done
     fi

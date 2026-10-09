@@ -228,10 +228,16 @@ Bitcoin 停止时可能需要数分钟完成 UTXO 写盘。终端每 15 秒显�
 包含停机展示改进的版本会识别 `Flushing UTXO set to disk` 并显示该日志记录的条目数。Core 未报告刷盘完成百分比时，工具不估算百分比或剩余时间；`No newer stage log for ...` 只表示没有新的阶段日志，不能据此判断卡死。
 `Mempool saved (27 bytes; completed step)` 表示保存了空交易池文件，是已完成的一步；后续仍可能要写入大量 UTXO。以 `shutdown completed` 的退出结果和命令正常返回确认停机完成，不用强杀代替正常停止。
 
-包含 Ord 停止改进的新版本，会先等待 Ord 完成当前数据库批次，显示耗时及可用的读写观测，再停止其他服务。
+当前 `down` 按依赖顺序先停止 control-plane、USDB chain、indexer、balance-history，再等待 Ord 完成当前数据库批次，最后停止 Bitcoin（`--keep-bitcoin` 除外）。因此 Ord 落盘期间 Bitcoin RPC 仍可用。
+
+control-plane 收到停止信号后关闭 HTTP 监听，等待已接收的请求完成并刷新日志。终端等待提示中的
+`finish active HTTP requests` 表示等待控制台请求结束；服务日志中的 `shutdown started / progress / finished`
+记录阶段和耗时。如果一直没有 `shutdown started`，应检查实际运行镜像是否包含退出修复，不能仅凭容器仍为 healthy 判断正在正常退出。
+
 这条 `down` 路径不会因旧的十分钟上限自动强杀 Ord。Ctrl+C 只结束命令等待，不撤销已经提交的 Ord 停止请求；
-其余服务尚未进入正常停机步骤。重新执行 `usdb-node down` 可继续等待。异常退出会保留容器供检查日志，处理后再执行 `down`。
+此前的 USDB 服务可能已停止，Bitcoin 仍保留。重新执行 `usdb-node down` 可继续等待。异常退出会保留容器供检查日志，处理后再执行 `down`。
 直接执行 Docker 停止或主机关机仍受各自的超时策略约束。详见 [Ord 停止与排查](../services/ord.md#停止时长时间等待)。
+各常驻服务的信号处理及初始化任务的限制见 [Docker 退出检查](../../publish/usdb-docker-shutdown-audit.md)。
 
 `down --keep-bitcoin` 不适合整机断电、完整备份或需要停止全部数据服务的配置变更。启停会中断 RPC/P2P；矿工节点停链期间也无法继续本地挖矿。
 

@@ -1,0 +1,22 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "usdb-service-graceful-shutdown",
+  "type": "fixed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Handle container stop signals in the control plane and retain early stop requests in Rust data services",
+  "details": [
+    "The control plane now handles SIGTERM and SIGINT as container PID 1, stops accepting connections, drains active HTTP requests and flushes its logs. Long drains report their phase and elapsed time.",
+    "Balance-history and usdb-indexer register stop handlers before database initialization. Balance-history retains one subscription across native bootstrap and daemon startup.",
+    "Managed shutdown retains the existing dependency order and does not add a forced-kill timeout for database services or Ord. Initialization workflows remain subject to their own cancellation and recovery contracts."
+  ],
+  "operator_actions": [
+    "Activate the release and recreate the service containers through the normal node upgrade workflow. Installing new CLI scripts alone does not replace a running control-plane binary."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}
