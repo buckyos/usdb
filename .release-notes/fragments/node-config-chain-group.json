@@ -1,0 +1,17 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-config-chain-group",
+  "type": "changed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Group USDB chain settings and distinguish saved seeds from release defaults in config",
+  "details": [
+    "The read-only config view collects chain identity, role, data directory, memory budget, query mode, P2P/RPC settings and reorg guards in a dedicated USDB chain section, with mining and optional minting settings shown separately.",
+    "Configured seeds and release default seeds are counted and listed individually, with explicit empty, missing and unavailable states. JSON adds peer_sources while retaining redacted saved settings and their sources. Matching lists do not imply how the operator selected them.",
+    "The view remains offline and never applies release defaults. It points to peers status and peers enode for live connections and the local advertised identity, and hides malformed seed values and catalog errors that could contain credentials."
+  ],
+  "operator_actions": [
+    "Use usdb-node config to inspect the USDB chain section and compare saved seeds with the selected release's defaults. Use config --json for structured output."
+  ],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

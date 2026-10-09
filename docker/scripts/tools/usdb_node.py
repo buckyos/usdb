@@ -6101,7 +6101,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     version.add_argument("--json", action="store_true", help="print machine-readable version information")
     config = subparsers.add_parser("config", help="Show all saved node settings, grouped and redacted; no Docker/RPC required",
-        description="Read node.env, bundled network.env and monitor policy without changing files or contacting services. "
+        description="Read node.env, bundled network.env, release default seeds and monitor policy without changing files or contacting services. "
+                    "USDB chain settings are grouped separately, with saved seeds distinguished from release suggestions. "
                     "Secrets and unclassified values are hidden in both text and JSON. This does not prove running services adopted the configuration.")
     config.add_argument("--json", action="store_true", help="print the same redacted saved configuration as JSON")
     import usdb_mining

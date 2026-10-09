@@ -35,9 +35,32 @@ usdb-node config
 usdb-node config --json
 ```
 
-`config` 按目录、网络端口、防火墙、资源预算、Bitcoin、快照、挖矿与可选服务等分组显示配置，
+`config` 按目录、USDB chain、挖矿、铭文与可选 Ord、其他网络端口与防火墙、资源预算、Bitcoin、快照等分组显示配置，
 标注每项来自 `node.env` 还是发布包的 `network.env`；另外显示监控策略及其默认值。
 容量在文本输出中使用易读单位，JSON 保留配置中的原始字符串。空值明确显示为 `(empty)`。
+
+包含 chain 分组改进的版本，在 **USDB chain** 下集中展示网络与 Chain ID、节点角色、链数据目录、内存预算、
+archive/tracing、P2P 地址族与宣告地址、HTTP/WS 监听地址与端口，以及深度重组保护设置。
+挖矿地址和线程数位于 **Mining**；铭文来源和 Ord 开关等设置位于 **Inscriptions and optional minting (Ord)**。
+
+Chain 分组还会逐条列出两份 Seed/enode 列表：
+
+| 显示项 | 含义 |
+| --- | --- |
+| `Configured seeds` | `node.env` 已保存的 `USDB_BOOTNODES`；`0 — no seed saved` 表示已保存空列表 |
+| `Release default seeds` | 当前工具包 `bootnodes.json` 提供的设置建议，不代表当前节点已经采用 |
+| `matches saved endpoints` / `differs from saved endpoints` | 两份列表的端点是否相同；相同不代表能推断当初的选择方式 |
+| `not applied to saved configuration` | 发布包有默认入口，但当前保存的列表为空 |
+| `MISSING` / `UNAVAILABLE` | 默认 Seed 文件缺失 / 无法安全读取或格式无效，不能当作已确认的空列表 |
+
+尚未 setup、已配置但缺少 `USDB_BOOTNODES` 字段、空列表和无效列表会分别提示。无效端点的原始值隐藏，避免误填的认证 URL 泄露凭据。
+`config --json` 保留按键和来源列出的配置项，并增加 `peer_sources`，包含两份列表、各自状态与数量及是否一致。
+查看配置不会将默认 Seed 写入节点配置。Seed 是入网入口，不是当前已连接节点列表；本机对外 enode 和实时连接使用：
+
+```bash
+usdb-node peers status
+usdb-node peers enode
+```
 
 这是**只读的已保存配置**，节点运行或停止时均可查看，不需要 sudo、Docker 或 RPC，也不触发快照下载或校验。
 配置文件可能已经修改而容器尚未更新；检查实际运行状态仍使用 `usdb-node status`。
