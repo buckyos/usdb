@@ -1,0 +1,14 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-setup-cancellation",
+  "type": "fixed",
+  "scopes": ["node-runtime", "deployment"],
+  "summary": "Exit interactive setup cleanly on Ctrl+C without a Python traceback",
+  "details": [
+    "Setup catches KeyboardInterrupt at the CLI boundary after existing cleanup and operation-lock release, prints a short cancellation message and returns exit code 130.",
+    "The cancellation message points to config and setup without claiming rollback: settings or host operations completed before the interruption may already be persisted. Existing watch-mode interrupt behavior is unchanged."
+  ],
+  "operator_actions": [],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

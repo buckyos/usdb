@@ -6836,6 +6836,14 @@ def main() -> int:
         )
         with operation_context:
             return _execute_command(layout, args)
+    except KeyboardInterrupt:
+        if args.command != "setup":
+            raise
+        # Unwind cleanup/locks first. Setup may already have saved configuration
+        # or applied host changes, so cancellation must not promise rollback.
+        print("\nSetup cancelled (Ctrl+C).", file=sys.stderr)
+        print("Check saved settings: usdb-node config. Run usdb-node setup again when ready.", file=sys.stderr)
+        return 130
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         if args.command in {"up", "mining", "sourcedao", "peers", "version", "config", "upgrade-plan", "upgrade-release", "upgrade-status", "upgrade-cleanup"} and getattr(args, "json", False):
             print(

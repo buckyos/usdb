@@ -2,6 +2,7 @@
 """Exercise repeatable setup against packaged native node fixtures, without services."""
 
 import io
+from contextlib import redirect_stdout, redirect_stderr
 import json
 from pathlib import Path
 import subprocess
@@ -44,6 +45,83 @@ class SetupEditTests(unittest.TestCase):
 
     def update(self, values):
         node._atomic_write_private(self.layout.node_env, node.upsert_env(self.layout.node_env.read_text(), values))
+
+    def interrupted_cli(self, setup, *options):
+        """Exercise the CLI exception boundary and real operation-lock cleanup."""
+        out, err = io.StringIO(), io.StringIO()
+        argv = ["usdb-node", "--kit-root", str(self.layout.kit_root), "--node-env", str(self.layout.node_env), "setup", *options]
+        with mock.patch.object(sys, "argv", argv), redirect_stdout(out), redirect_stderr(err), \
+                mock.patch.object(sys.stdin, "isatty", return_value=True), \
+                mock.patch.object(out, "isatty", return_value=True), \
+                mock.patch.object(node, "setup_node", side_effect=setup):
+            code = node.main()
+        self.assertEqual(code, 130)
+        self.assertIn("Setup cancelled (Ctrl+C)", err.getvalue())
+        self.assertIn("usdb-node config", err.getvalue())
+        self.assertIn("Run usdb-node setup again", err.getvalue())
+        self.assertNotIn("Traceback", out.getvalue() + err.getvalue())
+        self.assertNotIn("KeyboardInterrupt", out.getvalue() + err.getvalue())
+        self.assertNotIn("operation failed", err.getvalue())
+        with node.node_operation_lock(self.layout, "setup"):
+            pass  # Ctrl+C must not leave the node locked against a later retry.
+        return out.getvalue(), err.getvalue()
+
+    def test_ctrl_c_at_initial_storage_profile_cancels_without_saving(self):
+        import node_storage
+        self.layout.node_env.unlink()
+        real_setup = node.setup_node
+        prompts = []
+
+        def answer(prompt):
+            prompts.append(prompt)
+            if prompt.startswith("Storage resource profile"):
+                raise KeyboardInterrupt
+            self.assertTrue(prompt.startswith("Host data root"))
+            return str(self.root / "data")
+
+        def setup(layout, **kwargs):
+            return real_setup(layout, input_fn=answer, output=sys.stdout, **kwargs)
+
+        capacity = node.DataRootCapacity(self.root, 3 * 1024**4, 3 * 1024**4)
+        with mock.patch.object(node, "_data_root_capacity", return_value=capacity), \
+                mock.patch.object(node_storage, "storage_hint", return_value=dict(kind="ssd", devices=[], recommended_profile="balanced")), \
+                mock.patch.object(node, "configure_node") as configure:
+            self.interrupted_cli(setup, "--no-controller")
+        self.assertEqual(len(prompts), 2)
+        configure.assert_not_called()
+        self.assertFalse(self.layout.node_env.exists())
+        self.assertFalse(self.backup.exists())
+
+    def test_ctrl_c_during_edit_preserves_configuration_and_private_files(self):
+        real_setup = node.setup_node
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+
+        def answer(prompt):
+            if prompt.startswith("Storage resource profile"):
+                raise KeyboardInterrupt
+            return ""
+
+        def setup(layout, **kwargs):
+            return real_setup(layout, input_fn=answer, output=sys.stdout, **kwargs)
+
+        self.interrupted_cli(setup)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+        self.assertFalse(self.backup.exists())
+
+    def test_ctrl_c_after_save_preserves_config_without_claiming_rollback(self):
+        self.layout.node_env.unlink()
+
+        def setup(layout, **kwargs):
+            node._atomic_write_private(layout.node_env, self.original.decode())
+            return node.SetupResult(layout.node_env, False, False)
+
+        with mock.patch.object(node, "_controller_install_context"), \
+                mock.patch.object(node, "install_controller_unit", side_effect=KeyboardInterrupt) as install:
+            _, err = self.interrupted_cli(setup)
+        install.assert_called_once()
+        self.assertEqual(self.layout.node_env.read_bytes(), self.original)
+        self.assertNotIn("no configuration was written", err)
+        self.assertNotIn("rolled back", err)
 
     def edit(self, answers=None, **kwargs):
         self.output = io.StringIO()

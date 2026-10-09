@@ -78,6 +78,10 @@ usdb-node peers enode
 | `configure` | 面向脚本的非交互式首次配置入口；与 setup 共用底层配置逻辑，拒绝覆盖已有配置，不安装 controller |
 | `config` | 随时查看已保存的配置，不写入文件、不改变服务 |
 
+包含取消提示改进的版本，在 `setup` 中按 `Ctrl+C` 会显示 `Setup cancelled (Ctrl+C)` 并退出，退出码为 130，不显示脚本堆栈。
+确认保存前的输入不会写入配置；如果已经进入保存后的防火墙或 controller 操作阶段，取消不代表回滚已完成的操作。
+可用 `usdb-node config` 查看已保存结果，需要时执行 `doctor` 检查，再重新运行 `setup`。
+
 `configure --role full` 用于普通同步节点，`bootnode` 用于网络入口节点。`--miner-threads` 仅保存线程数，
 不会开启挖矿；`--miner-address` 是保留的兼容参数，首次 full/bootnode 配置应留空，节点就绪后使用 `mining enable --address`。
 其他选项说明通过 `usdb-node configure --help`、`usdb-node setup --help` 等查看。
