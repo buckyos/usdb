@@ -136,15 +136,20 @@ class OrdOperationsTests(unittest.TestCase):
         self.assertTrue(all(r["state"] == "STOPPING" and r["ord_height"] == 589999 and r["canonical"] is False for r in waits))
 
     def test_rendering_and_projection_keep_commit_and_io_observations(self):
-        report = dict(enabled=True, state="INDEXING", ord_height=589999, core_height=968997,
+        report = dict(minting=dict(enabled=True, state="INDEXING", ord_height=589999, core_height=968997,
                       index_phase="COMMITTING", commit_target_height=594999, commit_elapsed_secs=75,
-                      sample_read_bytes=policy.MIB, sample_write_bytes=2 * policy.MIB, sample_elapsed_secs=10)
-        projected = monitor.project(dict(minting=report), 1000)["minting"]
-        self.assertEqual(projected["index_phase"], "COMMITTING")
-        row = render._minting_rows(report, details=False)[-1]
-        self.assertIn("committed height 589,999", row.summary)
-        self.assertIn("Committing database batch through 594,999 | elapsed 00:01:15", row.info)
-        self.assertTrue(any("wrote 2.0MiB" in line for line in row.info))
+                      sample_read_bytes=policy.MIB, sample_write_bytes=2 * policy.MIB, sample_elapsed_secs=10))
+        projected = monitor.project(report, 1000)["minting"]
+        for field in ("ord_height", "index_phase", "commit_target_height", "commit_elapsed_secs",
+                      "sample_read_bytes", "sample_write_bytes", "sample_elapsed_secs"):
+            self.assertEqual(projected[field], report["minting"][field], field)
+        for details in (False, True):
+            with self.subTest(details=details):
+                rendered = render.render_node_progress(report, details=details)
+                self.assertIn("Ord (optional)", rendered)
+                self.assertIn("committed height 589,999", rendered)
+                self.assertIn("Committing database batch through 594,999 | elapsed 00:01:15", rendered)
+                self.assertIn("Recent I/O: read 1.0MiB, wrote 2.0MiB over 10s", rendered)
 
     def test_shutdown_progress_write_failure_does_not_send_second_interrupt(self):
         child = Child()
