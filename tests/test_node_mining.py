@@ -194,6 +194,21 @@ class MiningTests(unittest.TestCase):
             self.assertTrue(selectors)
             self.assertTrue(all(query["block_height"] == 100 for query in selectors))
 
+    def test_normal_block_write_uses_server_committed_read_safety(self):
+        with MiningFixture() as f:
+            f.ready.update(consensus_ready=False, committed_query_ready=True,
+                           blockers=["CatchingUp", "BlockProcessingPending"])
+            f.enable()
+            self.assertEqual(f.run(), 0)
+            self.assertEqual(MINING.observe(f.layout)["state"], "ACTIVE")
+            for safety in (False, "true", None):
+                f.ready["committed_query_ready"] = safety
+                with self.subTest(safety=safety), self.assertRaisesRegex(ValueError, "INDEXER_NOT_READY"):
+                    MINING.upstream_candidate(f.layout, ADDRESS)
+            del f.ready["committed_query_ready"]
+            with self.assertRaisesRegex(ValueError, "INDEXER_NOT_READY"):
+                MINING.upstream_candidate(f.layout, ADDRESS)
+
     def test_committed_queries_reject_hard_blockers_and_unknown_readiness(self):
         for service, blockers in (("bh_ready", ["RollbackInProgress", "ShutdownRequested", "SnapshotInstallUnverified"]),
                                   ("ready", ["BlockProcessingPending", "ReorgRecoveryPending", "UpstreamReadinessUnknown",

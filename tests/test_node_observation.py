@@ -62,6 +62,18 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(result["blockers"], ["CatchingUp", "UnknownBlocker"])
         self.assertNotIn("PRIVATE", json.dumps(result))
 
+    def test_committed_query_readiness_survives_projection_without_inference(self):
+        for safety in (True, False, None, "true"):
+            with self.subTest(safety=safety):
+                raw = {"consensus_ready": False, "query_ready": True,
+                       "committed_query_ready": safety, "blockers": ["BlockProcessingPending"]}
+                once = observation.readiness(raw)
+                twice = observation.readiness(once)
+                expected = safety if type(safety) is bool else None
+                self.assertIs(twice["committed_query_ready"], expected)
+                self.assertFalse(twice["consensus_ready"])
+        self.assertIsNone(observation.readiness({"consensus_ready": True})["committed_query_ready"])
+
     def test_latched_incident_is_stable_read_only_and_sanitized_for_new_and_old_images(self):
         for legacy in (False, True):
             with self.subTest(legacy=legacy), MiningFixture() as f:

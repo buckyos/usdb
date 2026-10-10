@@ -1,6 +1,7 @@
 # 已提交 BTC 状态的出块与延迟验证改进
 
-状态：第一阶段已实现并通过本地回归，待评审与发布验证。后续阶段尚未实现，不代表已经通过多节点实测或发布。
+状态：第一阶段已提交（`f760421`）；补充批次“正常区块执行期间读取已提交前缀”已完成本地验收，待评审。
+Go 延迟验证、独立多节点矩阵和 gap 尚未实现，不代表已经通过多节点实测或发布。
 
 ## 问题与目标
 
@@ -38,8 +39,8 @@
   当前进度等于目标进度。历史覆盖有其他缺口时，仍须验证请求高度自身的完整锚点。
 - 请求高度高于已提交高度返回 `HEIGHT_NOT_SYNCED`；目标历史缺失、裁剪、identity mismatch
   保留原来的结构化错误，不做高度替换。
-- 保留 `BlockProcessingPending` 等提交保护。这一阶段不承诺在跨存储提交窗口中零等待，
-  更不通过删除 pending 保护来读取 writer 的未提交状态。未来若放宽，需要完整的一致性读证据。
+- 第一批保留 `BlockProcessingPending` 等提交保护，不读取 writer 的未提交状态。
+  对正常执行期间的进一步放宽见下面的补充批次；失败或恢复仍阻断。
 - 经济查询在派生后再次检查安全状态和完整 historical identity，拒绝跨恢复窗口的结果。
 - CLI 使用 indexer 的已提交高度及精确 context 查询结果判断候选资格，不再要求 BH/indexer
   全局追平；深重组保护、Bitcoin 启动检查、epoch 和 candidate identity 校验保持有效。
@@ -63,6 +64,40 @@
 - indexer 完整测试：408 通过，12 项既有用例保持忽略；包含多区间协议、重组及进程退出恢复矩阵。
 - mining 系列 77 项、节点工具 127 项、usdb-util 89 项通过；workspace check/Clippy、格式与
   release fragment 校验通过。上述均为本地测试，尚未执行本批 CI、真实节点升级或独立多节点验收。
+
+## 第一阶段补充：正常执行 H+1 时查询已提交 H
+
+第一批的 `BlockProcessingPending` 覆盖整个单块处理流程，不能保证处理新块时仍能使用旧高度。
+补充实现将正常向前索引与失败、回滚恢复分开处理：
+
+1. RPC 和派生能量查询使用独立 SQLite 只读连接，不能读到 writer 的未提交 pass、owner、
+   collab、余额快照或高度。索引执行仍使用原写连接，保留同块内读取前序事件的语义。
+2. 正常块只向已提交高度之后追加能量记录；查询严格限制在指定高度，能量 finalized height
+   必须覆盖 SQLite 已提交高度。能量先 finalize，SQLite 最后发布；不会提前使用 H+1。
+3. 每个状态查询持有读取许可，直到派生与校验结束。正常向前索引可并行；破坏历史的 reorg
+   和失败恢复必须等待现有查询释放许可，新查询快速返回 `SNAPSHOT_NOT_READY`。
+   这样也避免跨分支的中间数据污染经济视图缓存。长查询可能延后恢复实际执行，恢复期间不接受新查询。
+4. 正常执行标志以作用域守卫管理；返回错误、取消或 unwind 都清除。pending 高度必须高于
+   已提交高度，且没有 publication recovery，才允许读取旧前缀。失败留下的 pending 不放行。
+5. head identity 读取随每块事务提交的精确历史 anchor，不等待旧的 batch adopted anchor 更新。
+   `get_readiness.committed_query_ready` 表示当前已提交 head 是否可查询，仍须做请求高度和 identity 校验。
+   全局 `consensus_ready` 和 `BlockProcessingPending` 保持同步/处理状态语义。
+6. 挖矿工具只有在服务端明确返回 `committed_query_ready=true` 时才允许 pending 状态，不能仅根据
+   blocker 名称推断。旧服务不提供此字段时仍保留 pending 阻断行为。
+
+边界：不承诺每次 RPC 零重试。SQLite 已发布但运行态 pending 尚未清除、head 正好变化、
+失败或恢复等窗口仍可能拒绝；不需要网络重置、重索引或更改能量/铭文规则。
+
+验收使用 `tests/indexer_concurrent_committed_queries.rs` 的真实区块执行流程，以通道暂停在
+8 个 publication failpoint；比较暂停前后的完整 state、pass、energy、profile、candidate、
+collab、aggregate 结果，覆盖跨块发布、失败后的阻断/重试、重组等待查询结束和新查询快速拒绝。
+这些暂停点仅编译进测试，不是运行时注入开关。
+
+补充批次本地验证：indexer 411 项通过、12 项既有用例保持忽略；mining 系列 78 项、
+节点工具 127 项、监控投影 16 项通过。新增 projection 测试确认该 readiness 字段保留
+服务端布尔值，缺失或类型不合法时保持未知，不从全局同步状态推断。
+workspace check/Clippy、格式、usdb-util 健康检查及 release fragment 校验通过；
+尚未执行本批 CI、真实节点升级和独立多节点延迟验收。
 
 ## 第二阶段：Go 延迟验证与重试
 

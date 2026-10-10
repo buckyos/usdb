@@ -320,6 +320,10 @@ impl MinerPassStorage {
         let db_path = data_dir.join(crate::constants::MINER_PASS_DB_FILE);
         let open = || {
             Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .and_then(|reader| {
+                    reader.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+                    Ok(reader)
+                })
                 .map_err(|e| format!("Cannot inspect pass database {}: {e}", db_path.display()))
         };
         let conn = Mutex::new(open()?);

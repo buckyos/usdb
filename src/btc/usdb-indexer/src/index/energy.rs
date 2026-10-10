@@ -178,9 +178,14 @@ impl PassEnergyManager {
         self.storage.get_pending_block_height()
     }
 
+    /// Highest fully finalized energy height; SQLite publication must never precede it.
+    pub fn get_synced_block_height(&self) -> Result<Option<u32>, String> {
+        self.storage.get_synced_block_height()
+    }
+
     #[cfg(test)]
     pub fn get_synced_block_height_for_test(&self) -> Result<Option<u32>, String> {
-        self.storage.get_synced_block_height()
+        self.get_synced_block_height()
     }
 
     #[cfg(test)]

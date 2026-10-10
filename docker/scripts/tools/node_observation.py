@@ -50,7 +50,7 @@ def quantity(value):
 def readiness(value, *, observed_at=None) -> dict:
     """Preserve exact service blockers without classifying them as permanent errors."""
     result = {"status": "unavailable", "observed_at": observed_at or now(),
-              "rpc_alive": None, "query_ready": None, "consensus_ready": None,
+              "rpc_alive": None, "query_ready": None, "consensus_ready": None, "committed_query_ready": None,
               "blockers": None, "failure": {"code": "READINESS_UNAVAILABLE",
                   "severity": "unknown", "recovery": "unknown"}}
     if not isinstance(value, dict):
@@ -70,7 +70,7 @@ def readiness(value, *, observed_at=None) -> dict:
         return result
     result.update(status="available", failure=None)
     result["observed_at"] = timestamp(value.get("observed_at")) or result["observed_at"]
-    for key in ("rpc_alive", "query_ready", "consensus_ready"):
+    for key in ("rpc_alive", "query_ready", "consensus_ready", "committed_query_ready"):
         result[key] = value.get(key) if type(value.get(key)) is bool else None
     blockers = value.get("blockers")
     if isinstance(blockers, list):

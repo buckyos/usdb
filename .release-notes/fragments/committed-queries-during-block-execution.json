@@ -1,0 +1,21 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "committed-queries-during-block-execution",
+  "type": "fixed",
+  "scopes": ["indexer", "node-runtime"],
+  "summary": "Keep committed BTC state queryable during normal forward block execution",
+  "details": [
+    "RPC and economic derivation use independent SQLite readers and height-bounded energy history. The head identity advances with each committed block instead of waiting for the entire sync batch.",
+    "Readiness adds committed_query_ready. Mining checks accept BlockProcessingPending only when the indexer explicitly reports safe committed reads; failed attempts, recovery, shutdown and identity mismatches remain blocking.",
+    "State queries hold a shared recovery barrier through derivation. Reorg and failed publication recovery wait for active reads; new reads fail promptly while recovery is queued or running. Normal forward indexing continues concurrently.",
+    "Publication transitions can still require retries. This does not add Go deferred validation or miner gap policy and does not change network identity, database format or economic rules."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

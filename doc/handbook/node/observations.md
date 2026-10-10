@@ -38,6 +38,7 @@ usdb-node status --watch --details
 | `services.<id>.readiness.status` | `available`、`unavailable` 或 `invalid`；与是否就绪无关 |
 | `readiness.observed_at` | 本次服务探测时间，console 再次序列化不会刷新它 |
 | `rpc_alive / query_ready / consensus_ready` | 服务明确返回的布尔值；缺字段保持 `null`，不从端口或百分比推断 |
+| `committed_query_ready` | indexer 已提交 head 是否可供状态查询；正常处理下一块时也可为 true，失败或恢复时为 false；旧服务缺字段保持 `null` |
 | `blockers` | 原样保留已知枚举；缺字段为 `null`，不认识的原因归为 `UnknownBlocker` |
 | `readiness.failure` | 无法观察时为 `READINESS_UNAVAILABLE` / `READINESS_INVALID`；严重程度和恢复方式均为 `unknown` |
 | `incidents.status` | 是否成功检查持久事故；`unavailable` 绝不表示已恢复 |

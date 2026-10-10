@@ -388,8 +388,13 @@ def _committed_query_ready(value, service):
     soft_blockers = {"CatchingUp"}
     if service == "usdb-indexer":
         soft_blockers |= {"UpstreamConsensusNotReady", "HistoryBackfillPending"}
+        # Only the server can distinguish an active forward write from failed publication.
+        if isinstance(value, dict) and value.get("committed_query_ready") is True:
+            soft_blockers.add("BlockProcessingPending")
     return (isinstance(value, dict) and value.get("service") == service
             and value.get("rpc_alive") is True and value.get("query_ready") is True
+            and (service != "usdb-indexer" or "committed_query_ready" not in value
+                 or value["committed_query_ready"] is True)
             and isinstance(value.get("blockers"), list)
             and all(isinstance(blocker, str) and blocker in soft_blockers for blocker in value["blockers"]))
 

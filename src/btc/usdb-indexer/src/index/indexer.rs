@@ -161,6 +161,8 @@ pub struct InscriptionIndexer {
 
     transfer_tracker: Arc<dyn TransferTrackerApi>,
     miner_pass_storage: MinerPassStorageRef,
+    // Independent SQLite readers never share the block writer's open savepoint.
+    rpc_pass_storage: MinerPassStorageRef,
     balance_monitor: BalanceMonitor,
 
     pass_energy_manager: PassEnergyManagerRef,
@@ -175,6 +177,9 @@ pub struct InscriptionIndexer {
     publication_faults: PublicationFaults,
     // A failed outer SQLite publication must repair energy/tracker state before another block.
     block_publication_recovery_pending: AtomicBool,
+    normal_block_in_progress: AtomicBool,
+    // Queries share the immutable prefix with forward indexing, but exclude destructive recovery.
+    committed_query_gate: Arc<tokio::sync::RwLock<()>>,
 
     // Shutdown signal
     should_stop: Arc<AtomicBool>,
@@ -185,6 +190,15 @@ struct CollectedMintItems {
     valid_items: Vec<InscriptionNewItem>,
     // Invalid protocol mints that still need history visibility at the inscription height.
     invalid_items: Vec<InvalidPassMintInscriptionInfo>,
+}
+
+// A failed, cancelled or panicking block must never retain the normal-write exemption.
+struct NormalBlockReadGuard<'a>(&'a AtomicBool);
+
+impl Drop for NormalBlockReadGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 struct BlockMutationCollectionGuard<'a> {
@@ -306,8 +320,9 @@ impl InscriptionIndexer {
             miner_pass_storage.clone(),
             pass_energy_manager.clone(),
         )?);
+        let rpc_pass_storage = Arc::new(MinerPassStorage::open_read_only(&config.data_dir())?);
         let effective_energy_resolver = Arc::new(EffectiveEnergyResolver::new(
-            miner_pass_storage.clone(),
+            rpc_pass_storage.clone(),
             pass_energy_manager.clone(),
             config.config().bitcoin.network(),
             config.config().usdb.active_address_page_size,
@@ -341,10 +356,13 @@ impl InscriptionIndexer {
             effective_energy_resolver,
             balance_history_client,
             miner_pass_storage,
+            rpc_pass_storage,
             balance_monitor,
             status,
             reorg_recovery_fault_injector,
             block_publication_recovery_pending: AtomicBool::new(false),
+            normal_block_in_progress: AtomicBool::new(false),
+            committed_query_gate: Arc::new(tokio::sync::RwLock::new(())),
             #[cfg(test)]
             publication_faults: PublicationFaults::default(),
 
@@ -371,8 +389,10 @@ impl InscriptionIndexer {
         miner_pass_storage
             .reconcile_snapshot_history_coverage(config.config().usdb.genesis_block_height)
             .expect("test history coverage must reconcile");
+        let rpc_pass_storage =
+            Arc::new(MinerPassStorage::open_read_only(&config.data_dir()).unwrap());
         let effective_energy_resolver = Arc::new(EffectiveEnergyResolver::new(
-            miner_pass_storage.clone(),
+            rpc_pass_storage.clone(),
             pass_energy_manager.clone(),
             config.config().bitcoin.network(),
             config.config().usdb.active_address_page_size,
@@ -401,6 +421,7 @@ impl InscriptionIndexer {
             inscription_source,
             transfer_tracker,
             miner_pass_storage,
+            rpc_pass_storage,
             balance_monitor,
             pass_energy_manager,
             miner_pass_manager,
@@ -409,6 +430,8 @@ impl InscriptionIndexer {
             status,
             reorg_recovery_fault_injector: ReorgRecoveryFaultInjector::default(),
             block_publication_recovery_pending: AtomicBool::new(false),
+            normal_block_in_progress: AtomicBool::new(false),
+            committed_query_gate: Arc::new(tokio::sync::RwLock::new(())),
             #[cfg(test)]
             publication_faults: PublicationFaults::default(),
             should_stop: Arc::new(AtomicBool::new(false)),
@@ -687,6 +710,32 @@ impl InscriptionIndexer {
     /// Return the read-only UIP-0004 effective energy resolver.
     pub fn effective_energy_resolver(&self) -> &EffectiveEnergyResolverRef {
         &self.effective_energy_resolver
+    }
+
+    /// Read committed pass rows without sharing the indexer's writer connection.
+    pub(crate) fn rpc_pass_storage(&self) -> &MinerPassStorageRef {
+        &self.rpc_pass_storage
+    }
+
+    /// Only an active forward block may serve the immutable committed prefix.
+    /// Failed attempts and publication recovery retain the global pending barrier.
+    pub(crate) fn normal_block_read_available(&self) -> bool {
+        self.normal_block_in_progress.load(Ordering::SeqCst)
+            && !self
+                .block_publication_recovery_pending
+                .load(Ordering::SeqCst)
+    }
+
+    /// Never wait behind recovery in an RPC worker. A held read lease prevents a
+    /// reorg from changing pass/energy rows until this query finishes or rejects.
+    pub(crate) fn try_committed_query_lease(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, String> {
+        self.committed_query_gate.clone().try_read_owned().map_err(|_| {
+            let msg = "Committed state query deferred: destructive indexer recovery owns or awaits the read barrier".to_string();
+            warn!("{msg}");
+            msg
+        })
     }
 
     fn check_shutdown(&self) -> bool {
@@ -1063,6 +1112,7 @@ impl InscriptionIndexer {
         // soon as reorg handling starts. The durable source of truth is still the
         // SQLite pending marker written by rollback_to_block_height_with_upstream_reorg_recovery_pending().
         self.status.set_upstream_reorg_recovery_pending(true);
+        let query_barrier = self.committed_query_gate.write().await;
 
         if let Err(e) = self
             .miner_pass_storage
@@ -1085,6 +1135,7 @@ impl InscriptionIndexer {
         #[cfg(test)]
         self.publication_faults
             .hit(rollback_target, FaultPoint::ReorgPassRolledBack)?;
+        drop(query_barrier);
         self.resume_pending_upstream_reorg_recovery(genesis_block_height)
             .await?;
 
@@ -1114,6 +1165,7 @@ impl InscriptionIndexer {
         };
         self.status.set_upstream_reorg_recovery_pending(true);
 
+        let _query_barrier = self.committed_query_gate.write().await;
         let pass_synced_height = self
             .miner_pass_storage
             .get_synced_btc_block_height()?
@@ -1678,6 +1730,8 @@ impl InscriptionIndexer {
         for height in block_range {
             self.status
                 .set_block_processing_pending_height(Some(height));
+            self.normal_block_in_progress.store(true, Ordering::SeqCst);
+            let _read_guard = NormalBlockReadGuard(&self.normal_block_in_progress);
             debug!("Syncing inscriptions at block height {}", height);
             let sync_single_block_begin = Instant::now();
             // Use savepoint to keep pass+balance sqlite state atomic at per-block granularity.
@@ -1800,6 +1854,18 @@ impl InscriptionIndexer {
     }
 
     #[cfg(test)]
+    pub(crate) fn pause_publication_for_test(
+        &self,
+        height: u32,
+        point: FaultPoint,
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        self.publication_faults.pause(height, point)
+    }
+
+    #[cfg(test)]
     pub(crate) fn arm_publication_fault_for_test(
         &self,
         height: u32,
@@ -1846,8 +1912,11 @@ impl InscriptionIndexer {
 
     #[cfg(test)]
     pub(crate) async fn rollback_and_resume_for_test(&self, height: u32) -> Result<(), String> {
+        self.status.set_upstream_reorg_recovery_pending(true);
+        let query_barrier = self.committed_query_gate.write().await;
         self.miner_pass_storage
             .rollback_to_block_height_with_upstream_reorg_recovery_pending(height, None)?;
+        drop(query_barrier);
         self.resume_pending_upstream_reorg_recovery(self.config.config().usdb.genesis_block_height)
             .await
     }
@@ -2175,6 +2244,8 @@ impl InscriptionIndexer {
     // Reconcile against durable SQLite, never the writer's failed provisional height. On a
     // process restart, normal energy reconciliation and tracker initialization do the same work.
     async fn recover_block_publication(&self) -> Result<(), String> {
+        self.normal_block_in_progress.store(false, Ordering::SeqCst);
+        let _query_barrier = self.committed_query_gate.write().await;
         let result = async {
             self.miner_pass_storage.require_committed_writer()?;
             let height = self.durable_pass_height()?;
@@ -2200,6 +2271,8 @@ impl InscriptionIndexer {
         energy_finalized: bool,
         original_error: String,
     ) -> String {
+        self.normal_block_in_progress.store(false, Ordering::SeqCst);
+        let _query_barrier = self.committed_query_gate.write().await;
         let original_error_for_log = original_error.clone();
         // There are two distinct recovery windows here:
         // 1) energy_finalized == false:

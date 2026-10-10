@@ -30,6 +30,9 @@
   - 表示当前状态已满足全局追平、历史覆盖和安全条件
   - 启动编排和同步验收等待此状态；指定已提交高度的共识查询单独判断，见 5.4
 
+补充字段 `committed_query_ready` 表示当前已提交 head 可供 context 查询使用，允许正常追块和
+下一块的向前写入。该字段不代替具体请求的高度、历史保留范围和 identity 检查。
+
 ## 3. 依赖的状态来源
 
 第一版 `usdb-indexer` readiness 由以下几类状态共同决定：
@@ -77,7 +80,8 @@
 
 P6.4 新增 `block_processing_pending_height` 运行时标记：开始处理时设置，保存该块和 synced height 的事务提交后清除。
 数据查询或其他块处理失败时保持 `BlockProcessingPending`；恢复核对后已无需处理该块也可清除。
-该标记阻止瞬时或失败状态被宣称为共识就绪，普通查询继续读取已提交状态；重启仍以持久化高度、
+该标记阻止瞬时或失败状态被宣称为全局共识就绪；正常向前执行时可以查询已提交前缀，见 5.4。
+重启仍以持久化高度、
 能量/reorg恢复和历史锚点完整性为准。Core 单块输入能力预检和后台验证进度不是本服务的 consensus readiness，
 见[P6.4操作](../balance-history/balance-history-assumeutxo-p64-operations.md)。
 
@@ -149,10 +153,15 @@ BH 正常 `CatchingUp`。这不修改全局 `consensus_ready`：请求必须位�
 该高度的历史 anchor、local/system commit 和匹配的 expected state。
 
 BH 必须仍为 `rpc_alive && query_ready`，已提交稳定高度覆盖请求高度，拥有 hash/commit，
-blockers 只能是正常 `CatchingUp`。本地仍拒绝 `BlockProcessingPending`、shutdown、
-reorg recovery（含持久化标记）、未知上游、缺失或不一致的当前状态身份。
+blockers 只能是正常 `CatchingUp`。本地仍拒绝 shutdown、reorg recovery（含持久化标记）、
+未知上游、缺失或不一致的当前状态身份。`BlockProcessingPending` 仅在正常向前执行、pending
+高于已提交 head、能量已 finalize 到 head 且没有失败恢复时可以共存；失败留下的 pending 仍拒绝。
 请求派生完成后再检查安全条件并复核历史 identity；未来高度、历史缺失或裁剪沿用结构化错误。
-本阶段不提供跨存储提交过程中的无等待读取，也不替代 Go 侧延迟验证重试。
+
+RPC/能量派生使用独立 SQLite 只读连接及严格的能量历史高度限制。head 使用每块提交的历史
+anchor。整个状态查询持有共享读取许可，重组/恢复持有独占许可；普通向前写入不占用该许可。
+恢复开始或排队时新查询快速拒绝，已进行的查询结束/拒绝后才修改历史。仍不承诺发布切换瞬间
+零重试，也不替代 Go 侧延迟验证重试。
 
 实现与后续验收计划见[已提交状态出块与延迟验证](./committed-state-mining-and-validation-plan.md)。
 
@@ -163,7 +172,7 @@ reorg recovery（含持久化标记）、未知上游、缺失或不一致的当
 - `get_sync_status`
   - 继续提供进度视图
 - `get_snapshot_info`
-  - 继续表示 adopted upstream snapshot
+  - 表示本地已提交高度对应的 upstream snapshot，从逐块提交的历史 anchor 读取
 - `get_local_state_commit_info`
   - 表示本地核心 durable 状态
 - `get_system_state_info`

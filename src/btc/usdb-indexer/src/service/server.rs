@@ -307,6 +307,16 @@ pub struct UsdbIndexerRpcServer {
 }
 
 impl UsdbIndexerRpcServer {
+    /// Hold recovery outside the entire derivation, including cache population.
+    /// Normal forward indexing only appends above the selected committed prefix.
+    fn committed_query_lease(&self) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, JsonError> {
+        self.indexer.try_committed_query_lease().map_err(|detail| {
+            let mut data = ConsensusRpcErrorData::new(USDB_INDEXER_SERVICE_NAME);
+            data.detail = Some(detail);
+            Self::to_consensus_error(ConsensusRpcErrorCode::SnapshotNotReady, data)
+        })
+    }
+
     pub fn new(
         config: ConfigManagerRef,
         status: StatusManagerRef,
@@ -444,7 +454,7 @@ impl UsdbIndexerRpcServer {
 
     fn synced_height(&self) -> Result<Option<u32>, JsonError> {
         self.indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_committed_synced_btc_block_height()
             .map_err(Self::to_internal_error)
     }
@@ -743,7 +753,7 @@ impl UsdbIndexerRpcServer {
 
     /// Check runtime safety independently of tip catch-up. The caller must also
     /// resolve the committed height and validate its complete historical identity.
-    /// Pending publication and recovery remain global barriers in this phase.
+    /// Only normal forward writes may overlap a query of the committed prefix.
     fn ensure_consensus_query_ready(
         &self,
         requested_height: Option<u32>,
@@ -775,15 +785,7 @@ impl UsdbIndexerRpcServer {
         });
         // Historical coverage elsewhere is not proof that this height is missing.
         // The selected anchor/commit/retention checks below remain authoritative.
-        let local_safe = readiness.query_ready
-            && readiness.blockers.iter().all(|blocker| {
-                matches!(
-                    blocker,
-                    ReadinessBlocker::CatchingUp
-                        | ReadinessBlocker::UpstreamConsensusNotReady
-                        | ReadinessBlocker::HistoryBackfillPending
-                )
-            });
+        let local_safe = readiness.committed_query_ready;
         if local_safe && upstream_safe {
             return Ok(());
         }
@@ -799,10 +801,12 @@ impl UsdbIndexerRpcServer {
             .join(", ");
 
         let detail = format!(
-            "{query_name} requires a safe committed state: requested_height={height:?}, local_synced_height={:?}, query_ready={}, consensus_ready={}, blockers=[{}], upstream_query_ready={:?}, upstream_stable_height={:?}, upstream_blockers={:?}",
+            "{query_name} requires a safe committed state: requested_height={height:?}, local_synced_height={:?}, query_ready={}, committed_query_ready={}, consensus_ready={}, pending_height={:?}, blockers=[{}], upstream_query_ready={:?}, upstream_stable_height={:?}, upstream_blockers={:?}",
             readiness.synced_block_height,
             readiness.query_ready,
+            readiness.committed_query_ready,
             readiness.consensus_ready,
+            readiness.block_processing_pending_height,
             blockers,
             upstream.as_ref().map(|value| value.query_ready),
             upstream.as_ref().and_then(|value| value.stable_height),
@@ -1108,16 +1112,20 @@ impl UsdbIndexerRpcServer {
     }
 
     fn upstream_snapshot_info(&self) -> Result<Option<IndexerSnapshotInfo>, JsonError> {
+        let Some(local_synced_block_height) = self.synced_height()? else {
+            return Ok(None);
+        };
+        // Per-block history and the durable height publish in the same SQLite commit.
+        // The legacy adopted batch anchor may still lag while the next block is executing.
         let Some(anchor) = self
             .indexer
-            .miner_pass_storage()
-            .get_balance_history_snapshot_anchor()
+            .rpc_pass_storage()
+            .get_balance_history_snapshot_anchor_at_height(local_synced_block_height)
             .map_err(Self::to_internal_error)?
         else {
             return Ok(None);
         };
 
-        let local_synced_block_height = self.synced_height()?.unwrap_or(anchor.stable_height);
         self.validate_stored_snapshot_stable_lag(
             anchor.stable_height,
             anchor.stable_lag,
@@ -1144,7 +1152,7 @@ impl UsdbIndexerRpcServer {
 
         let anchor = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_balance_history_snapshot_anchor_at_height(block_height)
             .map_err(Self::to_internal_error)?
             .ok_or_else(|| {
@@ -1272,7 +1280,7 @@ impl UsdbIndexerRpcServer {
             .to_string();
         let latest_pass_block_commit = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_latest_pass_block_commit_at_or_before(synced_height)
             .map_err(Self::to_internal_error)?
             .map(|entry| LocalStatePassCommitIdentity {
@@ -1292,14 +1300,14 @@ impl UsdbIndexerRpcServer {
 
             if require_latest_balance_snapshot_consistency {
                 self.indexer
-                    .miner_pass_storage()
+                    .rpc_pass_storage()
                     .assert_balance_snapshot_consistency(synced_height, genesis_block_height)
                     .map_err(Self::to_internal_error)?;
             }
 
             let snapshot = self
                 .indexer
-                .miner_pass_storage()
+                .rpc_pass_storage()
                 .get_active_balance_snapshot(synced_height)
                 .map_err(Self::to_internal_error)?
                 .ok_or_else(|| {
@@ -1636,13 +1644,13 @@ impl UsdbIndexerRpcServer {
         let runtime = self.status.get_runtime_readiness();
         let history = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_committed_snapshot_history_progress(self.config.config().usdb.genesis_block_height)
             .map_err(Self::to_internal_error)?;
         let synced_height = history.synced_height;
         let durable_reorg_recovery_pending = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_upstream_reorg_recovery_pending_height()
             .map_err(Self::to_internal_error)?
             .is_some();
@@ -1650,7 +1658,7 @@ impl UsdbIndexerRpcServer {
             runtime.upstream_reorg_recovery_pending || durable_reorg_recovery_pending;
         let upstream_reorg_epoch = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_upstream_reorg_epoch()
             .map_err(Self::to_internal_error)?;
 
@@ -1752,11 +1760,54 @@ impl UsdbIndexerRpcServer {
             && system_state.is_some()
             && blockers.is_empty();
 
+        // SQLite readers exclude provisional pass rows. Normal energy writes are
+        // height-keyed appends above this prefix and finalize before SQLite publishes.
+        // A failed/recovering attempt never receives this exemption.
+        let pending_read_safe = match runtime.block_processing_pending_height {
+            None => true,
+            Some(pending) => {
+                self.indexer.normal_block_read_available()
+                    && synced_height.is_some_and(|height| pending > height)
+                    && self
+                        .indexer
+                        .pass_energy_manager()
+                        .get_synced_block_height()
+                        .map_err(Self::to_internal_error)?
+                        .zip(synced_height)
+                        .is_some_and(|(energy, pass)| energy >= pass)
+            }
+        };
+        let committed_query_ready = query_ready
+            && pending_read_safe
+            && blockers.iter().all(|blocker| {
+                matches!(
+                    blocker,
+                    ReadinessBlocker::CatchingUp
+                        | ReadinessBlocker::UpstreamConsensusNotReady
+                        | ReadinessBlocker::HistoryBackfillPending
+                        | ReadinessBlocker::BlockProcessingPending
+                )
+            })
+            && upstream_readiness.as_ref().is_some_and(|upstream| {
+                upstream.rpc_alive
+                    && upstream.query_ready
+                    && upstream
+                        .stable_height
+                        .zip(synced_height)
+                        .is_some_and(|(stable, local)| stable >= local)
+                    && upstream.stable_block_hash.is_some()
+                    && upstream.latest_block_commit.is_some()
+                    && upstream.blockers.iter().all(|blocker| {
+                        matches!(blocker, balance_history::ReadinessBlocker::CatchingUp)
+                    })
+            });
+
         Ok(ReadinessInfo {
             service: USDB_INDEXER_SERVICE_NAME.to_string(),
             rpc_alive: runtime.rpc_alive,
             query_ready,
             consensus_ready,
+            committed_query_ready,
             synced_block_height: synced_height,
             snapshot_history_ready_height: history.ready_height,
             snapshot_history_pending_from: history.pending_from,
@@ -1976,7 +2027,7 @@ impl UsdbIndexerRpcServer {
         inscription_id: &InscriptionId,
         resolved_height: u32,
     ) -> Result<Option<PassSnapshot>, JsonError> {
-        let storage = self.indexer.miner_pass_storage();
+        let storage = self.indexer.rpc_pass_storage();
         let pass = storage
             .get_pass_by_inscription_id(inscription_id)
             .map_err(Self::to_internal_error)?;
@@ -2097,7 +2148,7 @@ impl UsdbIndexerRpcServer {
     /// Pin display cache reuse to the dataset and durable branch, including same-height reorgs.
     fn leaderboard_state(&self, height: u32) -> Result<LeaderboardState, JsonError> {
         self.active_version_set_at(height)?;
-        let storage = self.indexer.miner_pass_storage();
+        let storage = self.indexer.rpc_pass_storage();
         Ok(LeaderboardState {
             height,
             registry_id: self
@@ -2196,7 +2247,7 @@ impl UsdbIndexerRpcServer {
     ) -> Result<(u64, Vec<PassEnergyLeaderboardItem>), JsonError> {
         let build_start = Instant::now();
         let states = scope.states();
-        let storage = self.indexer.miner_pass_storage();
+        let storage = self.indexer.rpc_pass_storage();
         let total_passes = storage
             .get_pass_count_from_history_at_height_by_states(resolved_height, &states)
             .map_err(Self::to_internal_error)?;
@@ -2467,7 +2518,7 @@ impl UsdbIndexerRpcServer {
     ) -> JsonResult<MinerEconomicAggregate> {
         let snapshot = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_active_balance_snapshot(resolved_height)
             .map_err(Self::to_internal_error)?;
         let Some(snapshot) = snapshot else {
@@ -2563,6 +2614,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     }
 
     fn get_snapshot_info(&self) -> JsonResult<Option<IndexerSnapshotInfo>> {
+        let _query_lease = self.committed_query_lease()?;
         Ok(Some(self.require_upstream_snapshot_info()?))
     }
 
@@ -2570,10 +2622,11 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetPassBlockCommitParams,
     ) -> JsonResult<Option<PassBlockCommitInfo>> {
+        let _query_lease = self.committed_query_lease()?;
         let resolved_height = self.resolve_height(params.block_height)?;
         let entry = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_pass_block_commit(resolved_height)
             .map_err(Self::to_internal_error)?;
 
@@ -2589,10 +2642,12 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     }
 
     fn get_local_state_commit_info(&self) -> JsonResult<Option<LocalStateCommitInfo>> {
+        let _query_lease = self.committed_query_lease()?;
         Ok(Some(self.require_local_state_commit_info()?))
     }
 
     fn get_system_state_info(&self) -> JsonResult<Option<SystemStateInfo>> {
+        let _query_lease = self.committed_query_lease()?;
         Ok(Some(self.require_system_state_info()?))
     }
 
@@ -2600,6 +2655,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetStateRefAtHeightParams,
     ) -> JsonResult<HistoricalStateRefInfo> {
+        let _query_lease = self.committed_query_lease()?;
         let expected_state =
             self.validate_consensus_query_context(params.block_height, params.context.as_ref())?;
         let requested_height =
@@ -2622,6 +2678,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     }
 
     fn get_pass_snapshot(&self, params: GetPassSnapshotParams) -> JsonResult<Option<PassSnapshot>> {
+        let _query_lease = self.committed_query_lease()?;
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
         let (resolved_height, state_ref) =
             self.resolve_state_for_contextual_query(params.at_height, params.context.as_ref())?;
@@ -2665,6 +2722,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetPassMintAuditParams,
     ) -> JsonResult<Option<PassMintAuditInfo>> {
+        let _query_lease = self.committed_query_lease()?;
         let id = self.parse_inscription_id(&params.inscription_id)?;
         let height =
             self.resolve_contextual_query_height(params.at_height, params.context.as_ref())?;
@@ -2690,7 +2748,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         // This also prevents a provisional writer or concurrent rollback from leaking mixed state.
         let (audit, mint_height) = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_mint_audit_at_height(&id, height, &commit.block_commit)
             .map_err(Self::to_internal_error)?;
         let Some(mint_height) = mint_height else {
@@ -2715,10 +2773,11 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetActivePassesAtHeightParams,
     ) -> JsonResult<ActivePassesAtHeight> {
+        let _query_lease = self.committed_query_lease()?;
         self.validate_pagination(params.page, params.page_size)?;
 
         let resolved_height = self.resolve_height(params.at_height)?;
-        let storage = self.indexer.miner_pass_storage();
+        let storage = self.indexer.rpc_pass_storage();
         let total = storage
             .get_active_pass_count_from_history_at_height(resolved_height)
             .map_err(Self::to_internal_error)?;
@@ -2747,10 +2806,11 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetPassStatsAtHeightParams,
     ) -> JsonResult<PassStatsAtHeight> {
+        let _query_lease = self.committed_query_lease()?;
         let resolved_height = self.resolve_height(params.at_height)?;
         let stats = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_pass_state_stats_from_history_at_height(resolved_height)
             .map_err(Self::to_internal_error)?;
 
@@ -2766,13 +2826,14 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     }
 
     fn get_pass_history(&self, params: GetPassHistoryParams) -> JsonResult<PassHistoryPage> {
+        let _query_lease = self.committed_query_lease()?;
         self.validate_pagination(params.page, params.page_size)?;
 
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
         let resolved_to_height = self.resolve_height_range(params.from_height, params.to_height)?;
         let total = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_pass_history_count_in_height_range(
                 &inscription_id,
                 params.from_height,
@@ -2794,7 +2855,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         let items = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_pass_history_by_page_in_height_range(
                 &inscription_id,
                 params.from_height,
@@ -2827,6 +2888,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetOwnerActivePassAtHeightParams,
     ) -> JsonResult<Option<PassSnapshot>> {
+        let _query_lease = self.committed_query_lease()?;
         let owner_text = params.owner;
         let owner_text_for_duplicate = owner_text.clone();
         let owner = self.parse_owner(&owner_text)?;
@@ -2834,7 +2896,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         let active_pass = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_owner_active_pass_from_history_at_height(&owner, resolved_height)
             .map_err(|e| {
                 if e.contains("Duplicate active owner detected") {
@@ -2873,13 +2935,14 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetOwnerPassesAtHeightParams,
     ) -> JsonResult<OwnerPassesAtHeight> {
+        let _query_lease = self.committed_query_lease()?;
         self.validate_pagination(params.page, params.page_size)?;
 
         let owner = self.parse_owner(&params.owner)?;
         let resolved_height = self.resolve_height(params.at_height)?;
         let states = self.parse_optional_pass_states(params.states)?;
         let desc = self.parse_order_desc(params.order.as_deref())?;
-        let storage = self.indexer.miner_pass_storage();
+        let storage = self.indexer.rpc_pass_storage();
         let total = storage
             .get_owner_pass_count_from_history_at_height_by_states(&owner, resolved_height, &states)
             .map_err(Self::to_internal_error)?;
@@ -2922,12 +2985,13 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     }
 
     fn get_recent_passes(&self, params: GetRecentPassesParams) -> JsonResult<RecentPassesPage> {
+        let _query_lease = self.committed_query_lease()?;
         self.validate_pagination(params.page, params.page_size)?;
 
         let resolved_height = self.resolve_height(params.at_height)?;
         let states = self.parse_optional_pass_states(params.states)?;
         let desc = self.parse_order_desc(params.order.as_deref())?;
-        let storage = self.indexer.miner_pass_storage();
+        let storage = self.indexer.rpc_pass_storage();
         let total = storage
             .get_recent_pass_count_from_history_at_height_by_states(resolved_height, &states)
             .map_err(Self::to_internal_error)?;
@@ -2965,6 +3029,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     }
 
     fn get_pass_energy(&self, params: GetPassEnergyParams) -> JsonResult<PassEnergySnapshot> {
+        let _query_lease = self.committed_query_lease()?;
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
         let (query_height, state_ref) =
             self.resolve_state_for_contextual_query(params.block_height, params.context.as_ref())?;
@@ -3031,6 +3096,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetCollabBreakdownParams,
     ) -> JsonResult<CollabBreakdownPage> {
+        let _query_lease = self.committed_query_lease()?;
         self.validate_economic_view_version(
             &params.view_version,
             params.block_height,
@@ -3199,6 +3265,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetPassEnergyRangeParams,
     ) -> JsonResult<PassEnergyRangePage> {
+        let _query_lease = self.committed_query_lease()?;
         self.validate_pagination(params.page, params.page_size)?;
 
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
@@ -3261,6 +3328,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetPassEnergyLeaderboardParams,
     ) -> JsonResult<PassEnergyLeaderboardPage> {
+        let _query_lease = self.committed_query_lease()?;
         self.validate_pagination(params.page, params.page_size)?;
 
         let resolved_height = self.resolve_height(params.at_height)?;
@@ -3393,6 +3461,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetPassEconomicProfileParams,
     ) -> JsonResult<PassEconomicProfileView> {
+        let _query_lease = self.committed_query_lease()?;
         let (query_height, state_ref) = self.resolve_economic_query_context(
             &params.view_version,
             params.block_height,
@@ -3401,7 +3470,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         let pass_id = self.parse_inscription_id(&params.pass_id)?;
         let Some(pass_snapshot) = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_pass_snapshot_from_history_at_height(&pass_id, query_height)
             .map_err(Self::to_internal_error)?
         else {
@@ -3431,6 +3500,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: ResolveMinerCandidateParams,
     ) -> JsonResult<MinerCandidateProfileView> {
+        let _query_lease = self.committed_query_lease()?;
         let usdb_main = Self::normalize_usdb_main_query(&params.usdb_main)?;
         let (query_height, state_ref) = self.resolve_economic_query_context(
             &params.view_version,
@@ -3439,7 +3509,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         )?;
         let snapshots = self
             .indexer
-            .miner_pass_storage()
+            .rpc_pass_storage()
             .get_active_standard_passes_by_usdb_main_from_history_at_height(
                 &usdb_main,
                 query_height,
@@ -3485,6 +3555,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetMinerEconomicAggregateParams,
     ) -> JsonResult<MinerEconomicAggregateView> {
+        let _query_lease = self.committed_query_lease()?;
         let (query_height, state_ref) = self.resolve_economic_query_context(
             &params.view_version,
             params.block_height,
@@ -3504,6 +3575,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetCandidateSetViewParams,
     ) -> JsonResult<CandidateSetViewPage> {
+        let _query_lease = self.committed_query_lease()?;
         self.validate_economic_view_version(
             &params.view_version,
             params.block_height,
@@ -3633,10 +3705,11 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     }
 
     fn get_invalid_passes(&self, params: GetInvalidPassesParams) -> JsonResult<InvalidPassesPage> {
+        let _query_lease = self.committed_query_lease()?;
         self.validate_pagination(params.page, params.page_size)?;
 
         let resolved_to_height = self.resolve_height_range(params.from_height, params.to_height)?;
-        let storage = self.indexer.miner_pass_storage();
+        let storage = self.indexer.rpc_pass_storage();
         let total = storage
             .get_invalid_pass_count_in_height_range(
                 params.from_height,
@@ -3727,6 +3800,13 @@ mod tests {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../tests/indexer_committed_height_queries.rs"
+        ));
+    }
+
+    mod concurrent_committed_queries {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tests/indexer_concurrent_committed_queries.rs"
         ));
     }
 
@@ -4498,65 +4578,35 @@ mod tests {
     }
 
     #[test]
-    fn test_get_snapshot_info_snapshot_id_ignores_local_synced_height() {
-        let (server_a, root_dir_a) = build_server("snapshot_id_ignore_local_a", 120);
-        server_a
-            .indexer
-            .miner_pass_storage()
-            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
-                stable_height: 120,
-                stable_block_hash: Some("aa".repeat(32)),
-                latest_block_commit: Some("bb".repeat(32)),
-                balance_query_floor: 0,
-                history_query_floor: 0,
-                stable_lag: regtest_stable_lag(),
-                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
-                    .to_string(),
-                balance_history_semantics_version:
-                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
-                commit_protocol_version: "1.0.0".to_string(),
-                commit_hash_algo: "sha256".to_string(),
-            })
-            .unwrap();
-
-        let (server_b, root_dir_b) = build_server("snapshot_id_ignore_local_b", 135);
-        server_b
-            .indexer
-            .miner_pass_storage()
-            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
-                stable_height: 120,
-                stable_block_hash: Some("aa".repeat(32)),
-                latest_block_commit: Some("bb".repeat(32)),
-                balance_query_floor: 0,
-                history_query_floor: 0,
-                stable_lag: regtest_stable_lag(),
-                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
-                    .to_string(),
-                balance_history_semantics_version:
-                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
-                commit_protocol_version: "1.0.0".to_string(),
-                commit_hash_algo: "sha256".to_string(),
-            })
-            .unwrap();
-        server_b
-            .indexer
-            .miner_pass_storage()
-            .update_synced_btc_block_height(135)
-            .unwrap();
-
-        let snapshot_a = server_a.get_snapshot_info().unwrap().unwrap();
-        let snapshot_b = server_b.get_snapshot_info().unwrap().unwrap();
-        assert_ne!(
-            snapshot_a.local_synced_block_height,
-            snapshot_b.local_synced_block_height
+    fn test_get_snapshot_info_uses_committed_head_without_batch_anchor_fallback() {
+        let (server, root_dir) = build_server("snapshot_committed_head", 120);
+        seed_upstream_anchor(&server, 120);
+        let previous = server.get_snapshot_info().unwrap().unwrap();
+        let storage = server.indexer.miner_pass_storage();
+        storage.update_synced_btc_block_height(135).unwrap();
+        // A missing head anchor is an error, never permission to pair height 135 with anchor 120.
+        let error = server.get_snapshot_info().unwrap_err();
+        assert_eq!(
+            error.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotNotReady.code())
         );
-        assert_eq!(snapshot_a.consensus_identity, snapshot_b.consensus_identity);
-        assert_eq!(snapshot_a.snapshot_id, snapshot_b.snapshot_id);
-
-        drop(server_a);
-        drop(server_b);
-        std::fs::remove_dir_all(root_dir_a).unwrap();
-        std::fs::remove_dir_all(root_dir_b).unwrap();
+        storage
+            .upsert_balance_history_snapshot_history_entry(&ready_balance_history_snapshot(135))
+            .unwrap();
+        assert_eq!(
+            storage
+                .get_balance_history_snapshot_anchor()
+                .unwrap()
+                .unwrap()
+                .stable_height,
+            120
+        );
+        let current = server.get_snapshot_info().unwrap().unwrap();
+        assert_eq!(current.local_synced_block_height, 135);
+        assert_eq!(current.balance_history_stable_height, 135);
+        assert_ne!(current.snapshot_id, previous.snapshot_id);
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
     }
 
     #[test]

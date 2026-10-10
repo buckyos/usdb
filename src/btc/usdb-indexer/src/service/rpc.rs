@@ -586,6 +586,10 @@ pub struct ReadinessInfo {
     pub query_ready: bool,
     /// True when global synchronization and current state safety checks all pass.
     pub consensus_ready: bool,
+    /// True when the committed head can serve contextual queries, including during
+    /// a normal forward block write. The requested height and identity still need validation.
+    #[serde(default)]
+    pub committed_query_ready: bool,
     /// Local durable synced height, when available.
     pub synced_block_height: Option<u32>,
     /// Last committed height with continuous historical anchors from the configured origin.

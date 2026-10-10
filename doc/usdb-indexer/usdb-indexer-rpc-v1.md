@@ -302,13 +302,14 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 
 ### 5) `get_snapshot_info`
 
-返回当前 adopted upstream snapshot 元数据。
+返回当前本地已提交高度所采用的 upstream snapshot 元数据。
 
 说明：
 
 - 成功时返回当前本地采用的 `balance-history` snapshot 信息；
-- 若当前还没有 adopted upstream snapshot anchor，则返回共享共识错误 `SNAPSHOT_NOT_READY`；
-- 这条接口描述的是当前本地 adopted 的 upstream snapshot，不是按历史高度回放的 state ref。
+- 从随每块事务提交的历史 anchor 读取，不等待整批索引结束；
+- 当前已提交高度缺少 anchor 时返回共享共识错误 `SNAPSHOT_NOT_READY`，不回退旧的 batch anchor；
+- 指定历史高度的完整身份仍通过 `get_state_ref_at_height` 查询。
 
 ### 6) `get_local_state_commit_info`
 
@@ -332,6 +333,8 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 
 返回服务存活、本地查询与下游共识三层 readiness，以及当前采用的状态 identity。新增字段：
 
+- `committed_query_ready`：已提交 head 可用于 context 查询；正常处理下一块可为 true，失败或恢复为 false。
+  具体请求仍须验证高度、历史保留范围和完整 identity。旧版本可能没有此字段。
 - `block_processing_pending_height`：未提交或最近失败的块高度；非空时增加 `BlockProcessingPending` blocker，
   保持 `consensus_ready=false`，普通查询仍可读取已提交状态。成功提交或完成核对后确认无需继续处理时清除；
   该字段覆盖历史 block/undo 数据不足以及其他块处理失败，不是 txindex 或 Core 后台验证进度。
@@ -1119,7 +1122,9 @@ feature `owner_mint_history` 表示返回 `ever_valid_owner: boolean`。该字�
 这里的 `consensus_ready` 仍表示全局追平状态，不能单独作为指定高度的验证门槛。
 `get_state_ref_at_height`、带 context 的 pass snapshot/energy 和经济视图查询允许 BH/indexer
 正常追块，但只返回请求高度的完整已提交状态，并在完成时复核安全条件和 identity。
-`BlockProcessingPending`、恢复、shutdown、未知或不完整状态仍拒绝；不会替换请求高度。
+正常执行下一块时，服务端可通过独立读取连接继续服务旧的已提交前缀，并在 readiness 中给出
+`committed_query_ready=true`。失败的 `BlockProcessingPending`、恢复、shutdown、未知或不完整
+状态仍拒绝；不会替换请求高度。head identity 来自该块原子提交的历史 anchor，无需等待 batch 完成。
 具体条件见 [readiness 契约](./usdb-indexer-readiness-design.md)。
 
 示例：
