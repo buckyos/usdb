@@ -1,7 +1,7 @@
 # 已提交 BTC 状态的出块与延迟验证改进
 
-状态：第一阶段已提交（`f760421`）；补充批次“正常区块执行期间读取已提交前缀”已完成本地验收，待评审。
-Go 延迟验证、独立多节点矩阵和 gap 尚未实现，不代表已经通过多节点实测或发布。
+状态：第一阶段及正常区块执行期间的已提交前缀查询已提交（`f760421`、`981be5a`）。
+第二阶段 Go 延迟验证与重试已实现并通过本地验收，待评审；独立多节点矩阵和 gap 尚未实现。
 
 ## 问题与目标
 
@@ -109,6 +109,57 @@ workspace check/Clippy、格式、usdb-util 健康检查及 release fragment 校
 数据永久裁剪、配置不兼容和深重组不能被简单归入无限重试。真实无效区块仍拒绝。
 不能复用 timestamp future-block 错误来掩盖不同的依赖和资源边界。
 
+### 第二阶段实现
+
+- Go 使用独立的 external-state 错误分类，保留原始 RPC 错误及请求 pass/BTC 高度。
+  `HEIGHT_NOT_SYNCED`、`SNAPSHOT_NOT_READY` 和已识别的临时网络故障进入等待；
+  identity mismatch、无效 pass、难度、状态根错误仍是验证失败。
+- 历史裁剪、不支持的查询版本、配置/凭据错误、不可解析的响应等本地永久故障不处罚 peer，
+  不进入区块重试队列。同步调度明确暂停，修复依赖后需重启 chain 服务。
+  不自动清库、重建或回退 BTC anchor。
+- `FinalizeWithError` 是可选的 engine 接口，Ethash 和 Beacon 包装层均保留错误；
+  StateProcessor 在失败时返回原始原因并丢弃工作状态，避免 RPC 失败被奖励缺失产生的
+  state-root mismatch 掩盖。`InsertChain` 不持有链锁等待，由广播/同步调用方重试。
+- gas 等可独立完成的 header 校验先于 profile RPC。每次重试重新进入正常 header、
+  profile、奖励及状态根验证，不能凭先前成功的 RPC 结果跳过最终导入校验。
+- fetcher 的等待与普通待导入区块共用去重和配额：全局 256 块、编码体积 128 MiB，
+  每 peer 64 块/32 MiB，最多同时运行 4 个导入任务；保留 head 前 7/后 32 块的距离约束。
+  初始 1 秒退避，依次 2、4、8 秒并封顶；每秒调度一次，实际启动时间还受正在执行的查询影响。
+  队列任务从首次入队起最多保留 30 分钟，重复广播不延长寿命。父块未导入时保留后继顺序，
+  等待过期后释放配额，可由后续同步或新广播重新获取。
+- downloader 复用现有有界结果缓存，仅持有当前批次进行重试；每批最多等待 2 分钟，
+  退避同样封顶 8 秒。超时返回临时错误，同步协调器至少等待 10 秒再发起新会话，
+  peer 保持连接；已经提交的前缀保留。light/snap header 和 full block 导入都接入同一策略。
+- 停机取消等待计时器，fetcher 的完成通知不会阻塞已经退出的事件循环。
+  已经进入的 RPC 按其既有 query timeout 结束，不承诺立即中断底层请求。
+- 输出首次等待、恢复、到期和永久阻断日志，包含阶段/高度/hash、尝试次数、耗时或原始原因。
+  `SNAPSHOT_NOT_READY` 的服务端含义较宽，因此仍保留有界等待及现有深重组 halt 机制；
+  不能将反复出现的此错误解释为“必然会自动恢复”。
+
+本批不更改协议、genesis、registry 或数据库格式。已更新 Go CI 的 USDB 依赖到 `981be5a`，
+但本地提交/验证不代表已推送、通过远端 CI 或完成真实节点升级。
+
+### 第二阶段本地验收范围
+
+- 真实临时 chain DB + 模拟 RPC：header 查询失败、header 通过后奖励查询失败，
+  Ethash/Beacon 两条路径均不写坏块、不提交失败奖励，依赖恢复后原区块可重新导入。
+  可直接证明无效的 gas header 在 RPC 前被拒绝，真正的奖励状态根不匹配仍被拒绝。
+- fetcher：乱序父子、重复广播、header/执行阶段临时失败、恢复后连续导入、
+  恢复后发现真实无效、light header 重试、配额/距离/寿命/并发上限及退出通知。
+- downloader：full/light/snap 实际同步路径、部分前缀已提交后重试、取消/退出/等待超时，
+  本地永久故障与真实无效链的 peer 处理差异。
+- Fast CI 的必跑清单记录广播/同步关键用例，防止筛选条件遗漏；独立 BH/indexer 的
+  网络级时延与故障恢复仍属于第三阶段，不以这些模拟 RPC 测试替代。
+
+
+本地验证记录：Go 1.18.5 下完整 fetcher/downloader 测试通过；相关 USDB 共识、
+导入、RPC 和 miner 回归通过；新增 core/fetcher/downloader/sync 调度用例通过 race 检查。
+Fast CI JSON 报告确认 14 个关键同步用例实际运行并通过；覆盖校验/依赖锁工具 15 项测试通过。
+Go 1.26 兼容工具链下新增用例和 geth 编译检查通过；release fragment、依赖锁、shell 语法、
+格式及既有 Fast CI 涉及包的 vet 检查通过。额外扫描 `consensus` 根包仍报告
+`merger.go` 两处既有 unreachable code，本批没有修改该文件或放宽现有 CI 检查。
+未运行远端 CI、发布或真实节点升级。
+
 ## 第三阶段：独立多节点延迟矩阵
 
 至少使用独立的 indexer/BH 状态，覆盖 gossip 先到、父块先同步、连续子块、RPC 中断、
@@ -134,4 +185,4 @@ gap 只是一项本地出块策略，不是 validator 的新共识条件。典�
 - [RPC 契约](usdb-indexer-rpc-v1.md)
 
 现有 `run_usdb_profile_e2e.sh` outage 测试显式 reconnect 和重启 mining，不能作为
-第二、三阶段无干预恢复的验收证据。第一阶段通过也不代表上述 P2P 缺口已经关闭。
+第三阶段无干预恢复的验收证据。第二阶段的本地 Go 回归也不能替代独立多节点验收。
