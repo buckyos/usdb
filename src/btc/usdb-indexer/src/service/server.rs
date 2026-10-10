@@ -1150,6 +1150,18 @@ impl UsdbIndexerRpcServer {
     ) -> Result<IndexerSnapshotInfo, JsonError> {
         self.ensure_history_height_retained(block_height, "historical state")?;
 
+        // Read the cursor before the anchor: concurrent backfill can only add
+        // rows and advance coverage while this query holds its recovery lease.
+        // Reversing these reads could classify a just-repaired gap as permanent.
+        let history = self
+            .indexer
+            .rpc_pass_storage()
+            .get_committed_snapshot_history_progress(self.history_retention_floor())
+            .map_err(Self::to_internal_error)?;
+        let backfill_pending = history
+            .pending_from
+            .zip(history.synced_height)
+            .is_some_and(|(start, end)| (start..=end).contains(&block_height));
         let anchor = self
             .indexer
             .rpc_pass_storage()
@@ -1159,17 +1171,24 @@ impl UsdbIndexerRpcServer {
                 let (current_snapshot, current_local_state, current_system_state) = self
                     .current_state_for_error_payload()
                     .unwrap_or((None, None, None));
+                let code = if backfill_pending {
+                    ConsensusRpcErrorCode::SnapshotNotReady
+                } else {
+                    ConsensusRpcErrorCode::HistoryNotAvailable
+                };
+                let detail = format!(
+                    "Missing balance-history snapshot history at height {} while building historical state ref: backfill_pending={}",
+                    block_height, backfill_pending
+                );
+                warn!("Historical state query deferred: module=rpc_server, {detail}");
                 Self::to_consensus_error(
-                    ConsensusRpcErrorCode::HistoryNotAvailable,
+                    code,
                     self.build_consensus_error_data(
                         Some(block_height),
                         current_snapshot.as_ref(),
                         current_local_state.as_ref(),
                         current_system_state.as_ref(),
-                        Some(format!(
-                            "Missing balance-history snapshot history at height {} while building historical state ref",
-                            block_height
-                        )),
+                        Some(detail),
                     ),
                 )
             })?;
@@ -4479,7 +4498,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.code,
-            ErrorCode::ServerError(ConsensusRpcErrorCode::HistoryNotAvailable.code())
+            ErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotNotReady.code())
         );
         server
             .get_state_ref_at_height(GetStateRefAtHeightParams {

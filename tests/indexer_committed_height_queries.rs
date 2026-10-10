@@ -164,7 +164,7 @@ fn catch_up_never_substitutes_heights_or_ignores_identity() {
     );
     assert_code(
         state_at(&server, 111).unwrap_err(),
-        ConsensusRpcErrorCode::HistoryNotAvailable,
+        ConsensusRpcErrorCode::SnapshotNotReady,
     );
     assert_code(
         state_at(&server, 99).unwrap_err(),

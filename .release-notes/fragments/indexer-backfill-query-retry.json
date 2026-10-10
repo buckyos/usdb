@@ -1,0 +1,19 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "indexer-backfill-query-retry",
+  "type": "fixed",
+  "scopes": ["indexer", "consensus", "node-runtime", "testing"],
+  "summary": "Keep historical queries retryable while their missing anchors await automatic backfill",
+  "details": [
+    "Return SNAPSHOT_NOT_READY when the requested anchor is missing inside the committed pending backfill range, allowing existing bounded validation retries to recover with the original height and identity.",
+    "Keep complete historical heights available during backfill. Missing business snapshots or anchors outside the pending range remain local HISTORY_NOT_AVAILABLE faults; retention and identity mismatch checks are unchanged."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

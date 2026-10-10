@@ -50,6 +50,113 @@ fn economic_answers(rpc: &UsdbIndexerRpcServer, scenario: &QueryScenario, height
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn historical_profile_retries_during_backfill_then_recovers_with_the_same_identity() {
+    let (p, scenario) = fixture("query_backfill_retry").await;
+    let baseline = economic_answers(&p.rpc(), &scenario, 9);
+    // Model a legacy database with complete business state and a missing anchor.
+    let p = p
+        .while_stopped(|root| {
+            let conn = rusqlite::Connection::open(
+                root.join("data").join(crate::constants::MINER_PASS_DB_FILE),
+            )
+            .unwrap();
+            conn.execute(
+                "DELETE FROM balance_history_snapshot_history WHERE block_height = 9",
+                [],
+            )
+            .unwrap();
+        })
+        .await;
+    p.status.set_rpc_alive(true);
+    p.status
+        .set_balance_history_readiness(Some(ready_balance_history_readiness(10)));
+    p.status
+        .set_balance_history_snapshot(Some(p.history.lock().unwrap().snapshot(10)));
+    let rpc = p.rpc();
+    let context: ConsensusQueryContext = ConsensusQueryContext::from(
+        &serde_json::from_value::<PassEconomicProfileView>(baseline["profile"].clone())
+            .unwrap()
+            .external_state,
+    );
+    let query = json!({"view_version":USDB_ECONOMIC_STATE_VIEW_VERSION,
+        "pass_id":scenario.ids[0].to_string(),"block_height":9,"context":context});
+    let error = rpc
+        .get_pass_economic_profile(params(query.clone()))
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        ErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotNotReady.code())
+    );
+    assert_eq!(
+        decode_consensus_error_data(&error).requested_height,
+        Some(9)
+    );
+    assert_eq!(
+        rpc.get_readiness().unwrap().snapshot_history_pending_from,
+        Some(9)
+    );
+    // Complete heights remain usable while this selected historical height waits.
+    economic_answers(&rpc, &scenario, 10);
+
+    // Use the production backfill loop, without replacing the RPC/indexer instance.
+    p.sync_to(10).await.unwrap();
+    assert_eq!(
+        rpc.get_readiness().unwrap().snapshot_history_pending_from,
+        None
+    );
+    assert_eq!(
+        serde_json::to_value(
+            rpc.get_pass_economic_profile(params(query.clone()))
+                .unwrap()
+        )
+        .unwrap(),
+        baseline["profile"]
+    );
+    assert_eq!(economic_answers(&rpc, &scenario, 9), baseline);
+
+    // A missing business snapshot is not repaired by anchor backfill.
+    let conn = rusqlite::Connection::open(
+        p.root
+            .join("data")
+            .join(crate::constants::MINER_PASS_DB_FILE),
+    )
+    .unwrap();
+    conn.execute(
+        "DELETE FROM active_balance_snapshots WHERE block_height = 9",
+        [],
+    )
+    .unwrap();
+    let error = rpc
+        .get_pass_economic_profile(params(query.clone()))
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        ErrorCode::ServerError(ConsensusRpcErrorCode::HistoryNotAvailable.code())
+    );
+    // Likewise, a missing anchor outside the durable pending range is a fault,
+    // not evidence that an automatic recovery job can repair it in this process.
+    conn.execute(
+        "DELETE FROM balance_history_snapshot_history WHERE block_height = 9",
+        [],
+    )
+    .unwrap();
+    let error = rpc.get_pass_economic_profile(params(query)).unwrap_err();
+    assert_eq!(
+        error.code,
+        ErrorCode::ServerError(ConsensusRpcErrorCode::HistoryNotAvailable.code())
+    );
+    assert!(
+        decode_consensus_error_data(&error)
+            .detail
+            .unwrap()
+            .contains("backfill_pending=false")
+    );
+    drop(conn);
+    drop(rpc);
+    p.cleanup();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_block_writes_serve_old_state_and_publish_each_committed_head() {
     let (p, scenario) = fixture("concurrent_committed_prefix").await;
     let baseline = economic_answers(&p.rpc(), &scenario, 10);

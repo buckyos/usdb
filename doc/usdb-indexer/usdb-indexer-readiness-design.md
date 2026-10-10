@@ -143,6 +143,10 @@ BTC hash、上游 block commit、stable lag 和协议版本写入历史 anchor�
 
 回填时全局 readiness 的 blockers 包含 `HistoryBackfillPending`。指定高度的共识查询仍须检查
 该高度自身的历史 anchor 和完整 identity；其他高度的覆盖缺口不单独阻断该查询。
+若请求高度的 anchor 缺失且落在持久化的 `snapshot_history_pending_from..=synced_block_height`
+范围内，返回可有界重试的 `SNAPSHOT_NOT_READY`。缺少 active-balance snapshot 等业务历史，
+或缺少上述范围之外的 anchor，仍返回 `HISTORY_NOT_AVAILABLE`，不承诺自动恢复。
+回填完成后必须使用原请求重新校验完整 identity，不能替换高度或跳过 mismatch 校验。
 即使双方高度完全相同，也只有连续补齐后全局 `consensus_ready` 才为 true。
 详细验收见 [历史 anchor 原子提交验收](./usdb-indexer-snapshot-anchor-acceptance.md)。
 

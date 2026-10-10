@@ -188,7 +188,8 @@ reveal-envelope index；它不是 ord 的 source-local global inscription number
 - historical activation lookup 还会区分 `ACTIVATION_RECORD_NOT_FOUND / ACTIVATION_RECORD_CONFLICT / VERSION_NOT_SUPPORTED / FORMULA_VERSION_MISMATCH / COMMIT_PROTOCOL_VERSION_MISMATCH`
 - 已区分：
   - `STATE_NOT_RETAINED`：高度低于当前统一历史保留窗口下界（当前实现即 `genesis_block_height`）
-  - `HISTORY_NOT_AVAILABLE`：高度仍在保留窗口内，但当前缺少构造历史 state ref 所需的辅助数据
+  - `SNAPSHOT_NOT_READY`：请求高度缺少历史 anchor，且位于已提交的自动回填范围内，可有界重试
+  - `HISTORY_NOT_AVAILABLE`：高度仍在保留窗口内，但缺少自动 anchor 回填不能修复的历史辅助数据
 
 建议字段：
 
@@ -390,7 +391,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - `context` 可选；传入 `expected_state` 后，服务会在该高度做 selector 校验
 - 当前已支持 `snapshot_id / stable_block_hash / version / local_state_commit / system_state_id` 的 mismatch 错误
 - 若高度低于统一历史保留窗口下界（当前实现为 `genesis_block_height`），会返回共享共识错误 `STATE_NOT_RETAINED`
-- 若高度仍在保留窗口内，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`
+- 若请求高度缺少的 anchor 位于自动回填范围内，返回 `SNAPSHOT_NOT_READY`；保留窗口内其他历史辅助数据缺失返回 `HISTORY_NOT_AVAILABLE`（详见 6.1）。
 - 后续 ETHW 验块应优先使用这条接口固定 `(height, state ref)`，再用相同上下文复查 pass/energy
 
 ---
@@ -427,7 +428,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - 若 `at_height` 和 `context.requested_height` 同时出现但不一致，返回 `InvalidParams`。
 - 当前已支持 `snapshot_id / stable_block_hash / version / local_state_commit / system_state_id` 的 mismatch 错误。
 - 若高度低于统一历史保留窗口下界（当前实现为 `genesis_block_height`），会返回共享共识错误 `STATE_NOT_RETAINED`。
-- 若高度合法，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`。
+- 若请求高度缺少的 anchor 位于自动回填范围内，返回 `SNAPSHOT_NOT_READY`；其他历史辅助数据缺失返回 `HISTORY_NOT_AVAILABLE`（详见 6.1）。
 
 ### 8a) `get_pass_mint_audit`
 
@@ -655,7 +656,7 @@ feature `owner_mint_history` 表示返回 `ever_valid_owner: boolean`。该字�
 - 若 `block_height` 和 `context.requested_height` 同时出现但不一致，返回 `InvalidParams`。
 - mismatch 校验成功后，才继续返回业务能量结果；`ENERGY_NOT_FOUND` 仍表示该 pass 在查询模式下没有对应能量记录。
 - 若高度低于统一历史保留窗口下界（当前实现为 `genesis_block_height`），会返回共享共识错误 `STATE_NOT_RETAINED`。
-- 若高度合法，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`。
+- 若请求高度缺少的 anchor 位于自动回填范围内，返回 `SNAPSHOT_NOT_READY`；其他历史辅助数据缺失返回 `HISTORY_NOT_AVAILABLE`（详见 6.1）。
 - 返回的 `raw_energy`、`collab_contribution`、`effective_energy` 均为 canonical decimal string。`collab_contribution` / `effective_energy` 为运行时派生值，不写回 raw energy ledger。
 - 返回的 `level`、`difficulty_factor_bps` 按 UIP-0005 从 `effective_energy` 运行时派生，不写入 energy DB；USDB indexer 不查询、不持久化 ETHW `base_difficulty` 或 `real_difficulty`。
 
@@ -919,7 +920,7 @@ feature `owner_mint_history` 表示返回 `ever_valid_owner: boolean`。该字�
 
 - `context` 校验语义与 `get_pass_energy` 一致。
 - `view_version` 必填；字段缺失是无效参数，不保留旧请求兼容入口。不支持的值返回 `VIEW_VERSION_MISMATCH`。
-- 即使未传 `context`，服务也必须重建目标高度的完整历史 identity 并返回 `external_state`；缺失历史辅助数据返回 `HISTORY_NOT_AVAILABLE`。
+- 即使未传 `context`，服务也必须重建目标高度的完整历史 identity 并返回 `external_state`；自动回填范围内的 anchor 缺口返回 `SNAPSHOT_NOT_READY`，其他历史辅助数据缺失返回 `HISTORY_NOT_AVAILABLE`（详见 6.1）。
 - 服务在派生 candidate 数据前后重建并比较完整 state ref；若期间发生同高度 reorg，返回对应 state mismatch，不返回混合历史状态。
 - `total` 是该 `external_state` 下 `candidate_pass` 总数，包括 `effective_energy = 0` 的 Active standard pass。
 - `limit` 必须在 `1..=500`；非法 limit、cursor 篡改、跨资源复用或任一绑定字段变化均返回 `INVALID_PAGINATION`。
@@ -1152,6 +1153,7 @@ feature `owner_mint_history` 表示返回 `ever_valid_owner: boolean`。该字�
 当前历史校验相关接口已经补齐这类共享错误：
 
 - `STATE_NOT_RETAINED`
+- `SNAPSHOT_NOT_READY`
 - `HISTORY_NOT_AVAILABLE`
 
 它们的当前语义是：
@@ -1159,9 +1161,14 @@ feature `owner_mint_history` 表示返回 `ever_valid_owner: boolean`。该字�
 - `STATE_NOT_RETAINED`
   - 请求高度本身合法
   - 但已低于当前统一历史保留窗口下界（现阶段即 `genesis_block_height`）
+- `SNAPSHOT_NOT_READY`（历史 anchor 回填场景）
+  - 请求高度缺少 anchor，且位于持久化的 `snapshot_history_pending_from..=synced_block_height` 范围内
+  - 索引循环会尝试自动补齐；消费者沿用有界等待，恢复后重新校验原请求的完整 identity
+  - 该范围内已经具备完整数据的高度仍可查询，不因其他高度的缺口统一返回未就绪
 - `HISTORY_NOT_AVAILABLE`
   - 请求高度仍在保留窗口内
-  - 但节点当前缺少重建该高度历史 state ref 所需的辅助数据
+  - 但缺少 active-balance snapshot 等自动 anchor 回填不能修复的业务历史，或缺少回填范围之外的 anchor
+  - 属于本地历史故障；消费者不处罚 peer，也不假设该节点能通过自动重试恢复
 
 这类情况不能混成 `*_MISMATCH`，否则 ETHW 验块会把“服务没有这份历史数据”误判成“区块记录的状态错误”。
 

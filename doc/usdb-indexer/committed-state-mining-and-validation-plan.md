@@ -117,9 +117,14 @@ workspace check/Clippy、格式、usdb-util 健康检查及 release fragment 校
 - Go 使用独立的 external-state 错误分类，保留原始 RPC 错误及请求 pass/BTC 高度。
   `HEIGHT_NOT_SYNCED`、`SNAPSHOT_NOT_READY` 和已识别的临时网络故障进入等待；
   identity mismatch、无效 pass、难度、状态根错误仍是验证失败。
+- 自动历史回填范围内缺失的 anchor 返回 `SNAPSHOT_NOT_READY`，补齐后按原高度和 identity
+  重新验证。其他业务历史缺失或回填范围之外的 anchor 缺失保留 `HISTORY_NOT_AVAILABLE`，
+  避免把可恢复缺口永久阻断，也避免把永久缺失加入无限等待。
 - 历史裁剪、不支持的查询版本、配置/凭据错误、不可解析的响应等本地永久故障不处罚 peer，
   不进入区块重试队列。同步调度明确暂停，修复依赖后需重启 chain 服务。
   不自动清库、重建或回退 BTC anchor。
+- Go RPC client 对 system state、pass profile、miner candidate 的结果解码失败保留专门的
+  本地错误类型及原始 JSON 解码原因；合法 JSON-RPC envelope 内的字段类型错误也不得记为 BAD BLOCK。
 - `FinalizeWithError` 是可选的 engine 接口，Ethash 和 Beacon 包装层均保留错误；
   StateProcessor 在失败时返回原始原因并丢弃工作状态，避免 RPC 失败被奖励缺失产生的
   state-root mismatch 掩盖。`InsertChain` 不持有链锁等待，由广播/同步调用方重试。
@@ -162,6 +167,19 @@ Go 1.26 兼容工具链下新增用例和 geth 编译检查通过；release frag
 格式及既有 Fast CI 涉及包的 vet 检查通过。额外扫描 `consensus` 根包仍报告
 `merger.go` 两处既有 unreachable code，本批没有修改该文件或放宽现有 CI 检查。
 未运行远端 CI、发布或真实节点升级。
+
+### 发布前错误分类修正验收（2026-10-10）
+
+- indexer 使用临时旧库制造历史 anchor 缺口，验证 `SNAPSHOT_NOT_READY`、完整高度继续可查、
+  生产回填流程完成后同一 RPC 实例按原 context 恢复，并与补洞前的完整经济视图逐项一致。
+  同时验证缺少业务 snapshot、回填范围外的 anchor 仍为 `HISTORY_NOT_AVAILABLE`。
+- Go 覆盖三类 RPC 结果的语法、外层类型和字段类型错误；真实 HTTP JSON-RPC 回归覆盖
+  Ethash/Beacon 的 header 和奖励查询，确认不记坏块、不提交失败奖励、保留解码原因，
+  依赖恢复后可重新完整导入。full/light fetcher 的本地永久错误不丢弃 peer。
+- 本地 indexer 单元及集成测试 413 项、usdb-util 89 项通过（分别沿用 12、2 项忽略）；
+  workspace check、fmt、全 targets/features clippy 通过。Go 1.18.5 的相关回归、
+  internal/usdb 全量测试、受影响路径 race 和 vet 通过，Fast CI 必跑同步用例增至 15 项并确认全部执行通过。
+  两仓新增 release fragment 校验通过。本轮未重新执行第三阶段多节点矩阵、远端 CI 或真实节点升级。
 
 ## 第三阶段：独立多节点延迟矩阵
 
