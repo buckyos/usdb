@@ -79,7 +79,10 @@ features contains:
   miner_economic_aggregate
 ```
 
-`query_ready / consensus_ready` 描述当前运行状态；上述字段描述实现能力和契约版本。consumer 需要同时满足自身所需的 readiness 与协议能力条件。
+`query_ready / consensus_ready` 描述当前运行状态；上述字段描述实现能力和契约版本。
+`consensus_ready` 包含全局追平条件，正常追块不使已提交历史状态失效。consumer 应以指定高度的
+完整 context 查询及身份校验判断可验证性；提交中、恢复、历史缺失等安全屏障仍有效，不能仅凭
+`query_ready=true` 接受结果。实现契约见 [readiness 设计](../usdb-indexer/usdb-indexer-readiness-design.md)。
 
 能力字段 `candidate_set_selection_rule` 沿用 v1 RPC 名称，但其规范语义只是 `candidate_set_view` 的 ordering contract，不是 USDB block-selection policy。
 

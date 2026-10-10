@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "committed-height-consensus-queries",
+  "type": "fixed",
+  "scopes": ["indexer", "node-runtime"],
+  "summary": "Allow committed-height consensus queries during normal indexer and balance-history catch-up",
+  "details": [
+    "Historical state, contextual pass and economic queries validate committed height and exact state identity independently of global consensus_ready. Pending publication, recovery, shutdown, missing history and identity mismatches still block; completion rechecks safety and identity.",
+    "Mining preflight and status accept pinned candidates during ordinary catch-up while preserving Bitcoin startup, reorg epoch and identity checks. Global synchronization readiness retains its existing meaning.",
+    "This stage does not add Go deferred block validation or a miner publication gap, and does not guarantee availability during cross-store block commits. No protocol, genesis or database format changes are required."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

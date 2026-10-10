@@ -169,7 +169,7 @@ class MiningTests(unittest.TestCase):
                    lambda f: f.candidate["pass"].update(usdb_main="0x" + "11" * 20),
                    lambda f: f.candidate["external_state"].update(snapshot_id="aa" * 32),
                    lambda f: f.candidate.update(selection_rule="wrong-rule"),
-                   lambda f: f.ready.update(consensus_ready=False),
+                   lambda f: f.ready.update(consensus_ready=False, query_ready=False),
                    lambda f: setattr(f, "fail_rpc", "resolve_miner_candidate")]
         for change in changes:
             with self.subTest(change=change), MiningFixture() as f:
@@ -180,6 +180,48 @@ class MiningTests(unittest.TestCase):
                 self.assertEqual(f.layout.node_env.read_bytes(), before)
                 self.assertEqual(f.calls, [])
                 self.assertFalse(MINING.state_path(f.layout).exists())
+
+    def test_committed_candidate_keeps_mining_active_during_normal_catch_up(self):
+        with MiningFixture() as f:
+            f.bh_ready.update(consensus_ready=False, blockers=["CatchingUp"])
+            f.ready.update(consensus_ready=False, blockers=["CatchingUp", "UpstreamConsensusNotReady",
+                                                           "HistoryBackfillPending"])
+            self.assertEqual(MINING.preflight(f.layout, ADDRESS, first_node=True)["state"], "READY")
+            f.enable()
+            self.assertEqual(f.run(), 0)
+            self.assertEqual(MINING.observe(f.layout)["state"], "ACTIVE")
+            selectors = [params[0] for method, params in f.rpc_calls if method == "resolve_miner_candidate"]
+            self.assertTrue(selectors)
+            self.assertTrue(all(query["block_height"] == 100 for query in selectors))
+
+    def test_committed_queries_reject_hard_blockers_and_unknown_readiness(self):
+        for service, blockers in (("bh_ready", ["RollbackInProgress", "ShutdownRequested", "SnapshotInstallUnverified"]),
+                                  ("ready", ["BlockProcessingPending", "ReorgRecoveryPending", "UpstreamReadinessUnknown",
+                                             "UpstreamSnapshotMissing", "LocalStateCommitMissing", "FutureUnknownBlocker"])):
+            for blocker in blockers:
+                with self.subTest(service=service, blocker=blocker), MiningFixture() as f:
+                    getattr(f, service).update(consensus_ready=False, blockers=["CatchingUp", blocker])
+                    before = f.layout.node_env.read_bytes()
+                    with self.assertRaisesRegex(ValueError, "NOT_READY"):
+                        f.enable()
+                    self.assertEqual(f.calls, [])
+                    self.assertEqual(f.layout.node_env.read_bytes(), before)
+        for field in ("rpc_alive", "query_ready", "blockers"):
+            with self.subTest(missing=field), MiningFixture() as f:
+                del f.ready[field]
+                with self.assertRaisesRegex(ValueError, "INDEXER_NOT_READY"):
+                    f.enable()
+
+    def test_commit_barrier_appearing_after_candidate_blocks_authorization(self):
+        with MiningFixture() as f:
+            def start_commit(method):
+                if method == "resolve_miner_candidate":
+                    f.ready.update(consensus_ready=False, blockers=["BlockProcessingPending"])
+            f.after_rpc = start_commit
+            with self.assertRaisesRegex(ValueError, "INDEXER_NOT_READY"):
+                f.enable()
+            self.assertEqual(f.calls, [])
+            self.assertFalse(MINING.state_path(f.layout).exists())
 
     def test_invalid_addresses_and_zero_threads_rejected(self):
         for address in ("0x0", "0x" + "00" * 20, "0x" + "gg" * 20):

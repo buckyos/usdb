@@ -572,10 +572,10 @@ pub enum ReadinessBlocker {
 /// Structured readiness state for liveness, local queries, and downstream consensus use.
 ///
 /// `rpc_alive` is plain liveness. `query_ready` means local RPC queries are
-/// allowed against the node's current durable state. `consensus_ready` is
-/// stricter and only becomes true when the node has a complete upstream
-/// snapshot anchor, complete local/system commits, and no transient recovery
-/// work is still pending.
+/// allowed against the node's current durable state. `consensus_ready` also
+/// requires global catch-up, complete anchors/commits and no recovery work.
+/// A contextual query at a committed height checks its own safety and identity;
+/// normal catch-up alone does not prevent that query from succeeding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadinessInfo {
     /// Fixed service identifier, currently `usdb-indexer`.
@@ -584,7 +584,7 @@ pub struct ReadinessInfo {
     pub rpc_alive: bool,
     /// True when ordinary local query traffic is allowed.
     pub query_ready: bool,
-    /// True only when the current system state is safe for downstream consensus use.
+    /// True when global synchronization and current state safety checks all pass.
     pub consensus_ready: bool,
     /// Local durable synced height, when available.
     pub synced_block_height: Option<u32>,
@@ -1442,8 +1442,9 @@ pub trait UsdbIndexerRpc {
 
     /// Returns structured readiness state for liveness, local queries, and consensus use.
     ///
-    /// Downstream callers must use `consensus_ready` instead of inferring
-    /// readiness from `get_network_type` or from free-form sync messages.
+    /// Startup callers use `consensus_ready` for global readiness. Consensus
+    /// consumers pin contextual queries to a committed height; they must not
+    /// reject normal catch-up solely because `consensus_ready` is false.
     #[rpc(name = "get_readiness")]
     fn get_readiness(&self) -> JsonResult<ReadinessInfo>;
 

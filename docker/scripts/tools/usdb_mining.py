@@ -383,19 +383,30 @@ def bitcoin_check(layout: node.ReleaseLayout, env):
                          f"({', '.join(fields)}); background historical validation is not required. Inspect status --progress-json")
 
 
+def _committed_query_ready(value, service):
+    """Allow ordinary catch-up; the pinned candidate RPC still validates the state."""
+    soft_blockers = {"CatchingUp"}
+    if service == "usdb-indexer":
+        soft_blockers |= {"UpstreamConsensusNotReady", "HistoryBackfillPending"}
+    return (isinstance(value, dict) and value.get("service") == service
+            and value.get("rpc_alive") is True and value.get("query_ready") is True
+            and isinstance(value.get("blockers"), list)
+            and all(isinstance(blocker, str) and blocker in soft_blockers for blocker in value["blockers"]))
+
+
 def upstream_candidate(layout: node.ReleaseLayout, address, expect_pass=None):
     env = node.read_env(layout.node_env)
     guard_check(layout, env)
     bitcoin_check(layout, env)
     bh, error = node._read_service_readiness(layout, "run_testnet_runtime.sh", ["data-status"], "balance-history")
-    if error or not bh or bh.get("consensus_ready") is not True:
+    if error or not _committed_query_ready(bh, "balance-history"):
         raise ValueError(f"BALANCE_HISTORY_NOT_READY: {error or (bh or {}).get('blockers')}")
     # Retry a moving tip using a wholly fresh selector. A changed reorg epoch
     # fails instead of authorizing the operation against a different history.
     first_epoch = None
     for _ in range(3):
         ready = rpc(layout, "get_readiness", indexer=True)
-        if not isinstance(ready, dict) or ready.get("service") != "usdb-indexer" or ready.get("consensus_ready") is not True:
+        if not _committed_query_ready(ready, "usdb-indexer"):
             raise ValueError(f"INDEXER_NOT_READY: {(ready or {}).get('blockers') if isinstance(ready, dict) else ready}")
         height, epoch = ready.get("synced_block_height"), ready.get("upstream_reorg_epoch")
         if type(height) is not int or height < 0 or type(epoch) is not int or epoch < 0:
@@ -455,7 +466,9 @@ def upstream_candidate(layout: node.ReleaseLayout, address, expect_pass=None):
         if after.get("upstream_reorg_epoch") != epoch:
             raise ValueError("REORG_DURING_CHECK: upstream reorg epoch changed")
         keys = ("synced_block_height", "upstream_snapshot_id", "local_state_commit", "system_state_id")
-        if after.get("consensus_ready") is True and all(after.get(k) == ready[k] for k in keys):
+        if not _committed_query_ready(after, "usdb-indexer"):
+            raise ValueError(f"INDEXER_NOT_READY: {after.get('blockers')}")
+        if all(after.get(k) == ready[k] for k in keys):
             return {"candidate": candidate, "upstream_reorg_epoch": epoch}
     raise ValueError("UPSTREAM_MOVING: no stable observation; retry the check")
 

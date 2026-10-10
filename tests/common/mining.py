@@ -44,7 +44,10 @@ class MiningFixture:
         self.chain = {"height": 0, "syncing": False, "peers": 0, "node_id": "ee" * 32,
                       "enode": "enode://" + "ee" * 64 + "@172.18.0.2:31303",
                       "network": self.layout.network_identity}
-        self.ready = {"service": "usdb-indexer", "consensus_ready": True, "synced_block_height": 100,
+        self.bh_ready = {"service": "balance-history", "rpc_alive": True, "query_ready": True,
+                         "consensus_ready": True, "blockers": []}
+        self.ready = {"service": "usdb-indexer", "rpc_alive": True, "query_ready": True,
+                      "consensus_ready": True, "blockers": [], "synced_block_height": 100,
                       "upstream_snapshot_id": "01" * 32, "system_state_id": "02" * 32,
                       "local_state_commit": "03" * 32, "upstream_reorg_epoch": 0}
         self.candidate = {"view_version": MINING.VIEW, "selection_rule": MINING.RULE, "matching_candidate_count": 2,
@@ -74,7 +77,7 @@ class MiningFixture:
                         "_require_controller_unit": self.root / "controller.service",
                         "start_controller_unit": "usdb-controller", "stop_controller_unit": None,
                         "_bitcoin_startup_progress": {"ready": True},
-                        "_read_service_readiness": ({"consensus_ready": True}, None)}
+                        "_read_service_readiness": (self.bh_ready, None)}
         for name, value in observations.items():
             self.stack.enter_context(mock.patch.object(NODE, name, return_value=value))
         self.stack.enter_context(mock.patch.object(NODE, "run_helper", side_effect=self.helper))

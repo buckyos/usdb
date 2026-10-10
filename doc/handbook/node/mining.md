@@ -184,7 +184,10 @@ usdb-node mining status --watch
 | 任务失败或配置漂移 | 保存 `mining status --json` 和链日志；解决具体错误后按同一目标重试 enable/disable |
 | 上游回滚或停链标记阻断 | 保留现场，按网络事故流程处理，不清除标记强行恢复 |
 
-在 AssumeUTXO 模式下，Bitcoin 基线和前台链尖端必须就绪，BH 与 indexer 也必须通过共识就绪检查。Bitcoin 后台历史验证可以继续运行，`history_validated=false` 本身不阻止挖矿预检。
+在 AssumeUTXO 模式下，Bitcoin 基线和前台链尖端必须就绪。BH 与 indexer 正常追块时，
+只要 indexer 最新已提交高度的状态完整、候选有效，挖矿预检仍可通过；不要求全局同步百分比达到 100%。
+提交中、回滚恢复、状态缺失或校验不匹配仍会等待或拒绝。Bitcoin 后台历史验证可以继续运行，
+`history_validated=false` 本身不阻止挖矿预检。
 
 旧版工具可能在链容器尚未创建时误报 `RESOURCE_LIMIT_REQUIRED`。若刚启动节点，先观察启动进度并在链就绪后重试；不能仅凭这条旧提示认定内存配置有误。包含启动诊断修复的版本会先检查链是否运行，再检查实际资源限制。
 

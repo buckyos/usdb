@@ -741,24 +741,50 @@ impl UsdbIndexerRpcServer {
         Ok(resolved)
     }
 
-    /// Fail closed for validator-style historical queries whenever the current
-    /// node is not consensus-ready.
-    ///
-    /// Historical context RPCs are used to replay a BTC-backed validator view.
-    /// During catch-up, restart recovery, or upstream-not-ready windows, the
-    /// node may still be alive and have some durable rows locally, but callers
-    /// must not treat that partial view as a stable consensus answer.
+    /// Check runtime safety independently of tip catch-up. The caller must also
+    /// resolve the committed height and validate its complete historical identity.
+    /// Pending publication and recovery remain global barriers in this phase.
     fn ensure_consensus_query_ready(
         &self,
         requested_height: Option<u32>,
         query_name: &str,
     ) -> Result<(), JsonError> {
         let readiness = self.readiness_info()?;
-        // Direct unit tests invoke server methods without going through the
-        // HTTP listener, so `rpc_alive=false` can be a pure fixture artifact.
-        // Only enforce the live not-ready contract once the RPC surface is
-        // actually up and serving requests.
-        if !readiness.rpc_alive || readiness.consensus_ready {
+        // Legacy unit fixtures call methods without starting an HTTP listener.
+        // Production always enforces liveness, including listener shutdown.
+        #[cfg(test)]
+        if !readiness.rpc_alive {
+            return Ok(());
+        }
+
+        let height = requested_height.or(readiness.synced_block_height);
+        let upstream = self.status.balance_history_readiness();
+        let upstream_safe = upstream.as_ref().is_some_and(|value| {
+            value.rpc_alive
+                && value.query_ready
+                && value
+                    .stable_height
+                    .zip(height)
+                    .is_some_and(|(stable, h)| stable >= h)
+                && value.stable_block_hash.is_some()
+                && value.latest_block_commit.is_some()
+                && value
+                    .blockers
+                    .iter()
+                    .all(|blocker| matches!(blocker, balance_history::ReadinessBlocker::CatchingUp))
+        });
+        // Historical coverage elsewhere is not proof that this height is missing.
+        // The selected anchor/commit/retention checks below remain authoritative.
+        let local_safe = readiness.query_ready
+            && readiness.blockers.iter().all(|blocker| {
+                matches!(
+                    blocker,
+                    ReadinessBlocker::CatchingUp
+                        | ReadinessBlocker::UpstreamConsensusNotReady
+                        | ReadinessBlocker::HistoryBackfillPending
+                )
+            });
+        if local_safe && upstream_safe {
             return Ok(());
         }
 
@@ -772,6 +798,17 @@ impl UsdbIndexerRpcServer {
             .collect::<Vec<_>>()
             .join(", ");
 
+        let detail = format!(
+            "{query_name} requires a safe committed state: requested_height={height:?}, local_synced_height={:?}, query_ready={}, consensus_ready={}, blockers=[{}], upstream_query_ready={:?}, upstream_stable_height={:?}, upstream_blockers={:?}",
+            readiness.synced_block_height,
+            readiness.query_ready,
+            readiness.consensus_ready,
+            blockers,
+            upstream.as_ref().map(|value| value.query_ready),
+            upstream.as_ref().and_then(|value| value.stable_height),
+            upstream.as_ref().map(|value| &value.blockers),
+        );
+        warn!("Consensus query deferred: module=rpc_server, {detail}");
         Err(Self::to_consensus_error(
             ConsensusRpcErrorCode::SnapshotNotReady,
             self.build_consensus_error_data(
@@ -779,14 +816,7 @@ impl UsdbIndexerRpcServer {
                 current_snapshot.as_ref(),
                 current_local_state.as_ref(),
                 current_system_state.as_ref(),
-                Some(format!(
-                    "{} requires consensus_ready=true, current readiness is rpc_alive={}, query_ready={}, consensus_ready={}, blockers=[{}]",
-                    query_name,
-                    readiness.rpc_alive,
-                    readiness.query_ready,
-                    readiness.consensus_ready,
-                    blockers
-                )),
+                Some(detail),
             ),
         ))
     }
@@ -809,17 +839,12 @@ impl UsdbIndexerRpcServer {
             )));
         }
 
-        if context.is_some() {
-            self.ensure_consensus_query_ready(
-                requested_height.or(context.and_then(|value| value.requested_height)),
-                "validator contextual query",
-            )?;
-        }
-
         let effective_requested_height =
             requested_height.or(context.and_then(|value| value.requested_height));
         if context.is_some() {
-            self.resolve_height_with_consensus_error(effective_requested_height)
+            let height = self.resolve_height_with_consensus_error(effective_requested_height)?;
+            self.ensure_consensus_query_ready(Some(height), "validator contextual query")?;
+            Ok(height)
         } else {
             self.resolve_height(effective_requested_height)
         }
@@ -827,19 +852,16 @@ impl UsdbIndexerRpcServer {
 
     /// Resolve the effective query height while optionally enforcing a
     /// caller-supplied historical state selector.
-    fn resolve_height_for_contextual_query(
+    fn resolve_state_for_contextual_query(
         &self,
         requested_height: Option<u32>,
         context: Option<&ConsensusQueryContext>,
-    ) -> Result<u32, JsonError> {
+    ) -> Result<(u32, Option<HistoricalStateRefInfo>), JsonError> {
         let resolved_height = self.resolve_contextual_query_height(requested_height, context)?;
 
         let Some(context) = context else {
-            return Ok(resolved_height);
+            return Ok((resolved_height, None));
         };
-        if context.expected_state.is_empty() {
-            return Ok(resolved_height);
-        }
 
         let state_ref = self.build_historical_state_ref_info_with_registry(
             resolved_height,
@@ -850,7 +872,7 @@ impl UsdbIndexerRpcServer {
             &state_ref,
             &context.expected_state,
         )?;
-        Ok(resolved_height)
+        Ok((resolved_height, Some(state_ref)))
     }
 
     /// Reject unsupported UIP-0006 view contracts before deriving any economic
@@ -901,7 +923,9 @@ impl UsdbIndexerRpcServer {
         let resolved_height = if context.is_some() {
             self.resolve_contextual_query_height(requested_height, context)?
         } else {
-            self.resolve_height_with_consensus_error(requested_height)?
+            let height = self.resolve_height_with_consensus_error(requested_height)?;
+            self.ensure_consensus_query_ready(Some(height), "economic query")?;
+            height
         };
         self.ensure_history_height_retained(resolved_height, "historical state")?;
         let registry_id =
@@ -951,6 +975,7 @@ impl UsdbIndexerRpcServer {
         query_height: u32,
         initial_state_ref: &HistoricalStateRefInfo,
     ) -> Result<HistoricalStateRefInfo, JsonError> {
+        self.ensure_consensus_query_ready(Some(query_height), "economic query completion")?;
         let revalidated_state_ref = self.build_historical_state_ref_info_with_registry(
             query_height,
             Some(
@@ -2577,9 +2602,9 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     ) -> JsonResult<HistoricalStateRefInfo> {
         let expected_state =
             self.validate_consensus_query_context(params.block_height, params.context.as_ref())?;
-        self.ensure_consensus_query_ready(Some(params.block_height), "historical state ref query")?;
         let requested_height =
             self.resolve_height_with_consensus_error(Some(params.block_height))?;
+        self.ensure_consensus_query_ready(Some(requested_height), "historical state ref query")?;
         let state_ref = self.build_historical_state_ref_info_with_registry(
             requested_height,
             expected_state.activation_registry_id.as_deref(),
@@ -2589,7 +2614,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             &state_ref,
             &expected_state,
         )?;
-        Ok(state_ref)
+        self.revalidate_economic_query_context(requested_height, &state_ref)
     }
 
     fn get_readiness(&self) -> JsonResult<ReadinessInfo> {
@@ -2598,10 +2623,14 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
     fn get_pass_snapshot(&self, params: GetPassSnapshotParams) -> JsonResult<Option<PassSnapshot>> {
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
-        let resolved_height =
-            self.resolve_height_for_contextual_query(params.at_height, params.context.as_ref())?;
+        let (resolved_height, state_ref) =
+            self.resolve_state_for_contextual_query(params.at_height, params.context.as_ref())?;
         self.ensure_history_height_retained(resolved_height, "historical state")?;
-        self.build_pass_snapshot(&inscription_id, resolved_height)
+        let snapshot = self.build_pass_snapshot(&inscription_id, resolved_height)?;
+        if let Some(state_ref) = state_ref {
+            self.revalidate_economic_query_context(resolved_height, &state_ref)?;
+        }
+        Ok(snapshot)
     }
 
     fn get_pass_mint_source(
@@ -2937,8 +2966,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
     fn get_pass_energy(&self, params: GetPassEnergyParams) -> JsonResult<PassEnergySnapshot> {
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
-        let query_height =
-            self.resolve_height_for_contextual_query(params.block_height, params.context.as_ref())?;
+        let (query_height, state_ref) =
+            self.resolve_state_for_contextual_query(params.block_height, params.context.as_ref())?;
         self.ensure_history_height_retained(query_height, "historical state")?;
         let mode = params.mode.unwrap_or_else(|| "at_or_before".to_string());
 
@@ -2978,6 +3007,9 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             .map_err(Self::to_internal_error)?
             .level_and_factor(snapshot.effective_energy);
 
+        if let Some(state_ref) = state_ref {
+            self.revalidate_economic_query_context(query_height, &state_ref)?;
+        }
         Ok(PassEnergySnapshot {
             inscription_id: record.inscription_id.to_string(),
             query_block_height: query_height,
@@ -3691,6 +3723,13 @@ mod tests {
 
     mod economic_scale;
 
+    mod committed_height_queries {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tests/indexer_committed_height_queries.rs"
+        ));
+    }
+
     mod assumeutxo_p5 {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -4337,7 +4376,7 @@ mod tests {
     }
 
     #[test]
-    fn test_history_gap_blocks_consensus_even_when_upstream_stops_and_head_exists() {
+    fn test_history_gap_blocks_global_readiness_but_queries_check_the_selected_height() {
         let (server, root_dir) = build_server_with_genesis("history_gap_ready_gate", 120, 100);
         server.status.set_rpc_alive(true);
         seed_state_ref_context(&server, 120);
@@ -4360,8 +4399,14 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.code,
-            ErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotNotReady.code())
+            ErrorCode::ServerError(ConsensusRpcErrorCode::HistoryNotAvailable.code())
         );
+        server
+            .get_state_ref_at_height(GetStateRefAtHeightParams {
+                block_height: 120,
+                context: None,
+            })
+            .unwrap();
 
         let history: Vec<_> = (100..120).map(ready_balance_history_snapshot).collect();
         server
@@ -5338,7 +5383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_state_ref_at_height_returns_snapshot_not_ready_when_consensus_not_ready() {
+    fn test_get_state_ref_at_height_returns_snapshot_not_ready_when_upstream_rolls_back() {
         let (server, root_dir) =
             build_server_with_genesis("state_ref_at_height_not_ready", 120, 100);
         seed_state_ref_context(&server, 120);
@@ -5346,7 +5391,7 @@ mod tests {
 
         let mut upstream_readiness = ready_balance_history_readiness(120);
         upstream_readiness.consensus_ready = false;
-        upstream_readiness.blockers = vec![balance_history::ReadinessBlocker::CatchingUp];
+        upstream_readiness.blockers = vec![balance_history::ReadinessBlocker::RollbackInProgress];
         server
             .status
             .set_balance_history_readiness(Some(upstream_readiness));
@@ -5719,7 +5764,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_pass_snapshot_returns_snapshot_not_ready_when_context_consensus_not_ready() {
+    fn test_get_pass_snapshot_returns_snapshot_not_ready_when_context_upstream_rolls_back() {
         let (server, root_dir) = build_server_with_genesis("snapshot_context_not_ready", 120, 100);
         let storage = server.indexer.miner_pass_storage();
 
@@ -5730,7 +5775,7 @@ mod tests {
 
         let mut upstream_readiness = ready_balance_history_readiness(101);
         upstream_readiness.consensus_ready = false;
-        upstream_readiness.blockers = vec![balance_history::ReadinessBlocker::CatchingUp];
+        upstream_readiness.blockers = vec![balance_history::ReadinessBlocker::RollbackInProgress];
         server
             .status
             .set_balance_history_readiness(Some(upstream_readiness));
@@ -8686,7 +8731,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_pass_energy_returns_snapshot_not_ready_when_context_consensus_not_ready() {
+    fn test_get_pass_energy_returns_snapshot_not_ready_when_context_upstream_rolls_back() {
         let (server, root_dir) = build_server("energy_context_not_ready", 130);
         let storage = server.indexer.miner_pass_storage();
 
@@ -8698,7 +8743,7 @@ mod tests {
 
         let mut upstream_readiness = ready_balance_history_readiness(120);
         upstream_readiness.consensus_ready = false;
-        upstream_readiness.blockers = vec![balance_history::ReadinessBlocker::CatchingUp];
+        upstream_readiness.blockers = vec![balance_history::ReadinessBlocker::RollbackInProgress];
         server
             .status
             .set_balance_history_readiness(Some(upstream_readiness));

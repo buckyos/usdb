@@ -1116,6 +1116,12 @@ feature `owner_mint_history` 表示返回 `ever_valid_owner: boolean`。该字�
 - `actual_state`
 - `mismatch_field`
 
+这里的 `consensus_ready` 仍表示全局追平状态，不能单独作为指定高度的验证门槛。
+`get_state_ref_at_height`、带 context 的 pass snapshot/energy 和经济视图查询允许 BH/indexer
+正常追块，但只返回请求高度的完整已提交状态，并在完成时复核安全条件和 identity。
+`BlockProcessingPending`、恢复、shutdown、未知或不完整状态仍拒绝；不会替换请求高度。
+具体条件见 [readiness 契约](./usdb-indexer-readiness-design.md)。
+
 示例：
 
 ```json

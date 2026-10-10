@@ -7,6 +7,7 @@
 - [usdb-indexer-rpc-v1.md](./usdb-indexer-rpc-v1.md)
 - [usdb-indexer-sync-status-model.md](./usdb-indexer-sync-status-model.md)
 - [usdb-indexer-readiness-design.md](./usdb-indexer-readiness-design.md)
+- [已提交状态出块与延迟验证改进计划](./committed-state-mining-and-validation-plan.md)
 
 ## Regtest 框架与规划
 

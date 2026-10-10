@@ -27,8 +27,8 @@
   - 表示本地 durable 状态已经可用于普通查询
   - 允许上游暂时未 ready，但不允许本地处于 reorg recovery / shutdown 中间态
 - `consensus_ready`
-  - 表示当前状态已经满足严格共识消费条件
-  - 这是脚本和下游系统应该等待的状态
+  - 表示当前状态已满足全局追平、历史覆盖和安全条件
+  - 启动编排和同步验收等待此状态；指定已提交高度的共识查询单独判断，见 5.4
 
 ## 3. 依赖的状态来源
 
@@ -107,7 +107,7 @@ P6.4 新增 `block_processing_pending_height` 运行时标记：开始处理时�
 - 没有任何 blocker
 - `snapshot_history_pending_from = null`，即所需历史 anchor 已连续覆盖本地已提交高度
 
-这样能把下面这些危险窗口显式挡住：
+全局就绪判定会等待以下情况结束，其中正常追块不代表旧的已提交状态不安全：
 
 - RPC 已可访问，但本地还没 durable 到任何高度
 - 上游已经有新 stable snapshot，但本地还在追块
@@ -137,9 +137,24 @@ BTC hash、上游 block commit、stable lag 和协议版本写入历史 anchor�
 | `snapshot_history_ready_height` | 从索引起点连续具备 anchor 的最后已提交高度；首行尚缺时为 null |
 | `snapshot_history_pending_from` | 已提交业务范围内的第一个缺失高度；无缺口时为 null |
 
-回填时可继续提供普通本地查询；严格共识查询返回 `SNAPSHOT_NOT_READY`，blockers 包含
-`HistoryBackfillPending`。即使上游停止出块且双方高度完全相同，也只有补齐后才允许共识就绪。
+回填时全局 readiness 的 blockers 包含 `HistoryBackfillPending`。指定高度的共识查询仍须检查
+该高度自身的历史 anchor 和完整 identity；其他高度的覆盖缺口不单独阻断该查询。
+即使双方高度完全相同，也只有连续补齐后全局 `consensus_ready` 才为 true。
 详细验收见 [历史 anchor 原子提交验收](./usdb-indexer-snapshot-anchor-acceptance.md)。
+
+### 5.4 指定已提交高度的可验证性
+
+`get_state_ref_at_height`、带 context 的 pass snapshot/energy，以及经济视图查询允许本地和
+BH 正常 `CatchingUp`。这不修改全局 `consensus_ready`：请求必须位于本地已提交范围，并具备
+该高度的历史 anchor、local/system commit 和匹配的 expected state。
+
+BH 必须仍为 `rpc_alive && query_ready`，已提交稳定高度覆盖请求高度，拥有 hash/commit，
+blockers 只能是正常 `CatchingUp`。本地仍拒绝 `BlockProcessingPending`、shutdown、
+reorg recovery（含持久化标记）、未知上游、缺失或不一致的当前状态身份。
+请求派生完成后再检查安全条件并复核历史 identity；未来高度、历史缺失或裁剪沿用结构化错误。
+本阶段不提供跨存储提交过程中的无等待读取，也不替代 Go 侧延迟验证重试。
+
+实现与后续验收计划见[已提交状态出块与延迟验证](./committed-state-mining-and-validation-plan.md)。
 
 ## 6. 与现有 RPC 的关系
 
@@ -156,10 +171,9 @@ BTC hash、上游 block commit、stable lag 和协议版本写入历史 anchor�
 - `get_readiness`
   - 负责把这些状态组合成“现在能不能用”
 
-因此下游应遵循：
-
-1. 先等 `get_readiness.consensus_ready = true`
-2. 再读取 `snapshot_info / local_state_commit_info / system_state_info`
+启动编排继续等待 `get_readiness.consensus_ready = true`。已运行的 miner/validator 使用指定高度
+及完整 context 的查询结果判断能否使用该状态，不能仅因全局正在追块就拒绝。
+节点挖矿工具仍核对候选前后 height、epoch 和 identity，真实不安全状态保持 WAITING。
 
 ## 7. 测试策略
 

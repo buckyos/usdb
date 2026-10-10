@@ -105,7 +105,7 @@ class FirstNodeTests(unittest.TestCase):
                 if mutation == "pass":
                     f.candidate["pass"]["state"] = "invalid"
                 else:
-                    f.ready["consensus_ready"] = False
+                    f.ready.update(consensus_ready=False, query_ready=False)
                 with self.assertRaisesRegex(ValueError, code):
                     f.enable()
                 self.assertEqual(f.calls, [])
