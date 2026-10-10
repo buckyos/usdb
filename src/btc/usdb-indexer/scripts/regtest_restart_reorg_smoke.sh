@@ -91,6 +91,10 @@ main() {
 
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" invalidateblock "$original_hash"
 
+  # Establish the replacement branch before awaiting readiness. A shorter matching
+  # Core prefix alone now waits for recovery without deleting committed history.
+  regtest_ensure_stable_height_reachable "$((TARGET_HEIGHT - 1))"
+
   regtest_restart_balance_history
   regtest_wait_until_balance_history_synced_eq "$((TARGET_HEIGHT - 1))"
   regtest_wait_until_rpc_expr_eq \

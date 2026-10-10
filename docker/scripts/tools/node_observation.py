@@ -13,7 +13,7 @@ SCHEMA = "usdb-node-observation:v1"
 SERVICES = {"bitcoin": "btc-node", "balance_history": "balance-history",
             "usdb_indexer": "usdb-indexer", "usdb_chain": "usdb-chain"}
 BLOCKERS = frozenset({
-    "RpcNotListening", "Initializing", "Loading", "CatchingUp", "RollbackInProgress",
+    "RpcNotListening", "Initializing", "Loading", "CatchingUp", "RollbackInProgress", "UpstreamRecoveryPending",
     "ShutdownRequested", "StableBlockHashMissing", "LatestBlockCommitMissing",
     "SnapshotInstallUnverified", "NativeBootstrapNotReady", "BlockProcessingPending",
     "SyncedHeightMissing", "HistoryBackfillPending", "UpstreamReadinessUnknown",

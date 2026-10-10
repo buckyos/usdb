@@ -803,6 +803,9 @@ impl BalanceHistoryRpcServer {
         if runtime.rollback_in_progress {
             blockers.push(ReadinessBlocker::RollbackInProgress);
         }
+        if runtime.upstream_recovery_pending {
+            blockers.push(ReadinessBlocker::UpstreamRecoveryPending);
+        }
         if runtime.shutdown_requested {
             blockers.push(ReadinessBlocker::ShutdownRequested);
         }
@@ -825,6 +828,7 @@ impl BalanceHistoryRpcServer {
         let query_ready = native_ready
             && runtime.rpc_alive
             && !runtime.rollback_in_progress
+            && !runtime.upstream_recovery_pending
             && !runtime.shutdown_requested
             && !matches!(
                 sync_status.phase,
@@ -2239,6 +2243,47 @@ mod tests {
         server.status.set_rollback_in_progress(false);
         assert_eq!(server.get_block_height().unwrap(), 12);
         assert_eq!(server.get_snapshot_info().unwrap().stable_height, 12);
+    }
+
+    #[test]
+    fn test_upstream_recovery_gates_queries_without_removing_committed_history() {
+        let server = make_test_server("upstream_recovery");
+        seed_stable_commit(&server, 12, 9);
+        server.status.update_status(12, 11, None);
+        server.status.set_upstream_recovery_pending(true);
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.rpc_alive);
+        assert!(!readiness.query_ready);
+        assert!(!readiness.consensus_ready);
+        assert_eq!(readiness.stable_height, Some(12));
+        assert!(
+            readiness
+                .blockers
+                .contains(&ReadinessBlocker::UpstreamRecoveryPending)
+        );
+        for error in [
+            server.get_snapshot_info().unwrap_err(),
+            server.get_block_commit(12).unwrap_err(),
+        ] {
+            assert_eq!(
+                error.code,
+                JsonErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotNotReady.code())
+            );
+        }
+        let preserved = server.db.get_block_commit(12).unwrap().unwrap();
+        server.status.update_total(12, None);
+        server.status.set_upstream_recovery_pending(false);
+        assert!(server.get_readiness().unwrap().consensus_ready);
+        assert_eq!(server.get_snapshot_info().unwrap().stable_height, 12);
+        assert_eq!(
+            server
+                .db
+                .get_block_commit(12)
+                .unwrap()
+                .unwrap()
+                .block_commit,
+            preserved.block_commit
+        );
     }
 
     #[test]

@@ -28,6 +28,9 @@ pub struct RuntimeReadinessStatus {
     /// During this window the service must report itself as not query-ready for
     /// strict downstream consumers even if the RPC server is still reachable.
     pub rollback_in_progress: bool,
+    /// Core has not yet re-established canonical history and confirmations for the committed tip.
+    /// Preserve storage while gating queries until a successful upstream check clears this flag.
+    pub upstream_recovery_pending: bool,
     /// True after shutdown has been requested but before the process has fully exited.
     ///
     /// This lets readiness drop immediately when the node enters drain/teardown,
@@ -115,6 +118,15 @@ impl SyncStatusManager {
     pub fn set_shutdown_requested(&self, shutdown_requested: bool) {
         let mut runtime = self.runtime_readiness.lock().unwrap();
         runtime.shutdown_requested = shutdown_requested;
+    }
+
+    /// Gate queries while Core restores the canonical history or confirmation target.
+    pub fn set_upstream_recovery_pending(&self, pending: bool) {
+        let mut runtime = self.runtime_readiness.lock().unwrap();
+        if runtime.upstream_recovery_pending != pending {
+            info!("Bitcoin upstream recovery pending: {}", pending);
+        }
+        runtime.upstream_recovery_pending = pending;
     }
 
     pub fn get_runtime_readiness(&self) -> RuntimeReadinessStatus {

@@ -172,8 +172,12 @@ main() {
 
   assert_empty_surface_state "$TARGET_HEIGHT"
 
-  regtest_log "Replacing stable-frontier block height=${TARGET_HEIGHT}; expected temporary stable rollback=${rollback_height}"
-  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" invalidateblock "$original_hash"
+  regtest_log "Replacing history after height=${rollback_height}; expected stable rollback=${rollback_height}"
+  # A shorter matching prefix is not reorg evidence. Build a conflicting branch
+  # with the intended stable target before expecting rollback and an epoch change.
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+    invalidateblock "$(regtest_get_bitcoin_block_hash "$((rollback_height + 1))")"
+  regtest_mine_blocks "$BTC_STABLE_LAG_BLOCKS" "$(regtest_get_new_address)"
 
   ancestor_hash="$(regtest_get_bitcoin_block_hash "$rollback_height")"
   regtest_wait_until_balance_history_synced_eq "$rollback_height"

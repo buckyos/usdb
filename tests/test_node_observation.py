@@ -58,8 +58,11 @@ class ObservationTests(unittest.TestCase):
         self.assertIsNone(recovered["failure"])
 
     def test_new_blocker_is_unknown_not_silently_dropped_or_exported(self):
-        result = observation.readiness({"consensus_ready": False, "blockers": ["CatchingUp", "PRIVATE", {}]})
-        self.assertEqual(result["blockers"], ["CatchingUp", "UnknownBlocker"])
+        result = observation.readiness({"query_ready": False, "consensus_ready": False,
+            "blockers": ["CatchingUp", "UpstreamRecoveryPending", "PRIVATE", {}]})
+        self.assertEqual(result["blockers"], ["CatchingUp", "UpstreamRecoveryPending", "UnknownBlocker"])
+        self.assertEqual(observation.readiness(result)["blockers"], result["blockers"])
+        self.assertFalse(result["query_ready"])
         self.assertNotIn("PRIVATE", json.dumps(result))
 
     def test_committed_query_readiness_survives_projection_without_inference(self):
@@ -146,16 +149,44 @@ class ObservationTests(unittest.TestCase):
             self.assertEqual(result, {"status": "unavailable", "events": []})
 
     def test_known_marker_remains_critical_when_its_contents_cannot_be_read(self):
+        responses = [subprocess.CompletedProcess([], 1, "", "PRIVATE"),
+                     subprocess.TimeoutExpired("docker", 30), OSError("Docker unavailable"),
+                     subprocess.CompletedProcess([], 0, "not JSON"),
+                     subprocess.CompletedProcess([], 0, json.dumps({"schema_version": files.SCHEMA,
+                         "action": "incidents", "result": {"status": "available", "events": []}}))]
+        for response in responses:
+            with self.subTest(response=str(response)), MiningFixture() as f:
+                path = self.write_incident(f)
+                before = path.read_bytes()
+                kwargs = {"side_effect": response} if isinstance(response, Exception) else {"return_value": response}
+                with mock.patch.object(files.os, "open", side_effect=PermissionError()), \
+                     mock.patch.object(mining.subprocess, "run", **kwargs) as probe:
+                    result = observation.observe_incidents(f.layout, node)
+                probe.assert_called_once()
+                self.assertEqual(result["status"], "available")
+                event = result["events"][0]
+                self.assertEqual(event["severity"], "critical")
+                self.assertEqual(event["evidence_status"], "unavailable")
+                self.assertTrue(event["latched"])
+                self.assertIsNone(event["event_id"])
+                self.assertEqual(path.read_bytes(), before)
+                self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_known_unreadable_marker_recovers_details_through_read_only_probe(self):
         with MiningFixture() as f:
-            self.write_incident(f)
-            with mock.patch.object(files.os, "open", side_effect=PermissionError()):
+            path = self.write_incident(f)
+            before = path.read_bytes()
+            expected = observation.observe_incidents(f.layout, node)
+            response = subprocess.CompletedProcess([], 0, json.dumps({
+                "schema_version": files.SCHEMA, "action": "incidents", "result": expected}))
+            with mock.patch.object(files.os, "open", side_effect=PermissionError()), \
+                 mock.patch.object(mining.subprocess, "run", return_value=response) as probe:
                 result = observation.observe_incidents(f.layout, node)
-            self.assertEqual(result["status"], "available")
-            event = result["events"][0]
-            self.assertEqual(event["severity"], "critical")
-            self.assertEqual(event["evidence_status"], "unavailable")
-            self.assertTrue(event["latched"])
-            self.assertIsNone(event["event_id"])
+            self.assertEqual(result, expected)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertIn("--read-only", probe.call_args.args[0])
+            self.assertIn("--pull=never", probe.call_args.args[0])
+            self.assertIn("--network=none", probe.call_args.args[0])
 
     def test_lifecycle_and_progress_see_marker_even_without_chain_process(self):
         with MiningFixture() as f:

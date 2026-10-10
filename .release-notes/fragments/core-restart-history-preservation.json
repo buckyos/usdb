@@ -1,0 +1,22 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "core-restart-history-preservation",
+  "type": "fixed",
+  "scopes": ["balance-history", "node-runtime", "testing"],
+  "summary": "Preserve committed history while Bitcoin Core restores its tip after a restart",
+  "details": [
+    "Balance-history separates the canonical Bitcoin tip from the confirmation target. A lower target, matching shorter history or failed RPC query gates readiness with UpstreamRecoveryPending while retaining committed data; recovery resumes automatically without advancing the indexer reorg epoch.",
+    "Conflicting committed block hashes still trigger reorg reconciliation and the existing durable chain protection. Restart regressions cover both unchanged history recovery and real replacement branches.",
+    "Known but unreadable chain incident files are retried through the existing bounded read-only container probe so status can display their details. Failed probes preserve the known critical incident and never clear a halt marker."
+  ],
+  "operator_actions": [
+    "Upgrade and restart balance-history through the normal release workflow. If DEEP_REORG_HALTED was already recorded, preserve the incident and follow the reviewed recovery procedure; this fix does not automatically unlock an existing halt."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

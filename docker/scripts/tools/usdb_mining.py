@@ -117,11 +117,20 @@ def _read_chain_files(layout: node.ReleaseLayout, env, action: str) -> dict:
     required by mining and the controller, so no interactive sudo is needed.
     """
     root = Path(env["USDB_CHAIN_DATA_HOST_DIR"]).resolve()
+    known_incident = None
     try:
-        return chain_files.inspect_files(root, action, node.DATASET_IDENTITY_FILE)
+        report = chain_files.inspect_files(root, action, node.DATASET_IDENTITY_FILE)
+        if action != "incidents" or not any(
+                event.get("evidence_status") == "unavailable" for event in report.get("events", [])):
+            return report
+        # The host may traverse root-owned directories but not read a 0600 marker.
+        # Preserve its presence while retrying metadata through the read-only probe.
+        known_incident = report
     except PermissionError:
         pass
     if any(char in str(root) for char in (",", "\n", "\r", "\0")):
+        if known_incident is not None:
+            return known_incident
         raise ValueError("CHAIN_DATA_INSPECTION_FAILED: unsupported character in chain data mount path")
     command = ["docker", "run", "--rm", "--interactive", "--pull=never", "--network=none",
                "--read-only", "--user=0:0", "--cap-drop=ALL", "--cap-add=DAC_READ_SEARCH",
@@ -154,6 +163,8 @@ def _read_chain_files(layout: node.ReleaseLayout, env, action: str) -> dict:
             sanitized = incidents(report)
             if sanitized["status"] != "available":
                 raise ValueError("invalid chain incident metadata")
+            if known_incident is not None and not sanitized["events"]:
+                return known_incident
             return sanitized
         elif (set(report) != {"halted", "baseline_present", "baseline_epoch"} or
               type(report.get("halted")) is not bool or type(report.get("baseline_present")) is not bool or
@@ -161,6 +172,8 @@ def _read_chain_files(layout: node.ReleaseLayout, env, action: str) -> dict:
             raise ValueError("invalid chain recovery metadata")
         return report
     except (OSError, ValueError, subprocess.SubprocessError) as error:
+        if known_incident is not None:
+            return known_incident
         raise ValueError(f"CHAIN_DATA_INSPECTION_FAILED: cannot inspect {root} through the read-only chain image: {error}. "
                          "Check Docker access and the cached release image; keep the database ownership and permissions unchanged.") from error
 

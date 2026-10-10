@@ -351,6 +351,8 @@ pub enum ReadinessBlocker {
     CatchingUp,
     /// Durable state is being rolled back or resumed after an interrupted rollback.
     RollbackInProgress,
+    /// Core is recovering the canonical tip or confirmations for already committed history.
+    UpstreamRecoveryPending,
     /// Shutdown has been requested and the node is draining toward exit.
     ShutdownRequested,
     /// Stable height exists but its canonical BTC block hash is not yet available.

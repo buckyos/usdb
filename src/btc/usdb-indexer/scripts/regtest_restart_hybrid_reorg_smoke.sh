@@ -118,6 +118,7 @@ main() {
     exit 1
   fi
 
+  regtest_ensure_stable_height_reachable "$target_height"
   regtest_restart_balance_history
   regtest_wait_until_balance_history_synced_eq "$target_height"
   regtest_wait_until_balance_history_block_commit_hash "$affected_height" "$replacement_affected_hash"

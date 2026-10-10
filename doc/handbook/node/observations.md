@@ -82,6 +82,21 @@ Chain 的 `head.number/hash/timestamp` 来自同一个最新块对象，`peer_co
 有链头且 `eth_syncing=false` 不证明全网仍在出块。停滞判定需要连续观测或其他节点对照；
 同高度换 hash 也需要保留，不能只比较高度。BTC lag 仅用于运维，不改变共识验证规则。
 
+## 重启后的 Bitcoin 恢复等待
+
+断电重启后，Bitcoin Core 可能暂时报告较低的链头，扣除确认数后的 BH 同步目标也会降低。
+例如 BH 已提交高度 970727，而 Core 暂时恢复到 970736，扣除 10 个确认后的目标变为 970726。
+只要已提交历史的区块哈希没有变化，BH 会保留原高度和数据，等待 Core 恢复确认数。
+Core 暂时只恢复出较短的相同历史，或 RPC 查询失败，也不会单凭高度降低回滚数据。
+
+等待期间，BH readiness 的 `blockers` 包含 `UpstreamRecoveryPending`，
+`query_ready` 和 `consensus_ready` 为 `false`，下游暂缓继续；Core 恢复且哈希检查通过后自动继续。
+这里显示的已提交高度可能暂时高于当前确认目标，表示保留了本地历史，并不表示可以继续参与共识。
+可以通过 `usdb-node status --watch` 和 `usdb-node logs balance-history` 观察恢复，通常无需重新同步数据。
+
+只有查到已提交历史的区块哈希变化，才会进入重组回滚。真实重组仍保留原有的 epoch 与停机保护。
+如果旧版本已经写入下面的持久停机记录，升级本身不会清除它，仍需核对事故并按恢复流程处理。
+
 ## 严重事故：深度 BTC 重组停机
 
 当前接入的明确事故类型为 `DEEP_REORG_HALTED`。事故来源是 Chain 数据目录下的
@@ -116,8 +131,9 @@ Chain 的 `head.number/hash/timestamp` 来自同一个最新块对象，`peer_co
 事故文件存在但 JSON 损坏、字段不一致、超出大小限制或不是普通文件时，仍报告持久停机，
 `evidence_status=invalid`，未知的发生时间为 `null`；无法取得可靠 ID 时也为 `null`。
 这表示需要检查事故证据，不能忽略停机标记。采集器拒绝跟随事故文件软链接或读取 FIFO。
-文件权限不足时，可通过缓存的固定版本 Chain 镜像执行有时间限制的只读探测；
-不会拉取镜像、修改权限、打开数据库或重启服务。探测仍失败时 `incidents.status=unavailable`。
+目录或事故文件权限不足时，可通过缓存的固定版本 Chain 镜像执行有时间限制的只读探测，
+补读事故 ID、时间与 epoch 等详情；不会拉取镜像、修改权限、打开数据库或重启服务。
+尚无法确认标记是否存在且探测失败时，`incidents.status=unavailable`。
 
 如果已经确认标记存在，只是无法读取其内容，则保留 critical 事件，
 `evidence_status=unavailable`；不会因缺少详情丢掉已知停机证据。
