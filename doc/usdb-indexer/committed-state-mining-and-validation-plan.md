@@ -228,6 +228,113 @@ miner 定向回归通过；fake sealing 在 Go 1.18.5、Go 1.26 及 race 模式�
 ShellCheck、workflow YAML、Go 格式/vet 和 release fragment 校验通过。
 本批只完成本地验收与 CI 入口接入，未运行远端 CI、发布或升级真实节点。
 
+### 发布前补充一：跨重试期限的自动恢复
+
+短时故障恢复不能证明重试任务退出或 gossip 队列淘汰后仍可追平。新增验收使用相同的独立
+Core/BH/indexer 节点和正式重试时限，故障期间维持真实上游落后，不缩短 runtime 常量。
+
+1. **downloader 超时后重新同步**：首次 late-join validator 保持 indexer 落后，超过 120 秒
+   单批等待预算。必须观察到 `External state wait budget exhausted`，随后在同一 peer 连接上
+   自动启动下一轮失败验证；仅看到第一次等待或测试计时超过 120 秒不算通过。
+2. **fetcher 淘汰后重新获取**：保持另一个节点的 BH 落后，健康节点只多出一个新块，然后停止
+   出块，故障持续超过 1800 秒。必须观察到
+   已冻结目标 tip 对应的 `Expired propagated block awaiting validation/external state`，
+   并确认 validator 恰好停在该 tip 的父块。此时 peer 广告的 parent TD 可能已等于本地 TD，
+   不能依赖“还欠多个父块”触发的 downloader 恰好带回最后一块；只观察到较低父块淘汰不算通过。
+3. **安静网络中的恢复**：健康矿工停止并等待在途封块结束，冻结既有 tip。在跨期等待和
+   恢复期间持续检查健康 tip 不变；只解除上游延迟，不执行 `miner_start`、chain restart、
+   手工 peer reconnect 或 `admin_importChain`。恢复后 90 秒内必须导入该 tip 的规范 hash，
+   并有同一 selector 先失败后成功的 RPC 审计记录。
+4. **一致性及连续性**：沿用 PID/start-time/启动次数、peer 断连和 BAD BLOCK 检查；恢复后
+   逐块核对执行 roots、系统存储、两矿工收益，最终确认独立上游的 pass/energy/history 一致。
+
+Nightly `multi-miner-delay` 的第一轮 indexer 延迟追加 downloader 跨期验收（共 15 项）；
+Weekly `multi-miner-soak` 的第一轮同时追加 fetcher 跨期验收，后两轮保留短时故障矩阵（共 36 项）。
+Weekly 编译与模拟预算分开，模拟最多 2700 秒，workflow 步骤 47 分钟，保留清理和日志收集余量。
+Fast CI 检查证据判定和入口配置，不用压缩时间的测试替代上述真实跨期证据。
+
+本地复现入口位于 Go 仓库：
+
+```bash
+MATRIX_SCENARIO=multi-miner MATRIX_CYCLES=1 MATRIX_RETRY_EXPIRY=all \
+  bash scripts/usdb/run_usdb_upstream_fault_matrix.sh
+```
+
+`MATRIX_RETRY_EXPIRY=downloader` 仅补 2 分钟跨期场景；`none` 保留原有短时矩阵。
+报告包含实际等待时间、超时 session 数、目标 tip 淘汰高度及恢复到固定 hash 的证据。
+
+#### 2026-10-10 修复前结果：单 tip 恢复失败
+
+运行时基于 USDB `5b39cce` / Go `d2460bb87`，使用临时独立 regtest 数据、真实 120/1800 秒
+期限和既有 delayed fake PoW。新增验收代码尚未代表远端 CI 通过。
+
+- **downloader 通过**：Nightly 单轮 15 项、runner 退出码 0。故障持续 137.934 秒，
+  观察到 session 超时及下一轮自动验证，解除延迟后 7.276 秒恢复到冻结高度 20。
+- **多块对照**：故障持续 1808.696 秒，高度 9–14 的 gossip 块全部过期；解除后 15.303 秒
+  自动恢复到冻结高度 14，16 条业务断言通过。该对照的外层 runner 在运行期间被本轮编辑，
+  导致收尾 EOF、退出码 2；仅作为行为证据，不计作完整 runner 或 CI 绿灯。
+- **单 tip 正式验收失败**：故障持续 1801.503 秒，高度 9 的唯一待验证块实际过期，
+  validator 停在高度 8。解除延迟后 BH/indexer 已 ready 到 BTC 高度 150；直接复查原先失败的
+  同一 profile 请求，两台独立 indexer 返回完全一致的数据，但这不是 validator 的自动重试。
+  90 秒恢复门限仍超时；独立只读观测到第 93 秒，chain 仍在高度 8，`eth_syncing=false`。
+  恢复阶段没有自动 profile 调用，也没有 peer 断连。
+
+根因是 `handleBlockBroadcast` 记录的 peer head/TD 为广播块的父块；单 tip 场景下，它已与
+本地 head/TD 相等。fetcher 过期后删除该块及其获取线索，`nextSyncOp` 又因 peer TD 不高于
+本地而不调度同步。只有后续新广播等额外事件才可能打破停滞，不能满足无干预恢复条件。
+
+发布前须补齐过期后的有界重新发现/获取机制，并保持内存/peer 配额、完整验证及取消边界。
+不能通过延长 TTL、恢复阶段重新挖块、重连或跳过此用例将验收改为通过。
+上述记录对应修复前运行时；正式 Weekly 必须保留该单 tip 验收条件。
+
+辅助回归 54 项、Python 语法、ShellCheck、workflow YAML 和新增 release fragment 检查通过。
+本地报告保存在 `/tmp/usdb-retry-expiry-acceptance`：`downloader-evidence` 为通过的 Nightly，
+`all-evidence` 为多块对照，`single-tip-production` 为原始时限失败记录（含只读恢复观测和
+profile 可用性复查）；`single-tip-probe` 仅为缩短 TTL 的定位实验，不用于生产时限验收。
+
+#### 过期 tip 的恢复实现
+
+fetcher 在两条过期路径（重试队列出队、在途验证返回临时失败）释放块体及 peer 配额后，
+将轻量 header 交回同步层。同步层使用本地已知父块 TD，或该 peer 当前明确广告的同一父块 TD，
+推导 tip TD；只在 TD 增加时更新该连接已有的 head/TD 并唤醒 downloader。不能确定父块 TD 时
+不猜测权重，peer 已离线或块已在本地时不新建恢复任务。
+
+该 head/TD 只是未信任的下载目标，必须由仍可提供该块的 peer 重新提供数据，经正常 header、
+body、外部状态和执行验证后才能导入。恢复沿用 downloader 的 120 秒等待预算和 session 间
+冷却；永久本地错误仍停止自动同步。30 分钟 fetcher TTL、全局及每 peer 的块数/字节限制不变。
+peer head 的比较更新使用同一锁，避免旧父块广播覆盖恢复目标；同步唤醒合并为一个待处理事件，
+不为每个过期块保留块体、创建无限任务或阻塞 fetcher 循环。
+
+快速回归覆盖 ETH/66、ETH/67 中“本地与 peer 的父块 TD 相等、源节点仅多出一个固定 tip”的
+实际下载恢复，两条过期回调的配额释放，以及永久错误、未知父块、旧 hint、断连和关闭边界。
+验收中的 `miner_stop` 后增加在途封块等待，先确定稳定父块再切换矿工，避免旧 anchor 的合法
+封块与唯一不可验证 tip 竞争高度。单块场景在 delayed fake-PoW 的首个封块任务提交后即停止
+新任务，再等待该块完成，避免等待导入才停矿时已经提交第二个任务；仍要求源节点恰好多出
+一个新块，不放宽单 tip 条件。
+
+#### 2026-10-10 修复后本地结果
+
+基于相同 USDB `5b39cce` / Go `d2460bb87` 加本次未提交的 Go 修复，独立 regtest 单轮
+16 项验收全部通过，runner 退出码 0；沿用正式 120/1800 秒时限及 delayed fake-PoW。
+
+- **单 tip 跨期恢复通过**：过期前只读采样确认 validator 停在高度 9，peer 广告父块 TD
+  与本地同为 82,056，`eth_syncing=false`，源节点固定在高度 10。故障持续 1809.643 秒，
+  唯一 tip 实际过期并出现 `Scheduling expired propagated block for sync`；仅解除上游延迟后
+  15.055 秒内导入原固定 hash，同一 profile 请求由失败转为成功。无新出块、重启、手工重连
+  或 peer 断连，执行 roots、收益及独立上游状态一致。
+- **downloader 跨期恢复通过**：故障持续 142.789 秒，观察到一次 session 超时及下一轮
+  自动验证；解除延迟后 0.504 秒恢复到固定高度 16。其余竞争分叉、anchor 复用上限、无效块
+  拒绝和最终三节点一致性检查通过，最终规范高度 64。
+- **回归检查通过**：18 项 Fast 强制回归及相关 race 检查，fetcher、ETH 协议、handler
+  包完整测试，相关 `go vet`，54 项验收辅助测试及 release fragments 检查均通过。
+  最终单块封块控制另以六秒 TTL 诊断连续验证三轮，每轮约 7.025 秒恢复；这些短时诊断仅用于
+  夹具稳定性检查，真实跨期证据来自上述 1800 秒运行。
+
+通过报告位于 `/tmp/usdb-retry-expiry-acceptance/single-tip-fixed-drained/summary.json`，
+同目录保存过期前 head/TD 采样、RPC 审计和节点日志；其父目录保存二进制/源文件校验值、
+该长周期运行的 driver 快照及 runtime patch。临时测试服务已退出。
+这些是本地单轮结果；提交后的远端 CI 和三轮 Weekly 仍需按正式入口完成发布资格验证。
+
 ## 第四阶段：可选矿工发布延迟 gap
 
 详细设计见 [Miner BTC anchor gap 方案](miner-anchor-gap-plan.md)。建议默认 gap=2，允许显式 0；
