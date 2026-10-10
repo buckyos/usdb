@@ -1,7 +1,8 @@
 # 已提交 BTC 状态的出块与延迟验证改进
 
 状态：第一阶段及正常区块执行期间的已提交前缀查询已提交（`f760421`、`981be5a`）。
-第二阶段 Go 延迟验证与重试已实现并通过本地验收，待评审；独立多节点矩阵和 gap 尚未实现。
+第二阶段 Go 延迟验证与重试已提交（Go `40c3200c5`，文档 `7cc13b8`）。
+第三阶段独立多节点矩阵已实现并通过本地单轮、连续三轮验收，待评审；可选矿工 gap 尚未实现。
 
 ## 问题与目标
 
@@ -165,6 +166,47 @@ Go 1.26 兼容工具链下新增用例和 geth 编译检查通过；release frag
 至少使用独立的 indexer/BH 状态，覆盖 gossip 先到、父块先同步、连续子块、RPC 中断、
 BH/indexer 分别落后、恢复后无人工 reconnect/restart 自动导入，以及真正无效块的拒绝。
 记录等待时长、peer 断连、重试次数、分叉/孤块和恢复高度；不以共用一个上游的测试替代。
+
+### 第三阶段实现
+
+Go 仓库新增 `tests/multi_miner_acceptance.py`，通过现有独立上游 runner 的
+`MATRIX_SCENARIO=multi-miner` 启动。每个节点从独立空目录同步 Core/BH/indexer；
+两个矿工使用不同 BTC owner、真实 pass 和 USDB 收益地址，第三个节点作为晚加入的 validator。
+透明代理只延迟真实 Core `getblock` 请求，不伪造高度、profile 或 readiness 响应。
+
+- BH 落后两个块时，旧高度的完整历史 profile 必须与健康节点一致；矿工仍可使用它出块。
+- indexer 单独落后时，BH 必须已追平，历史 RPC 保持可用；新高度的验证进入等待。
+- gossip 连续块、晚加入节点的 downloader 分别观察真实失败及重试。
+  只在初次连接时设置 peer，恢复阶段不重连、不重启 chain，也不手工启动 mining 推动同步。
+- indexer 进程中断产生实际 RPC 连接故障；使用同一数据库恢复该服务后，chain 自动导入。
+- 两个矿工同时出块；另外显式构造不同 BTC anchor、同一 USDB 高度 hash 不同的竞争分支，
+  恢复后要求更高工作量分支获胜，记录旧分支被替换的块。
+- 测试 genesis 缩小 anchor age 上限到 24，验证耗尽后停止组块，新 BTC 状态可用后自动继续。
+- 正常依赖故障不得留下 BAD BLOCK；最后通过真实 `admin_importChain` 注入非法 gas header，
+  要求拒绝并记录它，再验证后续合法块正常导入。
+
+恢复门限为 90 秒；必须有相同 selector 先失败、后成功的 RPC 审计证据。
+同时核对 PID、Linux process start time、启动次数、peer 断连记录及目标高度的规范 hash。
+`miner_stop` 后可能仍有在途的已封块，因此允许 head 前进到目标的合法后继，不能仅凭高度
+追平或不同时间采样的 head hash 判断恢复或分叉。
+最终逐块核对区块 roots、历史系统存储、两名矿工的收益，以及独立上游的 pass/energy/history。
+
+Nightly `multi-miner-delay` 执行一轮，Weekly `multi-miner-soak` 在同一批节点与数据库上连续
+执行三轮。Fast CI 覆盖证据判定、透明代理和 CI 入口；队列资源界限、light/snap、取消及
+非法 gossip 仍由第二阶段 Go 回归覆盖。BTC 深重组沿用既有独立上游故障矩阵。
+
+封块使用 `fakepow` 加 1200ms 延迟，其余共识校验、P2P、执行和奖励路径均为真实实现。
+多矿工验收发现现有 delayed fake sealer 同步阻塞任务循环，导致无法及时取消旧封块任务；
+已将该测试模式改为异步延迟并响应取消，新增 Fast 必跑及 race 回归，普通 PoW 路径不变。
+这不是实际算力或公网延迟基准，不据此决定生产 gap，也不代表远端 CI 或真实节点升级已通过。
+
+2026-10-10 本地验收：单轮 14 项、同一批节点连续三轮 34 项全部通过，最终分别收敛到
+USDB 高度 68、136；每个恢复场景约 1.3–20.1 秒，无 peer 断连、chain 重启或人工重连。
+三轮竞争分支分别有 2 个旧块被规范链替换，最终历史执行、两名矿工收益和独立上游状态一致。
+两个 runner 均正常退出并完成进程清理。Python 辅助回归 79 项、Fast 必跑共识 9 项、
+miner 定向回归通过；fake sealing 在 Go 1.18.5、Go 1.26 及 race 模式下通过。
+ShellCheck、workflow YAML、Go 格式/vet 和 release fragment 校验通过。
+本批只完成本地验收与 CI 入口接入，未运行远端 CI、发布或升级真实节点。
 
 ## 第四阶段：可选矿工发布延迟 gap
 
