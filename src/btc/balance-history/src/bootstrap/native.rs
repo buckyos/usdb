@@ -311,6 +311,7 @@ fn prepare(
     let mut staging_config = (**config).clone();
     staging_config.root_dir = root.join("bootstrap-staging");
     let staging_config = Arc::new(staging_config);
+    clean_abandoned_verification(&staging_config.db_dir())?;
     let db = Arc::new(BalanceHistoryDB::open(
         staging_config.clone(),
         BalanceHistoryDBMode::Normal,
@@ -333,6 +334,8 @@ fn prepare(
                 db.verify_native_import_prefix(&coins[..skip])?;
                 if processed > applied {
                     db.import_native_bootstrap_coins(&coins[skip..], processed)?;
+                    #[cfg(test)]
+                    super::process_fault::reach("import_committed");
                 }
                 if last_report.elapsed().as_secs() >= 10 {
                     write_report(
@@ -433,6 +436,8 @@ fn prepare(
                 config.sync.undo_retention_blocks,
             )?;
             db.sync_assumeutxo_checkpoint()?;
+            #[cfg(test)]
+            super::process_fault::reach("replay_committed");
             current = end;
             eprintln!(
                 "Native bootstrap replay progress: height={current}, target={origin}, elapsed_seconds={:.1}",
@@ -452,7 +457,16 @@ fn prepare(
             &serde_json::json!({"phase":"verifying","height":origin,"elapsed_seconds":started.elapsed().as_secs_f64()}),
         )?;
         let mut journal = VerificationJournal::new(root, origin, started);
-        let mut observe = |value| journal.observe(value, Instant::now());
+        let mut observe = |value| {
+            journal.observe(value, Instant::now())?;
+            #[cfg(test)]
+            if value.stage == super::VerificationStage::UtxosAndBalanceAggregation
+                && value.scanned > 0
+            {
+                super::process_fault::reach("verifying");
+            }
+            Ok(())
+        };
         let origin_identity = db.verify_native_bootstrap_origin(
             identity.snapshot.network,
             origin,
@@ -485,6 +499,8 @@ fn prepare(
         .ok_or("Missing sealed native bootstrap")?;
     db.validate_native_bootstrap_service()?;
     db.flush_all()?;
+    #[cfg(test)]
+    super::process_fault::reach("sealed_before_publish");
     drop(db);
     // Rename only the private DB directory, leaving config/logs and existing user files intact.
     fs::create_dir_all(config.db_dir()).map_err(|e| e.to_string())?;
@@ -511,6 +527,56 @@ fn prepare(
     Ok(state)
 }
 
+/// The caller owns the bootstrap workspace lock; only its private staging scratch is disposable.
+fn clean_abandoned_verification(parent: &std::path::Path) -> Result<(), String> {
+    if !parent.exists() {
+        return Ok(());
+    }
+    let result = (|| -> std::io::Result<()> {
+        if !fs::symlink_metadata(parent)?.is_dir() {
+            return Err(std::io::Error::other(
+                "Verification parent is not a directory",
+            ));
+        }
+        for entry in fs::read_dir(parent)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some((pid, timestamp)) = name
+                .strip_prefix("native-verify-")
+                .and_then(|v| v.split_once('-'))
+            else {
+                continue;
+            };
+            if pid.parse::<u32>().is_err()
+                || timestamp.parse::<u128>().is_err()
+                || !pid.bytes().all(|b| b.is_ascii_digit())
+                || !timestamp.bytes().all(|b| b.is_ascii_digit())
+            {
+                continue;
+            }
+            // Do not follow links or remove unrelated files masquerading as a scratch directory.
+            if !entry.file_type()?.is_dir() {
+                return Err(std::io::Error::other("Unsafe abandoned verification entry"));
+            }
+            fs::remove_dir_all(entry.path())?;
+            log_bootstrap_milestone(format_args!(
+                "Native verification workspace recovered: removed={}",
+                entry.path().display()
+            ));
+        }
+        Ok(())
+    })();
+    result.map_err(|error| {
+        let message = format!(
+            "Native verification workspace recovery failed: path={}, error={error}",
+            parent.display()
+        );
+        log::error!("{message}");
+        message
+    })
+}
+
 // Waiting is an operational phase, not readiness. Source import and replay checkpoints remain durable.
 fn wait_for_blocks(
     root: &std::path::Path,
@@ -533,4 +599,38 @@ fn wait_for_blocks(
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use crate::assumeutxo::test_common::Workspace;
+
+    #[test]
+    fn verification_cleanup_preserves_unrelated_data_and_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+        let work = Workspace::new();
+        let staging = work.0.join("staging");
+        fs::create_dir(&staging).unwrap();
+        let scratch = staging.join("native-verify-123-456");
+        fs::create_dir(&scratch).unwrap();
+        fs::write(scratch.join("temporary-aggregate"), "temporary").unwrap();
+        fs::create_dir(staging.join("balance_history")).unwrap();
+        fs::write(staging.join("balance_history/data"), "keep").unwrap();
+        fs::write(staging.join("native-verify-not-a-scratch"), "keep").unwrap();
+        clean_abandoned_verification(&staging).unwrap();
+        assert!(!scratch.exists());
+        assert_eq!(
+            fs::read(staging.join("balance_history/data")).unwrap(),
+            b"keep"
+        );
+        assert!(staging.join("native-verify-not-a-scratch").exists());
+        let outside = work.0.join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("data"), "preserve").unwrap();
+        symlink(&outside, &scratch).unwrap();
+        assert!(clean_abandoned_verification(&staging).is_err());
+        assert_eq!(fs::read(outside.join("data")).unwrap(), b"preserve");
+        assert!(scratch.is_symlink());
+    }
 }

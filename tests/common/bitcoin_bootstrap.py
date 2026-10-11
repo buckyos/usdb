@@ -106,11 +106,15 @@ class BootstrapCore:
                 else:
                     error = dict(code=-32601, message="Unexpected method")
                 body = json.dumps(dict(jsonrpc="2.0", id=request["id"], result=result, error=error)).encode()
-                self.send_response(500 if error else 200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.send_response(500 if error else 200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    # Observer crash tests intentionally discard an in-flight load response.
+                    pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_port}"

@@ -443,6 +443,10 @@ mod origin_tests;
 mod native_tests;
 
 #[cfg(test)]
+#[path = "../../../../../tests/assumeutxo_process_recovery.rs"]
+mod process_tests;
+
+#[cfg(test)]
 #[path = "../../../../../tests/assumeutxo_native_rpc.rs"]
 mod native_rpc_tests;
 

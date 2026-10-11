@@ -4,6 +4,9 @@ mod checkpoint;
 pub use checkpoint::*;
 mod native;
 pub use native::*;
+#[cfg(test)]
+#[path = "../../../../tests/common/bootstrap_process_fault.rs"]
+pub(crate) mod process_fault;
 mod progress;
 pub(crate) use progress::{
     VerificationJournal, VerificationLogThrottle, VerificationProgress, VerificationStage,

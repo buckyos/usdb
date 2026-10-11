@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
+      USDB_TEST_ARTIFACT_DIR: /tmp/usdb-process-recovery-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out usdb
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,6 +67,7 @@ jobs:
           python3 tests/test_control_plane_monitor.py
           python3 tests/test_node_observation.py
           python3 tests/test_node_monitor.py
+          python3 tests/test_node_process_recovery.py
           python3 tests/test_node_monitor_core_startup.py
           python3 tests/test_node_resource_history.py
           python3 tests/test_node_notifications.py
@@ -127,3 +129,17 @@ jobs:
           python3 tests/test_bitcoin_startup_progress.py
           python3 tests/test_bitcoin_shutdown_progress.py
           python3 docker/scripts/tools/test_testnet_bitcoin_release.py
+
+      - name: Preserve process recovery evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: usdb-process-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.USDB_TEST_ARTIFACT_DIR }}/**/*.log
+            ${{ env.USDB_TEST_ARTIFACT_DIR }}/**/timeline.json
+            ${{ env.USDB_TEST_ARTIFACT_DIR }}/**/summary.json
+            ${{ env.USDB_TEST_ARTIFACT_DIR }}/**/result.json
+            ${{ env.USDB_TEST_ARTIFACT_DIR }}/**/reached.json
+          if-no-files-found: warn
+          retention-days: 14

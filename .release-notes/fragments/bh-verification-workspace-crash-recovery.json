@@ -1,0 +1,20 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "bh-verification-workspace-crash-recovery",
+  "type": "fixed",
+  "scopes": ["balance-history", "node-runtime", "testing"],
+  "summary": "Recover abandoned native verification workspaces after a process crash",
+  "details": [
+    "Before resuming an unpublished native bootstrap, remove abandoned verification aggregate directories inside its private staging database directory while holding the bootstrap workspace lock.",
+    "Preserve database checkpoints and unrelated files, reject redirected scratch entries, and rerun verification before publishing ready state. This does not introduce resumable verification scans or change state commitments.",
+    "Exercise real process termination during import, replay, verification and sealed publication, including repeated verification crashes and comparison with an uninterrupted reference. Fault handshakes are compiled only into test binaries."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}
