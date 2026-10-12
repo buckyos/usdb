@@ -3063,9 +3063,16 @@ class RegtestWorldSimulator:
     def wait_service_synced(self, target_height: int) -> None:
         start = time.time()
         while True:
-            bh_height = int(self.rpc_balance_history("get_block_height", []) or 0)
-            usdb_height = self.rpc_usdb("get_synced_block_height", [])
-            usdb_height_num = 0 if usdb_height is None else int(usdb_height)
+            bh_height = self.rpc_result_if_ready(
+                self.rpc_call(self.args.balance_history_rpc_url, "get_block_height", []),
+                "balance-history get_block_height",
+            )
+            bh_height = None if bh_height is None else int(bh_height)
+            usdb_height = self.rpc_result_if_ready(
+                self.rpc_call(self.args.usdb_indexer_rpc_url, "get_synced_block_height", []),
+                "usdb-indexer get_synced_block_height",
+            )
+            usdb_height_num = None if usdb_height is None else int(usdb_height)
             bh_readiness = self.rpc_balance_history("get_readiness", [])
             usdb_readiness = self.rpc_usdb("get_readiness", [])
             bh_consensus_ready = bool(
@@ -3080,7 +3087,9 @@ class RegtestWorldSimulator:
             )
 
             if (
-                bh_height >= target_height
+                bh_height is not None
+                and usdb_height_num is not None
+                and bh_height >= target_height
                 and usdb_height_num >= target_height
                 and bh_consensus_ready
                 and usdb_consensus_ready
@@ -4992,17 +5001,13 @@ class RegtestWorldSimulator:
         )
 
         self.run_btc_cli(None, ["invalidateblock", rollback_start_hash])
-        # On regtest, balance-history rolls back immediately after invalidateblock,
-        # while usdb-indexer may only converge after replacement blocks appear.
-        # Waiting for both services to hit the rollback target can hang here even
-        # though final replacement-tip reconciliation works. For world-sim we only
-        # need the upstream rollback to be visible before mining the replacement chain.
+        # A shorter matching prefix is not proof of a conflicting branch. The
+        # services preserve committed history and gate queries until Core exposes
+        # replacement blocks, so build that branch before waiting for readiness.
         rollback_tip_height = self.get_bitcoin_block_height()
         upstream_rollback_stable_height = self.stable_height_for_tip(
             rollback_tip_height, self.args.stable_lag_blocks
         )
-        self.wait_balance_history_height_exact(upstream_rollback_stable_height)
-
         replacement_mempool_info = self.mine_replacement_blocks(depth, disconnected_blocks)
         replacement_hash_at_replaced_height = self.get_block_hash(block_height)
         if replacement_hash_at_replaced_height == original_tip_hash:

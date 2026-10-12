@@ -632,6 +632,82 @@ class RegtestWorldSimulatorEconomicViewTests(unittest.TestCase):
         self.assertEqual(calls[1]["cursor"], "cursor-2")
 
 
+class RegtestWorldReorgOrderingTests(unittest.TestCase):
+    def make_simulator(self):
+        simulator = RegtestWorldSimulator.__new__(RegtestWorldSimulator)
+        simulator.args = SimpleNamespace(
+            reorg_depth=3, stable_lag_blocks=10, sync_timeout_sec=2,
+            balance_history_rpc_url="balance-history",
+        )
+        simulator.metrics = {"reorg_ok": 0}
+        simulator.reorg_events_applied = 0
+        simulator.validator_samples = []
+        chain = {"raw_tip": 110, "replacement": False}
+
+        def invalidate(wallet, args):
+            self.assertEqual(args, ["invalidateblock", "old-98"])
+            chain["raw_tip"] = 97
+
+        def replace(depth, blocks):
+            self.assertEqual(depth, 3)
+            self.assertEqual(chain["raw_tip"], 97)
+            chain.update(raw_tip=110, replacement=True)
+            return {"replacement_replayed_tx_count": 2}
+
+        def trigger():
+            self.assertTrue(chain["replacement"])
+            chain["raw_tip"] += 1
+            return chain["raw_tip"]
+
+        def wait_ready(*args):
+            self.assertTrue(chain["replacement"], "matching prefixes keep queries gated")
+            self.assertEqual(chain["raw_tip"], 111, "Ord needs the trigger block before waiting")
+
+        simulator.log = mock.Mock()
+        simulator.run_btc_cli = mock.Mock(side_effect=invalidate)
+        simulator.get_bitcoin_block_height = lambda: chain["raw_tip"]
+        simulator.get_block_hash = lambda height: f"{'new' if chain['replacement'] else 'old'}-{height}"
+        simulator.capture_reorg_blocks = mock.Mock(return_value=[])
+        simulator.mine_replacement_blocks = mock.Mock(side_effect=replace)
+        simulator.mine_one_empty_block = trigger
+        # Model the real readiness gate while Core exposes only a matching prefix.
+        simulator.rpc_call = mock.Mock(return_value={
+            "error": {"code": -32041, "message": "SNAPSHOT_NOT_READY"},
+        })
+        simulator.rpc_balance_history = mock.Mock(return_value={"consensus_ready": False})
+        simulator.wait_ord_server_synced = mock.Mock(side_effect=wait_ready)
+        simulator.wait_service_synced = mock.Mock(side_effect=wait_ready)
+        simulator.wait_snapshot_hashes = mock.Mock(return_value=("new-101", "new-101"))
+        simulator.rebuild_local_chain_view_from_height = mock.Mock(return_value={})
+        simulator.run_global_cross_check = mock.Mock(return_value={})
+        simulator.emit_report = mock.Mock()
+        simulator.capture_replay_checkpoint = mock.Mock()
+        return simulator
+
+    def test_reorg_replaces_matching_prefix_before_waiting_for_services(self):
+        simulator = self.make_simulator()
+        with mock.patch("regtest_world_simulator.time.time", side_effect=[0, 3]):
+            result = simulator.perform_reorg(500, 100)
+        self.assertEqual(result["upstream_rollback_stable_height"], 87)
+        self.assertEqual(result["tip_height"], 101)
+        self.assertEqual(result["ord_reorg_trigger_block_count"], 1)
+        self.assertEqual(simulator.metrics["reorg_ok"], 1)
+        simulator.wait_snapshot_hashes.assert_called_once_with(101, "new-101")
+        simulator.run_global_cross_check.assert_called_once_with(101, 500)
+        simulator.capture_replay_checkpoint.assert_called_once_with("reorg", 500, 101)
+
+    def test_reorg_still_rejects_noncanonical_service_snapshots(self):
+        for hashes in (("old-101", "new-101"), ("new-101", "old-101")):
+            with self.subTest(hashes=hashes):
+                simulator = self.make_simulator()
+                simulator.wait_snapshot_hashes.return_value = hashes
+                with mock.patch("regtest_world_simulator.time.time", side_effect=[0, 3]):
+                    with self.assertRaisesRegex(WorldSimError, "stable hash mismatch"):
+                        simulator.perform_reorg(500, 100)
+                self.assertEqual(simulator.metrics["reorg_ok"], 0)
+                simulator.capture_replay_checkpoint.assert_not_called()
+
+
 class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
     def test_ord_transient_error_classifier_is_strict_and_case_insensitive(
         self,

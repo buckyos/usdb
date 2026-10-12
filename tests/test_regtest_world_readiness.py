@@ -12,6 +12,8 @@ from regtest_world_simulator import RegtestWorldSimulator, WorldSimError  # noqa
 
 
 class WorldReadinessTests(unittest.TestCase):
+    WAIT_METHODS = ("wait_balance_history_height_exact", "wait_service_height_exact", "wait_service_synced")
+
     def setUp(self):
         self.simulator = RegtestWorldSimulator.__new__(RegtestWorldSimulator)
         self.simulator.args = SimpleNamespace(
@@ -24,7 +26,7 @@ class WorldReadinessTests(unittest.TestCase):
         }
 
     def test_waits_retry_gated_heights_including_target_zero(self):
-        for wait_name in ("wait_balance_history_height_exact", "wait_service_height_exact"):
+        for wait_name in self.WAIT_METHODS:
             for gated_service in ("balance-history", "usdb-indexer"):
                 if wait_name == "wait_balance_history_height_exact" and gated_service == "usdb-indexer":
                     continue
@@ -64,14 +66,14 @@ class WorldReadinessTests(unittest.TestCase):
                 self.assertEqual(sleep.call_count, 2)
 
     def test_persistent_not_ready_times_out(self):
-        for wait_name in ("wait_balance_history_height_exact", "wait_service_height_exact"):
+        for wait_name in self.WAIT_METHODS:
             with self.subTest(wait=wait_name):
                 self.simulator.rpc_call = lambda url, method, params: (
                     {"result": {"consensus_ready": False}}
                     if method == "get_readiness" else self.not_ready
                 )
                 with mock.patch("regtest_world_simulator.time.time", side_effect=[0, 3]):
-                    with self.assertRaisesRegex(WorldSimError, "exact sync timeout"):
+                    with self.assertRaisesRegex(WorldSimError, "sync timeout"):
                         getattr(self.simulator, wait_name)(10)
 
     def test_other_rpc_errors_and_ordinary_assertions_remain_fatal(self):
@@ -80,13 +82,29 @@ class WorldReadinessTests(unittest.TestCase):
             {"code": -32041, "message": "unexpected error"},
         ):
             self.simulator.rpc_call = lambda *args: {"error": error}
-            for wait_name in ("wait_balance_history_height_exact", "wait_service_height_exact"):
+            for wait_name in self.WAIT_METHODS:
                 with self.subTest(wait=wait_name, error=error):
                     with self.assertRaises(WorldSimError):
                         getattr(self.simulator, wait_name)(10)
         self.simulator.rpc_call = lambda *args: self.not_ready
         with self.assertRaises(WorldSimError):
             self.simulator.rpc_balance_history("get_block_height", [])
+
+    def test_at_least_wait_requires_target_height_and_consensus_readiness(self):
+        for waiting_service in ("balance-history", "usdb-indexer"):
+            with self.subTest(service=waiting_service):
+                heights = iter([9, 11, 11])
+                ready = iter([True, False, True])
+
+                def rpc_call(url, method, params):
+                    if method == "get_readiness":
+                        return {"result": {"consensus_ready": next(ready) if url == waiting_service else True}}
+                    return {"result": next(heights) if url == waiting_service else 10}
+
+                self.simulator.rpc_call = rpc_call
+                with mock.patch("regtest_world_simulator.time.sleep") as sleep:
+                    self.simulator.wait_service_synced(10)
+                self.assertEqual(sleep.call_count, 2)
 
 
 if __name__ == "__main__":

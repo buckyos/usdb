@@ -24,6 +24,10 @@
 5. 在 replacement tip 上立即跑一次 global cross-check，再继续后续随机业务。
 6. weekly 额外启用 `SIM_REPLAY_CHECK_ENABLED=1`，立即保存每次重组后的完整状态；工作结束后用空数据库重新同步 balance-history/indexer，并对照这些历史检查点与最终状态。失败后保留 N+1 恢复点，不重跑工作轮次。范围、门禁及时间预算见 [独立状态重建对照](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim.md#重组后的独立状态重建对照)。
 
+`invalidateblock` 后，Core 可能暂时只暴露较短但哈希一致的历史前缀。此时 balance-history 会保留已提交历史并通过 `UpstreamRecoveryPending` 暂缓查询，避免把 Core 重启恢复期间的高度降低误判为重组。因此，world-sim 必须先生成替代分支和 Ord 触发块，再等待服务就绪；不能先等待 balance-history 降到回滚目标，否则会与生产保护逻辑互相等待。报告中的 `upstream_rollback_stable_height` 仅记录断链后 Core 的确认目标，不表示 balance-history 已回滚到该高度。
+
+替代分支生成后，同步等待在原有超时内重试 `SNAPSHOT_NOT_READY`，并继续要求同步高度与 `consensus_ready` 达标；其他 RPC 错误仍立即失败。随后仍验证 canonical hash、global cross-check 和独立 replay，不以服务进程存活或单独的高度变化判定恢复成功。
+
 Bitcoin Core 28.1 的 `invalidateblock` 只尝试将最先断开的 10 个块中的交易放回 mempool；深度 3 加稳定滞后 10 会断开 13 个块。因此不能用回滚后的 mempool 代替断链交易清单，否则钱包可能保留未确认交易占用的输入，导致后续 Ord 报 `wallet contains no cardinal utxos`。
 
 `tests/test_regtest_world_reorg.py` 使用真实 Bitcoin Core 与 Ord 覆盖 10、11、13 个断开块边界，确认原 commit/reveal 被重放后，再从同一钱包完成新一次铭刻。可设置 `BITCOIN_BIN_DIR` 和 `ORD_BIN` 后直接执行；weekly world-soak 在长跑前执行此测试。
