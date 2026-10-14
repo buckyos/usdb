@@ -11,7 +11,8 @@ Activation: None
 
 状态：默认 gap=2 的本地策略方向已确认，项目组讨论见 [USDB #52](https://github.com/buckyos/usdb/issues/52)。
 本文按 2026-10-14 的讨论收敛，并吸收 [项目组评审意见](https://github.com/buckyos/usdb/issues/52#issuecomment-6139593744)。
-gap 尚未实现；本文不改变当前出块策略或网络共识参数。
+Go 参考实现的第一批选高、历史组块和配置已完成本地回归，已提交为 Go `d8286636a`，尚未发布；node-kit 集成、
+独立多节点 gap 验收及收益观测仍待完成。本文不改变网络共识参数。
 
 本文是独立的 Informational UIP，用稳定编号承载推荐策略、参考实现计划、观测和验收，
 供跨客户端讨论与引用。Draft 状态不表示委员会已审议通过或功能已发布。
@@ -127,9 +128,9 @@ current head。若未来支持裁剪，再明确 floor 的 RPC 契约及与验�
 
 ## 3. 历史状态必须贯穿组块
 
-目前 Go `PayloadBuilder.BuildCurrentPayload` 用 `get_system_state_info` 的当前高度构造
-context，再调用 `resolve_miner_candidate`。Rust 已有 `get_state_ref_at_height` 和带 context
-的历史 candidate 查询；不需要为 gap 新造一套 indexer 状态或能量计算。
+Go `PayloadBuilder.BuildCurrentPayload` 已按本节接入历史 state-ref 和 candidate 查询。
+Rust 复用已有 `get_state_ref_at_height` 和带 context 的历史 candidate 查询；不需要为 gap
+新造一套 indexer 状态或能量计算。实现与验收状态见第 6、7 节及总体计划。
 
 建议流程：
 
@@ -255,17 +256,18 @@ development `M=6650` 不能替代 public 参数标定。Nightly 应使用小 `M`
 - 深重组 halt、失败发布、数据库恢复等保护不因历史 gap 放宽；不自动寻找“安全旧高度”。
 - anchor 不倒退约束比较的是同一分支的父子块。USDB 正常换到另一条合法分支时，应基于
   新父块重算，不能拿被丢弃分支的最大 anchor 当作全局不可回退水位。
-- 当前 `HasSystemStateChanged` 比较 current ID 与上次成功组块 ID。加入 gap 后必须分开
-  保存“成功组块时观察的最新 head”和“实际选择的历史 state”，否则 current 永远不同于
-  selected，可能每轮轮询都取消重建工作。
+- `HasSystemStateChanged` 必须比较“成功组块时观察的最新 head”与本次 head，将其与
+  “实际选择的历史 state”分开。第一批实现已保存前者的高度、snapshot/system ID 和规则
+  身份，后者由组块结果承载；否则 current 永远不同于 selected，可能每轮轮询都取消重建工作。
 - 失败不得提前确认刷新基线；parent 改变、age 到达边界、配置变化和新 head 到来都应重算。
   只看到新 head 但还没成功完成历史查询时，不能吞掉后续重试。
 
 ## 5. 配置、展示与升级
 
-建议实现名：geth `--miner.usdb-anchor-gap`，`miner.USDBConfig.AnchorGap`；node-kit
-`USDB_MINER_ANCHOR_GAP`。均为拟定名称，当前尚不可执行。Go 默认配置与 node-kit 默认值
-一致为 2，显式 0 必须保留；不要用“值为零就取默认”的写法。
+Go 第一批已接入 geth `--miner.usdb-anchor-gap` 与 TOML `Eth.Miner.USDB.AnchorGap`，
+尚未发布；node-kit `USDB_MINER_ANCHOR_GAP` 仍是拟定名称，待第二批接入。Go 未设置时
+使用默认 2，显式 0 保留；`miner.USDBConfig.AnchorGap` 以可选值区分两者，避免旧 TOML
+缺少字段时被误解释为 0。node-kit 接入后须保持相同默认值。
 首版只提供静态配置，不增加在线自适应调参；拒绝负数、非整数和超出高度类型范围的值。
 
 设置放在本机运行配置，不放进共识 `network.json`、activation registry 或数据兼容性身份。
@@ -326,8 +328,8 @@ validator 从收到的 selector 只知道 `H`，不知道生产者组块时的 `
 
 ## 6. 实施顺序与验收
 
-实现按 A → B → C 推进，D 单独记录收益分析及测试网观察；所有 gap 实现及下述验收尚待执行。
-既有无 gap 的功能矩阵通过，不代表下面的新增场景已验收。
+实现按 A → B → C 推进，D 单独记录收益分析及测试网观察。A 已完成本地实现与回归，
+B/C/D 尚待执行；既有无 gap 的功能矩阵通过，不代表新增多节点 gap 场景已验收。
 
 ### A. Go 选高与完整组块
 
@@ -393,7 +395,7 @@ Weekly 执行混合 gap、秒级延迟/连续块、多轮故障与经济状态�
 ## 7. 完成条件与文档维护
 
 - [x] 以 UIP-0018 收录设计依据、配置定位、算法与测试边界，并同步 UIP-0007 的生成/验证边界。
-- [ ] A：Go 策略与精确历史组块实现、工作刷新及单元/集成回归通过。
+- [x] A：Go 策略与精确历史组块实现、工作刷新及单元/集成回归本地通过；已提交为 Go `d8286636a`，尚未发布。
 - [ ] B：节点配置、实际参数核验、资格/等待展示与观测接入，旧配置升级验证通过。
 - [ ] C：独立多节点 gap 对照、混合矿工、状态变化和小 M 恢复矩阵通过。
 - [ ] D：完成首轮收益分析及测试网观测报告，列出尚不能得出的结论与后续标定事项。

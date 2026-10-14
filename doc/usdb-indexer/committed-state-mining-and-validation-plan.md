@@ -4,7 +4,7 @@
 第二阶段 Go 延迟验证与重试已提交（Go `40c3200c5`，文档 `7cc13b8`）。
 第三阶段独立多节点矩阵已提交（Go `4c1c18817`，验收文档 `0bdbc84`），本地单轮、连续三轮验收通过。
 第四阶段 [UIP-0018 Miner BTC anchor gap 推荐策略](../UIP/UIP-0018-miner-btc-anchor-gap-policy.md) 已收敛默认策略、
-评审补充和分层验收，并同步 UIP-0007 的历史选高边界；gap 尚未实现。
+评审补充和分层验收，并同步 UIP-0007 的历史选高边界；Go 第一批实现本地回归通过，已提交为 Go `d8286636a`，尚未发布。
 
 ## 问题与目标
 
@@ -339,7 +339,8 @@ peer head 的比较更新使用同一锁，避免旧父块广播覆盖恢复目�
 ## 第四阶段：可选矿工发布延迟 gap
 
 详细设计见 [UIP-0018 Miner BTC anchor gap 推荐策略](../UIP/UIP-0018-miner-btc-anchor-gap-policy.md)。默认策略取 gap=2，允许显式 0；
-目前仅为设计，尚未改变运行默认值。gap 是本地出块策略，不是 validator 的新共识条件。
+Go 第一批参考实现已采用默认 2，尚未发布；节点工具配置和展示待接入。gap 是本地出块策略，
+不是 validator 的新共识条件。
 典型情况下优先选择最新完整高度 L 的 L-gap，BTC profile 按所选历史 context 查询；
 USDB 难度、奖励等 chain policy 仍按待挖 USDB block number 激活。
 
@@ -352,6 +353,37 @@ USDB 难度、奖励等 chain policy 仍按待挖 USDB block number 激活。
 - UIP-0018 以 Informational 类型承载推荐策略与实施验收，UIP-0007 定义共识边界。方案纳入了
   理论缓冲概率、同状态跨节点可用时间观测、小 M 的连续让步以及收益分析边界；
   fakepow 功能验收、受控收益分析和公网观察分别报告，具体完成条件以 UIP-0018 为准。
+
+### 第一批 Go 实现与本地验收（2026-10-14）
+
+文档基线已提交为 USDB `e538cff`；以下 Go 实现已提交为 `d8286636a`，不表示已发布或通过远端 CI。
+
+- `internal/usdb/miner_anchor.go` 实现纯选高策略，沿用 UIP-0007 的 transition 校验；gap 让步于
+  父高度和待挖子块 checkpoint 的 age 上限，不按候选收益搜索其他高度。
+- `client.go` 接入 `get_state_ref_at_height`；builder 校验 snapshot/local/system 三部分的高度、
+  身份和历史规则，再固定同一 context 查询 candidate。仍检查最新已提交前缀的 registry
+  兼容性，不能用较旧的 H 掩盖更新区间的规则冲突。
+- 工作刷新记录最新观察状态，组块结果保存实际所选历史状态；失败不推进刷新基线。Go
+  worker 输出选高诊断，并沿用既有失败重试路径。
+- 新增 `--miner.usdb-anchor-gap` 和 `Eth.Miner.USDB.AnchorGap`，缺省 2，允许显式 0；
+  拒绝负数、小数和超过 BTC 高度类型的值。TOML 字段探测只投影所需字段，完整配置仍先
+  严格校验，避免合法 `Eth` 配置在第二次探测中被误拒绝。
+
+本地验证结果：
+
+| 层级 | 结果与范围 |
+| --- | --- |
+| Go 1.18.5 包回归 | `internal/usdb`、`miner`、`cmd/utils`、`eth/ethconfig` 全包通过；`cmd/geth` 与 `consensus/ethash` 的 USDB/配置/selector 相关回归通过 |
+| 激活分派 | `usdb_miner_pass_conformance` 下 `internal/usdb` 全包通过，覆盖七处 BTC 规则边界、USDB difficulty checkpoint 独立选择，以及旧 registry 在最新前缀发生冲突时拒绝 |
+| 历史组块 | `tests/TestUSDBMinerAnchorGapHistoricalBlockEconomics` 通过；真实 Go HTTP RPC adapter、builder、Ethash Prepare/FinalizeAndAssemble/VerifyHeader 使用历史 pass、难度与奖励；该用例已接入 Fast |
+| 选高及刷新 | 覆盖 0/1/2、起点/溢出、parent 约束、age 耗尽与子块 cap 变化、gap 恢复和再次压缩、查询中 head 前进、历史身份不匹配、恢复屏障、失败重试与分支切换 |
+| 并发 | Go 1.26.0 配合项目 linker 兼容参数，builder、worker 刷新及完整历史组块的定向 race 检查通过 |
+| CLI/TOML | 构建 geth，核验 help、dumpconfig、显式 0/1/2/最大值、无效值拒绝、TOML 读取与命令行优先级；配置往返不丢失显式 0 |
+| 静态检查 | 相关包 `go vet`、Go 1.18.5 `gofmt`、Fast 脚本 ShellCheck、release fragment 校验和 `git diff --check` 通过 |
+
+以上为隔离本地测试，不涉及在线节点变更；完整组块测试未运行 PoW 竞争或独立 Core/BH/indexer。
+下一批为 UIP-0018 的 B：node-kit 参数透传、升级保留与实际参数核验、矿工资格/等待展示。
+C 的独立多节点延迟和混合 gap 矩阵、D 的收益与测试网观测继续单独验收。
 
 ## 参考
 
