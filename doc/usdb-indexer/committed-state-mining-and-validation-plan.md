@@ -3,7 +3,8 @@
 状态：第一阶段及正常区块执行期间的已提交前缀查询已提交（`f760421`、`981be5a`）。
 第二阶段 Go 延迟验证与重试已提交（Go `40c3200c5`，文档 `7cc13b8`）。
 第三阶段独立多节点矩阵已提交（Go `4c1c18817`，验收文档 `0bdbc84`），本地单轮、连续三轮验收通过。
-第四阶段 [Miner BTC anchor gap 方案](miner-anchor-gap-plan.md) 已整理为设计草案，尚未实现。
+第四阶段 [UIP-0018 Miner BTC anchor gap 推荐策略](../UIP/UIP-0018-miner-btc-anchor-gap-policy.md) 已收敛默认策略、
+评审补充和分层验收，并同步 UIP-0007 的历史选高边界；gap 尚未实现。
 
 ## 问题与目标
 
@@ -337,7 +338,7 @@ peer head 的比较更新使用同一锁，避免旧父块广播覆盖恢复目�
 
 ## 第四阶段：可选矿工发布延迟 gap
 
-详细设计见 [Miner BTC anchor gap 方案](miner-anchor-gap-plan.md)。建议默认 gap=2，允许显式 0；
+详细设计见 [UIP-0018 Miner BTC anchor gap 推荐策略](../UIP/UIP-0018-miner-btc-anchor-gap-policy.md)。默认策略取 gap=2，允许显式 0；
 目前仅为设计，尚未改变运行默认值。gap 是本地出块策略，不是 validator 的新共识条件。
 典型情况下优先选择最新完整高度 L 的 L-gap，BTC profile 按所选历史 context 查询；
 USDB 难度、奖励等 chain policy 仍按待挖 USDB block number 激活。
@@ -348,6 +349,9 @@ USDB 难度、奖励等 chain policy 仍按待挖 USDB block number 激活。
 - 必须处理起始高度、历史保留范围、规则激活边界及 remint 生效延迟。
 - gap 只能降低等待概率，不能替代第二阶段；还须补充 0/1/2 对照与混合矿工验收。
   既有多节点恢复测试不构成默认 2 的公网性能证明。
+- UIP-0018 以 Informational 类型承载推荐策略与实施验收，UIP-0007 定义共识边界。方案纳入了
+  理论缓冲概率、同状态跨节点可用时间观测、小 M 的连续让步以及收益分析边界；
+  fakepow 功能验收、受控收益分析和公网观察分别报告，具体完成条件以 UIP-0018 为准。
 
 ## 参考
 

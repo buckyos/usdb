@@ -1,6 +1,6 @@
 # USDB Improvement Proposals
 
-`doc/UIP/` 用于存放 USDB 的正式协议改进提案。
+`doc/UIP/` 用于存放 USDB 的协议改进、推荐策略与流程提案。
 
 UIP 参考 BTC BIP 和 Ethereum EIP 的组织方式，但应保持 USDB 自身的协议边界：
 
@@ -14,7 +14,11 @@ UIP 参考 BTC BIP 和 Ethereum EIP 的组织方式，但应保持 USDB 自身�
 | 类型 | 说明 |
 | --- | --- |
 | 拆分/规划文档 | 用于规划 UIP 边界，不直接作为最终协议。 |
-| 正式 UIP | 后续使用 `UIP-0001-*.md` 形式落地，进入 Draft/Review/Final 流程。 |
+| 正式 UIP | 使用 `UIP-NNNN-*.md` 形式落地，进入 Draft/Review/Final 流程。 |
+
+按 [UIP-0000](./UIP-0000-uip-process.md)，UIP 可分为 Standards Track、Informational 和
+Process。Informational UIP 为非强制建议提供稳定编号；获得编号或被其他 UIP 引用，不会
+自动将推荐策略变成共识要求。具体约束以各 UIP 的类型、状态与激活说明为准。
 
 ## 命名与系统边界
 
@@ -64,6 +68,7 @@ RPC 和运行参数同样必须显式区分边界：BTC-side 状态服务使用
 - [UIP-0015-auxiliary-hashpower-pool.md](./UIP-0015-auxiliary-hashpower-pool.md)：辅助算力池激活边界、BTC 算力证明纲要、pass 绑定和 reward 分配待审计问题。
 - [UIP-0016-miner-pass-operation-eligibility.md](./UIP-0016-miner-pass-operation-eligibility.md)：MinerPass V2 首次零余额开户、来源证明与跨地址继承；保留 Draft 状态，testnet-v1 网络包已冻结，部署验收另行记录。
 - [UIP-0017-miner-pass-upgrade-and-legacy-rights.md](./UIP-0017-miner-pass-upgrade-and-legacy-rights.md)：存量 MinerPass 默认保留、跨版本继承与例外权益处置提案要求；Draft，尚无激活或迁移实现。
+- [UIP-0018-miner-btc-anchor-gap-policy.md](./UIP-0018-miner-btc-anchor-gap-policy.md)：Miner BTC anchor gap 推荐策略、历史选高、观测与实施验收；Informational / Draft，建议默认 2、允许本地覆盖，无共识激活，gap 尚未实现。
 - [uip-split-design.md](./uip-split-design.md)：经济模型拆分与标准化顺序。
 
 ## 跨 UIP 术语索引
@@ -79,6 +84,7 @@ RPC 和运行参数同样必须显式区分边界：BTC-side 状态服务使用
 | `level`、`difficulty_factor_bps`、`real_difficulty` | [UIP-0005](./UIP-0005-level-and-real-difficulty.md) | indexer nominal level/factor 和 USDB-chain difficulty 折算公式。 |
 | `query_context`、`expected_state`、`external_state`、`candidate_pass`、`candidate_set_view`、`top_ranked_candidate`、`collab_breakdown` | [UIP-0006](./UIP-0006-usdb-economic-state-view.md) | BTC-side USDB 历史查询、经济审计集合和确定性排序。 |
 | `ProfileSelectorPayload`、`selected_pass`、`btc_anchor_age_blocks`、`btc_anchor_policy_version`、`btc_anchor_max_age_blocks`、USDB miner、USDB validator | [UIP-0007](./UIP-0007-usdb-consensus-profile-selector.md) | USDB block 选择的 pass、链上 selector payload、父子 BTC anchor transition 和验证角色。 |
+| miner anchor gap、配置 gap、实际 gap | [UIP-0018](./UIP-0018-miner-btc-anchor-gap-policy.md) | 本地矿工推荐策略与观测术语，不是链上字段或额外共识条件；仍受 UIP-0007 约束。 |
 | `btc_activation_record`、`btc_registry_revision`、`activation_registry_id`、`active_version_set`、`usdb_activation_checkpoint`、`usdb_activation_schedule`、`resolved_usdb_versions` | [UIP-0008](./UIP-0008-protocol-versioning-and-activation-matrix.md) | BTC 单版本族记录、完整 registry 快照，以及 USDB chain 的完整激活检查点和按高度 lookup。 |
 | `source_owner`、`mint_owner`、`balance_before_tx`、`ever_valid_owner`、`can_open`、`source_proof` | [UIP-0016](./UIP-0016-miner-pass-operation-eligibility.md) | V2 mint 资格、链上来源与一次性开户历史；仅适用于显式选择对应规则的网络，不等于业务内容签名授权。 |
 | `candidate_energy`、`candidate_level`、`leader_quote_active` | [UIP-0014](./UIP-0014-leader-quote-activity-and-candidate-energy.md) | USDB-chain policy 应用于 selected pass 的实际候选能量和等级。 |

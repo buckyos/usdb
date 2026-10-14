@@ -360,16 +360,41 @@ reward rule 和 future difficulty policy 必须消费同一个 selector 得到�
 
 miner 生成新区块时应该：
 
-1. 从本地 BTC-side `usdb-indexer` service 获取 current system state。
-2. 使用配置的 `pass_id` 在该 state 下确认 pass 可查询。
-3. 从 USDB chain config 读取待挖 USDB block number 对应的 expected
-   `difficulty_policy_version / btc_anchor_policy_version / btc_anchor_max_age_blocks`。
-4. 使用待挖块的 parent selector 派生唯一 `btc_anchor_age_blocks`；无法推进时停止组块。
+1. 固定待挖父块，从 USDB chain config 读取待挖 USDB block number 对应的 expected
+   `payload_version / difficulty_policy_version / btc_anchor_policy_version / btc_anchor_max_age_blocks`
+   和 BTC activation registry。
+2. 从本地 BTC-side `usdb-indexer` service 获取完整已提交状态的可用边界，按本地出块策略
+   选择一个可查询的 BTC 历史高度；不要求始终选择 current head。
+3. 固定该高度的完整 historical state identity，在同一个 UIP-0006 context 中解析所选
+   pass 的经济视图并检查组块资格。不能把历史高度与 current profile 或不同身份拼接。
+   参考客户端按配置的 `usdb_main` 调用 `resolve_miner_candidate` 原子选择 candidate；
+   validator 仍按 payload 中的具体 `pass_id` 验证，不按地址重新选择或要求其排名第一。
+4. BTC-side activation 按所选 BTC 高度解释；USDB-chain difficulty/reward 等 policy
+   仍按待挖 USDB block number 解释。使用 parent selector 和当前 checkpoint 派生唯一
+   `btc_anchor_age_blocks`；同高复用或高度推进均须满足本文 transition 规则，无法构造
+   合法 selector 时停止组块。
 5. 将 `difficulty_policy_version`、`btc_height`、`btc_anchor_age_blocks`、
    `snapshot_id`、`system_state_id` 和 `pass_id` 编码成 `ProfileSelectorPayload`。
 6. 写入待挖区块的 `header.Extra`。
 
 miner 不能正确构造 payload 时，不应继续挖 USDB reward-enabled 区块。
+
+## 本地选高策略与验证边界
+
+矿工可以采用本地可配置的选高缓冲，在最新完整提交高度之前选择可验证状态。该策略
+不得绕过父 anchor 不倒退、同高度身份一致、age 派生及上限、历史查询安全性和矿工资格
+等既有约束。具体选高偏好可以在这些约束下让步。
+
+validator 必须验证 payload 指定的历史状态及父子关系，不得要求生产者采用某个本地
+gap、使用最新状态或执行某一种选高/让步算法；不得将 validator 自己的 gap、current
+BTC tip 或同步进度变成额外的区块有效性条件。本地暂时缺少指定状态与该区块不满足
+共识规则必须区分，不能通过改查另一个高度完成验证。
+
+gap 的推荐默认值、覆盖方式、选高算法、观测指标和实施验收由
+[UIP-0018 Miner BTC anchor gap 推荐策略](./UIP-0018-miner-btc-anchor-gap-policy.md) 承载。
+UIP-0018 为 Informational 推荐，不构成 validator 的额外共识条件或强制实现依赖。
+本文补充澄清已有历史 selector 的使用边界，不改变 payload 布局、anchor policy 或经济
+计算规则，也不引入新的协议激活高度。
 
 # Versioning
 
@@ -463,6 +488,10 @@ UIP-0008 负责通用版本激活矩阵。USDB chain 具体 chain config、genes
   `btc_anchor_max_age_blocks` 边界前后。
 - `difficulty_policy_version` 与 chain config expected version 不一致时拒绝。
 - validator 使用 payload selectors 查询历史 BTC-side USDB state。
+- 对同一合法 selector，矿工/validator 的本地选高配置不同不影响验证结果；validator 不
+  按自己的 gap 重选高度或 candidate，也不因未采用推荐让步算法而拒绝合法块。
+- 历史 BTC profile 与待挖 USDB block 的 chain policy 分别按各自高度分派，不能因选用
+  历史状态而推迟已激活的 USDB chain policy。
 - BTC head 前进后，旧 USDB block 仍按旧 payload 验证通过。
 - same-height BTC reorg 后，旧 payload 返回 state mismatch。
 - 缺少 BTC-side `usdb-indexer` service 时 fail-closed。
@@ -477,8 +506,9 @@ UIP-0008 负责通用版本激活矩阵。USDB chain 具体 chain config、genes
   `ProfileSelectorPayload`，并由 USDB chain config 按待处理 block number 提供 expected
   `payload_version / btc_anchor_policy_version / difficulty_policy_version` 和
   `btc_anchor_max_age_blocks`。
-- miner/validator CLI 只保留 companion RPC URL、timeout 和 selected pass 等运行参数；
-  是否激活本规则及 expected version 只能由 chain config 决定。
+- miner/validator CLI 承载 companion RPC URL、timeout、矿工地址等运行参数；矿工本地
+  选高策略的配置另见 UIP-0018。是否激活本规则及 expected version 只能由 chain
+  config 决定，不能由本地 gap 改写。
 - `VerifyHeader` 先执行不访问 RPC 的固定长度、版本和父子 BTC anchor transition
   校验，再按 selector 查询 historical profile 并重算实际 difficulty；畸形或 stale
   transition 不会进入 RPC 路径。
