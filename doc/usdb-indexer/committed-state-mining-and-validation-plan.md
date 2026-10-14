@@ -416,6 +416,19 @@ C 的独立多节点延迟和混合 gap 矩阵、D 的收益与测试网观测�
 测试没有改变在线节点；不代表 Docker 服务重启、远端 CI 或多节点 gap 性能已经验收。
 下一批仍为 C：独立多节点延迟、混合 gap、状态变化与小 M 恢复矩阵；D 单独记录收益及测试网观察。
 
+### 第三批独立多节点 gap、延迟与恢复（2026-10-14）
+
+Go 基线 `a9550af7c` / USDB `a13b873`；本批测试已提交为 Go `a391fd3ac`，验收文档随本记录提交。
+Nightly 8 个独立运行、Weekly 6 个独立运行及 67 项定向回归本地通过。
+范围、命令、证据和未完成项见[独立多节点验收记录](miner-anchor-gap-multi-node-acceptance.md)。
+
+新增独立 Nightly `miner-anchor-gap` 和 Weekly `miner-anchor-gap-soak`，分别覆盖全新链的
+0/1/2 × lag 1/2 对照、lag 3、小 M 连续让步，以及同链混合 gap、秒级批量延迟、故障与
+竞争分支恢复。旧 fault/restart 夹具明确使用 gap=0，避免 CLI 默认变化让原断言失去意义。
+
+生产程序和协议规则未改变；只扩展测试、审计时间及 CI 编排。C 的经济/activation 多节点
+组合和完整事件链继续待办，D 收益分析/测试网观测仍独立推进。
+
 ## 参考
 
 - [UIP-0006 历史经济视图](../UIP/UIP-0006-usdb-economic-state-view.md)
