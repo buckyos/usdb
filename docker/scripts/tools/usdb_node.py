@@ -1425,6 +1425,7 @@ def configure_node(
             "USDB_NAT": nat,
             "USDB_MINER_ADDRESS": miner_address,
             "USDB_MINER_THREADS": str(miner_threads),
+            "USDB_MINER_ANCHOR_GAP": "2",
         }
         if select_snapshot:
             updates.update(

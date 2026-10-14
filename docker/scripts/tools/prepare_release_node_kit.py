@@ -89,6 +89,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/sourcedao_release.py",
     "docker/scripts/tools/usdb_node.py",
     "docker/scripts/tools/usdb_mining.py",
+    "docker/scripts/tools/node_mining_policy.py",
     "docker/scripts/tools/usdb_peers.py",
     "docker/scripts/tools/usdb_peer_check.py",
     "docker/scripts/tools/peer_sources.py",

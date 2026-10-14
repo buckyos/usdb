@@ -11,7 +11,7 @@ Activation: None
 
 状态：默认 gap=2 的本地策略方向已确认，项目组讨论见 [USDB #52](https://github.com/buckyos/usdb/issues/52)。
 本文按 2026-10-14 的讨论收敛，并吸收 [项目组评审意见](https://github.com/buckyos/usdb/issues/52#issuecomment-6139593744)。
-Go 参考实现的第一批选高、历史组块和配置已完成本地回归，已提交为 Go `d8286636a`，尚未发布；node-kit 集成、
+Go 参考实现的第一批选高、历史组块和配置已完成本地回归，已提交为 Go `d8286636a`，尚未发布；node-kit 第二批已完成本地实现与回归；Go 工作诊断已提交为 `a9550af7c`，配套节点工具与本记录一起提交，尚未发布。
 独立多节点 gap 验收及收益观测仍待完成。本文不改变网络共识参数。
 
 本文是独立的 Informational UIP，用稳定编号承载推荐策略、参考实现计划、观测和验收，
@@ -265,10 +265,15 @@ development `M=6650` 不能替代 public 参数标定。Nightly 应使用小 `M`
 ## 5. 配置、展示与升级
 
 Go 第一批已接入 geth `--miner.usdb-anchor-gap` 与 TOML `Eth.Miner.USDB.AnchorGap`，
-尚未发布；node-kit `USDB_MINER_ANCHOR_GAP` 仍是拟定名称，待第二批接入。Go 未设置时
+尚未发布；node-kit 已在第二批工作区接入 `USDB_MINER_ANCHOR_GAP`。Go 未设置时
 使用默认 2，显式 0 保留；`miner.USDBConfig.AnchorGap` 以可选值区分两者，避免旧 TOML
-缺少字段时被误解释为 0。node-kit 接入后须保持相同默认值。
+缺少字段时被误解释为 0。node-kit 使用相同默认值。
 首版只提供静态配置，不增加在线自适应调参；拒绝负数、非整数和超出高度类型范围的值。
+
+常规 setup 不增加 gap 输入；高级操作使用 `usdb-node mining configure --anchor-gap N`。该命令只
+保存本机策略，随后由 `usdb-node up` 复用现有 chain-only 配置应用流程；运行中的节点只重建
+chain 容器，停止的节点按正常启动流程运行。setup 编辑、release activation 和 upgrade 保留
+显式覆盖（包括 0）；已有挖矿授权仍执行原安全检查，无需再次 enable。
 
 设置放在本机运行配置，不放进共识 `network.json`、activation registry 或数据兼容性身份。
 升级只需更新相应软件与运行配置并重启受影响服务，不隔离旧库、不重置矿工资格授权。
@@ -280,11 +285,19 @@ Go 第一批已接入 geth `--miner.usdb-anchor-gap` 与 TOML `Eth.Miner.USDB.An
 - 选高原因：正常 gap、历史起点、父 anchor、age 上限导致推进。
 - 所选 pass、anchor age/max age；等待时指出目标高度、可用高度和具体失败原因。
 
-目前 `usdb_mining.py` 按最新 readiness context 查询 candidate。工具接入时须区分
+`usdb_mining.py` 的预检继续按最新 readiness context 查询 candidate。工具已区分
 “最新状态资格”和“实际所选高度资格”，否则首次 mint 会显示可挖但 builder 等待，或
 remint 后 UI 显示新证而当前工作仍使用旧证。实际工作以 Go builder 的结构化诊断为准；
 诊断不存在时显示未知，不复制一套会漂移的选高算法。优先扩展现有本机 mining 诊断路径，
 无需新增持久化监控服务；矿工授权、reorg guard 及 SourceDAO 前提继续独立保留。
+
+参考实现提供本机 `miner_getUSDBWorkStatus`（schema `usdb-miner-work:v1`，trusted miner namespace）。
+它只读取内存，分别返回最后一次 builder attempt 与 engine 已接收的 work；后者绑定 parent hash、
+seal hash 和完整选高诊断。停止挖矿、父链头变化或工作提交失败时不能把旧 work 标为 current。
+节点工具再与 `eth_getWork` 的 seal hash 对拍，才把该 pass 标为当前工作。错误只提供阶段、稳定
+分类和已知高度，原始 RPC 地址/响应不进入诊断；详细原因沿用 chain 日志。
+最新候选查询失败不等于历史工作无效，但已提交查询的硬屏障与 reorg guard 继续阻止健康展示。
+配置值、实际 argv、Go 报告三者有差异时须明确提示，不能把新配置伪装成已生效策略。
 
 ### 首次资格与等待提示
 
@@ -329,7 +342,7 @@ validator 从收到的 selector 只知道 `H`，不知道生产者组块时的 `
 ## 6. 实施顺序与验收
 
 实现按 A → B → C 推进，D 单独记录收益分析及测试网观察。A 已完成本地实现与回归，
-B/C/D 尚待执行；既有无 gap 的功能矩阵通过，不代表新增多节点 gap 场景已验收。
+B 已完成本地实现与回归并提交；C/D 尚待执行。既有无 gap 的功能矩阵通过，不代表新增多节点 gap 场景已验收。
 
 ### A. Go 选高与完整组块
 
@@ -396,7 +409,7 @@ Weekly 执行混合 gap、秒级延迟/连续块、多轮故障与经济状态�
 
 - [x] 以 UIP-0018 收录设计依据、配置定位、算法与测试边界，并同步 UIP-0007 的生成/验证边界。
 - [x] A：Go 策略与精确历史组块实现、工作刷新及单元/集成回归本地通过；已提交为 Go `d8286636a`，尚未发布。
-- [ ] B：节点配置、实际参数核验、资格/等待展示与观测接入，旧配置升级验证通过。
+- [x] B：节点配置、实际参数核验、资格/等待展示与本机工作诊断接入，旧配置升级回归本地通过；Go 工作诊断 `a9550af7c`，节点工具与本记录一起提交，尚未发布。跨节点时序观测继续在 C/D 验收。
 - [ ] C：独立多节点 gap 对照、混合矿工、状态变化和小 M 恢复矩阵通过。
 - [ ] D：完成首轮收益分析及测试网观测报告，列出尚不能得出的结论与后续标定事项。
 

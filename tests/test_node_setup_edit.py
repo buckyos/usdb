@@ -152,7 +152,7 @@ class SetupEditTests(unittest.TestCase):
         env = node.read_env(self.layout.node_env)
         self.update({**policy.build_resource_plan(64 * policy.GIB, "steady", env).environment(),
                      "USDB_NODE_ROLE": "miner", "USDB_MINER_ADDRESS": "0x" + "12" * 20,
-                     "USDB_MINER_THREADS": "3", "USDB_CHAIN_EXTRA_ARGS": "--cache=777"})
+                     "USDB_MINER_THREADS": "3", "USDB_MINER_ANCHOR_GAP": "0", "USDB_CHAIN_EXTRA_ARGS": "--cache=777"})
         self.update({"USDB_CHAIN_IMAGE": "ghcr.io/buckyos/usdb-chain@sha256:" + "f" * 64})
         journal = node._resource_state_path(self.layout)
         journal.write_bytes(b"existing transition state")

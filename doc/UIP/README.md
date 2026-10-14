@@ -68,7 +68,7 @@ RPC 和运行参数同样必须显式区分边界：BTC-side 状态服务使用
 - [UIP-0015-auxiliary-hashpower-pool.md](./UIP-0015-auxiliary-hashpower-pool.md)：辅助算力池激活边界、BTC 算力证明纲要、pass 绑定和 reward 分配待审计问题。
 - [UIP-0016-miner-pass-operation-eligibility.md](./UIP-0016-miner-pass-operation-eligibility.md)：MinerPass V2 首次零余额开户、来源证明与跨地址继承；保留 Draft 状态，testnet-v1 网络包已冻结，部署验收另行记录。
 - [UIP-0017-miner-pass-upgrade-and-legacy-rights.md](./UIP-0017-miner-pass-upgrade-and-legacy-rights.md)：存量 MinerPass 默认保留、跨版本继承与例外权益处置提案要求；Draft，尚无激活或迁移实现。
-- [UIP-0018-miner-btc-anchor-gap-policy.md](./UIP-0018-miner-btc-anchor-gap-policy.md)：Miner BTC anchor gap 推荐策略、历史选高、观测与实施验收；Informational / Draft，建议默认 2、允许本地覆盖，无共识激活；Go 第一批本地回归通过，尚未发布，节点工具与多节点验收待完成。
+- [UIP-0018-miner-btc-anchor-gap-policy.md](./UIP-0018-miner-btc-anchor-gap-policy.md)：Miner BTC anchor gap 推荐策略、历史选高、观测与实施验收；Informational / Draft，建议默认 2、允许本地覆盖，无共识激活；Go 第一批已提交；节点工具第二批本地回归通过并提交，尚未发布；独立多节点验收待完成。
 - [uip-split-design.md](./uip-split-design.md)：经济模型拆分与标准化顺序。
 
 ## 跨 UIP 术语索引

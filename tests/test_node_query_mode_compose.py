@@ -27,6 +27,7 @@ class QueryModeComposeTest(unittest.TestCase):
         fixture.configure_full_node(layout, "query-compose")
         with mock.patch.object(NODE, "_collect_compose_services", return_value={}):
             NODE.set_query_mode(layout, state_mode="archive", tracing="on")
+        NODE._atomic_write_private(fixture.node_env, NODE.upsert_env(fixture.node_env.read_text(), {"USDB_MINER_ANCHOR_GAP": "0"}))
         environment = {key: value for key, value in os.environ.items()
                        if not key.startswith(("USDB_", "BTC_", "BH_", "COMPOSE_"))}
         environment.update(USDB_NETWORK_ARTIFACTS_DIR=str(fixture.bundle / "artifacts"),
@@ -41,6 +42,7 @@ class QueryModeComposeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         chain = json.loads(result.stdout)["services"]["usdb-chain"]
         self.assertEqual(chain["environment"]["USDB_NODE_ROLE"], "full")
+        self.assertEqual(str(chain["environment"]["USDB_MINER_ANCHOR_GAP"]), "0")
         self.assertEqual(chain["environment"]["USDB_CHAIN_GCMODE"], "archive")
         self.assertEqual(chain["environment"]["USDB_CHAIN_TRACING"], "1")
         rpc_ports = [port for port in chain["ports"] if port["target"] in (8545, 8546)]

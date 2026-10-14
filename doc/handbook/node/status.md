@@ -36,14 +36,18 @@ usdb-node status
 
 | 位置 | 信息 | 含义 |
 | --- | --- | --- |
-| 顶部 | `Miner address`、`Candidate Pass` | 配置的收益地址和当前稳定 BTC 状态下选中的候选 Pass；身份显示位置固定，但候选会随状态更新 |
+| 顶部 | `Miner address`、`Latest Candidate Pass` | 配置的收益地址和当前稳定 BTC 状态下选中的候选 Pass；身份显示位置固定，但候选会随状态更新 |
 | `USDB chain` 下 | `Head` | 全网当前链头 hash 及区块时间距本次观测的时长；不表示本机出块 |
 | `USDB chain` 下 | `Local block` | 从本机容器出块日志取得完整 hash，再通过链 RPC 核对的最近本机出块；标明当前核对结果 |
 | `USDB chain` 下 | `Block income` | 该本机区块经验证的矿工发行奖励加矿工手续费收入，以 USDB 显示；不含划给 DAO 的手续费 |
-| `Mining` 下 | 等级、有效能量、难度系数、BTC 高度、候选数量 | 当前候选的挖矿条件；不是历史区块使用条件的替代品 |
+| `Mining` 下 | 等级、有效能量、难度系数、BTC 高度、候选数量 | 最新状态候选的挖矿条件；不是历史工作或历史区块使用条件的替代品 |
+| `Mining` 下（UIP-0018 支持版本） | configured/running gap、L/H、actual gap、原因、age/上限、Work Pass | Go 实际提交并与当前工作核对的历史选择；诊断不足时显示未知 |
 
 顶部候选 Pass 与最近本机区块实际使用的 Pass 可能不同：区块使用其自身绑定的历史状态。
 二者不同时额外显示 `Block Pass`；详细模式始终显示历史 Pass 和 BTC 高度。
+支持 UIP-0018 的版本还区分正在尝试组块的 `Work Pass`；它与已经出块的 `Block Pass` 也是不同观察。
+选高的 L/H 是该次组块的采样值，不是当前 Bitcoin tip。等待阶段会展示 Go 的选高/候选失败分类，
+并单独保留最新资格查询结果，具体见[gap 与历史资格](mining.md#btc-anchor-gap-与历史资格)。
 顶部地址、Pass 使用完整值，区块 hash 默认缩写，完整值也可用 `status --progress-json` 查看。
 
 `Block income` 是单个区块的收入，不是账户余额、累计挖矿收入或未来收益预测。

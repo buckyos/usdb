@@ -1,0 +1,29 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "miner-anchor-gap-node-kit",
+  "type": "added",
+  "scopes": [
+    "node-runtime",
+    "testing",
+    "documentation"
+  ],
+  "summary": "Expose advanced miner anchor gap configuration and verified historical work status",
+  "details": [
+    "Keep setup unchanged and default local gap to 2. Add mining configure --anchor-gap, preserve explicit zero during setup edits and upgrades, and pass the value to the managed chain runtime.",
+    "Distinguish saved gap, running geth arguments, latest candidate and the Go miner's submitted historical work. Report selection height, actual gap, reason, anchor age and pass; unavailable diagnostics are not guessed.",
+    "Apply policy changes through existing chain-only reconciliation without rebuilding datasets or reauthorizing mining; committed-state recovery barriers remain enforced."
+  ],
+  "operator_actions": [
+    "Use usdb-node mining configure --anchor-gap N only for advanced local policy changes, then usdb-node up and mining status. Ordinary setup keeps the recommended gap.",
+    "Upgrade the node kit and chain image together. Independent multi-node gap measurements remain a separate qualification stage."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": [
+    "https://github.com/buckyos/usdb/issues/52"
+  ]
+}

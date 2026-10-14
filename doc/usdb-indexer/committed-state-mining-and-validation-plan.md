@@ -339,7 +339,7 @@ peer head 的比较更新使用同一锁，避免旧父块广播覆盖恢复目�
 ## 第四阶段：可选矿工发布延迟 gap
 
 详细设计见 [UIP-0018 Miner BTC anchor gap 推荐策略](../UIP/UIP-0018-miner-btc-anchor-gap-policy.md)。默认策略取 gap=2，允许显式 0；
-Go 第一批参考实现已采用默认 2，尚未发布；节点工具配置和展示待接入。gap 是本地出块策略，
+Go 第一批参考实现已采用默认 2，尚未发布；节点工具配置和展示已在第二批工作区接入。gap 是本地出块策略，
 不是 validator 的新共识条件。
 典型情况下优先选择最新完整高度 L 的 L-gap，BTC profile 按所选历史 context 查询；
 USDB 难度、奖励等 chain policy 仍按待挖 USDB block number 激活。
@@ -384,6 +384,37 @@ USDB 难度、奖励等 chain policy 仍按待挖 USDB block number 激活。
 以上为隔离本地测试，不涉及在线节点变更；完整组块测试未运行 PoW 竞争或独立 Core/BH/indexer。
 下一批为 UIP-0018 的 B：node-kit 参数透传、升级保留与实际参数核验、矿工资格/等待展示。
 C 的独立多节点延迟和混合 gap 矩阵、D 的收益与测试网观测继续单独验收。
+
+### 第二批 node-kit 与本机工作诊断（2026-10-14）
+
+基线为 Go `d8286636a` / USDB `a5181ad`；Go 工作诊断已提交为 `a9550af7c`，节点工具与本记录一起提交，尚未发布或远端 CI 验收。
+
+- `mining configure --anchor-gap N` 只保存本机配置，常规 setup 无新增问题/选项。新安装默认 2，
+  旧配置缺省同样为 2；显式 0 经 setup 编辑、activate-release 和 upgrade 保留。
+- Compose 将 `USDB_MINER_ANCHOR_GAP` 送到运行入口，full/miner 都使用明确 geth 参数；拒绝空串、
+  负数、小数、溢出和重复/旁路覆盖。值不进入 registry、network identity 或数据兼容 ID。
+- 保存后 `up` 沿用受控 chain-only 配置协调；不重建数据库，保留 APPLIED 矿工授权及其安全检查。
+  测试确认修改 gap 后实际只发生 stop-chain/recreate-chain，数据 binding 与原授权保持一致。
+- Go 增加有锁的 builder attempt 与 engine work 诊断；work 绑定 parent/seal hash，并携带本次
+  历史选高、pass、age 和 state identity。`miner_getUSDBWorkStatus` 仅读内存，无上游查询。
+- status 区分 latest candidate 与历史 Work Pass，核验 argv/Go 配置以及 `eth_getWork` 哈希。
+  过期或缺失诊断显示未知；正常 CatchingUp 不阻断历史工作，硬 readiness/reorg 屏障仍保留。
+  新 mint/remint 的预计可见高度只在 pinned snapshot 足够时给出，明确条件而不承诺 PoW 时间。
+
+本地验证：
+
+| 验证层 | 结果 |
+| --- | --- |
+| 节点配置/工作显示 | 新策略测试通过：0/2、异常输入、真实 entrypoint argv、配置漂移、旧 RPC/错 hash/错地址/错 gap、remint 双 pass、首次等待及高度溢出 |
+| 生命周期回归 | mining、first-node、peers、setup 编辑、upgrade、release activation、config view、progress/activity、bundle 校验、node-kit 打包相关测试通过；使用临时文件与模拟服务边界 |
+| Compose | 实际 `docker compose config` 验证显式 0 到达 chain 环境；未启动容器 |
+| Go 回归 | canonical Go 1.18.5 的 internal/usdb、miner 全包、eth 的 USDB RPC 用例通过；conformance tag 历史规则矩阵和完整历史组块测试通过 |
+| 并发与边界 | Go 1.26 的定向 race 检查通过；覆盖快照独立复制、失败/恢复、并发读取、停止/父头变化失效及无 indexer 的 RPC 查询 |
+| 静态与 CLI | Go vet/gofmt、ShellCheck、fragment 校验、CLI help 与 diff 检查通过；setup 无 anchor-gap 参数 |
+
+新增策略与 RPC 用例已接入 Fast；Go 既有运行入口测试补齐 gap 透传/异常值检查。
+测试没有改变在线节点；不代表 Docker 服务重启、远端 CI 或多节点 gap 性能已经验收。
+下一批仍为 C：独立多节点延迟、混合 gap、状态变化与小 M 恢复矩阵；D 单独记录收益及测试网观察。
 
 ## 参考
 

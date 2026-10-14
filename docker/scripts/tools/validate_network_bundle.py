@@ -740,6 +740,8 @@ def validate_node_env(
 ) -> None:
     """Validate configuration; only a bootstrap preflight may defer snapshot files."""
     env = read_env(path)
+    from node_mining_policy import configured_gap
+    configured_gap(env)
     validate_node_rule_overrides(network, env)
     index_origin_height = network_index_origin_height(network)
     validate_image_ref(

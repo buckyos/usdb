@@ -82,6 +82,46 @@ usdb-node mining status --watch
 
 `mining check` 显示 `state=READY`，表示本次预检通过，可以继续执行 `mining enable`。它不会自动开启挖矿，也不表示收益已经到账。`enable` 会重新检查当时的状态。
 
+### BTC anchor gap 与历史资格
+
+包含 [UIP-0018](../../UIP/UIP-0018-miner-btc-anchor-gap-policy.md) 支持的版本默认保留 **2 个 BTC
+区块**的选高余量，以减少其他节点尚未同步相同状态时的等待。这是本机挖矿策略，不是网络参数；
+验证者不要求区块满足这个 gap。它在 indexer 的已提交高度上计算，不再重复扣除 BH 的 10 块确认。
+父 anchor、历史起点和 anchor 复用上限可以使实际 gap 小于配置值。
+
+`mining check` 的候选证对应最新可查询状态。`mining status` 和 `status --watch` 另行展示 Go
+实际提交的工作：`L` 是组块时观察到的 indexer 高度，`H` 是该工作使用的高度；同时显示实际 gap、
+选高原因、anchor age/上限和 **Work Pass**。因此 remint 后，Latest Candidate Pass 可以已经变成新证，
+Work Pass 暂时仍是旧证。新证不会因为出现在最新查询中就立即用于组块。
+
+首次 mint 后可能需要继续等待 gap。能够核对铭文高度时，工具显示按正常 gap 预计可见的 indexer
+高度；候选持续有效、历史状态安全等条件仍需满足，父 anchor/age 约束也可能使它提前进入工作。
+这不是发现 PoW 区块的 ETA。诊断缺失、旧版 RPC 或工作哈希尚未匹配时，实际高度/pass 显示未知，
+不根据最新候选推测；正常追块本身不撤销已经提交的有效历史工作。
+
+### 高级选项：修改本机 gap
+
+常规 setup 不询问或修改这一参数。建议保留默认 2；确需调整时，例如恢复最新状态策略：
+
+```bash
+usdb-node mining configure --anchor-gap 0
+usdb-node up
+usdb-node mining status
+```
+
+`configure` 只保存本机 `node.env` 中的 `USDB_MINER_ANCHOR_GAP`，不会自动启停服务。`up` 对已经
+运行的节点复用既有配置应用流程，只重建 `usdb-chain`，RPC/P2P 会短暂中断；停止的节点则按正常
+启动流程运行。已有数据和挖矿授权保留，安全检查仍执行；不要再次执行 `mining enable` 来调整 gap。
+如果 mining/peer 操作正在进行，先等该操作结束。
+
+可设范围为 `0..4294967295`，显式 0 会保留。恢复推荐值使用 `--anchor-gap 2`。极大的值会使策略
+持续受历史起点或父 anchor 约束，通常没有实际意义。setup 编辑和升级保留保存的覆盖值。
+显示中的 configured 是保存的值，running 是检查实际 geth 参数得到的值；两者不同表示尚未应用，
+running unknown 表示尚不能核实。修改此参数不需要重建数据库或改变 chain/network ID。
+
+本节描述工作区的新能力，须升级到同时包含 node-kit 和 Go 支持的发布包后使用；旧包可能没有
+`mining configure` 或工作诊断 RPC。独立多节点 gap 效果与测试网性能仍需后续验收。
+
 ### 地址、资格和链状态
 
 | 输出 | 面向使用者的含义 |

@@ -3296,6 +3296,7 @@ class UsdbNodeTests(unittest.TestCase):
             bitcoin_rpc_user="node-a",
             bitcoin_p2p="private",
         )
+        NODE._atomic_write_private(layout.node_env, NODE.upsert_env(layout.node_env.read_text(), {"USDB_MINER_ANCHOR_GAP": "0"}))
         original = NODE.read_env(layout.node_env)
         legacy = "\n".join(
             line
@@ -3317,6 +3318,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(updated["USDB_FIREWALL_MODE"], "managed")
         self.assertEqual(updated["BTC_RPC_PASSWORD"], original["BTC_RPC_PASSWORD"])
         self.assertEqual(updated["USDB_BOOTNODES"], VALID_SEED)
+        self.assertEqual(updated["USDB_MINER_ANCHOR_GAP"], "0")
 
         incompatible = dict(layout.runtime_compatibility)
         incompatible["compatibility_id"] = "8" * 64

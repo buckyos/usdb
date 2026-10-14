@@ -69,6 +69,8 @@ class MiningFixture:
         self.fail_helper = None
         self.after_helper = None
         self.after_rpc = None
+        self.work_diagnostic = None
+        self.pass_snapshot = None
         self.work_available = True
         self.mining_override = None
         self.container_number = 0
@@ -97,6 +99,7 @@ class MiningFixture:
     def adopt(self):
         env = NODE.read_env(self.layout.node_env)
         args = ["geth", "--networkid", "123", "--bootnodes", env.get("USDB_BOOTNODES", ""), "--discovery.dns", ""]
+        args += ["--miner.usdb-anchor-gap", env.get("USDB_MINER_ANCHOR_GAP", "2")]
         if env["USDB_NODE_ROLE"] == "miner":
             args += ["--mine", "--miner.threads", env["USDB_MINER_THREADS"], "--miner.etherbase", env["USDB_MINER_ADDRESS"]]
         self.runtime = {"id": f"{self.container_number:064x}", "image": self.layout.images["USDB_CHAIN_IMAGE"],
@@ -126,7 +129,18 @@ class MiningFixture:
         self.rpc_calls.append((method, deepcopy(params)))
         if self.fail_rpc == method:
             raise ValueError("injected RPC unavailable")
-        values = {"get_readiness": self.ready, "resolve_miner_candidate": self.candidate,
+        gap = int(NODE.read_env(self.layout.node_env).get("USDB_MINER_ANCHOR_GAP", "2"))
+        build = {"stage": "validated", "observed_at": "2026-10-14T00:00:00Z", "block_number": self.chain["height"] + 1,
+                 "miner_address": ADDRESS, "latest_height": 100,
+                 "selection": {"latest_height": 100, "selected_height": max(0, 100-gap), "configured_gap": gap,
+                               "actual_gap": min(100, gap), "reason": "gap"},
+                 "pass_id": PASS_ID, "anchor_age": 0, "max_anchor_age": 6,
+                 "snapshot_id": "a1" * 32, "system_state_id": "a2" * 32}
+        diagnostic = {"schema_version": "usdb-miner-work:v1", "configured_gap": gap, "mining": True,
+                      "head_hash": "0x" + "ab" * 32, "attempt": build, "work_current": True,
+                      "work": {"build": build, "parent_hash": "0x" + "ab" * 32, "seal_hash": "0x" + "01" * 32}}
+        values = {"miner_getUSDBWorkStatus": self.work_diagnostic if self.work_diagnostic is not None else diagnostic,
+                  "get_pass_snapshot": self.pass_snapshot, "get_readiness": self.ready, "resolve_miner_candidate": self.candidate,
                   "eth_mining": self.runtime["environment"]["USDB_NODE_ROLE"] == "miner" if self.mining_override is None else self.mining_override,
                   "eth_coinbase": self.runtime["environment"].get("USDB_MINER_ADDRESS"),
                   "admin_peers": self.peers if self.peers is not None else [
@@ -212,7 +226,7 @@ class RuntimeScriptFixture:
                     "USDB_CHAIN_ID": "123", "USDB_NETWORK_ID": "123", "USDB_GENESIS_VALIDATOR": str(validator),
                     "USDB_INDEXER_RPC_URL": "http://127.0.0.1:1", "USDB_GETH_BIN": str(geth),
                     "ARGV_FILE": str(self.argv_file), "USDB_DEEP_REORG_GUARD_ENABLED": "0"}
-        for key in ("USDB_CHAIN_EXTRA_ARGS", "USDB_BOOTNODES", "USDB_MINER_THREADS", "USDB_NODE_ROLE"):
+        for key in ("USDB_CHAIN_EXTRA_ARGS", "USDB_BOOTNODES", "USDB_MINER_THREADS", "USDB_NODE_ROLE", "USDB_MINER_ANCHOR_GAP"):
             self.env.pop(key, None)
         return self
 

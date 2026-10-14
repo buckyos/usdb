@@ -503,14 +503,16 @@ def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
             row.summary = f"workers: {configured['USDB_MINER_THREADS']}"
         if details or row.attention or row.state not in _COMPLETE:
             row.info.append(mining.get("detail", ""))
+        from node_mining_policy import display_lines
+        row.info += display_lines(mining)
         candidate = mining.get("eligibility", {}).get("candidate", {})
         profile = candidate.get("pass", {})
         if profile:
-            row.info.append(f"Candidate: level {profile.get('level', '?')} | effective energy {profile.get('effective_energy', '?')} "
+            row.info.append(f"Latest candidate: level {profile.get('level', '?')} | effective energy {profile.get('effective_energy', '?')} "
                             f"| difficulty factor {profile.get('difficulty_factor_bps', '?')} bps")
             height = candidate.get("external_state", {}).get("btc_height")
             if _height(height):
-                row.info.append(f"Pass evaluated at BTC height {height:,} | eligible candidates {candidate.get('matching_candidate_count', '?')}")
+                row.info.append(f"Latest candidate evaluated at BTC height {height:,} | eligible candidates {candidate.get('matching_candidate_count', '?')}")
             if details:
                 row.info.append(f"Raw energy {profile.get('raw_energy', '?')} | collaboration {profile.get('collab_contribution', '?')}")
         rows.append(row)
@@ -553,9 +555,9 @@ def render_node_progress(report: dict[str, Any], *, phase: str = "observe", widt
         append(f"Miner address: {configured['USDB_MINER_ADDRESS']}")
         profile = mining.get("eligibility", {}).get("candidate", {}).get("pass", {})
         if profile.get("pass_id"):
-            append(f"Candidate Pass: {profile['pass_id']} | {profile.get('state', '?')}/{profile.get('pass_kind', '?')}")
+            append(f"Latest Candidate Pass: {profile['pass_id']} | {profile.get('state', '?')}/{profile.get('pass_kind', '?')}")
         else:
-            append("Candidate Pass: unavailable (see Mining status)")
+            append("Latest Candidate Pass: unavailable (see Mining status)")
 
     rows = _rows(report, details=details)
     for group in ("Attention", "Work in progress", "Node services", "Preparation"):

@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 import usdb_node as node
 import chain_file_inspection as chain_files
+import node_mining_policy as anchor_policy
 
 SCHEMA = "usdb-node-mining:v1"
 VIEW = "uip-0006-usdb-economic-state-view:v1"
@@ -273,6 +274,8 @@ def runtime_matches(layout: node.ReleaseLayout, env, runtime):
         return False
     flags = flag_values(runtime.get("argv", []))
     if not flags:
+        return False
+    if str(flags.get("--miner.usdb-anchor-gap")) != str(anchor_policy.configured_gap(env)):
         return False
     miner = configured["USDB_NODE_ROLE"] == "miner"
     if ("--mine" in flags and flags["--mine"] not in {"false", "0"}) != miner:
@@ -608,6 +611,8 @@ def preflight(layout: node.ReleaseLayout, address: str, *, threads: int = 1, fir
     upstream = upstream_candidate(layout, address, expect_pass)
     return {"schema_version": SCHEMA, "state": "READY", "release_id": layout.release_id,
             "address": address, "threads": threads, "available_cpus": cpus,
+            "qualification_scope": "latest_committed_state",
+            "anchor_policy": anchor_policy.policy_view(env, runtime, sys.modules[__name__]),
             "binding": data_binding, "chain": chain, "peer": peer, **upstream,
             "bootstrap": bootstrap_status(layout, chain),
             "economics": economics_status(layout, chain, upstream["candidate"]),
@@ -989,7 +994,7 @@ def economics_status(layout: node.ReleaseLayout, chain, candidate):
             target = total_sats * 100000 * 10**18 // 100000000
             result.update(issued_usdb_atoms=str(issued), target_usdb_atoms=str(target),
                           first_block_emission_atoms=str(max(0, target - issued) // 157680),
-                          estimate_assumption="First block, fixed price v1, K=1; unchanged BTC state; fees excluded")
+                          estimate_assumption="First block, fixed price v1, K=1; latest committed BTC state; actual historical work may differ; fees excluded")
     except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
         result["estimate_unavailable"] = str(error)
     return result
@@ -1001,11 +1006,12 @@ def observe(layout: node.ReleaseLayout, *, details: bool = False) -> dict[str, A
               "state": "WAITING", "applied": False}
     try:
         env = node.read_env(layout.node_env)
-        report["configured"] = role_config(env)
+        report["configured"] = {**role_config(env), anchor_policy.KEY: str(anchor_policy.configured_gap(env))}
         operation = read_state(layout)
         report["operation"] = {key: operation.get(key) for key in
                                ("operation_id", "phase", "target", "error", "rollback", "rollback_detail", "detail")}
         runtime = inspect_chain(layout)
+        report["anchor_policy"] = anchor_policy.policy_view(env, runtime, sys.modules[__name__])
         report["runtime"] = {key: runtime.get(key) for key in ("id", "state", "image", "environment", "error", "exit_code")}
         try:
             guard_check(layout, env)
@@ -1034,16 +1040,36 @@ def observe(layout: node.ReleaseLayout, *, details: bool = False) -> dict[str, A
             try:
                 report["eligibility"] = upstream_candidate(layout, env["USDB_MINER_ADDRESS"])
             except (OSError, ValueError, subprocess.SubprocessError) as error:
-                report.update(state="BLOCKED" if str(error).startswith("DEEP_REORG") else "WAITING", detail=str(error),
-                              observation_unavailable="unavailable" in str(error).lower() or "timed out" in str(error).lower())
+                # Latest qualification is informational here. It is not the historical
+                # qualification of already submitted Go work (for example after remint).
+                report["latest_eligibility_error"] = str(error)
+                if str(error).startswith(("DEEP_REORG", "REORG_")):
+                    report.update(state="BLOCKED", detail=str(error))
+                    return report
+                if str(error).startswith(("BALANCE_HISTORY_NOT_READY", "INDEXER_NOT_READY")):
+                    # These gates already allow ordinary CatchingUp. Remaining
+                    # blockers represent an unsafe or unknown committed-query state.
+                    report.update(state="WAITING", detail=str(error))
+                    return report
+            report["anchor_work"] = anchor_policy.observe_work(layout, env, sys.modules[__name__])
+            diagnostic = report["anchor_work"]
+            if diagnostic.get("available") and diagnostic["configured_gap"] != report["anchor_policy"]["runtime_gap"]:
+                report.update(state="BLOCKED", drift=True, detail="Go work policy differs from inspected runtime arguments")
                 return report
             try:
                 work = rpc(layout, "eth_getWork")
                 if not isinstance(work, list) or len(work) < 3 or not all(re.fullmatch(r"0x[0-9a-fA-F]{64}", str(v)) for v in work[:3]):
                     raise ValueError("No valid current work")
-                report.update(state="ACTIVE" if mining is True else "WARMING_UP", work_available=True)
+                submitted = diagnostic.get("work") or {}
+                if (not diagnostic.get("available") or not diagnostic.get("work_current")
+                        or submitted.get("seal_hash", "").lower() != work[0].lower()):
+                    report.update(state="WAITING", work_available=False,
+                                  detail="Waiting for current Go work diagnostics matching eth_getWork; actual anchor/pass unknown")
+                else:
+                    report.update(state="ACTIVE" if mining is True else "WARMING_UP", work_available=True)
             except (OSError, ValueError) as error:
                 report.update(state="WARMING_UP", work_available=False, detail=f"Waiting for DAG/work: {error}")
+            anchor_policy.candidate_hint(layout, report, sys.modules[__name__])
         else:
             report.update(state="DISABLED" if mining is False else "BLOCKED", applied=mining is False)
             if mining is not False:
@@ -1072,13 +1098,15 @@ def print_report(report, *, output=sys.stdout):
     print(f"USDB mining | state={report.get('state', report.get('phase', 'UNKNOWN'))}", file=output)
     if "address" in report:
         print(f"Address: {report['address']} | CPU workers: {report.get('threads', 1)}", file=output)
-    candidate = report.get("candidate", {})
+    candidate = report.get("candidate") or report.get("eligibility", {}).get("candidate", {})
     if candidate:
         profile = candidate["pass"]
-        print(f"Pass: {profile['pass_id']} | candidates={candidate['matching_candidate_count']} | "
+        print(f"Latest Candidate Pass: {profile['pass_id']} | candidates={candidate['matching_candidate_count']} | "
               f"state={profile['state']}/{profile['pass_kind']} | energy={profile['effective_energy']} | "
               f"level={profile.get('level')} | difficulty={profile.get('difficulty_factor_bps')} bps", file=output)
-        print(f"BTC height: {candidate['external_state']['btc_height']} | reorg epoch={report['upstream_reorg_epoch']}", file=output)
+        print(f"Latest qualification at BTC height: {candidate['external_state']['btc_height']} | "
+              f"reorg epoch={report.get('upstream_reorg_epoch', report.get('eligibility', {}).get('upstream_reorg_epoch'))}", file=output)
+        print("Latest qualification is separate from current historical work; see Work Pass below or mining status.", file=output)
     if "chain" in report:
         chain = report["chain"]
         print(f"Chain: {chain['network']['chain_id']} | genesis={chain['network']['genesis_block_hash']} | "
@@ -1092,14 +1120,16 @@ def print_report(report, *, output=sys.stdout):
             print("Cold start: reusing the recorded founder identity for this network and chain dataset", file=output)
     if "configured" in report:
         print(f"Configured: {json.dumps(report['configured'], sort_keys=True)} | applied={report['applied']}", file=output)
-    for key in ("operation", "bootstrap", "economics", "last_local_seal", "shareable_enode", "peer_guidance", "impact", "detail"):
+    for line in anchor_policy.display_lines(report):
+        print(line, file=output)
+    for key in ("latest_eligibility_error", "operation", "bootstrap", "economics", "last_local_seal", "shareable_enode", "peer_guidance", "impact", "detail"):
         if report.get(key) is not None:
             print(f"{key}: {json.dumps(report[key], sort_keys=True) if isinstance(report[key], dict) else report[key]}", file=output)
 
 
 def add_parser(subparsers):
     parser = subparsers.add_parser("mining", help="Check, enable, disable or observe managed CPU mining")
-    actions = parser.add_subparsers(dest="mining_action", required=True, metavar="{check,enable,disable,status}")
+    actions = parser.add_subparsers(dest="mining_action", required=True, metavar="{check,enable,disable,status,configure}")
     for name in ("check", "enable"):
         command = actions.add_parser(name, help="Read-only miner eligibility and resource checks" if name == "check" else "Enable mining after eligibility checks and confirmation")
         command.add_argument("--address", required=True, help="USDB miner reward address (0x-prefixed address associated with the selected MinerPass)")
@@ -1116,11 +1146,22 @@ def add_parser(subparsers):
     status.add_argument("--watch", action="store_true", help="continuously observe mining until Ctrl+C")
     status.add_argument("--json", action="store_true", help="print mining observations as JSON")
     status.add_argument("--refresh-secs", type=float, default=5, help="watch refresh interval in seconds (default: 5)")
+    configure = actions.add_parser("configure", help="Advanced local mining policy; saved only, applied by up")
+    configure.add_argument("--anchor-gap", required=True, help="Preferred BTC block margin (default 2; explicit 0 allowed); not a consensus rule")
+    configure.add_argument("--json", action="store_true", help="print saved policy as JSON")
     actions.add_parser("validate-start")
 
 
 def execute(layout: node.ReleaseLayout, args: argparse.Namespace) -> int:
     """Dispatch the operator CLI and optionally attach a display to systemd work."""
+    if args.mining_action == "configure":
+        report = anchor_policy.configure(layout, args.anchor_gap, sys.modules[__name__])
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(f"BTC anchor gap saved: {report['previous_gap']} -> {report['configured_gap']}")
+            print(report["detail"])
+        return 0
     if args.mining_action == "validate-start":
         validate_start(layout)
         return 0

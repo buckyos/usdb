@@ -129,11 +129,12 @@ class UpgradeTests(unittest.TestCase):
 
     def test_upgrade_preserves_bitcoin_bh_wallet_identity_and_settings(self):
         old=self.f.env_path.read_text()
-        self.f.env_path.write_text(node.upsert_env(old,{'USDB_NODE_ROLE':'miner','USDB_MINER_ADDRESS':'0x'+'1'*40}))
+        self.f.env_path.write_text(node.upsert_env(old,{'USDB_NODE_ROLE':'miner','USDB_MINER_ADDRESS':'0x'+'1'*40,'USDB_MINER_ANCHOR_GAP':'0'}))
         self.stage()
         self.run_session()
         env=node.read_env(self.f.env_path)
         self.assertEqual(env['USDB_NODE_ROLE'],'full')
+        self.assertEqual(env['USDB_MINER_ANCHOR_GAP'],'0')
         self.assertEqual(env['USDB_MINER_ADDRESS'],'')
         self.assertEqual(env['BTC_RPC_PASSWORD'],node.read_env(self.f.backup/'private/node.env')['BTC_RPC_PASSWORD'])
         for key in ('BTC_NODE_DATA_HOST_DIR','BH_DATA_HOST_DIR'):
