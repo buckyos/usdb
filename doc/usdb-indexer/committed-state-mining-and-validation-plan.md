@@ -429,6 +429,23 @@ Nightly 8 个独立运行、Weekly 6 个独立运行及 67 项定向回归本地
 生产程序和协议规则未改变；只扩展测试、审计时间及 CI 编排。C 的经济/activation 多节点
 组合和完整事件链继续待办，D 收益分析/测试网观测仍独立推进。
 
+### 第四批历史经济边界与双轴升级（2026-10-14 本地验收）
+
+实现已提交为 Go `2a9f11fa1`；远端 CI 待执行。
+
+新增三套独立上游的生命周期与测试专用 activation 验收；普通规则场景 8 项门禁、10 个区块，
+升级场景 5 项门禁、23 个区块本地通过。覆盖首次 mint 等待、同/跨地址继承、两种协作绑定、
+强制赠予拒绝、转移后 Dormant，以及 BTC 历史规则与 USDB 子块策略的分别激活。升级后还
+验证 gap=0/1/2 接续与余量恢复。Core 交易重建的余额/能量 oracle 独立核对账本结果。
+
+同时修正 fake PoW 的 `Prepare` 跳过 USDB 难度分派问题；普通生产 PoW 不变。
+Nightly 扩展 `miner-anchor-gap`，Weekly 新增 `miner-anchor-economics`，测试规则和二进制
+与普通运行隔离。72 项 Python 定向回归及相关 normal/conformance Go 包回归通过。
+完整命令、适用范围和证据见[独立多节点验收记录](miner-anchor-gap-multi-node-acceptance.md)。
+
+C 的完整事件链、观察进程重启和 BTC 重组身份切换仍未完成；D 收益/跨主机测试网观察仍独立推进。
+本地验收不代替完整远端 CI 或发布验收。
+
 ## 参考
 
 - [UIP-0006 历史经济视图](../UIP/UIP-0006-usdb-economic-state-view.md)
