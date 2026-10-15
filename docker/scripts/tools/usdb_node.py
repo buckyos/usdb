@@ -74,7 +74,11 @@ from resource_policy import (  # noqa: E402
     POLICY_KEYS,
     STORAGE_PROFILES,
     DEFAULT_MEMORY_PERCENT,
-    PHASES as RESOURCE_PHASES,
+    RUNTIME_PHASES as RESOURCE_PHASES,
+    POLICY_VERSION_KEY,
+    runtime_policy,
+    resource_phases,
+    chain_resources_ready,
     SERVICE_MEMORY_KEYS,
     build_resource_plan,
     effective_memory_bytes,
@@ -942,12 +946,16 @@ def _resource_policy_updates(mode: str, caps: dict[str, str]) -> dict[str, str]:
         # Explicit setup/recalculation opts in; merely activating a release
         # continues to validate the old persisted allocation unchanged.
         settings["USDB_ORD_RESOURCE_POLICY"] = "adaptive-v1"
+        settings[POLICY_VERSION_KEY] = "2"
         if "USDB_ORD_MEMORY_CAP" not in caps:
             settings["USDB_ORD_MEMORY_CAP"] = "32g"
         # Enabling txindex/Ord is not a rollback of completed synchronization.
         current_phase = caps.get("USDB_RESOURCE_PHASE", "bitcoin") if resource_mode(caps) == "auto" else "bitcoin"
+        if current_phase == "steady" and not runtime_policy(caps):
+            current_phase = "catchup"
+        settings["USDB_RESOURCE_PHASE"] = current_phase
         memory = effective_memory_bytes()
-        for phase in RESOURCE_PHASES:
+        for phase in resource_phases(settings):
             build_resource_plan(memory, phase, settings)
         settings.update(build_resource_plan(memory, current_phase, settings).environment())
     return settings
@@ -1046,7 +1054,8 @@ def set_resource_policy(layout: ReleaseLayout, mode: str, caps: dict[str, str]) 
     settings = _resource_cap_settings(env, selected)
     updates = _resource_policy_updates(mode, {**{key: env[key] for key in POLICY_KEYS if key in env},
         **settings, **caps, "USDB_DATA_ROOT": env["USDB_DATA_ROOT"],
-        **{key: env[key] for key in ("USDB_RESOURCE_MODE", "USDB_RESOURCE_PHASE") if key in env},
+        **{key: env[key] for key in ("USDB_RESOURCE_MODE", "USDB_RESOURCE_PHASE", POLICY_VERSION_KEY,
+                                   "USDB_RESOURCE_RUNTIME_BUDGET") if key in env},
         "USDB_MINTING_ENABLED": env.get("USDB_MINTING_ENABLED", "0"), "ORD_MEMORY_LIMIT": env.get("ORD_MEMORY_LIMIT", "4g"),
         "SNAPSHOT_MODE": env.get("SNAPSHOT_MODE", "none")})
     if mode == "manual" and resource_mode(env) == "auto":
@@ -1106,11 +1115,11 @@ def print_query_mode(layout: ReleaseLayout, *, json_output: bool) -> None:
 
 
 def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
-    """Preview all phases without changing configured or running resources."""
+    """Preview reachable phases without changing configured or running resources."""
     env = read_env(layout.node_env) if layout.node_env.is_file() else {}
     memory = effective_memory_bytes()
     plans = []
-    for phase in RESOURCE_PHASES:
+    for phase in resource_phases(env):
         plan = build_resource_plan(memory, phase, env)
         ord_cache = None
         if "ORD_MEMORY_LIMIT" in plan.limits:
@@ -1130,6 +1139,8 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
                       "ord_cache_bytes": ord_cache,
                       "ord_steady_cache_bytes": plan.ord_steady_cache_bytes})
     report = {"mode": resource_mode(env), "effective_host_memory_bytes": memory,
+              "policy_version": env.get(POLICY_VERSION_KEY, "1"),
+              "runtime_budget": env.get("USDB_RESOURCE_RUNTIME_BUDGET"),
               "storage_profile": env.get("USDB_STORAGE_PROFILE", "legacy"),
               "memory_percent": env.get("USDB_RESOURCE_MEMORY_PERCENT"),
               "configured_host_memory_bytes": env.get("USDB_RESOURCE_HOST_MEMORY_BYTES"),
@@ -1140,6 +1151,9 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print(f"Resource policy: {report['mode']}; effective host memory: {_human_bytes(memory)}")
+        if runtime_policy(env):
+            print(f"Policy v2: phase={report['configured_phase']}; runtime budget={report['runtime_budget']}. "
+                  "Fresh bootstrap requires 32 GB; resumed catchup/steady requires at least 16 GB.")
         print(f"Storage profile: {report['storage_profile']}; node memory percentage: {report['memory_percent'] or 'legacy formula'}")
         print("Budgets use effective host/cgroup RAM minus external reserve, not fluctuating MemAvailable.")
         if plans:
@@ -1159,7 +1173,7 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
             if item["phase"] == "bitcoin":
                 print("           BH/indexer/chain are not running or charged to this phase's memory pool.")
             if item["ord_deferred"]:
-                print("           Ord supervisor only; indexing waits for steady resources.")
+                print("           Ord supervisor only; indexing waits for catch-up resources.")
             elif item["ord_steady_cache_bytes"] is not None:
                 print(f"           Ord cache: catch-up {_human_bytes(item['ord_cache_bytes'])}, "
                       f"caught-up {_human_bytes(item['ord_steady_cache_bytes'])}; "
@@ -1665,7 +1679,7 @@ def setup_node(
         bitcoin_resources = {"memory_limit": managed["BTC_MEMORY_LIMIT"],
                              "memory_swap_limit": managed["BTC_MEMORY_SWAP_LIMIT"],
                              "dbcache_mb": managed["BTC_DBCACHE_MB"]}
-        print(f"Automatic whole-node resources: {managed.get('USDB_STORAGE_PROFILE', 'legacy')}; bitcoin -> overlap -> steady.", file=output)
+        print(f"Automatic whole-node resources: {managed.get('USDB_STORAGE_PROFILE', 'legacy')}; bitcoin -> overlap -> catchup -> steady.", file=output)
         print(f"Balance-history memory cap: {managed['USDB_BH_MEMORY_CAP']}", file=output)
     print("Bitcoin resource profile:", file=output)
     print(f"  Selected: {bitcoin_profile}", file=output)
@@ -1755,7 +1769,7 @@ def setup_node(
                 "SNAPSHOT_MODE": "assumeutxo" if layout.snapshot.get("status") == "native" else "none"})
             print(f"Revised Bitcoin startup ceiling: {_human_bytes(int(preview['BTC_MEMORY_LIMIT']))}; "
                   f"Ord supervisor: {_human_bytes(int(preview['ORD_MEMORY_LIMIT']))}. "
-                  "Full indexing budget is applied at the steady resource phase.", file=output)
+                  "Full indexing budget is applied at the catchup resource phase.", file=output)
     bitcoin_public = _prompt_yes_no(
         "Accept inbound Bitcoin peers on TCP/8333",
         default=False,
@@ -2700,6 +2714,7 @@ def _resource_containers(layout: ReleaseLayout) -> dict[str, dict[str, Any]]:
             "state": item["State"]["Status"],
             "exit_code": item["State"]["ExitCode"],
             "oom_killed": item["State"].get("OOMKilled"),
+            "started_at": item["State"].get("StartedAt"),
             "memory": item["HostConfig"]["Memory"],
             "swap": item["HostConfig"].get("MemorySwap"),
             "image": item["Config"]["Image"],
@@ -2707,7 +2722,8 @@ def _resource_containers(layout: ReleaseLayout) -> dict[str, dict[str, Any]]:
                             if key in {"BTC_DBCACHE_MB", "BTC_RESOURCE_PROFILE",
                                        "BH_SYNC_UTXO_MAX_CACHE_BYTES",
                                        "BH_SYNC_BALANCE_MAX_CACHE_BYTES", "BH_SYNC_MAX_MEMORY_PERCENT",
-                                       "ORD_STARTUP_DEFERRED", "ORD_INDEX_CACHE_BYTES"}},
+                                       "ORD_STARTUP_DEFERRED", "ORD_INDEX_CACHE_BYTES",
+                                       "ORD_STEADY_INDEX_CACHE_BYTES", "USDB_ORD_RESOURCE_POLICY"}},
         }
     return containers
 
@@ -2720,12 +2736,17 @@ def _resource_container_matches(container: dict[str, Any] | None,
     if container["memory"] != int(env[SERVICE_MEMORY_KEYS[service]]):
         return False
     if service == "btc-node":
-        keys = ("BTC_DBCACHE_MB", "BTC_RESOURCE_PROFILE")
+        keys = ("BTC_DBCACHE_MB",) if runtime_policy(env) else ("BTC_DBCACHE_MB", "BTC_RESOURCE_PROFILE")
         image_key, swap_key = "USDB_BITCOIN_IMAGE", "BTC_MEMORY_SWAP_LIMIT"
     elif service == "balance-history":
         keys = ("BH_SYNC_UTXO_MAX_CACHE_BYTES", "BH_SYNC_BALANCE_MAX_CACHE_BYTES", "BH_SYNC_MAX_MEMORY_PERCENT")
         image_key, swap_key = "USDB_SERVICES_IMAGE", "BH_MEMORY_SWAP_LIMIT"
     else:
+        if service == "ord-server" and runtime_policy(env):
+            keys = ("ORD_STARTUP_DEFERRED", "ORD_INDEX_CACHE_BYTES", "ORD_STEADY_INDEX_CACHE_BYTES", "USDB_ORD_RESOURCE_POLICY")
+            return (container["image"] == env["USDB_SERVICES_IMAGE"]
+                    and all(container.get("environment", {}).get(key) == env.get(key) for key in keys)
+                    and container.get("swap") == int(env["ORD_MEMORY_LIMIT"]))
         return True
     return (container["image"] == env[image_key]
             and container["swap"] == int(env[swap_key])
@@ -2762,9 +2783,19 @@ def _resource_plan_id(env: dict[str, str], target: str) -> str:
     return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
 
 
+def _resource_jobs_active(containers: dict[str, dict[str, Any]]) -> bool:
+    """Let one-shot imports/recovery finish before changing their service budgets."""
+    from node_resource_lifecycle import ACTIVE, JOBS
+    return any(containers.get(name, {}).get("state") in ACTIVE for name in JOBS)
+
+
 def _transition_resources(layout: ReleaseLayout, target: str, *, output_to_stderr: bool) -> None:
     """Release old allocations before applying new ones; resume from observed state."""
     env = read_env(layout.node_env)
+    if runtime_policy(env):
+        from node_resource_lifecycle import apply_plan
+        apply_plan(layout, sys.modules[__name__], target, output_to_stderr=output_to_stderr)
+        return
     validate_resource_environment(env, effective_memory_bytes())
     current = env["USDB_RESOURCE_PHASE"]
     if RESOURCE_PHASES.index(target) < RESOURCE_PHASES.index(current):
@@ -2898,10 +2929,11 @@ def _start_managed_node(layout: ReleaseLayout, *, sync_timeout_secs: int,
         data_ready = _managed_data_ready(layout, anchor)
         target = phase
         if ready_observations >= 3:
-            target = "steady"
+            target = "catchup" if runtime_policy(env) else "steady"
         elif phase == "bitcoin" and data_ready and not bitcoin_ready:
             target = "overlap"
-        if RESOURCE_PHASES.index(target) > RESOURCE_PHASES.index(phase):
+        if (RESOURCE_PHASES.index(target) > RESOURCE_PHASES.index(phase)
+                and (not runtime_policy(env) or not _resource_jobs_active(containers))):
             _transition_resources(layout, target, output_to_stderr=output_to_stderr)
             ready_observations = 0
             started.clear()
@@ -2943,7 +2975,7 @@ def _start_managed_node(layout: ReleaseLayout, *, sync_timeout_secs: int,
                                    sync_timeout_secs=0, output_to_stderr=output_to_stderr)
                         _resource_service_started(layout, "usdb-indexer")
                         started.add("usdb-indexer")
-        if phase == "steady" and bitcoin_ready:
+        if chain_resources_ready(env) and bitcoin_ready:
             bh_ready, _ = _read_service_readiness(layout, "run_testnet_runtime.sh", ["data-status"], "balance-history")
             indexer_ready, _ = _read_service_readiness(layout, "run_testnet_runtime.sh", ["indexer-status"], "usdb-indexer")
             if (bh_ready and bh_ready["consensus_ready"] and indexer_ready and indexer_ready["consensus_ready"]):
@@ -2960,7 +2992,8 @@ def _start_managed_node(layout: ReleaseLayout, *, sync_timeout_secs: int,
                 if _runtime_lifecycle_status(layout)["state"] == "ready":
                     state = _read_resource_state(layout)
                     if state:
-                        state["recover_services"] = []
+                        state["recover_services"] = ([name for name in state["recover_services"]
+                            if name in {"ord-server", "usdb-control-plane"}] if runtime_policy(env) else [])
                         _write_resource_state(layout, state)
                     return
         if time.monotonic() >= next_heartbeat:
@@ -4782,13 +4815,15 @@ def _resource_progress(layout, env, services, components) -> tuple[dict[str, Any
         if resources["mode"] == "auto":
             validate_resource_environment(env, effective_memory_bytes())
             resources["phase"] = env["USDB_RESOURCE_PHASE"]
+            resources["policy_version"] = env.get(POLICY_VERSION_KEY, "1")
+            resources["runtime_budget"] = env.get("USDB_RESOURCE_RUNTIME_BUDGET")
             resources["storage_profile"] = env.get("USDB_STORAGE_PROFILE", "legacy")
             resources["memory_percent"] = env.get("USDB_RESOURCE_MEMORY_PERCENT")
             state = _read_resource_state(layout)
             resources["transition_pending"] = bool(state.get("pending"))
             resources["target_phase"] = state.get("phase")
             resources["recover_services"] = state.get("recover_services", [])
-            resource_waiting = bool(env["USDB_RESOURCE_PHASE"] != "steady"
+            resource_waiting = bool(not chain_resources_ready(env)
                                     or state.get("pending") or state.get("recover_services"))
             waiting = set(state.get("recover_services", []))
             if state.get("pending"):
@@ -5672,7 +5707,7 @@ def _collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
         if resource_mode(env) == "auto":
             try:
                 observed = _resource_containers(layout)
-                if (env["USDB_RESOURCE_PHASE"] != "steady"
+                if (not chain_resources_ready(env)
                         or not _resource_container_matches(observed.get("btc-node"), env, "btc-node")
                         or not _resource_container_matches(observed.get("balance-history"), env, "balance-history")):
                     return _finish_node_status(report, "STARTING")
@@ -5817,6 +5852,9 @@ def up_node(
                 "network_bundle_id": layout.bundle_id, "initial_state": "STARTING",
                 "outcome": "ready" if code == 0 else "mining_pending_or_failed",
                 "completed_actions": ["mining"], "status": report}, code
+    if not dry_run:
+        from node_resource_lifecycle import prepare_for_up
+        prepare_for_up(layout, sys.modules[__name__])
     initial = collect_node_status(layout)
     action = _up_action(initial, allow_activation)
     result: dict[str, Any] = {
@@ -5919,15 +5957,18 @@ def run_bootstrap_controller(
     """Run the non-interactive, non-activating up state machine for systemd."""
     import usdb_mining
     import usdb_peers
+    from node_resource_lifecycle import run as manage_runtime_resources
     if usdb_mining.pending(layout):
         with node_operation_lock(layout, "mining"):
             code = usdb_mining.run_operation(layout)
-        return 1 if code == 0 and usdb_peers.pending(layout) else code
+        if code or usdb_peers.pending(layout):
+            return code or 1
+        return manage_runtime_resources(layout, sys.modules[__name__])
     if usdb_peers.pending(layout):
         with node_operation_lock(layout, "peers"):
             code = usdb_peers.run_operation(layout)
         if code or not usdb_peers.read_state(layout).get("resume_bootstrap"):
-            return code
+            return code or manage_runtime_resources(layout, sys.modules[__name__])
     result, return_code = up_node(
         layout,
         dry_run=False,
@@ -5942,7 +5983,7 @@ def run_bootstrap_controller(
     if usdb_peers.pending(layout):
         return 1
     if return_code == 0:
-        return 0
+        return manage_runtime_resources(layout, sys.modules[__name__])
     if result["outcome"] in {
         "manual_action_required",
         "no_forward_progress",
@@ -5982,6 +6023,8 @@ def submit_up_to_controller(
                 "controller_unit": unit, "background_services": background,
                 "status": collect_node_status(layout)}, 0
 
+    from node_resource_lifecycle import prepare_for_up
+    prepare_for_up(layout, sys.modules[__name__])
     initial = collect_node_status(layout)
     result: dict[str, Any] = {
         "schema_version": NODE_UP_SCHEMA_VERSION,
@@ -6019,6 +6062,9 @@ def submit_up_to_controller(
             run_helper(layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=True)
             _start_optional_ord(layout, output_to_stderr=True)
         result["outcome"] = completed_outcome
+        configured = read_env(layout.node_env) if layout.node_env.is_file() else {}
+        if runtime_policy(configured) and resource_mode(configured) == "auto":
+            result["controller_unit"] = start_controller_unit(layout)
         result["status"] = collect_node_status(layout)
         return result, 0
 

@@ -22,7 +22,7 @@ class OrdCapacityError(ValueError):
 
 GUIDANCE = {
     "DISABLED": "Run usdb-node down, then set-minting --enabled on and up to enable the local backend.",
-    "WAITING_RESOURCES": "Waiting for steady resource allocation; only the small supervisor is running. Core and BH have priority during bootstrap.",
+    "WAITING_RESOURCES": "Waiting for catch-up resource allocation; only the small supervisor is running. Core and BH have priority during bootstrap.",
     "WAITING_CORE": "Waiting for the Bitcoin foreground chain to catch up; USDB startup remains independent.",
     "WAITING_HISTORY": "Waiting for Bitcoin historical validation; do not restart or reload the snapshot.",
     "WAITING_TXINDEX": "Waiting for txindex to cover the foreground tip. If absent, check that Core adopted BTC_TXINDEX=1.",

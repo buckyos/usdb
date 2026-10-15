@@ -1,187 +1,141 @@
 # USDB 整机内存预算与自动资源切换
 
-## 1. 配置入口与主机基线
+## 1. 生效范围与主机基线
 
-新节点的 `usdb-node setup` 和 `configure` 默认使用 `--resource-mode auto`。
-controller 根据主机内存生成完整的容器、Bitcoin dbcache 和 balance-history 应用缓存预算，
-在 Bitcoin 独立同步、两个索引源交叠追赶和 Bitcoin 稳态之间自动切换。
+新 `setup/configure` 的自动策略和停机后的显式重算使用资源策略 v2，保存
+`USDB_RESOURCE_POLICY_VERSION=2`。未包含该字段的运行中节点继续使用原策略；安装工具包
+不会在线改写它们的额度。manual 模式保留原有配置和 32 GB 基线。
 
-最低要求为操作系统/controller 可见的 **32 GB，即 32,000,000,000 字节**。分配基准取
-`MemTotal` 与 controller 所处 cgroup v1/v2 及其父级有效内存限制的较小值，不使用随负载变化的
-`MemAvailable`。表格中的 GiB 和配置中的 `g` 按 1024³ 字节计算。
+有效主机容量取 `MemTotal` 与 controller 所在 cgroup 及父级内存限制的较小值。
+不使用随负载变化的 `MemAvailable`，swap 不计入 RAM。GB 门槛按十进制计算，GiB 和配置
+中的 `g` 按 1024³ 字节计算。
 
-预算在配置时确定并写入 `node.env`。主机可用额度减小时，preflight 拒绝继续使用旧预算；
-主机扩容或管理员希望改变封顶值时，在停机状态重新计算。Docker、操作系统及同机其他工作负载
-必须纳入预留空间，swap 不计入可分配 RAM。
+| 场景 | 最低有效容量 | 说明 |
+| --- | ---: | --- |
+| 全新部署、基线导入、`bitcoin/overlap` | 32,000,000,000 字节 | 保留初始同步预算 |
+| 已进入运行阶段的节点恢复，`catchup/steady` | 16,000,000,000 字节 | 使用较低的运行预算；实际服务最低额度及外部预留仍须全部容纳 |
 
-```bash
-# 新节点：默认自动策略，可覆盖封顶值。
-usdb-node setup --bh-memory-cap 64g
+16 GB 是本轮资源配置的准入边界，预算试算和故障注入测试不等同于主网长期峰值验收。
+特别是 Ord、archive/tracing、大量查询或重新建索引，仍需观察实际内存压力与吞吐。
+缩容应在全部同步完成后进行；中途缩容到小预算虽然可以续跑已有数据，但不保证追赶速度。
 
-# 只读预览当前机器在所有阶段的计划。
-usdb-node resources
-usdb-node resources --json
+## 2. 阶段与完成判定
 
-# 已有节点显式启用或重新计算策略；保留现有数据。
-usdb-node down
-usdb-node set-resource-policy --mode auto --bh-memory-cap 96g
-usdb-node doctor
-usdb-node up
-```
+自动阶段为 `bitcoin → overlap → catchup → steady`。
 
-旧 `node.env` 缺少 `USDB_RESOURCE_MODE` 时仍采用 manual 模式。升级不会自动授权旧节点的
-profile 切换。直接使用原始 `node.env.example` 的底层 runner 用户也保留 manual 模式。
-`--bitcoin-profile` 仅用于 `--resource-mode manual`；自动模式通过整机策略管理 Bitcoin。
-
-若同时升级同一 bundle 的 release，应先 `down` 并等待结束，安装包含本功能的新 node kit，
-再执行 `set-resource-policy --mode auto -> activate-release -> doctor -> up`。
-`activate-release` 只更新镜像引用，不启用自动资源策略，并且会校验现有缓存配置；旧的
-12 GiB / 8 GiB / 75% 组合需要先由 `set-resource-policy` 修正，才能通过激活校验。
-
-这一流程以现有数据契约和 snapshot 绑定兼容新 release 为前提。本资源策略不转换拆分前的
-整体 snapshot：当前 preflight 只接受 core manifest，启动状态还会检查 release-approved
-snapshot 绑定。已经从旧整体 snapshot 导入 RocksDB 的节点仍需要独立的续跑兼容处理，
-不能仅凭导入成功就假定上述升级流程可完成启动。
-
-## 2. 比例与封顶
-
-每项分配取“有效主机内存 × 阶段比例”和封顶值的较小值，再向下取整到 MiB。
-
-| 阶段 | Bitcoin 比例 | Bitcoin 默认封顶 | balance-history 比例 | BH 默认封顶 |
-| --- | ---: | ---: | ---: | ---: |
-| `bitcoin` | 80% | 32 GiB | 暂不启动；预生成交叠配置 | 64 GiB |
-| `overlap` | 25% | 16 GiB | 37.5% | 64 GiB |
-| `steady` | 12.5% | 8 GiB | 50% | 64 GiB |
-
-上表为普通同步模式的基准。原生 AssumeUTXO 的 `overlap` 阶段，Bitcoin 仍需补齐历史，
-同时 BH 导入、重放和核验。Bitcoin 目标额度提高到有效内存的 37.5%，仍受交叠阶段封顶约束；
-增加部分从 BH 原额度等量转移，BH 至少保留 8 GiB 用于基线启动。如果显式 BH 封顶或外部服务预留
-使 BH 原额度低于 8 GiB，则不从它转出内存；不擅自提高用户设置的上限。
-
-原生 AssumeUTXO 模式进入 `steady` 只要求前台追平、BH/indexer
-共识就绪；**不表示 Core 后台历史验证完成**。该模式的稳态 Bitcoin 额度改为有效内存的
-50%（受 `USDB_BTC_STEADY_MEMORY_CAP` 原生默认 16 GiB 封顶），增加部分从 BH 原额度等量转移，
-BH 至少保留 4 GiB。自定义 BH 封顶不足以转移时，Bitcoin 的增量也相应减少。
-BH 应用缓存随新额度重新计算，额度转移不增加整机总预算，所有阶段仍校验有效主机内存上限。
-
-| 有效主机内存 | 独立阶段 BTC | 交叠阶段 BTC / BH | 稳态阶段 BTC / BH |
-| --- | ---: | ---: | ---: |
-| 32 GiB | 约 25.6 GiB | 8 / 12 GiB | 4 / 16 GiB |
-| 64 GiB | 32 GiB | 16 / 24 GiB | 8 / 32 GiB |
-| 256 GiB | 32 GiB | 16 / 64 GiB | 8 / 64 GiB |
-
-原生 AssumeUTXO 的 **32 GiB** 主机稳态为 **BTC 16 GiB / BH 4 GiB**；64 GiB 主机为
-**16 / 24 GiB**，256 GiB 主机为 **16 / 64 GiB**。实际有效内存约 30.3 GiB 的主机约为
-BTC 14.9 GiB / BH 4 GiB，避免后台验证期间 Core 被过小的容器额度挤压。
-历史验证结束后保留这一预算，不因状态查询触发停机降档；前台、chain 和 mining 的就绪条件不变。
-
-原生交叠阶段的 **32 GiB** 主机为 **BTC 12 GiB / BH 8 GiB**；约 30.3 GiB 有效内存的
-测试机为 **BTC 10.9 GiB / BH 8 GiB**。64 GiB 及以上主机在默认交叠封顶 16 GiB 下不转移额度。
-Bitcoin dbcache 使用转移前的基准，BH 应用缓存按新额度重算；8 GiB BH 的两项应用缓存合计 5 GiB。
-这是保留整机预算的固定阶段分配，不依据瞬时内存使用自动调整。是否降低 swap、RPC 超时和总同步耗时，
-仍需在冷启动中对照资源历史验证。
-
-已有原生 `overlap` 节点安装新 node kit 后，需要在停机窗口显式运行
-`usdb-node set-resource-policy --mode auto`，再激活 release、运行 `doctor/up`。
-旧配额不会在线自动修改；不匹配的新旧计划会明确要求重算。已在 `steady` 的节点重算后仍保持该阶段。
-
-已有原生自动配置如仍保存旧稳态预算，安装包含该修复的 node kit 后，需要在正常停机状态执行
-`usdb-node set-resource-policy --mode auto --bitcoin-steady-memory-cap 16g`，再运行 `doctor` 和 `up`。
-已有封顶值（包括旧默认 8g）会保留，因此需要显式提高；新原生配置默认使用 16g。重新计算保留 `steady`
-阶段和已有数据，不回到独占同步阶段；不一致的旧预算会被预检明确拒绝，不会仅修改配置后
-假装运行中的容器已获得新额度。若同次升级还需激活镜像，按第一节顺序先重新计算、再激活。
-
-实际 `MemTotal` 比标称 64 GiB 小时，额度随之降低，不向上套用标称档位。
-例如有效内存约 30.6 GiB 的主机，独立阶段 Bitcoin 约分配 24.5 GiB。
-80% 仍受 `USDB_BTC_IBD_MEMORY_CAP` 约束；默认封顶保持 32 GiB，因此 64 GiB 及更大主机
-若需超过 32 GiB，必须显式提高该封顶值。配置外部服务预留时，服务比例仍按扣除预留后的预算缩放。
-
-已经写入旧 50% 配额的自动配置需要在升级后重新计算：正常执行 `usdb-node down`，再执行
-`usdb-node set-resource-policy --mode auto`，随后按上述 release 激活流程运行 `doctor/up`。
-该操作保留已有数据和用户配置的封顶值；仅安装新 node kit 不会更新正在运行的容器额度。
-
-管理员可通过 setup/configure/set-resource-policy 的参数指定封顶值：
-
-| CLI 参数 | 持久配置字段 | 默认值 |
+| 阶段 | 含义 | 下游行为 |
 | --- | --- | --- |
-| `--bh-memory-cap` | `USDB_BH_MEMORY_CAP` | `64g` |
-| `--bitcoin-ibd-memory-cap` | `USDB_BTC_IBD_MEMORY_CAP` | `32g` |
-| `--bitcoin-overlap-memory-cap` | `USDB_BTC_OVERLAP_MEMORY_CAP` | `16g` |
-| `--bitcoin-steady-memory-cap` | `USDB_BTC_STEADY_MEMORY_CAP` | 原生 AssumeUTXO `16g`；普通模式 `8g` |
+| `bitcoin` | Bitcoin 独立同步、快照准备 | 保留独占同步限制；Ord 仅运行等待监督进程 |
+| `overlap` | Bitcoin 同步与 BH 导入、重放和核验交叠 | 按数据锚点启动 BH/indexer |
+| `catchup` | 前台可用，仍可能有后台验证、索引或链同步 | chain 按既有共识与身份检查启动；Ord 获得追赶预算后等待自己的依赖 |
+| `steady` | 当前启用的同步任务持续完成 | 使用较低的运行预算 |
 
-其他服务按 64 GiB 基准同比缩放并分别封顶：indexer 4 GiB、chain 5 GiB、control-plane
-1 GiB、registry installer 2 GiB、paired-checkpoint verification 1 GiB。`bitcoin` 阶段只计入
-Bitcoin、系统和显式声明的外部服务预算；下游额度预先生成，但这个阶段禁止其他节点服务或安装容器运行。
-进入 `overlap/steady` 后，即使下游尚未启动，计划也会保留其额度；chain-init 与 chain 顺序运行，
-共用这一预算槽位。系统预留为有效内存的
-15.625%，且不低于 4 GiB。包含预留的 64 GiB 交叠/稳态计划合计为 63 GiB。
+原生 AssumeUTXO 的前台就绪不要求 Bitcoin 历史或 txindex 完成。chain/mining 可以在
+`catchup` 运行；不开启 Ord 时不等待 Ord。资源控制器在前台启动结束后仍驻留，约每 15 秒观察：
 
-snapshot-loader 与 balance-history 顺序运行，使用相同额度。实际容器检查仍按同时运行的
-实例逐个计数；若两者意外并发，不会凭逻辑上的顺序关系少算一次内存。
+- Bitcoin 前台就绪、历史验证完成；开启 txindex 时，它必须已追到当前前台高度。
+- BH/indexer 的实时共识就绪和进度完成，USDB chain 已完成同步并满足既有入网检查。
+- 开启 Ord 时，它的当前容器启动后生成的观测仍在有效期内，且历史、txindex、canonical 检查均通过。
+- 没有正在执行的快照导入、registry 安装、chain 初始化或 checkpoint 恢复作业。
 
-## 3. 缓存预算
+以上条件连续成立 60 秒才进入 `steady`。缺失、过期观测、容器重启和采样长时间中断都会
+重新计时，旧的 phase、历史报告或缓存提示不能充当当前完成证据。
+`getindexinfo` 查询失败只使索引完成情况未知，不撤销已取得的 Bitcoin 前台就绪状态。
 
-balance-history 应用缓存合计为其容器额度的 **62.5%**，其中 UTXO 占 25%，余额占 75%。
-例如 32 GiB 容器分配 UTXO 5 GiB、余额 15 GiB。`BH_SYNC_MAX_MEMORY_PERCENT=80` 是主动
-缩减缓存的触发阈值，容器内其余空间留给 RocksDB、批处理、文件缓存和分配器开销。
+Core 历史和索引先完成、Ord 仍追赶时，也会经 60 秒窗口先释放 Core 预算，保存
+`USDB_RESOURCE_RUNTIME_BUDGET=core-ready`；其余服务和 Ord 额度保持不变。
+所有任务完成后保存 `compact`。普通新块或短暂 RPC 故障不切回追赶阶段；持续 5 分钟落后
+至少 1,000 个 BTC/BH/indexer/Ord 进度单位才从 `steady` 回到 `catchup`。
+本轮回退保留 compact 额度，不重新启用独占 Bitcoin 档或自动扩张整机预算。
 
-Bitcoin 独立同步阶段 dbcache 保留原有预算：先按有效主机内存的 50%（受 IBD 封顶及外部服务预留约束）
-计算旧容器额度，再取其 62.5%。容器新增的空间留给文件缓存和其他开销，避免增大 dbcache 后再次挤压
-文件缓存；约 30.6 GiB 主机上的 dbcache 仍为约 9.6 GiB。交叠/稳态阶段按**增加文件缓存余量前**的
-Bitcoin 基准额度取 50%，并统一封顶到 16 GiB。因此原生 32 GiB 主机稳态的 Bitcoin 容器虽扩大到
-16 GiB，dbcache 仍为 2 GiB，增加部分留给文件缓存及其他开销。Bitcoin 的
-memory+swap 上限仅额外允许最多 2 GiB 或容器额度的八分之一，BH 额外允许 2 GiB。
+## 3. 预算与缓存
 
-自动计划中的具体字节字段应由配置工具生成。手工修改自动模式下的容器额度或缓存而未保持
-整份计划一致，会在 preflight 被拒绝。manual 模式同样执行与 Rust 启动端一致的缓存检查：
+初始同步沿用 `balanced/slow-disk` 的内存池与封顶算法：扣除外部服务预留后，节点可用
+80%～90%（默认 90%），系统至少保留 4 GiB。`bitcoin` 将剩余池优先给 Core；`overlap`
+为 BH 保留至少 8 GiB，慢盘档将更多余量给 Core。32 GB 及以上的首次 `catchup` 保留原来
+运行阶段的后台验证/Ord 追赶预算。用户已有的自定义封顶继续生效。
+
+compact 运行预算系统至少保留 2 GiB，并继续遵守所选百分比；它按各服务最低额度计算，
+然后在上限以内增配，不为了占满 RAM 而分配。下表是**有效容量 16 GB、原生 AssumeUTXO、
+默认 90%、无外部服务预留**的预算，不是实测进程占用：
+
+| 服务/用途 | 容器上限或预留 |
+| --- | ---: |
+| Bitcoin | 2 GiB，dbcache 512 MiB |
+| balance-history | 4 GiB，应用缓存合计 1.5 GiB |
+| USDB indexer | 1 GiB |
+| USDB chain / 顺序运行的 chain-init | 2 GiB |
+| control-plane | 512 MiB |
+| registry installer | 512 MiB |
+| checkpoint verification | 256 MiB |
+| Bitcoin bootstrap helper | 512 MiB |
+| 可选 Ord | 2 GiB，索引缓存 512 MiB |
+| 系统预留 | 2 GiB |
+
+含所有辅助预算、开启 Ord 时总额 14.75 GiB，低于十进制 16 GB；不开启 Ord 时总额
+12.75 GiB。更大的运行主机可逐渐增至 Core 4 GiB、BH 8 GiB、chain 4 GiB、indexer
+2 GiB、Ord 4 GiB。compact dbcache 不超过 1 GiB，BH 应用缓存为容器额度的 37.5%，
+Ord 缓存不超过 1 GiB 且不超过其额度的四分之一。系统百分比与外部预留仍优先保留；
+无法容纳所有服务最低额度时明确拒绝配置。
+
+BH 的所有配置仍校验：
 
 ```text
 UTXO cache + balance cache <= BH memory limit × (pressure threshold - 10) / 100
 ```
 
-因此，旧配置中的 12 GiB 容器、8 GiB 缓存和 75% 压力阈值会在 snapshot 导入前报错。
+snapshot-loader 与 BH、chain-init 与 chain 分别按顺序复用预算槽位；实际容器检查仍逐个
+计算并发实例，不因逻辑上应当顺序运行而漏算异常并发。后台资源切换会等待一次性作业退出。
 
-## 4. controller 的切换顺序
+## 4. 安全切换与中断恢复
 
-以下六步描述普通同步/旧快照路径。原生 AssumeUTXO 在 snapshot 激活且启动文件准备完成后
-进入 `overlap` 并启动 BH/indexer；前台追平且两个数据服务共识就绪后进入 `steady` 并启动 chain。
-Core 后台历史验证继续独立运行，采用上述保留文件缓存余量的稳态预算。
+每次切换先把目标 phase、预算、计划摘要和待恢复服务原子写入 `node.resources.json` 并刷盘。
+仅停止需要改变容器额度/应用缓存的服务及其写入依赖：Core 改动会先停 chain、indexer、BH；
+BH 改动先停 indexer、chain；仅 Ord 改动时不会停止 Core/BH。
 
-1. 启动 Bitcoin，周期性读取完整 readiness 和数据启动锚点。锚点仍为 snapshot 高度
-   （无 snapshot 时为 index origin）加 stable lag，并校验配置的 BTC block hash。
-   启用独立追块的 80% 额度前，先确认没有运行、重启中或暂停的下游容器；若发现并发实例，报告错误并保留现场。
-2. 数据锚点成立且 Bitcoin 尚未完全追平时，持久化 `overlap` 切换意图，正常停止 Bitcoin，
-   等待刷盘退出后写入新配置并启动。核对实际容器 memory、memory+swap、image、dbcache
-   与 profile，并重新通过数据锚点检查后，才启动 snapshot-loader。
-3. loader 成功退出后，以当前计划启动 BH；registry installer 独立进行。长时间导入期间
-   controller 继续轮询，不把 Bitcoin 降档挂在导入完成之后。
-4. 完整 Bitcoin readiness 连续通过三次后进入 `steady`。完整判断包括网络、非 pruned、
-   IBD、blocks/headers、txindex 高度、tip 时间和 peer 状态。若下游尚未开始时已经满足该条件，
-   直接跳过交叠阶段。阶段只向前推进，短暂断网或普通重组不会重新启用高内存 IBD 档。
-5. 切换时先按依赖顺序正常停止已运行的 control-plane、chain、indexer、BH，保留正在进行的
-   snapshot 导入。Bitcoin 刷盘退出后重建并核对新配置，再恢复下游。BH 扩大的应用缓存随重启加载。
-6. BH 达到 origin 且 query-ready 后启动 indexer；所有完整 readiness 和已有的 chain-init、
-   paired-checkpoint recovery 检查通过后才启动 chain。资源阶段也完成后 controller 正常退出。
+使用正常退出或 SIGTERM，等待数据库刷盘，不加入超时 SIGKILL，也不直接降低运行中数据库
+的硬内存上限。写入新配置后重建必要容器，核对 Docker 的实际额度、swap 和相关应用缓存，
+再按原有 readiness、数据身份和恢复门禁启动下游。不会重新构建或删除已有数据。
 
-每次资源交接都先释放旧额度，再启用新额度；停机刷盘期间按旧额度计算。停机只使用正常关闭或
-SIGTERM，并等待退出，不添加 SIGKILL 超时。底层自动启动路径使用 `--no-deps` 明确启动当前
-阶段，避免因 BH 预算变化让 Compose 重新运行已经完成的 snapshot-loader。
+`pending` 表示预算交接尚未完成；`recover_services` 单独追踪已计划停止但尚待恢复的服务。
+新 Core 已采用目标配置时，重试不会重复重启它。切换期间更换 release/策略会因计划不匹配
+被拒绝。controller 轮询期间释放操作锁，实际切换期间持锁；前台可用后继续管理资源，
+queued mining/peers 操作完成后也回到资源观察。`status/doctor/resources` 都是只读入口。
 
-## 5. 中断恢复和观察
+## 5. 缩容、升级与观察
 
-与 `node.env` 同目录的 `node.resources.json` 记录目标阶段、计划摘要、切换是否未完成及待恢复
-的下游服务。文件原子写入并保持私有权限。必须先记录意图，再停服务；旧容器使用的配置不会
-因仅修改配置文件而被当成已经生效。
+推荐先确认新版 `steady`、没有 pending 切换，再完整停机和调整 VM：
 
-controller 中断后，已正常停止的容器保持关闭自动重启的状态。重试根据 Docker 的实际参数
-恢复切换：如果新 Bitcoin 容器已经采用目标配置，不会仅因 journal 尚未提交而再次重启它。
-新 release 或预算在未完成的切换期间发生变化时停止并要求检查。正常资源切换不执行数据迁移、
-重建或删除。
+```bash
+usdb-node down
+# 在虚拟化平台调整内存，启动 VM 后：
+usdb-node up --no-watch
+usdb-node resources
+usdb-node doctor
+usdb-node status --watch
+```
 
-`status --watch` 显示当前资源阶段，并将 journal 记录的计划停机标记为等待托管重启；重启已
-提交后出现的进程错误仍作为错误显示。`status --json` 保留 resources 检查，未完成的资源切换
-不能仅因部分 RPC 已恢复就报告整个启动流程完成。
+停机的旧自动 `steady` 节点或容量变化后的运行阶段节点，在实际 `up` 时先按当前主机容量
+重算，再进入常规预检；旧 `steady` 重新归为 `catchup` 接受实时观察。已经完成降档的节点
+冷启动保留 compact 预算，不临时恢复高内存独占同步档。原有 release 激活、数据身份和
+快照兼容检查仍然执行。运行中的节点、未知 Docker 状态或未完成的切换不会被擅自重算。
+因此缩容后直接运行只读 `doctor` 可能仍看到旧预算不符，可先显式重算再检查：
 
-本版测试覆盖 32/64/256 GiB 和真实非整数 GiB 内存、封顶覆盖、cgroup 父级限制、缓存冲突、
-交叠预算、停机/启动后的中断恢复、实际容器参数不符、长时间导入期间降档，以及已追平时跳过
-交叠阶段。生产规模下的峰值内存和追块吞吐仍需随发布后的实际运行验证。
+```bash
+usdb-node set-resource-policy --mode auto
+usdb-node resources
+usdb-node doctor
+usdb-node up
+```
+
+改变磁盘档位、封顶或外部预留也用停机后的 `set-resource-policy`。升级只安装工具包时
+保留运行中节点的旧策略；停机后的运行阶段 `up` 或显式重算才采用 v2。尚处初始同步的旧节点
+需显式重算，仍要求 32 GB。旧 manual 节点不会因安装新版本而自动切换模式。
+
+`resources` 预览当前阶段可到达的计划，小内存运行节点不必通过首次导入的 32 GB 校验。
+`status --watch` 区分 `CATCHUP` 和资源切换等待，资源历史记录策略版本、phase、runtime budget
+以及实际额度。停止 controller 会暂停自动资源管理，已运行容器继续运行；重新 `up` 可恢复。
+
+发布前仍需使用可维护的测试节点验证 16/20 GiB VM 的冷启动、持续追块/出块、Ord 可选路径、
+实际峰值内存和一次正常降档。当前本地回归覆盖预算、真实 shell 编排与模拟容器故障续接，
+不能替代 Docker/PVE 上的运行验收。

@@ -163,9 +163,11 @@ def start_native_node(layout, *, sync_timeout_secs: int, output_to_stderr: bool,
         bh, _ = node._read_service_readiness(layout, "run_testnet_runtime.sh", ["data-status"], "balance-history")
         indexer, _ = node._read_service_readiness(layout, "run_testnet_runtime.sh", ["indexer-status"], "usdb-indexer")
         consensus = bh and indexer and bh["consensus_ready"] and indexer["consensus_ready"]
-        if baseline and prepared and tip_ready and consensus:
-            if managed and phase != "steady":
-                node._transition_resources(layout, "steady", output_to_stderr=output_to_stderr)
+        if (baseline and prepared and tip_ready and consensus
+                and (not managed or not node.runtime_policy(env) or node.chain_resources_ready(env)
+                     or not node._resource_jobs_active(containers))):
+            if managed and not node.chain_resources_ready(env):
+                node._transition_resources(layout, "catchup" if node.runtime_policy(env) else "steady", output_to_stderr=output_to_stderr)
                 started.clear()
                 continue
             if any(containers.get(service, {}).get("state") != "running" for service in ("usdb-chain",)):
@@ -181,7 +183,8 @@ def start_native_node(layout, *, sync_timeout_secs: int, output_to_stderr: bool,
                 if managed:
                     state = node._read_resource_state(layout)
                     if state:
-                        state["recover_services"] = []
+                        state["recover_services"] = ([name for name in state["recover_services"]
+                            if name in {"ord-server", "usdb-control-plane"}] if node.runtime_policy(env) else [])
                         node._write_resource_state(layout, state)
                 progress_monitor.set_phase("ready")
                 return

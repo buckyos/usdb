@@ -436,7 +436,7 @@ class Rpc:
 
 class StatusRpc:
     """One bounded read-only observation; at most one transient retry across all methods."""
-    METHODS = {"getblockchaininfo", "getnetworkinfo", "getchainstates", "getblockhash", "getblockheader"}
+    METHODS = {"getblockchaininfo", "getnetworkinfo", "getchainstates", "getblockhash", "getblockheader", "getindexinfo"}
 
     def __init__(self, rpc: Rpc):
         self.rpc = rpc
@@ -537,6 +537,21 @@ def tip_status(rpc: Rpc | StatusRpc, snapshot: Snapshot, env: dict) -> dict:
     min_peers = unsigned(env, "BTC_MIN_CONNECTIONS", 1)
     report.update(tip_age_seconds=age, connections=network["connections"],
                   tip_ready=report["active_height"] >= report["headers"] and -7200 <= age <= max_age and network["connections"] >= min_peers)
+    report["indexes_ready"] = True
+    if env.get("BTC_TXINDEX") == "1":
+        try:
+            indexes = rpc.call("getindexinfo")
+        except RpcFailure as error:
+            # An optional index observation must not revoke foreground readiness.
+            report.update(indexes_ready=False, index_observation_error=error.diagnostic())
+            return report
+        index = indexes.get("txindex", {}) if isinstance(indexes, dict) else {}
+        if not isinstance(index, dict):
+            index = {}
+        indexed = index.get("best_block_height")
+        report["indexes_ready"] = (index.get("synced") is True and type(indexed) is int
+                                   and indexed >= report["active_height"])
+        report["txindex_height"] = indexed
     return report
 
 

@@ -31,6 +31,8 @@ Actions:
   up-console     Start only the private console, without upstream readiness gates.
   quiesce-ord    Gracefully stop Ord before changing its memory budget.
   quiesce-data   Gracefully stop dependent services for a managed resource transition.
+  quiesce-services <service> [service ...]
+                 Gracefully stop only the listed runtime services in dependency order.
   container-ids  Print this project's container IDs for resource inspection.
   data-status    Print the current balance-history readiness response.
   wait-data-origin [height] [timeout]
@@ -303,6 +305,17 @@ case "${action}" in
   quiesce-data)
     require_node_env
     quiesce_runtime_services usdb-chain usdb-indexer balance-history
+    ;;
+  quiesce-services)
+    require_node_env
+    [[ $# -gt 0 ]] || exit 1
+    for service in "$@"; do
+      case "${service}" in
+        usdb-chain|usdb-indexer|balance-history|ord-server|usdb-control-plane) ;;
+        *) echo "Unsupported resource transition service: ${service}" >&2; exit 1 ;;
+      esac
+    done
+    quiesce_runtime_services "$@"
     ;;
   data-status)
     require_node_env

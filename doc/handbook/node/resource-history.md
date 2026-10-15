@@ -36,7 +36,7 @@ usdb-node monitor events --service btc-node --since 2026-09-25T16:00:00Z --json
 
 | 字段或记录 | 含义与用法 |
 | --- | --- |
-| `configuration.phase` | 当时的资源阶段：`bitcoin`、`overlap`、`steady`。同时保存配置内存上限、Bitcoin dbcache 和 BH 缓存预算。 |
+| `configuration.phase` | 当时的资源阶段：`bitcoin`、`overlap`、`catchup`、`steady`。同时保存策略版本、运行预算、配置内存上限、Bitcoin dbcache 和 BH 缓存预算。 |
 | `memory_current_bytes` / `memory_limit_bytes` | 容器实际总占用和实际生效的上限，包含文件缓存。主机还有空闲 RAM，并不代表容器还有可用额度。 |
 | `anon_bytes` / `file_bytes` | 匿名内存与文件缓存，帮助区分缓存占用和进程工作内存。`working_set_bytes` 是 Docker 展示的工作集，口径不同。 |
 | `swap_used_bytes` | 容器当前使用的 swap；主机还有换入/换出速率，帮助判断是否持续换页。 |

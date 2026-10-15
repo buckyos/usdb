@@ -11,9 +11,12 @@ MIB = 1024**2
 GIB = 1024**3
 # A nominal 32 GB machine must expose at least 32 decimal GB to the OS/controller.
 MIN_HOST_MEMORY_BYTES = 32_000_000_000
+MIN_RUNTIME_MEMORY_BYTES = 16_000_000_000
+POLICY_VERSION_KEY = "USDB_RESOURCE_POLICY_VERSION"
 # Retain the conservative 16 GiB deployment cap across the Core 31.1 upgrade.
 MAX_BITCOIN_DBCACHE_MIB = 16384
 PHASES = ("bitcoin", "overlap", "steady")
+RUNTIME_PHASES = ("bitcoin", "overlap", "catchup", "steady")
 # Absence of these keys keeps released configurations on their original formula.
 POLICY_KEYS = ("USDB_STORAGE_PROFILE", "USDB_RESOURCE_MEMORY_PERCENT")
 STORAGE_PROFILES = ("balanced", "slow-disk")
@@ -125,6 +128,28 @@ def resource_mode(env: dict[str, str]) -> str:
     return mode
 
 
+def runtime_policy(env: dict[str, str]) -> bool:
+    """Version old allocations instead of silently changing a running node's limits."""
+    version = env.get(POLICY_VERSION_KEY, "1")
+    if version not in {"1", "2"}:
+        raise ValueError("unsupported USDB_RESOURCE_POLICY_VERSION")
+    return version == "2"
+
+
+def resource_phases(env: dict[str, str]) -> tuple[str, ...]:
+    """Small resumed nodes need not qualify for a fresh snapshot import."""
+    if not runtime_policy(env):
+        return PHASES
+    if env.get("USDB_RESOURCE_PHASE") in {"catchup", "steady"}:
+        return ("catchup", "steady")
+    return RUNTIME_PHASES
+
+
+def chain_resources_ready(env: dict[str, str]) -> bool:
+    """Background indexing must not gate foreground consensus participation."""
+    return env.get("USDB_RESOURCE_PHASE") in ({"catchup", "steady"} if runtime_policy(env) else {"steady"})
+
+
 @dataclass(frozen=True)
 class ResourcePlan:
     host_memory_bytes: int
@@ -141,6 +166,9 @@ class ResourcePlan:
     memory_percent: int | None = None
     ord_deferred: bool = False
     ord_steady_cache_bytes: int | None = None
+    policy_version: str = "1"
+    compact_runtime: bool = False
+    core_released: bool = False
 
     @property
     def total_bytes(self) -> int:
@@ -161,6 +189,9 @@ class ResourcePlan:
             "USDB_RESOURCE_MODE": "auto",
             "USDB_RESOURCE_HOST_MEMORY_BYTES": str(self.host_memory_bytes),
             "USDB_RESOURCE_PHASE": self.phase,
+            **({POLICY_VERSION_KEY: self.policy_version} if self.policy_version != "1" else {}),
+            **({"USDB_RESOURCE_RUNTIME_BUDGET": "compact" if self.compact_runtime else "core-ready" if self.core_released else "bootstrap"}
+               if self.policy_version == "2" else {}),
             "BTC_RESOURCE_PROFILE": f"managed-{self.phase}",
             **{key: str(value) for key, value in self.limits.items()},
             # Swap is a small emergency allowance, never part of the RAM budget.
@@ -180,6 +211,24 @@ class ResourcePlan:
 
 def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> ResourcePlan:
     """Reserve a bounded Ord catch-up ceiling without spending other services' minima."""
+    if runtime_policy(env):
+        if phase not in RUNTIME_PHASES:
+            raise ValueError(f"invalid USDB_RESOURCE_PHASE: {phase}")
+        if env.get("USDB_RESOURCE_RUNTIME_BUDGET", "bootstrap") not in {"bootstrap", "core-ready", "compact"}:
+            raise ValueError("invalid USDB_RESOURCE_RUNTIME_BUDGET")
+        if phase == "steady" or (phase == "catchup" and (
+                host_memory < MIN_HOST_MEMORY_BYTES or env.get("USDB_RESOURCE_RUNTIME_BUDGET") == "compact")):
+            return _runtime_plan(host_memory, phase, env)
+        legacy = build_resource_plan(host_memory, "steady" if phase == "catchup" else phase,
+                                     {**env, POLICY_VERSION_KEY: "1"})
+        if phase == "catchup" and env.get("USDB_RESOURCE_RUNTIME_BUDGET") == "core-ready":
+            # Core can release its cache while Ord keeps indexing. Other service
+            # allocations stay unchanged until the full completion window passes.
+            compact = _runtime_plan(host_memory, phase, env)
+            return replace(legacy, phase=phase, policy_version="2", core_released=True,
+                           limits={**legacy.limits, "BTC_MEMORY_LIMIT": min(legacy.limits["BTC_MEMORY_LIMIT"], compact.limits["BTC_MEMORY_LIMIT"])},
+                           dbcache_mib=min(legacy.dbcache_mib, compact.dbcache_mib))
+        return replace(legacy, phase=phase, policy_version="2")
     strategy = env.get("USDB_ORD_RESOURCE_POLICY", "fixed")
     if strategy not in {"fixed", "adaptive-v1"}:
         raise ValueError("USDB_ORD_RESOURCE_POLICY must be fixed or adaptive-v1")
@@ -207,6 +256,61 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
                    ord_memory_cap=cap,
                    ord_steady_cache_bytes=min(GIB, cache),
                    utxo_cache_bytes=bh_cache // 4, balance_cache_bytes=bh_cache - bh_cache // 4)
+
+
+def _runtime_plan(host_memory: int, phase: str, env: dict[str, str]) -> ResourcePlan:
+    """Bound incremental/restart work with service floors, not bootstrap proportions.
+
+    Helper jobs remain budgeted for cold-start gates. Caps are ceilings, not
+    allocations; spare RAM stays available to the host after catch-up completes.
+    """
+    if host_memory < MIN_RUNTIME_MEMORY_BYTES:
+        raise ValueError("runtime resources require at least 16 GB of effective host memory")
+    external = external_services_budget(env)
+    usable = host_memory - external
+    profile = env.get("USDB_STORAGE_PROFILE")
+    if profile is not None and profile not in STORAGE_PROFILES:
+        raise ValueError("USDB_STORAGE_PROFILE must be balanced or slow-disk")
+    percentage = env.get("USDB_RESOURCE_MEMORY_PERCENT", DEFAULT_MEMORY_PERCENT)
+    if not percentage.isascii() or not percentage.isdigit() or not 80 <= int(percentage) <= 90:
+        raise ValueError("USDB_RESOURCE_MEMORY_PERCENT must be an integer between 80 and 90")
+    reserve = max(2 * GIB, usable * (100 - int(percentage)) // 100)
+    caps = {key: memory_bytes(env.get(key, value), key) for key, value in resource_cap_defaults(env).items()
+            if key != "USDB_EXTERNAL_MEMORY_BUDGET"}
+    # Preserve chain execution headroom before optional cache growth.
+    services = [
+        ("USDB_CHAIN_MEMORY_LIMIT", 2 * GIB, max(2 * GIB, min(4 * GIB, usable // 12))),
+        ("BTC_MEMORY_LIMIT", 2 * GIB, min(caps["USDB_BTC_STEADY_MEMORY_CAP"], max(2 * GIB, min(4 * GIB, usable // 8)))),
+        ("BH_MEMORY_LIMIT", 4 * GIB, min(caps["USDB_BH_MEMORY_CAP"], max(4 * GIB, min(8 * GIB, usable // 4)))),
+        ("USDB_INDEXER_MEMORY_LIMIT", GIB, min(2 * GIB, max(GIB, usable // 16))),
+        ("CONTROL_PLANE_MEMORY_LIMIT", 256 * MIB, 512 * MIB),
+    ]
+    if env.get("USDB_MINTING_ENABLED") == "1":
+        services.append(("ORD_MEMORY_LIMIT", 2 * GIB, min(caps["USDB_ORD_MEMORY_CAP"], max(2 * GIB, min(4 * GIB, usable // 16)))))
+    limits = {"BH_SCRIPT_REGISTRY_MEMORY_LIMIT": 512 * MIB,
+              "USDB_CHECKPOINT_VERIFY_MEMORY_LIMIT": 256 * MIB}
+    if env.get("SNAPSHOT_MODE") == "assumeutxo":
+        limits["BTC_BOOTSTRAP_MEMORY_LIMIT"] = 512 * MIB
+    for key, floor, desired in services:
+        if desired < floor:
+            raise ValueError(f"runtime cap for {key} is below its {floor // MIB} MiB minimum")
+        limits[key] = floor
+    remaining = (usable - reserve - sum(limits.values())) // MIB * MIB
+    if remaining < 0:
+        raise ValueError("runtime service minima plus system/external reserve exceed effective host memory")
+    for key, floor, desired in services:
+        extra = min(remaining, (desired - floor) // MIB * MIB)
+        limits[key] += extra
+        remaining -= extra
+    ord_limit = limits.get("ORD_MEMORY_LIMIT")
+    cache = min(GIB, ord_limit // 4) if ord_limit else None
+    bh_cache = limits["BH_MEMORY_LIMIT"] * 3 // 8
+    return ResourcePlan(host_memory, phase, reserve, limits,
+                        min(1024, limits["BTC_MEMORY_LIMIT"] // 4 // MIB),
+                        bh_cache // 4, bh_cache - bh_cache // 4, external,
+                        cache, caps["USDB_ORD_MEMORY_CAP"] if ord_limit else None,
+                        profile, int(percentage), False,
+                        cache if env.get("USDB_ORD_RESOURCE_POLICY") == "adaptive-v1" else None, "2", True)
 
 
 def _base_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> ResourcePlan:
@@ -413,8 +517,10 @@ def validate_cache_budget(env: dict[str, str]) -> None:
 
 def validate_resource_environment(env: dict[str, str], host_memory: int | None = None) -> None:
     """Validate persisted budgets without guessing host RAM inside a service container."""
-    if host_memory is not None and host_memory < MIN_HOST_MEMORY_BYTES:
-        raise ValueError("USDB node requires at least 32 GB of effective host memory")
+    minimum = (MIN_RUNTIME_MEMORY_BYTES if resource_mode(env) == "auto" and runtime_policy(env)
+               and chain_resources_ready(env) else MIN_HOST_MEMORY_BYTES)
+    if host_memory is not None and host_memory < minimum:
+        raise ValueError(f"USDB node requires at least {minimum // 1_000_000_000} GB of effective host memory for this resource phase")
     if env.get("ORD_STARTUP_DEFERRED", "0") not in {"0", "1"}:
         raise ValueError("ORD_STARTUP_DEFERRED must be 0 or 1")
     if env.get("ORD_STARTUP_DEFERRED") == "1" and (resource_mode(env) != "auto" or not env.get("USDB_STORAGE_PROFILE")):
@@ -429,7 +535,7 @@ def validate_resource_environment(env: dict[str, str], host_memory: int | None =
             raise ValueError("effective host memory decreased; stop the node and recalculate its resource policy")
         phase = env.get("USDB_RESOURCE_PHASE", "")
         # Validate every reachable phase, not only today's allocation.
-        for candidate in PHASES:
+        for candidate in resource_phases(env):
             build_resource_plan(memory, candidate, env)
         expected = build_resource_plan(memory, phase, env).environment()
         for key, value in expected.items():

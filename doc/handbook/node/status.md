@@ -144,6 +144,11 @@ usdb-node status --progress-json    # 保留完整的机器可读观测字段
 
 Bitcoin 前台可以先就绪，后台历史验证继续进行。**总体可用和后台验证完成分别观察**；不要为了消除后台进度而停止验证。
 
+新版资源策略在这段时间显示 `Resources CATCHUP`：chain 可以跟踪或出块，后台任务继续。
+Core 历史、启用的 txindex/Ord、BH/indexer 和 USDB 链全部持续就绪后才进入 `steady`。
+controller 在前台就绪后仍驻留管理资源；`SWITCHING` 表示正在正常停止、重配或恢复相关服务。
+`status --watch` 只是观察，不发起资源切换。
+
 包含名称改进的版本会明确区分 `Bitcoin foreground`、`Bitcoin background` 和 `Balance history`。前两项都属于 Bitcoin Core，后一项是独立的余额历史服务，从 UTXO 快照基线重放到 USDB 创世基线，再追踪稳定区块。前台 `READY`、后台 `SYNCING` 可以同时出现，此时前台行会提示后台验证尚未完成。快照尚未激活时，普通区块同步仍显示 `Bitcoin (IBD)`。
 
 ### 高度和等待条件怎么对应

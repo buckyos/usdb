@@ -231,7 +231,8 @@ def edit(layout, node, *, input_fn, output, resource_mode=None, bitcoin_profile=
                   "Service limits and caches below are calculated budgets, not manual overrides.", file=output)
             if minting.enabled(candidate):
                 if candidate.get("USDB_STORAGE_PROFILE"):
-                    print("  Ord uses a 512 MiB waiting supervisor before steady; full indexing memory is allocated at steady.", file=output)
+                    phase = "catchup" if node.runtime_policy(candidate) else "steady"
+                    print(f"  Ord uses a 512 MiB waiting supervisor before {phase}; full indexing memory is allocated at {phase}.", file=output)
                 print("  Ord memory is reserved in every phase; txindex shares Bitcoin's budget. "
                       "Enabling txindex does not restart the Bitcoin-only resource phase.", file=output)
         for key, value in sorted(updates.items()):

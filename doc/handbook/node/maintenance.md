@@ -135,9 +135,9 @@ usdb-node status --watch
 
 直接回车保留当前值；全程不修改选项时，不改写文件、不重算资源、不重置进度记录。启用/关闭 Ord、
 修改资源输入或明确选择重算时，才重新计算预算并清理旧资源切换记录。已有自动模式节点保留当前
-`bitcoin / overlap / steady` 阶段，不会仅因开启 txindex 回退到 Bitcoin 独占阶段；启动时仍检查实际就绪状态，
+`bitcoin / overlap / catchup / steady` 阶段，不会仅因开启 txindex 回退到 Bitcoin 独占阶段；启动时仍检查实际就绪状态，
 按原策略推进阶段。新建配置或从 manual 切换至 auto 时从 `bitcoin` 阶段开始。已有链数据和索引保留。
-开启 Ord 会在各阶段预留其内存；新资源档位在冷启动阶段只保留 512 MiB 等待进程，steady 时分配完整额度，因此 BTC、BH 等服务的预算可能相应调整。这些是自动策略的计算结果，
+开启 Ord 会在各阶段预留其内存；新资源档位在冷启动阶段只保留 512 MiB 等待进程，catchup 时分配追赶额度，因此 BTC、BH 等服务的预算可能相应调整。这些是自动策略的计算结果，
 不是新增的手动配置。修改摘要和容量提示使用 MiB/GiB/TiB（1024 进制），配置文件仍保存精确数值，回车不会按显示精度取整。
 开启 archive 不会恢复已裁剪历史；开启 Ord 后仍需等待历史验证、txindex 和 Ord 索引完成，详见[本机铸造后端](../services/control-plane.md#可选的本机铸造后端)。
 已有节点首次启用 Ord 时，`setup` 和 `set-minting --enabled on` 都要求目标磁盘至少有 **300 GiB 可用空间**。
@@ -353,13 +353,15 @@ usdb-node resources
 usdb-node doctor
 ```
 
-核对新的预算后执行 `usdb-node up`。已有自动模式节点重算时保留当前资源阶段。
-只更新工具包不会自动重算已有预算；同机还有其他服务时，需要为它们预留实际额度，不能将节点预算之外的内存视作无限可用。
+核对新的预算后执行 `usdb-node up`。新版把旧自动 `steady` 重新归为 `catchup`，按实时观测确认全部完成。
+只安装工具包保留运行中节点的预算；停机后的运行阶段 `up` 可以重算并采用新版策略。
+同机还有其他服务时，需要为它们预留实际额度，不能将节点预算之外的内存视作无限可用。
 
 原生 AssumeUTXO 节点在 `overlap` 阶段同时运行 Bitcoin 历史验证和 BH 基线启动。新版策略给
 Bitcoin 增加内存余量，并为 BH 保留至少 8 GiB（用户原有显式上限不足时保持原上限）。例如有效内存
 32 GiB 的主机，该阶段分配 Bitcoin 12 GiB、BH 8 GiB；Bitcoin dbcache 不随容器额度一起增大。
-进入 `steady` 后采用稳态预算，不要求 Bitcoin 历史验证先完成。
+前台就绪后进入 `catchup`，不要求 Bitcoin 历史验证先完成；全部同步任务持续完成后才进入
+`steady` 并降低预算。已有节点缩容至 16/20 GB 的流程与边界见[运行预算与 VM 缩容](resources.md#同步完成后的运行预算与-vm-缩容)。
 
 若升级时节点仍处于旧 `overlap` 配额，先用原版本 `down`，安装新版工具后执行
 `usdb-node set-resource-policy --mode auto` 重算，再执行 `activate-release`、`doctor`、`up`。

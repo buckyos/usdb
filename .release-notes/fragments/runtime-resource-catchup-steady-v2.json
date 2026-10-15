@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "runtime-resource-catchup-steady-v2",
+  "type": "changed",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Separate foreground catchup from completed synchronization and budget resumed nodes from 16 GB",
+  "details": [
+    "New automatic configurations retain the 32 GB bootstrap minimum and require sustained fresh Core, enabled index, data-service and chain observations before steady resources.",
+    "The controller continues after foreground readiness, can release Core resources before Ord catches up, and journals graceful per-service resource transitions for recovery.",
+    "Stopped running-phase nodes rebudget against current host capacity before up preflight; compact cold starts preserve existing data and original identity and recovery gates.",
+    "Sixteen-GB support is a resource admission policy; production-scale peak memory and optional workloads still require deployed-node qualification."
+  ],
+  "operator_actions": [
+    "Keep initial synchronization at 32 GB or more. Before VM shrink, finish synchronization and pending transitions, fully stop the node, then resize and run up or explicitly recalculate resources while stopped.",
+    "Install the matching node kit and service images through the normal release activation workflow; running legacy policies are preserved until stopped-node adoption or explicit recalculation."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": true,
+    "restart_required": true
+  },
+  "references": ["https://github.com/buckyos/usdb/blob/master/doc/publish/usdb-node-resource-policy.md", "https://github.com/buckyos/usdb/blob/master/doc/handbook/node/resources.md"]
+}

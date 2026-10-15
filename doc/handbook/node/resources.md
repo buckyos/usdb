@@ -22,7 +22,7 @@
 usdb-node setup --storage-profile slow-disk --memory-percent 90
 ```
 
-已有节点在升级后保持原预算算法，`resources` 中显示 `legacy`；这不是数据格式问题。需要采用新档位时，先完整停机：
+安装新工具包保留运行中节点的原预算。新版自动策略使用 `bitcoin → overlap → catchup → steady`；旧配置没有策略版本字段时仍按旧规则运行。需要采用新档位时，先完整停机：
 
 ```bash
 usdb-node down
@@ -44,7 +44,7 @@ usdb-node up
 
 1. 取操作系统物理内存和当前 cgroup 限额中的较小值。
 2. 扣除明确配置的其他服务预算 `--external-memory-budget`；默认 0。
-3. 按所选百分比计算节点内存池，同时保证系统预留**至少 4 GiB**，取两者中更保守的额度。
+3. 按所选百分比计算节点内存池，同时保证初始同步系统预留**至少 4 GiB**，compact 运行预算**至少 2 GiB**，取两者中更保守的额度。
 4. 在内存池内分配各阶段的服务预算，应用各服务上限；不为了用满内存而突破上限。
 
 例如可见内存约 30.3 GiB、没有外部服务预留时，即使选择 90%，节点内存池也只有约 26.3 GiB，系统仍留出 4 GiB。Swap 不计入这个 RAM 池。
@@ -53,17 +53,18 @@ usdb-node up
 
 ## 各阶段的分配
 
-新档位继续使用 `bitcoin → overlap → steady` 三个阶段，按既有就绪条件推进。Core 后台历史验证未完成，不会单独阻止 BH 启动或进入 mining。
+新策略区分前台可用和全部同步完成。Core 后台历史验证未完成，不会单独阻止 BH 启动或进入 mining；此时使用 `catchup` 阶段。
 
 | 阶段 | 主要工作 | 内存安排 |
 | --- | --- | --- |
 | `bitcoin` | Core、快照准备 | BH 等数据服务尚未启动，Core 可使用扣除当前辅助服务后的内存池，受自身上限约束 |
 | `overlap` | Core 前台/后台同步，与 BH 导入、回放、验证并行 | 新档位保证 BH 至少 8 GiB；慢盘档将更多其余额度分给 Core |
-| `steady` | 主链运行；Core 仍可能补历史 | BH 至少 4 GiB；保留 Core 文件缓存空间，不因单次 RPC 成功或失败自动降档 |
+| `catchup` | 主链可运行；Core、启用的 txindex/Ord 或 USDB 链仍可能追赶 | 保留后台追赶额度；Core 先完成时可独立释放其预算 |
+| `steady` | Core 历史、启用的索引、数据服务和 USDB 链均持续就绪 | 采用 compact 运行预算；短暂落后不反复切档 |
 
-开启 Ord 后，前两个阶段只给监督进程 **512 MiB**，显示 `WAITING_RESOURCES`，不会启动 Ord 索引或额外轮询 Core。进入 `steady` 后，控制器先应用主节点预算，再重建 Ord 容器、分配完整额度；Ord 仍需等待 Core 历史验证和 txindex 就绪。
+开启 Ord 后，前两个阶段只给监督进程 **512 MiB**，显示 `WAITING_RESOURCES`，不会启动 Ord 索引或额外轮询 Core。进入 `catchup` 后，控制器先应用主节点预算，再重建 Ord 容器、分配追赶额度；Ord 仍需等待 Core 历史验证和 txindex 就绪。
 
-完整 Ord 预算：`balanced` 约占扣除外部预留后内存的四分之一，`slow-disk` 约八分之一，默认至少 4 GiB、最高 16 GiB；显式设置较低上限时可以降到 2 GiB。索引缓存不超过 Ord 额度的一半。所有这些额度均包含在节点内存池中，无法同时容纳时拒绝配置。
+32 GB 及以上的首次追赶预算：Ord 可使用 BH 完成启动后超出 4 GiB 的预算与未分配额度，目标上限为扣除外部预留后内存的一半，受 `--ord-memory-cap` 约束（新配置默认 32 GiB）。compact 阶段使用 2～4 GiB 的 Ord 容器预算。所有额度均包含在节点内存池中，无法同时容纳时拒绝配置。
 
 以约 30.3 GiB、90%、慢盘档、开启 Ord、无外部预留的机器为例：
 
@@ -71,7 +72,7 @@ usdb-node up
 | --- | ---: | ---: | ---: |
 | `bitcoin` | 约 24.9 GiB | 尚未启动 | 512 MiB（等待） |
 | `overlap` | 约 11.2 GiB | 8 GiB | 512 MiB（等待） |
-| `steady` | 约 11.7 GiB | 4 GiB | 4 GiB |
+| `catchup` | 约 11.7 GiB | 4 GiB | 约 4 GiB |
 
 系统及其余服务另有池内预算；以本机 `usdb-node resources` 结果为准。表格是预算试算，尚不是该机器的性能实测结果。
 
@@ -83,9 +84,9 @@ Core 容器额度与 `dbcache` 是两个不同限制。增加容器额度主要�
 | --- | ---: | ---: |
 | Core：`bitcoin` | 32 GiB | 64 GiB |
 | Core：`overlap` | 16 GiB | 32 GiB |
-| Core：`steady`（AssumeUTXO） | 16 GiB | 32 GiB |
+| Core：首次 `catchup`（AssumeUTXO） | 16 GiB | 32 GiB |
 | BH | 64 GiB | 64 GiB |
-| Ord | 16 GiB | 16 GiB |
+| Ord 追赶 | 32 GiB | 32 GiB |
 
 上限不是固定分配量。停机后可通过 `--bitcoin-ibd-memory-cap`、`--bitcoin-overlap-memory-cap`、`--bitcoin-steady-memory-cap`、`--bh-memory-cap`、`--ord-memory-cap` 调整；例如：
 
@@ -96,3 +97,22 @@ usdb-node set-resource-policy --mode auto --storage-profile slow-disk --memory-p
 `status` 显示当前档位和预算比例；`resources` 显示各阶段额度、系统预留和因上限留下的未分配空间，`resources --json` 可用于采集。资源历史会记录所用档位，便于比较调整前后同一阶段的 RPC 超时、Core/BH 推进速度及 I/O 压力。
 
 慢盘档不能保证消除所有 RPC 超时，也不会把 HDD 变成 SSD。如果持续没有区块进展，应按[资源历史与内存压力排查](resource-history.md)检查连续样本，再决定是否进一步调整或迁移数据盘。
+
+## 同步完成后的运行预算与 VM 缩容
+
+新版 `steady` 要求当前启用的同步任务连续 60 秒完成。controller 在前台可用后继续观察，
+状态查询本身不调整资源；普通新块或短暂 RPC 故障不会反复重启服务。
+降低容器额度或更改缓存时，先正常停止涉及的服务及其依赖、等待刷盘，再恢复运行。
+
+首次部署仍要求有效容量至少 **32 GB**；已进入运行阶段的节点可按 **16 GB** 的最低边界
+重算 compact 预算。默认 90%、无外部预留时，16 GB 主机的 Core/BH/indexer/chain 上限为
+2/4/1/2 GiB，系统至少预留 2 GiB；开启 Ord 再预算 2 GiB。辅助作业预算也计入总额，
+无法容纳时仍拒绝配置。16 GB 是本轮配置支持边界，主网长期峰值和可选负载还需实际验证。
+
+建议确认所有同步完成、没有资源切换后，先 `usdb-node down`，再关闭 VM 调整内存。
+恢复 VM 后，实际 `up` 会在容器已停止的条件下按当前容量重算并重新检查同步；旧的 `steady`
+按 `catchup` 重新观察，已有 compact 预算冷启动时保留。已有数据和身份继续由原有门禁检查。
+只读 `doctor` 不会重算，若希望先检查再启动，可在停机状态执行
+`set-resource-policy --mode auto → resources → doctor → up`。
+
+完整预算、阶段判定和中断恢复见[资源策略说明](../../publish/usdb-node-resource-policy.md)。

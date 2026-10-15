@@ -303,8 +303,8 @@ def check_resources(layout: node.ReleaseLayout, env, runtime, threads):
     if node.resource_mode(env) == "auto":
         node.validate_resource_environment(env, node.effective_memory_bytes())
         state = node._read_resource_state(layout)
-        if state.get("pending") or state.get("recover_services") or env.get("USDB_RESOURCE_PHASE") != "steady":
-            raise ValueError("RESOURCE_TRANSITION_PENDING: wait for the steady resource plan")
+        if state.get("pending") or state.get("recover_services") or not node.chain_resources_ready(env):
+            raise ValueError("RESOURCE_TRANSITION_PENDING: wait for the foreground resource plan")
         node._check_running_resource_budget(env, node._resource_containers(layout))
     if runtime.get("memory", 0) <= 0:
         raise ValueError("RESOURCE_LIMIT_REQUIRED: chain container must have a bounded memory budget")

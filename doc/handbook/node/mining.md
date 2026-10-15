@@ -219,7 +219,7 @@ usdb-node mining status --watch
 | `BITCOIN_PROBE_TIMEOUT`、`BITCOIN_PROBE_FAILED` | 探测程序整体超时、未能执行或输出无法解析；核对 Docker 可用性、访问权限和工具/镜像版本 |
 | `CHAIN_NOT_RUNNING` | 链容器或 geth 进程尚未就绪。若刚执行 `up`，运行 `usdb-node status --watch`，等待链服务启动后重试；若节点已停止，先执行 `usdb-node up`。持续无法启动时检查 `usdb-node logs usdb-chain` |
 | `RESOURCE_LIMIT_REQUIRED` | 链已运行，但容器没有内存上限；按[调整资源预算](maintenance.md#调整资源预算)核对并应用资源配置，再重试预检 |
-| `RESOURCE_TRANSITION_PENDING` | 自动资源配置仍在切换，等待状态面板显示 steady 阶段后重试 |
+| `RESOURCE_TRANSITION_PENDING` | 自动资源配置仍在切换，等待切换完成后重试；新版允许在 catchup 或 steady 阶段按实际 readiness 启用挖矿 |
 | 长期 `WARMING_UP` | 检查 `usdb-node logs usdb-chain`、CPU/内存及上游进度，不只凭哈希率为零判断失败 |
 | 任务失败或配置漂移 | 保存 `mining status --json` 和链日志；解决具体错误后按同一目标重试 enable/disable |
 | 上游回滚或停链标记阻断 | 保留现场，按网络事故流程处理，不清除标记强行恢复 |

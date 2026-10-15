@@ -461,6 +461,9 @@ def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
     elif resources.get("transition_pending") or resources.get("runtime_adopted") is False:
         rows.append(_Row("Resources", "SWITCHING", f"{resources.get('phase', '?')} -> {resources.get('target_phase', '?')}",
                          info=["Waiting for managed service restart / resource adoption"]))
+    elif resources.get("phase") == "catchup":
+        rows.append(_Row("Resources", "CATCHUP", info=[
+            "Foreground services may run; background validation and enabled indexes must finish before steady resources"]))
     for component in report.get("components", []):
         if details or component["state"] != "SKIPPED":
             explanations = None

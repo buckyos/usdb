@@ -65,7 +65,7 @@ state_path.write_text(json.dumps(states))
 
 
 class ResourceRunnerTests(unittest.TestCase):
-    def run_quiesce(self, states, fail_update=False, action="quiesce-data", fail_job=""):
+    def run_quiesce(self, states, fail_update=False, action="quiesce-data", fail_job="", arguments=()):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "node.env").write_text("USDB_RESOURCE_MODE=auto\n")
@@ -88,8 +88,8 @@ class ResourceRunnerTests(unittest.TestCase):
                    "RESOURCE_TEST_STATE": str(state_path), "RESOURCE_TEST_CALLS": str(calls),
                    "RESOURCE_TEST_FAIL_UPDATE": "1" if fail_update else "0",
                    "RESOURCE_TEST_FAIL_JOB": fail_job}
-            result = subprocess.run([str(RUNNER), action], env=env, capture_output=True, text=True, timeout=10)
-            return result, json.loads(state_path.read_text()), [json.loads(line) for line in calls.read_text().splitlines()]
+            result = subprocess.run([str(RUNNER), action, *arguments], env=env, capture_output=True, text=True, timeout=10)
+            return result, json.loads(state_path.read_text()), [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
 
     def test_consumers_stop_before_sources_and_loader_is_preserved(self):
         names = ["balance-history", "usdb-indexer", "usdb-chain", "usdb-control-plane", "snapshot-loader"]
