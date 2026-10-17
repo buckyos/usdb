@@ -4819,6 +4819,10 @@ def _resource_progress(layout, env, services, components) -> tuple[dict[str, Any
             resources["runtime_budget"] = env.get("USDB_RESOURCE_RUNTIME_BUDGET")
             resources["storage_profile"] = env.get("USDB_STORAGE_PROFILE", "legacy")
             resources["memory_percent"] = env.get("USDB_RESOURCE_MEMORY_PERCENT")
+            plan = build_resource_plan(int(env["USDB_RESOURCE_HOST_MEMORY_BYTES"]), resources["phase"], env)
+            resources["memory_limits"] = plan.limits
+            resources["system_reserve_bytes"] = plan.reserve_bytes
+            resources["unallocated_bytes"] = max(0, plan.host_memory_bytes - plan.total_bytes)
             state = _read_resource_state(layout)
             resources["transition_pending"] = bool(state.get("pending"))
             resources["target_phase"] = state.get("phase")

@@ -169,6 +169,7 @@ class ResourcePlan:
     policy_version: str = "1"
     compact_runtime: bool = False
     core_released: bool = False
+    runtime_budget: str | None = None
 
     @property
     def total_bytes(self) -> int:
@@ -190,7 +191,7 @@ class ResourcePlan:
             "USDB_RESOURCE_HOST_MEMORY_BYTES": str(self.host_memory_bytes),
             "USDB_RESOURCE_PHASE": self.phase,
             **({POLICY_VERSION_KEY: self.policy_version} if self.policy_version != "1" else {}),
-            **({"USDB_RESOURCE_RUNTIME_BUDGET": "compact" if self.compact_runtime else "core-ready" if self.core_released else "bootstrap"}
+            **({"USDB_RESOURCE_RUNTIME_BUDGET": self.runtime_budget or ("compact" if self.compact_runtime else "core-ready" if self.core_released else "bootstrap")}
                if self.policy_version == "2" else {}),
             "BTC_RESOURCE_PROFILE": f"managed-{self.phase}",
             **{key: str(value) for key, value in self.limits.items()},
@@ -214,8 +215,21 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
     if runtime_policy(env):
         if phase not in RUNTIME_PHASES:
             raise ValueError(f"invalid USDB_RESOURCE_PHASE: {phase}")
-        if env.get("USDB_RESOURCE_RUNTIME_BUDGET", "bootstrap") not in {"bootstrap", "core-ready", "compact"}:
+        budget = env.get("USDB_RESOURCE_RUNTIME_BUDGET", "bootstrap")
+        if budget not in {"bootstrap", "core-ready", "compact", "core-catchup", "runtime-ready"}:
             raise ValueError("invalid USDB_RESOURCE_RUNTIME_BUDGET")
+        if phase == "catchup" and budget in {"core-catchup", "runtime-ready"}:
+            plan = _runtime_plan(host_memory, phase, env)
+            if budget == "core-catchup":
+                # Unfinished history needs charged filesystem cache even with a
+                # small dbcache. Spend only unused pool space; preserve all other
+                # service floors, explicit caps and the system/external reserve.
+                current = plan.limits["BTC_MEMORY_LIMIT"]
+                cap = memory_bytes(env.get("USDB_BTC_STEADY_MEMORY_CAP",
+                    resource_cap_defaults(env)["USDB_BTC_STEADY_MEMORY_CAP"]), "USDB_BTC_STEADY_MEMORY_CAP")
+                extra = min(max(0, host_memory - plan.total_bytes), max(0, min(8 * GIB, cap) - current)) // MIB * MIB
+                plan = replace(plan, limits={**plan.limits, "BTC_MEMORY_LIMIT": current + extra})
+            return replace(plan, runtime_budget=budget)
         if phase == "steady" or (phase == "catchup" and (
                 host_memory < MIN_HOST_MEMORY_BYTES or env.get("USDB_RESOURCE_RUNTIME_BUDGET") == "compact")):
             return _runtime_plan(host_memory, phase, env)

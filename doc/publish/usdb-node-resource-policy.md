@@ -46,7 +46,8 @@ Core 历史和索引先完成、Ord 仍追赶时，也会经 60 秒窗口先释�
 `USDB_RESOURCE_RUNTIME_BUDGET=core-ready`；其余服务和 Ord 额度保持不变。
 所有任务完成后保存 `compact`。普通新块或短暂 RPC 故障不切回追赶阶段；持续 5 分钟落后
 至少 1,000 个 BTC/BH/indexer/Ord 进度单位才从 `steady` 回到 `catchup`。
-本轮回退保留 compact 额度，不重新启用独占 Bitcoin 档或自动扩张整机预算。
+回退采用 `core-catchup`，在现有运行服务预算之外将空余额度分给 Core；仍受整机内存池约束，
+不重新启用独占 Bitcoin 档。
 
 ## 3. 预算与缓存
 
@@ -77,6 +78,13 @@ compact 运行预算系统至少保留 2 GiB，并继续遵守所选百分比；
 2 GiB、Ord 4 GiB。compact dbcache 不超过 1 GiB，BH 应用缓存为容器额度的 37.5%，
 Ord 缓存不超过 1 GiB 且不超过其额度的四分之一。系统百分比与外部预留仍优先保留；
 无法容纳所有服务最低额度时明确拒绝配置。
+
+小内存恢复和 compact 冷启动先使用 `core-catchup`。以 compact 为基础，只将未分配额度
+增加到 Core 容器上限，最高 8 GiB，仍遵守显式 Core steady cap；dbcache、BH/Ord 和其他
+服务预算均保持不变。有效容量 20.49 GiB、90%、Ord 关闭时 Core 为 8 GiB、dbcache 655 MiB。
+Core 持续完成 60 秒后采用 `runtime-ready`，释放额外 Core 额度；等所有服务完成再进入
+`steady / compact`。`runtime-ready` 若持续 5 分钟存在 Core 未完成且进度落后至少 1,000，
+也可回到 `core-catchup`。观测未知时不降额。
 
 BH 的所有配置仍校验：
 
@@ -117,8 +125,10 @@ usdb-node status --watch
 
 停机的旧自动 `steady` 节点或容量变化后的运行阶段节点，在实际 `up` 时先按当前主机容量
 重算，再进入常规预检；旧 `steady` 重新归为 `catchup` 接受实时观察。已经完成降档的节点
-冷启动保留 compact 预算，不临时恢复高内存独占同步档。原有 release 激活、数据身份和
-快照兼容检查仍然执行。运行中的节点、未知 Docker 状态或未完成的切换不会被擅自重算。
+冷启动采用 `core-catchup`，确认同步后再释放额度。原有 release 激活、数据身份和
+快照兼容检查仍然执行。容量变化且容器运行、未知 Docker 状态或未完成的切换不会被擅自重算。
+旧版 `catchup / compact` 在显式 `up` 时迁移到 `core-catchup`；容量不变时可通过已有的
+切换日志正常停止 Core 及其消费者后恢复，无需操作者手工修改容器限额。
 因此缩容后直接运行只读 `doctor` 可能仍看到旧预算不符，可先显式重算再检查：
 
 ```bash
@@ -133,7 +143,7 @@ usdb-node up
 需显式重算，仍要求 32 GB。旧 manual 节点不会因安装新版本而自动切换模式。
 
 `resources` 预览当前阶段可到达的计划，小内存运行节点不必通过首次导入的 32 GB 校验。
-`status --watch` 区分 `CATCHUP` 和资源切换等待，资源历史记录策略版本、phase、runtime budget
+`status --watch` 区分 `CATCHUP`、具体 runtime budget、容器上限和资源切换等待，资源历史记录策略版本、phase、runtime budget
 以及实际额度。停止 controller 会暂停自动资源管理，已运行容器继续运行；重新 `up` 可恢复。
 
 发布前仍需使用可维护的测试节点验证 16/20 GiB VM 的冷启动、持续追块/出块、Ord 可选路径、

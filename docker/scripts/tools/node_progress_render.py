@@ -540,6 +540,17 @@ def render_node_progress(report: dict[str, Any], *, phase: str = "observe", widt
     resources = report.get("resources", {})
     if resources.get("storage_profile") in {"balanced", "slow-disk"}:
         append(f"Resource profile: {resources['storage_profile']} | Node memory budget: {resources.get('memory_percent', '?')}% (system reserve applies)")
+    if resources.get("runtime_budget"):
+        append(f"Resource allocation: {resources['runtime_budget']}")
+    limits = resources.get("memory_limits", {})
+    if limits:
+        labels = (("Bitcoin", "BTC_MEMORY_LIMIT"), ("BH", "BH_MEMORY_LIMIT"),
+                  ("Indexer", "USDB_INDEXER_MEMORY_LIMIT"), ("Chain", "USDB_CHAIN_MEMORY_LIMIT"),
+                  ("Control", "CONTROL_PLANE_MEMORY_LIMIT"), ("Ord", "ORD_MEMORY_LIMIT"))
+        append("Container memory ceilings: " + " | ".join(
+            f"{label} {human_size(limits[key])}" for label, key in labels if key in limits))
+        if "system_reserve_bytes" in resources and "unallocated_bytes" in resources:
+            append(f"System reserve: {human_size(resources['system_reserve_bytes'])} | Unallocated budget: {human_size(resources['unallocated_bytes'])}")
     observed = f"Observed {report.get('observed_at', 'unknown')}"
     if "observation_elapsed_secs" in report:
         observed += f" | Watching {duration_text(report['observation_elapsed_secs'])}"

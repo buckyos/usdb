@@ -18,6 +18,20 @@ from common.node_progress import native_bootstrap_progress, ready_miner_progress
 
 
 class ProgressDisplayTests(unittest.TestCase):
+    def test_resource_allocation_shows_budget_and_ceiling_separately_from_usage(self):
+        report = native_bootstrap_progress()
+        report["resources"] = dict(phase="catchup", runtime_budget="core-catchup",
+            storage_profile="slow-disk", memory_percent="90", memory_limits={
+                "BTC_MEMORY_LIMIT": 8 * 1024**3, "BH_MEMORY_LIMIT": 5 * 1024**3},
+            system_reserve_bytes=2 * 1024**3, unallocated_bytes=300 * 1024**2)
+        for width in (40, 120):
+            rendered = render_node_progress(report, width=width)
+            self.assertTrue(all(len(line) <= width for line in rendered.splitlines()))
+            text = " ".join(rendered.split())
+            self.assertIn("Resource allocation: core-catchup", text)
+            self.assertIn("Container memory ceilings: Bitcoin 8.0GiB | BH 5.0GiB", text)
+            self.assertIn("System reserve: 2.0GiB | Unallocated budget: 300.0MiB", text)
+
     def test_unfinished_progress_never_rounds_up_to_one_hundred_percent(self):
         for component_id, current, total in (("bitcoin", 967960, 967961),
                                              ("balance_history", 967950, 967951),

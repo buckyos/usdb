@@ -12,13 +12,15 @@ from common.native_node import NativeRuntime
 
 class RuntimeResources(NativeRuntime):
     """Observe cache adoption and graceful targeted stops across interruptions."""
-    def __init__(self, root: Path, *, memory=32 * policy.GIB, phase="catchup", ord_enabled=False):
+    def __init__(self, root: Path, *, memory=32 * policy.GIB, phase="catchup", ord_enabled=False, runtime_budget=None):
         super().__init__(root)
         self.memory = memory
         env = dict(node.read_env(self.layout.node_env), USDB_RESOURCE_POLICY_VERSION="2",
                    USDB_STORAGE_PROFILE="slow-disk", USDB_RESOURCE_MEMORY_PERCENT="90",
                    USDB_RESOURCE_PHASE=phase, USDB_MINTING_ENABLED=str(int(ord_enabled)),
                    USDB_ORD_RESOURCE_POLICY="adaptive-v1", USDB_DATA_ROOT=str(root / "data"))
+        if runtime_budget is not None:
+            env["USDB_RESOURCE_RUNTIME_BUDGET"] = runtime_budget
         env.update(policy.build_resource_plan(memory, phase, env).environment())
         self.layout.node_env.write_text(node.upsert_env("", env))
         self.core.update(rpc_available=True, tip_ready=True, history_validated=True,

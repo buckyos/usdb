@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/too
 import assumeutxo_node
 import bitcoin_assumeutxo
 import node_resource_lifecycle as lifecycle
+import node_resource_metrics as metrics
 import resource_policy as policy
 import usdb_minting
 import usdb_node as node
@@ -18,6 +19,52 @@ from common.runtime_resources import RuntimeResources
 
 
 class RuntimeBudgetTests(unittest.TestCase):
+    def test_core_catchup_uses_spare_capacity_without_growing_caches_or_other_services(self):
+        for memory in (16_000_000_000, 21999050752, 32 * policy.GIB, 64 * policy.GIB):
+            for active in ("0", "1"):
+                for percent in ("80", "90"):
+                    for profile in policy.STORAGE_PROFILES:
+                        with self.subTest(memory=memory, ord=active, percent=percent, profile=profile):
+                            env = dict(USDB_RESOURCE_POLICY_VERSION="2", SNAPSHOT_MODE="assumeutxo",
+                                       USDB_STORAGE_PROFILE=profile, USDB_RESOURCE_MEMORY_PERCENT=percent,
+                                       USDB_MINTING_ENABLED=active)
+                            if memory == 16_000_000_000 and active == "1" and percent == "80":
+                                for budget in ("compact", "core-catchup", "runtime-ready"):
+                                    with self.assertRaisesRegex(ValueError, "minima"):
+                                        policy.build_resource_plan(memory, "catchup", dict(env, USDB_RESOURCE_RUNTIME_BUDGET=budget))
+                                continue
+                            compact = policy.build_resource_plan(memory, "steady", env)
+                            catchup = policy.build_resource_plan(memory, "catchup", dict(env, USDB_RESOURCE_RUNTIME_BUDGET="core-catchup"))
+                            ready = policy.build_resource_plan(memory, "catchup", dict(env, USDB_RESOURCE_RUNTIME_BUDGET="runtime-ready"))
+                            self.assertLessEqual(catchup.total_bytes, memory)
+                            self.assertGreaterEqual(catchup.limits["BTC_MEMORY_LIMIT"], compact.limits["BTC_MEMORY_LIMIT"])
+                            self.assertLessEqual(catchup.limits["BTC_MEMORY_LIMIT"], 8 * policy.GIB)
+                            self.assertEqual(catchup.dbcache_mib, compact.dbcache_mib)
+                            self.assertEqual(catchup.reserve_bytes, compact.reserve_bytes)
+                            for key in compact.limits:
+                                if key != "BTC_MEMORY_LIMIT":
+                                    self.assertEqual(catchup.limits[key], compact.limits[key])
+                            self.assertEqual(ready.limits, compact.limits)
+                            for plan in (catchup, ready):
+                                policy.validate_resource_environment({**env, **plan.environment()}, memory)
+                                self.assertEqual(metrics.configuration(plan.environment())["runtime_budget"], plan.runtime_budget)
+
+    def test_node3_budget_preserves_external_reserve_and_explicit_core_cap(self):
+        env = dict(USDB_RESOURCE_POLICY_VERSION="2", USDB_RESOURCE_RUNTIME_BUDGET="core-catchup",
+                   SNAPSHOT_MODE="assumeutxo", USDB_STORAGE_PROFILE="slow-disk", USDB_MINTING_ENABLED="0")
+        host = 21999050752
+        plan = policy.build_resource_plan(host, "catchup", env)
+        self.assertEqual(plan.limits["BTC_MEMORY_LIMIT"], 8 * policy.GIB)
+        self.assertEqual(plan.dbcache_mib, 655)
+        for extra in ({"USDB_BTC_STEADY_MEMORY_CAP": "3g"}, {"USDB_EXTERNAL_MEMORY_BUDGET": "3g"}):
+            capped = policy.build_resource_plan(host, "catchup", dict(env, **extra))
+            self.assertLess(capped.limits["BTC_MEMORY_LIMIT"], plan.limits["BTC_MEMORY_LIMIT"])
+            self.assertLessEqual(capped.total_bytes, host)
+            if "USDB_EXTERNAL_MEMORY_BUDGET" in extra:
+                self.assertEqual(capped.external_services_bytes, 3 * policy.GIB)
+            else:
+                self.assertEqual(capped.limits["BTC_MEMORY_LIMIT"], 3 * policy.GIB)
+
     def test_runtime_matrix_including_nominal_sixteen_gb_and_ord(self):
         for memory in (16_000_000_000, 16 * policy.GIB, 20 * policy.GIB, 32 * policy.GIB, 64 * policy.GIB):
             for profile in policy.STORAGE_PROFILES:
@@ -98,9 +145,57 @@ class RuntimeHandoffTests(unittest.TestCase):
             updated = node.read_env(f.layout.node_env)
             self.assertEqual(updated["USDB_RESOURCE_PHASE"], "catchup")
             self.assertEqual(updated["USDB_RESOURCE_HOST_MEMORY_BYTES"], str(f.memory))
-            self.assertEqual(updated["USDB_RESOURCE_RUNTIME_BUDGET"], "compact")
+            self.assertEqual(updated["USDB_RESOURCE_RUNTIME_BUDGET"], "core-catchup")
             policy.validate_resource_environment(updated, f.memory)
             self.assertFalse(f.events)
+
+    def test_r19_compact_catchup_migrates_running_node_with_recoverable_stops(self):
+        f = RuntimeResources(self.root, memory=21999050752, runtime_budget="compact")
+        before = node.read_env(f.layout.node_env)
+        with f.patches():
+            self.assertTrue(lifecycle.prepare_for_up(f.layout, node))
+            after = node.read_env(f.layout.node_env)
+            self.assertEqual(after["USDB_RESOURCE_RUNTIME_BUDGET"], "core-catchup")
+            self.assertEqual(after["BTC_DBCACHE_MB"], before["BTC_DBCACHE_MB"])
+            self.assertEqual(int(after["BTC_MEMORY_LIMIT"]), 8 * policy.GIB)
+            self.assertEqual(f.events[0][0], "quiesce-services")
+            self.assertNotIn("usdb-control-plane", f.events[0][1])
+            self.assertEqual(sum(event[0] == "start" for event in f.events), 1)
+            self.assertIn("balance-history", node._read_resource_state(f.layout)["recover_services"])
+            self.assertFalse(lifecycle.prepare_for_up(f.layout, node))
+
+    def test_stopped_compact_node_promotes_but_runtime_ready_does_not_repeat_promotion(self):
+        f = RuntimeResources(self.root, memory=21999050752, runtime_budget="compact")
+        for item in f.containers.values():
+            item["state"] = "exited"
+        with f.patches():
+            self.assertTrue(lifecycle.prepare_for_up(f.layout, node))
+            self.assertFalse(f.events)
+            self.assertEqual(node.read_env(f.layout.node_env)["USDB_RESOURCE_RUNTIME_BUDGET"], "core-catchup")
+            lifecycle.apply_plan(f.layout, node, "catchup", runtime_budget="runtime-ready")
+            self.assertFalse(lifecycle.prepare_for_up(f.layout, node))
+            for item in f.containers.values():
+                item["state"] = "exited"
+            self.assertTrue(lifecycle.prepare_for_up(f.layout, node))
+            self.assertEqual(node.read_env(f.layout.node_env)["USDB_RESOURCE_RUNTIME_BUDGET"], "core-catchup")
+
+    def test_core_catchup_release_restarts_core_dependents_and_preserves_ord(self):
+        f = RuntimeResources(self.root, memory=21999050752, ord_enabled=True, runtime_budget="core-catchup")
+        with f.patches():
+            lifecycle.apply_plan(f.layout, node, "catchup", runtime_budget="runtime-ready")
+            self.assertNotIn("ord-server", f.events[0][1])
+            self.assertNotIn("usdb-control-plane", f.events[0][1])
+            env = node.read_env(f.layout.node_env)
+            self.assertEqual(env["USDB_RESOURCE_RUNTIME_BUDGET"], "runtime-ready")
+            self.assertEqual(int(env["BTC_MEMORY_LIMIT"]), 2749366272)
+
+    def test_steady_large_lag_reacquires_core_catchup_budget(self):
+        f = RuntimeResources(self.root, memory=21999050752, phase="steady")
+        with f.patches():
+            lifecycle.apply_plan(f.layout, node, "catchup")
+            env = node.read_env(f.layout.node_env)
+            self.assertEqual(env["USDB_RESOURCE_RUNTIME_BUDGET"], "core-catchup")
+            self.assertEqual(int(env["BTC_MEMORY_LIMIT"]), 8 * policy.GIB)
 
     def test_running_shrink_and_pending_transition_are_not_rewritten(self):
         f = RuntimeResources(self.root, phase="steady")
@@ -273,6 +368,21 @@ class RuntimeHandoffTests(unittest.TestCase):
 
 
 class CompletionWindowTests(unittest.TestCase):
+    def test_core_catchup_release_waits_for_core_completion_and_fresh_window(self):
+        state = lifecycle.Stability()
+        sample = dict(known=True, complete=False, core_complete=False, identity=1)
+        for now in range(0, 90, 15):
+            self.assertIsNone(state.target("catchup", sample, now, "core-catchup"))
+        sample["core_complete"] = True
+        for now in range(90, 150, 15):
+            self.assertIsNone(state.target("catchup", sample, now, "core-catchup"))
+        self.assertEqual(state.target("catchup", sample, 150, "core-catchup"), "runtime-ready")
+        self.assertIsNone(state.target("catchup", sample, 165, "runtime-ready"))
+        sample.update(core_complete=False, lag=1000)
+        for now in range(180, 480, 15):
+            self.assertIsNone(state.target("catchup", sample, now, "runtime-ready"))
+        self.assertEqual(state.target("catchup", sample, 480, "runtime-ready"), "core-catchup")
+
     def test_core_release_uses_a_window_and_is_not_repeated(self):
         state = lifecycle.Stability()
         sample = dict(known=True, complete=False, core_complete=True, identity=1)

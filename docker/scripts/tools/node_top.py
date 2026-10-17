@@ -34,7 +34,7 @@ INSPECT_FORMAT = ('{"id":{{json .Id}},"service":{{json (index .Config.Labels "co
                   '"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},'
                   '"exit_code":{{json .State.ExitCode}},"oom_killed":{{json .State.OOMKilled}},'
                   '"restart_count":{{json .RestartCount}},"memory_limit_bytes":{{json .HostConfig.Memory}},'
-                  '"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}')
+                  '"health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}}}')
 
 
 def _command(args):

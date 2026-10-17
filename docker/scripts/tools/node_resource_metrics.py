@@ -287,7 +287,7 @@ def configuration(env):
     percent = env.get("USDB_RESOURCE_MEMORY_PERCENT", "")
     result = {"phase": env.get("USDB_RESOURCE_PHASE") if env.get("USDB_RESOURCE_PHASE") in {"bitcoin", "overlap", "catchup", "steady"} else None,
               "policy_version": env.get("USDB_RESOURCE_POLICY_VERSION", "1") if env.get("USDB_RESOURCE_POLICY_VERSION", "1") in {"1", "2"} else None,
-              "runtime_budget": env.get("USDB_RESOURCE_RUNTIME_BUDGET") if env.get("USDB_RESOURCE_RUNTIME_BUDGET") in {"bootstrap", "core-ready", "compact"} else None,
+              "runtime_budget": env.get("USDB_RESOURCE_RUNTIME_BUDGET") if env.get("USDB_RESOURCE_RUNTIME_BUDGET") in {"bootstrap", "core-ready", "compact", "core-catchup", "runtime-ready"} else None,
               "mode": env.get("USDB_RESOURCE_MODE") if env.get("USDB_RESOURCE_MODE") in {"auto", "manual"} else None,
               "storage_profile": env.get("USDB_STORAGE_PROFILE") if env.get("USDB_STORAGE_PROFILE") in {"balanced", "slow-disk"} else "legacy",
               "memory_percent": int(percent) if percent.isascii() and percent.isdigit() and len(percent) == 2 and 80 <= int(percent) <= 90 else None,

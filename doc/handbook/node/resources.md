@@ -78,6 +78,18 @@ usdb-node up
 
 Core 容器额度与 `dbcache` 是两个不同限制。增加容器额度主要为文件页缓存和其他分配留空间；`dbcache` 单独按主机容量和上限计算，不随慢盘档增加的额度等比例扩大，也不保证剩余部分全部成为文件缓存。
 
+小内存恢复采用独立的 `core-catchup` 预算：保留 compact 的其他服务预算、系统及外部预留，
+将未分配额度优先加给 Core，最高 **8 GiB**，同时遵守 `--bitcoin-steady-memory-cap`。
+`dbcache` 保持 compact 的大小，新增额度用于文件缓存和其他内存分配。
+例如有效内存 20.49 GiB、90%、Ord 关闭时，Core 可从 2.56 GiB 增至 8 GiB，BH 仍为 5.12 GiB。
+容量紧张或开启 Ord 时，Core 实际所得可能低于 8 GiB；不会挤占其他服务最低预算。
+
+Core 前台、后台验证及启用的 txindex 持续就绪 60 秒后，预算进入 `runtime-ready`，
+释放额外的 Core 内存，阶段仍可保持 `catchup` 等待 Ord 或其他服务。
+所有同步工作完成后才进入 `steady`。短暂 RPC 不可用不会触发降额。
+旧版已经保存的 `catchup / compact` 在新版 `up` 时迁移，涉及的服务正常停止后恢复；
+安装工具包或只读查询本身不会改变容器额度。
+
 ## 上限、观察与调整
 
 | 默认上限 | `balanced` | `slow-disk` |
@@ -94,7 +106,9 @@ Core 容器额度与 `dbcache` 是两个不同限制。增加容器额度主要�
 usdb-node set-resource-policy --mode auto --storage-profile slow-disk --memory-percent 85 --bitcoin-overlap-memory-cap 16g
 ```
 
-`status` 显示当前档位和预算比例；`resources` 显示各阶段额度、系统预留和因上限留下的未分配空间，`resources --json` 可用于采集。资源历史会记录所用档位，便于比较调整前后同一阶段的 RPC 超时、Core/BH 推进速度及 I/O 压力。
+`status --watch` 显示当前阶段、具体预算名称、各服务容器内存上限、系统预留和未分配额度；
+这些是预算而非当前使用量，进程实际占用可用 `usdb-node top` 查看。
+`resources` 显示各阶段额度，`resources --json` 可用于采集。资源历史会记录所用档位，便于比较调整前后同一阶段的 RPC 超时、Core/BH 推进速度及 I/O 压力。
 
 慢盘档不能保证消除所有 RPC 超时，也不会把 HDD 变成 SSD。如果持续没有区块进展，应按[资源历史与内存压力排查](resource-history.md)检查连续样本，再决定是否进一步调整或迁移数据盘。
 
@@ -111,7 +125,7 @@ usdb-node set-resource-policy --mode auto --storage-profile slow-disk --memory-p
 
 建议确认所有同步完成、没有资源切换后，先 `usdb-node down`，再关闭 VM 调整内存。
 恢复 VM 后，实际 `up` 会在容器已停止的条件下按当前容量重算并重新检查同步；旧的 `steady`
-按 `catchup` 重新观察，已有 compact 预算冷启动时保留。已有数据和身份继续由原有门禁检查。
+按 `catchup` 重新观察，已有 compact 预算冷启动时先采用 `core-catchup`，重新确认 Core 同步后释放额度。已有数据和身份继续由原有门禁检查。
 只读 `doctor` 不会重算，若希望先检查再启动，可在停机状态执行
 `set-resource-policy --mode auto → resources → doctor → up`。
 

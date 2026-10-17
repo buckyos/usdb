@@ -8,7 +8,7 @@ import sys
 import time
 import uuid
 
-from resource_policy import (POLICY_VERSION_KEY, build_resource_plan,
+from resource_policy import (MIN_HOST_MEMORY_BYTES, POLICY_VERSION_KEY, build_resource_plan,
                              chain_resources_ready, resource_mode,
                              runtime_policy, validate_resource_environment)
 
@@ -40,22 +40,31 @@ def _prepare_for_up_locked(layout, node):
     if resource_mode(env) != "auto" or not chain_resources_ready(env):
         return False
     memory = node.effective_memory_bytes()
+    migrate_compact = (runtime_policy(env) and env.get("USDB_RESOURCE_PHASE") == "catchup"
+                       and env.get("USDB_RESOURCE_RUNTIME_BUDGET") == "compact")
     needs = (not runtime_policy(env) or env.get("USDB_RESOURCE_HOST_MEMORY_BYTES") != str(memory)
-             or env.get("USDB_RESOURCE_PHASE") == "steady")
+             or env.get("USDB_RESOURCE_PHASE") == "steady" or migrate_compact
+             or env.get("USDB_RESOURCE_RUNTIME_BUDGET") == "runtime-ready")
     if not needs:
         return False
     # Unavailable Docker observations must never masquerade as an empty host.
     observed = node._resource_containers(layout)
-    if any(item["state"] not in {"exited", "dead", "created"} for item in observed.values()):
-        if int(env.get("USDB_RESOURCE_HOST_MEMORY_BYTES", "0")) > memory:
-            raise ValueError("effective host memory decreased while containers are active; run usdb-node down before rebudgeting")
-        return False
     state = node._read_resource_state(layout)
     if state.get("pending") or state.get("recover_services"):
         if env.get("USDB_RESOURCE_HOST_MEMORY_BYTES") == str(memory):
             return False  # Resume the journal's original plan before considering migration.
         raise ValueError("finish the pending resource transition before changing the host memory budget")
+    if any(item["state"] not in {"exited", "dead", "created"} for item in observed.values()):
+        if int(env.get("USDB_RESOURCE_HOST_MEMORY_BYTES", "0")) > memory:
+            raise ValueError("effective host memory decreased while containers are active; run usdb-node down before rebudgeting")
+        if migrate_compact and env.get("USDB_RESOURCE_HOST_MEMORY_BYTES") == str(memory):
+            apply_plan(layout, node, "catchup", runtime_budget="core-catchup", output_to_stderr=True)
+            print("RESOURCE_REBUDGETED: Core catch-up receives unused runtime capacity", file=sys.stderr)
+            return True
+        return False
     settings = {**env, POLICY_VERSION_KEY: "2", "USDB_RESOURCE_PHASE": "catchup"}
+    if memory < MIN_HOST_MEMORY_BYTES or env.get("USDB_RESOURCE_RUNTIME_BUDGET") in {"compact", "core-catchup", "runtime-ready"}:
+        settings["USDB_RESOURCE_RUNTIME_BUDGET"] = "core-catchup"
     settings["USDB_ORD_RESOURCE_POLICY"] = "adaptive-v1"
     desired = {**settings, **build_resource_plan(memory, "catchup", settings).environment()}
     validate_resource_environment(desired, memory)
@@ -92,6 +101,8 @@ def apply_plan(layout, node, target, *, runtime_budget=None, output_to_stderr=Fa
     state = node._read_resource_state(layout)
     if state.get("pending"):
         runtime_budget = state.get("runtime_budget", runtime_budget)
+    elif target == "catchup" and current == "steady" and runtime_budget is None:
+        runtime_budget = "core-catchup"
     settings = dict(env)
     if runtime_budget is not None:
         settings["USDB_RESOURCE_RUNTIME_BUDGET"] = runtime_budget
@@ -217,6 +228,11 @@ class Stability:
                 target = "steady"
             elif phase == "catchup" and budget == "bootstrap" and sample.get("core_complete"):
                 target = "core-ready"
+            elif phase == "catchup" and budget == "core-catchup" and sample.get("core_complete"):
+                target = "runtime-ready"
+            elif (phase == "catchup" and budget == "runtime-ready"
+                  and sample.get("core_complete") is False and sample.get("lag", 0) >= 1000):
+                target = "core-catchup"
             elif phase == "steady" and sample.get("lag", 0) >= 1000:
                 target = "catchup"
         identity = sample.get("identity")
@@ -224,7 +240,7 @@ class Stability:
                 or not 0 < now - self.previous <= 60):
             self.since = now
         self.previous, self.identity, self.candidate = now, identity, target
-        if target and now - self.since >= (300 if target == "catchup" else 60):
+        if target and now - self.since >= (300 if target in {"catchup", "core-catchup"} else 60):
             return target
         return None
 
@@ -256,14 +272,15 @@ def run(layout, node, *, interval=15, sleep=time.sleep):
                     if node.read_env(layout.node_env) != env:
                         stability = Stability()
                         continue
-                    if target in {"steady", "core-ready"} and not state.get("pending"):
+                    if target in {"steady", "core-ready", "runtime-ready"} and not state.get("pending"):
                         key = "complete" if target == "steady" else "core_complete"
                         if not observations(layout, node).get(key):
                             stability = Stability()
                             continue
                     if target:
-                        apply_plan(layout, node, "catchup" if target == "core-ready" else target,
-                                   runtime_budget="core-ready" if target == "core-ready" else None,
+                        budget_target = target in {"core-ready", "runtime-ready", "core-catchup"}
+                        apply_plan(layout, node, "catchup" if budget_target else target,
+                                   runtime_budget=target if budget_target else None,
                                    output_to_stderr=True)
                     node.start_node(layout, sync_timeout_secs=node.DEFAULT_SYNC_TIMEOUT_SECS,
                                     pull=False, output_to_stderr=True)
