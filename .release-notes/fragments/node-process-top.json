@@ -1,0 +1,15 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "node-process-top",
+  "type": "added",
+  "scopes": ["deployment", "node-runtime"],
+  "summary": "Add usdb-node top for independent Docker and systemd process observations",
+  "details": [
+    "Display process state, host PID, uptime, restarts, exit evidence and observed memory without requiring startup resource or RPC checks.",
+    "Support one-shot text, --watch, --json and --all; preserve independent observations when Docker or systemd queries fail.",
+    "Distinguish absent containers, disabled configuration and unavailable observations; never start or repair services."
+  ],
+  "operator_actions": ["Use usdb-node top with an updated node tool package to inspect processes even when ordinary status is blocked."],
+  "compatibility": {"network_reset": false, "data_rebuild": false, "config_change": false, "restart_required": false},
+  "references": []
+}

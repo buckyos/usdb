@@ -30,6 +30,46 @@ usdb-node status
 
 进度面板中的单个组件状态与这里的总体状态不是同一层级。单行 `READY`、下载 100% 或容器显示 `running`，都不代表整个节点就绪。
 
+## 查看服务进程
+
+包含 `top` 的工具版本支持独立查看当前网络节点的进程，不需要启动服务：
+
+```bash
+usdb-node top                        # 输出一次进程清单后退出
+usdb-node top --watch                # 持续观察；Ctrl+C 只退出面板
+usdb-node top --watch --refresh-secs 3
+usdb-node top --json                 # 输出一次机器可读观测
+usdb-node top --all                  # 也显示已结束或尚未创建的辅助任务
+```
+
+`top` 直接查询 controller、monitor 的 systemd 单元及当前节点两个 Compose 项目的容器。
+它不依赖 RPC、同步就绪或内存预算检查，不启动、停止或修复服务；配置不可读时仍查询进程，配置启用状态标为未知。
+标题中的 `tool` 是当前工具包版本，不代表运行容器已经切换到这个版本。
+
+每行展示服务、管理方式、进程状态、宿主机主 PID、当前进程运行时间、重启计数、退出码以及内存使用/上限。
+Docker 主 PID 可能是容器入口或监督进程，其他子进程没有逐一展开。重启计数属于当前容器或 systemd 单元，重建后可能重置。
+Docker 内存使用取自 `docker stats` 的 working set；systemd 使用 cgroup 统计，二者口径不同，不能当作应用 RSS。
+内存上限来自运行实例，不取资源策略的预计预算；`none` 表示 Docker 未设置内存上限，`-` 表示没有可用观测。
+
+| 状态 | 含义 |
+| --- | --- |
+| `RUNNING` / `PAUSED` / `RESTARTING` | 实际进程或容器状态；不表示业务已就绪 |
+| `CREATED` | 容器已创建，但未处于运行状态 |
+| `EXITED` / `FAILED` | 容器已退出或 systemd 单元失败；结合退出码、信号和 OOM 标记判断 |
+| `STOPPED` / `COMPLETED` | systemd 单元未运行，或一次性单元已完成且无主进程 |
+| `NOT_CREATED` | 成功查询后，当前没有对应容器；不表示历史上从未运行 |
+| `NOT_INSTALLED` | systemd 未找到对应单元 |
+| `DISABLED` | 配置明确禁用且当前没有运行实例；禁用但仍运行的服务仍显示实际状态并提示冲突 |
+| `UNKNOWN` | 查询失败或实例在采集时变化，不能据此认定已经停止 |
+
+默认显示核心服务与可选 Ord；辅助任务运行中或异常退出时也自动显示，`--all` 展开其余辅助任务。
+退出码 137 本身不是 OOM 的充分证据，只有实际观测到时才标记 `OOMKilled=true`。
+Docker、systemd 查询独立失败，其他来源的有效结果仍保留。普通 `status` 因资源检查提前结束时，也可以使用 `top` 诊断进程。
+
+JSON schema 为 `usdb-node-top:v1`；`services` 是数组，保留同名服务的多个实际容器及其 ID。
+退出码 0 仅表示进程清单采集完成，即使所有服务都停止；退出码 1 表示有进程来源不可读或身份无法确认。
+可选内存统计不可用时保留进程状态并显示 `-`。`--json` 与 `--watch` 互斥；这项查询不替代 `status` / `doctor` 的健康检查。
+
 ## 矿工身份与出块收益
 
 包含矿工面板改进的工具在 `status --watch` 中增加以下信息，`--details` 展开区块 hash 和核对时间：

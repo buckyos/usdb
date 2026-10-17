@@ -126,6 +126,12 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertEqual(command.returncode, 0, command.stderr)
         self.assertIn("monitor", command.stdout)
         self.assertTrue((output / "docker/scripts/tools/node_controller_status.py").is_file())
+        self.assertTrue((output / "docker/scripts/tools/node_top.py").is_file())
+        command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
+                                  "top", "--help"], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(command.returncode, 0, command.stderr)
+        for flag in ("--watch", "--json", "--all", "--refresh-secs"):
+            self.assertIn(flag, command.stdout)
         self.assertTrue((output / "docker/scripts/tools/node_background_services.py").is_file())
         command = subprocess.run([sys.executable, str(output / "docker/scripts/tools/usdb_node.py"),
                                   "uninstall", "--help"], cwd=self.root, capture_output=True, text=True)

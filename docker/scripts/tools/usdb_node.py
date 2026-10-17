@@ -6458,6 +6458,15 @@ workflow:
         help="dashboard refresh interval (default: 5 seconds)",
     )
 
+    top = subparsers.add_parser("top", help="Show Docker and systemd processes without starting services",
+        description="Inspect this node's processes independently of configuration, resource and RPC readiness checks. "
+                    "Exit 0 means process observations completed, not that the node is ready; exit 1 means an observation is incomplete.")
+    top_output = top.add_mutually_exclusive_group()
+    top_output.add_argument("--watch", action="store_true", help="refresh until Ctrl+C; never start or repair services")
+    top_output.add_argument("--json", action="store_true", help="emit one machine-readable process inventory")
+    top.add_argument("--all", action="store_true", dest="include_all", help="also show inactive auxiliary jobs")
+    top.add_argument("--refresh-secs", type=float, default=5, help="watch refresh interval (default: 5 seconds)")
+
     controller = subparsers.add_parser(
         "controller",
         help="Install and operate the systemd-supervised bootstrap controller",
@@ -6894,6 +6903,10 @@ def main() -> int:
         if args.command == "config":
             import node_config_view
             return node_config_view.show(args.kit_root, args.node_env, sys.modules[__name__], json_output=args.json)
+        if args.command == "top":
+            import node_top
+            return node_top.show(args.kit_root, args.node_env, sys.modules[__name__], watch=args.watch,
+                                 json_output=args.json, include_all=args.include_all, refresh_secs=args.refresh_secs)
         layout = load_release_layout(args.kit_root, args.node_env)
         operation = _operation_name(args)
         operation_context = (
@@ -6910,7 +6923,7 @@ def main() -> int:
         print("Check saved settings: usdb-node config. Run usdb-node setup again when ready.", file=sys.stderr)
         return 130
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        if args.command in {"up", "mining", "sourcedao", "peers", "version", "config", "upgrade-plan", "upgrade-release", "upgrade-status", "upgrade-cleanup"} and getattr(args, "json", False):
+        if args.command in {"up", "mining", "sourcedao", "peers", "version", "config", "top", "upgrade-plan", "upgrade-release", "upgrade-status", "upgrade-cleanup"} and getattr(args, "json", False):
             print(
                 json.dumps(
                     {

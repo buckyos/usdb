@@ -77,6 +77,7 @@ jobs:
           python3 tests/test_ord_release.py
           python3 tests/test_node_setup_edit.py
           python3 tests/test_node_config_view.py
+          python3 tests/test_node_top.py
           python3 tests/test_node_network_switch.py
           python3 tests/test_node_install_guidance.py
           python3 tests/test_node_storage.py
