@@ -17,6 +17,7 @@ import node_doctor as presentation
 import resource_policy as policy
 import usdb_node as node
 from common.native_node import native_kit
+from common.node_identity import provision_identity
 
 
 class DoctorTests(unittest.TestCase):
@@ -32,6 +33,7 @@ class DoctorTests(unittest.TestCase):
             node.configure_node(self.layout, data_root=self.root / "data", role="full", miner_address="",
                                 miner_threads=1, bootnodes="", nat="none", bitcoin_rpc_user=None,
                                 bitcoin_p2p="private", resource_management="auto")
+        provision_identity(self.layout, node)
 
     def helper(self, layout, helper, args, **kwargs):
         self.assertTrue(kwargs.get("capture_output"))
@@ -69,6 +71,23 @@ class DoctorTests(unittest.TestCase):
         self.assertIn("local checks do not prove public reachability", compact)
         self.assertIn("does not mean services are running or synchronized", compact)
         self.assertNotIn("Not checked", output)
+
+    def test_missing_identity_blocks_doctor_status_and_up_without_generation(self):
+        import node_identity
+        key = node_identity.key_path(self.layout, node)
+        key.unlink()
+        result, output = self.command()
+        self.assertEqual(result, 1)
+        self.assertIn('P2P_IDENTITY_REQUIRED', output)
+        with mock.patch('node_resource_lifecycle.prepare_for_up'), \
+                mock.patch.object(node, 'run_helper') as helper:
+            report, code = node.up_node(self.layout, dry_run=False, allow_activation=False,
+                sync_timeout_secs=1, pull=True, json_output=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(report['status']['overall_state'], 'BLOCKED')
+        self.assertIn('identity restore', report['status']['checks']['data']['summary'])
+        helper.assert_not_called()
+        self.assertFalse(key.exists())
 
     def test_host_session_block_preserves_both_streams_and_stops_later_checks(self):
         calls = []

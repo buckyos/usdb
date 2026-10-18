@@ -132,7 +132,17 @@ usdb-node setup --p2p-ip-family dual --advertise-ipv6 "$USDB_NODE_IPV6"
 
 ## 5. 检查并启动
 
-先执行：
+包含身份保护功能的版本需要先明确选择 P2P 身份。全新节点执行：
+
+```bash
+usdb-node identity status
+usdb-node identity create --execute
+```
+
+创建需要输入显示的确认短语。已有有效身份时跳过创建；升级、跨网络切换或重装希望沿用旧公钥时，
+按[管理 P2P 节点身份](identity.md)显式恢复旧 key。`setup` 和 `up` 不会自动生成替代身份。
+
+然后执行：
 
 ```bash
 usdb-node doctor

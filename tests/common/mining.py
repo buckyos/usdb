@@ -209,6 +209,7 @@ class RuntimeScriptFixture:
         self.script = Path(__file__).resolve().parents[3] / "go-ethereum/scripts/usdb/docker/usdb_runtime_node.sh"
         self.data = self.root / "data"
         (self.data / "geth/chaindata").mkdir(parents=True)
+        (self.data / "geth/nodekey").write_text("0" * 63 + "1")
         (self.data / "geth/chaindata/CURRENT").write_text("MANIFEST-1")
         (self.data / "bootstrap").mkdir()
         genesis = self.root / "genesis.json"

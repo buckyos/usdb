@@ -86,10 +86,12 @@ class NativeBundleTests(unittest.TestCase):
         self.root = Path(temporary.name)
 
     def configure(self, layout):
+        from common.node_identity import provision_identity
         with mock.patch.object(node, "effective_memory_bytes", return_value=64 * policy.GIB), \
              mock.patch.object(node, "_validate_data_root_capacity"):
             node.configure_node(layout, data_root=self.root / "data", role="full", miner_address="", miner_threads=1,
                                 bootnodes="", nat="none", bitcoin_rpc_user=None, bitcoin_p2p="private", resource_management="auto")
+        provision_identity(layout, node)
 
     def test_native_kit_configures_without_legacy_snapshot_and_loads_in_isolation(self):
         layout = native_kit(self.root)
@@ -491,6 +493,8 @@ class NativeBundleTests(unittest.TestCase):
             self.assertFalse(setup.install_snapshot)
             self.assertFalse(any("Use this release-approved snapshot" in prompt for prompt in prompts))
             self.assertIn("Native AssumeUTXO bootstrap", output.getvalue())
+            from common.node_identity import provision_identity
+            provision_identity(installed, node)
             import usdb_p2p
             with mock.patch.object(node, "run_host_action"), mock.patch.object(usdb_p2p, "check_host"), \
                  mock.patch.object(node, "run_helper") as helper, redirect_stdout(output):

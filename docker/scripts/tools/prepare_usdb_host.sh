@@ -210,6 +210,7 @@ check_required_tools() {
   local python_bin=""
   local curl_bin=""
   local jq_bin=""
+  local openssl_bin=""
 
   if docker_bin="$(resolve_command docker)"; then
     print_version "Docker Engine CLI" "${docker_bin}" --version || failures=$((failures + 1))
@@ -245,6 +246,13 @@ check_required_tools() {
     print_version "jq" "${jq_bin}" --version || failures=$((failures + 1))
   else
     echo "FAIL jq: jq is missing" >&2
+    failures=$((failures + 1))
+  fi
+
+  if openssl_bin="$(resolve_command openssl)"; then
+    print_version "OpenSSL" "${openssl_bin}" version || failures=$((failures + 1))
+  else
+    echo "FAIL OpenSSL: openssl is missing" >&2
     failures=$((failures + 1))
   fi
 
@@ -440,7 +448,7 @@ install_base_packages() {
     -o APT::Get::List-Cleanup=false
   )
   apt_get "${source_options[@]}" update --error-on=any
-  apt_get "${source_options[@]}" install -y ca-certificates curl git python3 jq
+  apt_get "${source_options[@]}" install -y ca-certificates curl git python3 jq openssl
 }
 
 # Complete downloads before invoking dpkg so source fallback remains safe.

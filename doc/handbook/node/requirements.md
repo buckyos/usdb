@@ -96,7 +96,7 @@ sudo apt-get update
 sudo apt-get install -y ca-certificates curl python3 tar coreutils bash
 ```
 
-其他发行版使用对应的包管理器安装上述工具。Docker、Compose、Git 和 jq 等完整节点依赖，在安装节点工具后通过 `usdb-node prepare-host` 检查和准备，步骤见[安装与入网](install.md)。已有容器工作负载的主机如提示软件包冲突，先处理冲突，不直接卸载现有运行时。
+其他发行版使用对应的包管理器安装上述工具。Docker、Compose、Git、jq 和用于身份校验的 OpenSSL 等完整节点依赖，在安装节点工具后通过 `usdb-node prepare-host` 检查和准备，步骤见[安装与入网](install.md)。已有容器工作负载的主机如提示软件包冲突，先处理冲突，不直接卸载现有运行时。
 
 ## 端口与防火墙
 

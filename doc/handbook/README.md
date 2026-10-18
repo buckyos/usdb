@@ -30,6 +30,7 @@
 | 使用或部署浏览器、公共 RPC 与专用查询节点 | [USDB Explorer](services/explorer.md) |
 | 停机、续跑、升级或安排备份 | [日常维护](node/maintenance.md) |
 | 判断新版本兼容性、保留数据重建或恢复中断升级 | [升级预检与重建](node/upgrade.md) |
+| 查看、创建、恢复或更换 P2P 节点身份 | [管理 P2P 节点身份](node/identity.md) |
 | 处理安装、权限、同步或连接错误 | [故障排查](troubleshooting/README.md) |
 
 新节点按“测试网资料 → 环境准备 → 安装与入网 → 状态确认”的顺序阅读。发生故障时，可以直接从现象进入故障排查。

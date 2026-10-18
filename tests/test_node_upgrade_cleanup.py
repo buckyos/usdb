@@ -58,7 +58,16 @@ class CleanupTests(unittest.TestCase):
 
     def run_cleanup(self):
         phrase = f"CLEANUP {self.f.bundle} {self.state['operation_id']} {socket.gethostname()}"
-        return cleanup.Cleanup(self.f.backup, node).run(confirm=lambda: phrase)
+        answers = [phrase]
+        for item in self.items:
+            if item['kind'] == 'usdb_chain' and Path(item['path']).exists():
+                answers.extend('REMOVE IDENTITY ' + value for value in core.identity_fingerprints(Path(item['path'])).values())
+        return cleanup.Cleanup(self.f.backup, node).run(confirm=iter(answers).__next__)
+
+    def test_generic_cleanup_confirmation_does_not_authorize_identity_removal(self):
+        phrase = f"CLEANUP {self.f.bundle} {self.state['operation_id']} {socket.gethostname()}"
+        self.assertEqual(cleanup.Cleanup(self.f.backup, node).run(confirm=lambda: phrase), 0)
+        self.assertTrue(all(Path(item['path']).exists() for item in self.items))
 
     def snapshot(self):
         return {str(p): core.stamp(p) for p in self.root.rglob('*')}

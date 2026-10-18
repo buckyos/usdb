@@ -47,6 +47,41 @@ def overlap(left: Path, right: Path) -> bool:
     return left == right or left in right.parents or right in left.parents
 
 
+def identity_fingerprints(root: Path) -> dict[str, str]:
+    """Identify protected P2P files without exposing their contents or following links."""
+    result = {}
+    for relative in ("geth/nodekey", "nodekey"):
+        path = root / relative
+        safe_path(path)
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            continue
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= 4096,
+                    "Invalid nodekey file; preserve it for explicit identity recovery")
+            data = source.read(4097)
+        require(len(data) <= 4096, "Nodekey changed while inspecting it")
+        result[relative] = hashlib.sha256(data).hexdigest()
+    return result
+
+
+def confirm_identity_removal(root: Path, *, input_fn=None) -> dict[str, str] | None:
+    """A general data deletion approval never authorizes removing a P2P identity."""
+    fingerprints = identity_fingerprints(root)
+    for relative, fingerprint in fingerprints.items():
+        print(f"P2P identity removal: {root / relative}\nFingerprint: {fingerprint}")
+        print("Reinstall/setup will not restore this identity automatically; keep its private backup.")
+        phrase = "REMOVE IDENTITY " + fingerprint
+        print(f"Type exactly '{phrase}' to authorize this identity removal:", flush=True)
+        if (input_fn or input)().strip() != phrase:
+            print("Cancelled; P2P identity removal was not authorized.")
+            return None
+    require(identity_fingerprints(root) == fingerprints, "Identity changed during confirmation")
+    return fingerprints
+
+
 def safe_path(path: Path, *, leaf_link=False):
     for item in (path, *path.parents):
         require(not item.is_symlink() or (item == path and leaf_link), f"Refusing symlink path: {item}")
@@ -629,6 +664,9 @@ class Session:
         backup_note = "No full data backup is made for this target." if target.preserve is None or target.preserve else "An independently verified full copy is retained."
         if not confirm("DELETE", source, "This removes the selected path permanently. " + backup_note):
             return
+        identity = confirm_identity_removal(source) if target.key == "chain" else {}
+        if identity is None:
+            return
         check_stopped(self.plan, deleting=source)
         safe_path(source, leaf_link=bool(target.link))
         check_mounts(source)
@@ -649,6 +687,8 @@ class Session:
             self.check_target(target)
             check_stopped(self.plan, deleting=source)
             check_mounts(source)
+            if target.key == "chain":
+                require(identity_fingerprints(source) == identity, "Identity changed after deletion confirmation")
             self.event("delete_started", source)
             if target.key == "controller-unit" and not os.access(source.parent, os.W_OK):
                 subprocess.run(["sudo", "rm", "--", str(source)], check=True)

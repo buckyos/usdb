@@ -31,6 +31,7 @@ SOURCE_BUNDLE = REPOSITORY_ROOT / "docker/networks/testnet-v0"
 sys.path.insert(0, str(REPOSITORY_ROOT / "tests"))
 from common.enode import V4 as VALID_SEED
 from common.p2p import HOST, V4
+from common.node_identity import provision_identity
 import usdb_p2p as P2P
 
 
@@ -112,6 +113,7 @@ class UsdbNodeTests(unittest.TestCase):
             bitcoin_rpc_user="node-a",
             bitcoin_p2p="private",
         )
+        provision_identity(layout, NODE)
 
     def test_query_mode_preserves_identity_and_supports_partial_updates(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -2630,7 +2632,8 @@ class UsdbNodeTests(unittest.TestCase):
         install_controller.assert_called_once_with(layout)
         self.assertIn("bootstrap controller will download", output.getvalue())
         self.assertIn("Installed and enabled", output.getvalue())
-        self.assertIn("usdb-node doctor, then usdb-node up", output.getvalue())
+        self.assertIn("Confirm P2P identity", output.getvalue())
+        self.assertIn("usdb-node doctor and usdb-node up", output.getvalue())
         self.assertIn("WARN Docker session", output.getvalue())
         self.assertIn("newgrp docker", output.getvalue())
 
@@ -3064,6 +3067,7 @@ class UsdbNodeTests(unittest.TestCase):
             bitcoin_p2p="private",
             firewall_mode="managed",
         )
+        provision_identity(layout, NODE)
         with (
             mock.patch.object(NODE, "run_host_action") as host,
             mock.patch.object(NODE, "run_helper") as helper,
@@ -3239,6 +3243,7 @@ class UsdbNodeTests(unittest.TestCase):
             bitcoin_rpc_user="node-a",
             bitcoin_p2p="private",
         )
+        provision_identity(layout, NODE)
         output = io.StringIO()
         with (
             mock.patch.object(NODE, "run_host_action") as host,

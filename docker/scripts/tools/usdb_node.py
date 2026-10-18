@@ -1874,6 +1874,8 @@ def setup_node(
         minting=minting,
         monitor=monitor_enabled,
     )
+    import node_identity
+    node_identity.guidance(layout, sys.modules[__name__], output)
     return SetupResult(
         node_env=path,
         apply_firewall=manage_firewall,
@@ -2603,6 +2605,8 @@ def doctor(
             require_bitcoin_runtime=True,
             require_snapshot_artifacts=not pending,
         )
+        import node_identity
+        node_identity.require_ready(layout, sys.modules[__name__])
         return pending
 
     pending_snapshot = check("data", data)
@@ -5623,7 +5627,9 @@ def _collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
             require_runtime=False,
             require_bitcoin_runtime=True,
         )
-    except (OSError, ValueError) as error:
+        import node_identity
+        node_identity.require_ready(layout, sys.modules[__name__])
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         checks["data"] = {"state": "invalid", "summary": str(error)}
         return _finish_node_status(
             report,
@@ -6182,6 +6188,8 @@ def build_parser() -> argparse.ArgumentParser:
     usdb_sourcedao.add_parser(subparsers)
     import node_uninstall
     node_uninstall.add_parser(subparsers)
+    import node_identity
+    node_identity.add_parser(subparsers)
     import node_upgrade
     node_upgrade.add_parser(subparsers)
     import node_upgrade_archives
@@ -6557,6 +6565,10 @@ def _operation_name(args: argparse.Namespace) -> str | None:
 
 def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
     import node_network_switch
+    if args.command == "identity":
+        node_network_switch.require_selected_network(layout)
+        import node_identity
+        return node_identity.dispatch(args, layout, sys.modules[__name__])
     if args.command in {"setup", "configure", "up"} or (
             args.command == "controller" and args.controller_action in {"run", "install"}) or (
             args.command == "monitor" and args.monitor_action == "run") or (
@@ -6660,7 +6672,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
                 "Skipped the bootstrap controller by explicit request; "
                 "use usdb-node up --foreground or install the controller later."
             )
-            print("Run usdb-node doctor, then usdb-node up --foreground.")
+            print("Confirm P2P identity with usdb-node identity status/create/restore, then run usdb-node doctor and usdb-node up --foreground.")
         else:
             try:
                 path = install_controller_unit(layout)
@@ -6672,7 +6684,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
                 )
                 raise
             print(f"Installed and enabled USDB bootstrap controller: {path.name}")
-            print("Run usdb-node doctor, then usdb-node up.")
+            print("Confirm P2P identity with usdb-node identity status/create/restore, then run usdb-node doctor and usdb-node up.")
         _warn_pending_docker_session()
     elif args.command == "configure":
         import usdb_p2p
@@ -6697,6 +6709,8 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         )
         print(f"Configured {layout.release_id} node: {path}")
         print("Bitcoin RPC credentials were generated locally and were not printed.")
+        import node_identity
+        node_identity.guidance(layout, sys.modules[__name__])
         print("View saved settings: usdb-node config (or usdb-node config --json).")
         print(
             "Run usdb-node controller install before background up, "

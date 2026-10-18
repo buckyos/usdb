@@ -125,6 +125,7 @@ class HostPrepareInstallTests(unittest.TestCase):
             "git": "echo 'git version 2.43.0'",
             "python3": "echo 'Python 3.14.4'",
             "jq": "echo 'jq-1.7'",
+            "openssl": "echo 'OpenSSL 3.5.0'",
         }
         for name, body in commands.items():
             path = self.bin / name
@@ -289,7 +290,7 @@ class HostPrepareInstallTests(unittest.TestCase):
                     (self.root / "apt-calls").read_text().splitlines(),
                     [
                         "update --error-on=any",
-                        "install -y ca-certificates curl git python3 jq",
+                        "install -y ca-certificates curl git python3 jq openssl",
                         "update --error-on=any",
                         "install -y --download-only docker-ce docker-ce-cli containerd.io "
                         "docker-buildx-plugin docker-compose-plugin",

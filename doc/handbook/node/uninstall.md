@@ -16,7 +16,10 @@
 | 清空当前节点，准备重新安装同步 | `usdb-node uninstall --purge-data --execute` | 先备份配置、钱包、节点身份及监控历史；区块、BH/indexer/chain 数据库和下载快照不备份 |
 
 **不加 `--execute` 时只预览路径，不停止服务，也不删除文件。** 执行时还需要交互确认，
-没有 `--yes` 或通过管道跳过确认的入口。只运行 `controller stop` 不能代替停止整个节点。
+没有 `--yes` 或通过管道跳过确认的入口。
+清空涉及 nodekey 时，还需要单独输入 `REMOVE IDENTITY <完整文件SHA-256>`；通用的 PURGE 确认不授权删除身份。
+重新安装不会自动恢复或生成身份，需显式选择[恢复备份或创建新身份](identity.md)。
+只运行 `controller stop` 不能代替停止整个节点。
 包含自动停用自启改进的新版工具只需先执行 `down`，不再要求额外执行 `controller disable`：
 `uninstall --execute` 会检查本节点 controller、新版 monitor 和旧 console monitor 的自启状态，
 在确认并完成私有备份校验后自动禁用，再复查并继续删除。必要时通过 sudo 提示输入密码，整个卸载复用这次提权。

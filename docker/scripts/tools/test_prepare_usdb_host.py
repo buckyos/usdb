@@ -24,6 +24,7 @@ class PrepareUsdbHostTests(unittest.TestCase):
             ("python3", "Python 3.12.3"),
             ("curl", "curl 8.5.0"),
             ("jq", "jq-1.7"),
+            ("openssl", "OpenSSL 3.5.0"),
         ):
             self.write_command(name, f"echo '{version}'")
         self.write_docker(compose_ok=True, daemon_ok=True)

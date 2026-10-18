@@ -184,6 +184,20 @@ class RebuildTests(unittest.TestCase):
         self.assertTrue(self.fixture.paths["BH_DATA_HOST_DIR"].exists())
         self.assertFalse(self.fixture.paths["BH_SNAPSHOT_HOST_DIR"].exists())
 
+    def test_chain_cleanup_requires_separate_identity_confirmation(self):
+        session = self.fixture.session(tool)
+        target = self.target(session, 'chain')
+        key = target.path / 'geth/nodekey'
+        key.parent.mkdir(exist_ok=True)
+        key.write_text('0' * 63 + '1')
+        with self.operations(), mock.patch('builtins.input', return_value='DELETE'):
+            session.clean(target)
+        self.assertTrue(key.is_file())
+        fingerprint = tool.identity_fingerprints(target.path)['geth/nodekey']
+        with self.operations(), mock.patch('builtins.input', return_value='REMOVE IDENTITY ' + fingerprint):
+            session.clean(target)
+        self.assertFalse(target.path.exists())
+
     def test_only_rocksdb_is_archived_and_other_selected_paths_need_no_backup(self):
         session = self.fixture.session(tool)
         outside = self.root / "unrelated"

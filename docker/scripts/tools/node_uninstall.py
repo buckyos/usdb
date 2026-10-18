@@ -113,6 +113,7 @@ def show(value, backup):
     print(f"\nPrivate backup and resumable record: {backup}")
     if value["purge_data"]:
         print("Before deletion: archive and SHA-256 verify configuration, monitor history, node identities, wallet/private state and service definitions.")
+        print("P2P nodekey removal requires an additional REMOVE IDENTITY <fingerprint> confirmation; PURGE alone is insufficient.")
         if value.get("keep_bitcoin"):
             print("Bitcoin data (including wallets) and raw UTXO snapshot remain in place, not copied to the private backup.")
             print("BH/indexer/chain databases, Ord index and legacy BH snapshots are NOT backed up; those services must synchronize again.")
@@ -347,6 +348,13 @@ class Session:
         if input().strip() != phrase:
             print("Cancelled; no service settings or node files were changed.")
             return 0
+        identities = {}
+        for item in self.plan["targets"]:
+            if item["key"] == "chain":
+                approved = core.confirm_identity_removal(Path(item["path"]))
+                if approved is None:
+                    return 0
+                identities[item["path"]] = approved
         with ExitStack() as locks:
             lock_path = self.root / ".lock"
             core.safe_path(lock_path)
@@ -384,6 +392,9 @@ class Session:
                     continue
                 check_targets(self.plan)
                 check_stopped(self.plan, deleting=source)
+                if item["key"] == "chain":
+                    core.require(core.identity_fingerprints(source) == identities[str(source)],
+                                 "P2P identity changed after removal confirmation")
                 self.backup(only=source)
                 self.event("delete_started", source)
                 if source.is_dir() and not source.is_symlink():

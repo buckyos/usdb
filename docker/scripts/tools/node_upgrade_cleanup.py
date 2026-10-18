@@ -228,6 +228,13 @@ class Cleanup:
         if confirm().strip() != phrase:
             print("Cancelled; no archive was deleted.")
             return 0
+        identities = {}
+        for item in self.items:
+            if item["kind"] == "usdb_chain" and Path(item["path"]).exists():
+                approved = core.confirm_identity_removal(Path(item["path"]), input_fn=confirm)
+                if approved is None:
+                    return 0
+                identities[item["path"]] = approved
         with ExitStack() as locks:
             catalog_lock(self.plan["data_root"], locks, (self.plan["operator_uid"], self.plan["operator_gid"]))
             lock = self.root / ".lock"
@@ -255,6 +262,9 @@ class Cleanup:
                     core.require(not path.exists(), f"Deleted archive was recreated: {path}")
                     continue
                 if path.exists():
+                    if item["kind"] == "usdb_chain":
+                        core.require(core.identity_fingerprints(path) == identities.get(str(path), {}),
+                                     "Archived identity changed after removal confirmation")
                     verify_remaining(path, record["tree"], partial=record["delete_started"])
                     record["delete_started"] = True
                     self.save()
