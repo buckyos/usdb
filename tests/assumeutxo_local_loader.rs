@@ -25,6 +25,46 @@ fn loader_config(work: &Workspace, threshold: usize) -> Arc<BalanceHistoryConfig
     Arc::new(cfg)
 }
 
+#[test]
+fn production_preloader_selects_and_refreshes_local_source_once_per_batch() {
+    let work = Workspace::new();
+    let chain = chain("blocks");
+    let mut cfg = (*chain.native_config(&work.0, 101)).clone();
+    prepare_native_bootstrap(
+        Arc::new(cfg.clone()),
+        chain.client_with_stable_tip(),
+        &|| false,
+    )
+    .unwrap();
+    cfg.sync.local_loader_threshold = 0;
+    cfg.btc.data_dir = Some(work.0.join("node"));
+    let cfg = Arc::new(cfg);
+    let dir = cfg.btc.data_dir().join("blocks");
+    fs::create_dir_all(&dir).unwrap();
+    // One refresh has a 4096-record budget. A per-block refresh would scan the final record too.
+    let mut bytes = frame(cfg.btc.block_magic(), &chain.blocks[102]).repeat(4096);
+    bytes.extend(frame(cfg.btc.block_magic(), &chain.blocks[103]));
+    write_file(&dir.join("blk00011.dat"), &bytes, [0; 8], 0);
+    let rpc = GrowingChain::new(chain.clone(), 113);
+    let loader = CanonicalBlockLoader::new(rpc.client(), &cfg).unwrap();
+    let client: BTCClientRef = Arc::new(Box::new(loader));
+    let output = Arc::new(crate::output::IndexOutput::new(Arc::new(
+        crate::status::SyncStatusManager::new(),
+    )));
+    let indexer =
+        crate::index::BalanceHistoryIndexer::new_with_btc_client(cfg, output, client.clone())
+            .unwrap();
+    indexer.process_block_batch(102..104, 103).unwrap();
+    assert_eq!(rpc.tip_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(rpc.hash_calls.load(Ordering::Relaxed), 5); // Parent, two blocks, range end, commit end.
+    assert_eq!(rpc.payload_calls.load(Ordering::Relaxed), 1); // Unscanned block 103 falls back.
+    assert_eq!(indexer.db().get_btc_block_height().unwrap(), 103);
+    client.stop().unwrap();
+    let calls = rpc.hash_calls.load(Ordering::Relaxed);
+    assert!(client.load_block_range(102, 103).is_err());
+    assert_eq!(rpc.hash_calls.load(Ordering::Relaxed), calls);
+}
+
 #[tokio::test]
 async fn canonical_loader_sparse_dual_append_xor_restart_and_reorg() {
     let work = Workspace::new();

@@ -154,15 +154,25 @@ impl CanonicalBlockLoader {
 
     // Canonical hashes, parent continuity and a final tip-hash check prevent stale fork locations
     // or a reorg during retrieval from silently defining the block batch's logical order.
-    fn local_range(&self, start: u32, end: u32) -> Result<Vec<Block>, String> {
+    fn canonical_range(&self, start: u32, end: u32, local: bool) -> Result<Vec<Block>, String> {
         let mut blocks = Vec::new();
         let mut parent = start
             .checked_sub(1)
             .map(|h| self.rpc.get_block_hash(h))
             .transpose()?;
         for height in start..=end {
+            if self.stopped.load(Ordering::Relaxed) {
+                return Err("Canonical block loader stopped".to_string());
+            }
             let hash = self.rpc.get_block_hash(height)?;
-            let block = self.payload(&hash)?;
+            let block = if local {
+                self.payload(&hash)?
+            } else {
+                let block = self.rpc.get_block_by_hash(&hash)?;
+                validate_payload(&block, &hash)?;
+                self.rpc_blocks.fetch_add(1, Ordering::Relaxed);
+                block
+            };
             if parent.is_some_and(|p| block.header.prev_blockhash != p) {
                 return Err(format!(
                     "Canonical local block batch parent changed at height {height}"
@@ -199,8 +209,8 @@ impl BTCClient for CanonicalBlockLoader {
         self.rpc.init()
     }
     fn stop(&self) -> Result<(), String> {
-        self.rpc.stop()?;
         self.stopped.store(true, Ordering::Relaxed);
+        self.rpc.stop()?;
         Ok(())
     }
     fn on_sync_complete(&self, _height: u32) -> Result<(), String> {
@@ -231,17 +241,26 @@ impl BTCClient for CanonicalBlockLoader {
     }
     fn get_block_by_height(&self, height: u32) -> Result<Block, String> {
         if self.use_local(height)? && self.refresh() {
-            return self.local_range(height, height).map(|mut b| b.remove(0));
+            return self
+                .canonical_range(height, height, true)
+                .map(|mut b| b.remove(0));
         }
         self.rpc_blocks.fetch_add(1, Ordering::Relaxed);
         self.rpc.get_block_by_height(height)
+    }
+    fn load_block_range(&self, start: u32, end: u32) -> Result<Vec<Block>, String> {
+        if start > end {
+            return Err("Invalid canonical block range".to_string());
+        }
+        let local = self.use_local(start)? && self.refresh();
+        self.canonical_range(start, end, local)
     }
     async fn get_blocks(&self, start: u32, end: u32) -> Result<Vec<Block>, String> {
         if start > end {
             return Err("Invalid canonical block range".to_string());
         }
         if self.use_local(start)? && self.refresh() {
-            return self.local_range(start, end);
+            return self.canonical_range(start, end, true);
         }
         let blocks = self.rpc.get_blocks(start, end).await?;
         self.rpc_blocks

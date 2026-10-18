@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "bh-indexer-sync-scheduling",
+  "type": "changed",
+  "scopes": ["balance-history", "indexer", "node-runtime", "deployment"],
+  "summary": "Reduce new-block observation latency and bound synchronization work during Bitcoin RPC pressure",
+  "details": [
+    "Default BH and indexer idle observation to 250 milliseconds, independently collect Bitcoin and BH status, and wake indexer synchronization when relevant upstream state changes. Explicit polling configuration remains authoritative.",
+    "Apply bounded runtime retries to transient read-only Bitcoin RPC failures and capped exponential service backoff. Preserve cancellation, canonical hash checks and completed database commits; native bootstrap retains its separate retry policy.",
+    "Default BH batch_mode to adaptive: start at up to 32 blocks, halve on RPC retries or slow successful batches down to min(16, batch_size), and grow after four full fast retry-free commits without exceeding batch_size. The existing default cap remains 128 and explicit smaller caps remain effective.",
+    "Select the native block payload source and refresh its local index once per batch. Stop requesting the range suffix after a failed or cancelled RPC read while retaining linkage and final canonicality checks before atomic commit."
+  ],
+  "operator_actions": [
+    "Upgrade the node kit and matching usdb-services image through the normal release procedure, retaining existing Bitcoin, BH, indexer and chain data. Updating only the node kit does not install the new Rust runtime behavior.",
+    "To preserve an exact fixed batch upper bound or run a comparison, set BH_SYNC_BATCH_MODE=fixed and retain the desired BH_SYNC_BATCH_SIZE in node.env. Otherwise the new adaptive default applies; a cap of 16 remains 16."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

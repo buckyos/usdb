@@ -103,9 +103,13 @@ def render_config(env: Mapping[str, str]) -> str:
         table("btc.auth", auth)
     table("ordinals", dict(rpc_url=env.get("ORD_RPC_URL", "http://ord-server:28030")))
     table("electrs", dict(rpc_url=env.get("ELECTRS_RPC_URL", "tcp://electrs:50001")))
+    batch_mode = env.get("BH_SYNC_BATCH_MODE", "adaptive")
+    if batch_mode not in ("adaptive", "fixed"):
+        raise ValueError("BH_SYNC_BATCH_MODE must be adaptive or fixed")
     table("sync", dict(
         local_loader_threshold=unsigned(env, "BH_SYNC_LOCAL_LOADER_THRESHOLD", 500),
         batch_size=unsigned(env, "BH_SYNC_BATCH_SIZE", 128, minimum=1),
+        batch_mode=batch_mode,
         poll_interval_ms=unsigned(env, "BH_SYNC_POLL_INTERVAL_MS", 250, minimum=100, maximum=60000),
         utxo_max_cache_bytes=unsigned(env, "BH_SYNC_UTXO_MAX_CACHE_BYTES", 2147483648, minimum=1048576, maximum=2**63-1),
         balance_max_cache_bytes=unsigned(env, "BH_SYNC_BALANCE_MAX_CACHE_BYTES", 6442450944, minimum=1048576, maximum=2**63-1),

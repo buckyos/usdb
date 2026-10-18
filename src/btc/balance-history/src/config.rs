@@ -118,14 +118,28 @@ fn default_script_registry_slow_query_ms() -> u64 {
     250
 }
 
+/// Select adaptive batch sizing or a fixed operator-specified upper bound.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchMode {
+    #[default]
+    Adaptive,
+    Fixed,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexConfig {
     /// Threshold of blocks behind to switch to LocalLoader client
     #[serde(default = "default_local_loader_threshold")]
     pub local_loader_threshold: usize,
 
+    /// Maximum blocks per commit; a short backlog is processed immediately.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+
+    /// Adaptive mode starts at up to 32 blocks and reacts to actual batch pressure.
+    #[serde(default)]
+    pub batch_mode: BatchMode,
 
     /// Idle canonical-chain observation cadence; does not change stable lag.
     #[serde(default = "default_poll_interval_ms")]
@@ -166,6 +180,7 @@ impl Default for IndexConfig {
         Self {
             local_loader_threshold: default_local_loader_threshold(),
             batch_size: default_batch_size(),
+            batch_mode: BatchMode::default(),
             poll_interval_ms: default_poll_interval_ms(),
             utxo_max_cache_bytes: default_utxo_cache_bytes(),
             balance_max_cache_bytes: default_balance_cache_bytes(),
@@ -562,12 +577,13 @@ impl BalanceHistoryConfig {
             Some(BTCAuth::CookieFile(_)) => "cookie_file",
         };
         info!(
-            "Loaded balance-history {} config: root_dir={}, btc_network={}, btc_auth_mode={}, batch_size={}, poll_interval_ms={}, undo_retention_blocks={}, undo_cleanup_interval_blocks={}, rpc_addr={}:{}, snapshot_trust_mode={:?}, script_registry_cache_size_kib={}, script_registry_query_batch_size={}, script_registry_slow_query_ms={}",
+            "Loaded balance-history {} config: root_dir={}, btc_network={}, btc_auth_mode={}, batch_size={}, batch_mode={:?}, poll_interval_ms={}, undo_retention_blocks={}, undo_cleanup_interval_blocks={}, rpc_addr={}:{}, snapshot_trust_mode={:?}, script_registry_cache_size_kib={}, script_registry_query_batch_size={}, script_registry_slow_query_ms={}",
             source,
             self.root_dir.display(),
             self.btc.network(),
             auth_mode,
             self.sync.batch_size,
+            self.sync.batch_mode,
             self.sync.poll_interval_ms,
             self.sync.undo_retention_blocks,
             self.sync.undo_cleanup_interval_blocks,
@@ -610,6 +626,17 @@ mod tests {
             };
             assert!(config.validate().unwrap_err().contains("poll_interval_ms"));
         }
+    }
+
+    #[test]
+    fn batch_mode_defaults_to_adaptive_and_accepts_explicit_fixed() {
+        let config: IndexConfig = toml::from_str("batch_size = 16").unwrap();
+        assert_eq!(config.batch_mode, BatchMode::Adaptive);
+        assert_eq!(config.batch_size, 16);
+        let fixed: IndexConfig = toml::from_str("batch_mode = 'fixed'\nbatch_size = 64").unwrap();
+        assert_eq!(fixed.batch_mode, BatchMode::Fixed);
+        assert_eq!(fixed.batch_size, 64);
+        assert!(toml::from_str::<IndexConfig>("batch_mode = 'unknown'").is_err());
     }
 
     #[test]

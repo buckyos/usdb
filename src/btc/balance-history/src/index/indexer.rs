@@ -176,6 +176,7 @@ pub struct BalanceHistoryIndexer {
     cache_monitor: MemoryCacheMonitorRef,
     db: BalanceHistoryDBRef,
     batch_block_processor: BatchBlockProcessor,
+    batch_policy: Arc<Mutex<super::batch_policy::BatchPolicy>>,
     output: IndexOutputRef,
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     shutdown_rx: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
@@ -299,6 +300,10 @@ impl BalanceHistoryIndexer {
         );
 
         Ok(Self {
+            batch_policy: Arc::new(Mutex::new(super::batch_policy::BatchPolicy::new(
+                config.sync.batch_mode,
+                config.sync.batch_size,
+            ))),
             config,
             btc_client,
             utxo_cache,
@@ -357,6 +362,10 @@ impl BalanceHistoryIndexer {
         );
 
         Ok(Self {
+            batch_policy: Arc::new(Mutex::new(super::batch_policy::BatchPolicy::new(
+                config.sync.batch_mode,
+                config.sync.batch_size,
+            ))),
             config,
             btc_client,
             utxo_cache,
@@ -1060,16 +1069,53 @@ impl BalanceHistoryIndexer {
         self.output.set_index_message(&msg);
 
         // Process blocks in batches
-        let batch_size = self.config.sync.batch_size;
         let mut current_height = last_synced_height + 1;
         let mut batch_count = 0usize;
 
         while current_height <= latest_btc_height {
-            let end_height =
-                std::cmp::min(current_height + batch_size as u32 - 1, latest_btc_height);
-            info!("Processing blocks [{} - {}]", current_height, end_height);
-            let last_height =
-                self.process_block_batch(current_height..(end_height + 1), latest_btc_height)?;
+            if self.check_shutdown() {
+                break;
+            }
+            let batch_size = self.batch_policy.lock().unwrap().size();
+            let end_height = current_height
+                .saturating_add(batch_size as u32 - 1)
+                .min(latest_btc_height);
+            let exclusive_end = end_height.checked_add(1).ok_or_else(|| {
+                "Block range ending at u32::MAX cannot be represented".to_string()
+            })?;
+            info!(
+                "Processing blocks [{} - {}]: batch_mode={:?}, selected_batch_size={}",
+                current_height, end_height, self.config.sync.batch_mode, batch_size
+            );
+            let begin = Instant::now();
+            let before = self.btc_client.read_stats();
+            let result = self.process_block_batch(current_height..exclusive_end, latest_btc_height);
+            let after = self.btc_client.read_stats();
+            let retries = after.retries.saturating_sub(before.retries);
+            let exhausted = after.exhausted.saturating_sub(before.exhausted);
+            {
+                let mut policy = self.batch_policy.lock().unwrap();
+                let reason = policy.observe(
+                    result.is_ok(),
+                    (exclusive_end - current_height) as usize,
+                    begin.elapsed(),
+                    retries > 0 || exhausted > 0,
+                );
+                if policy.size() != batch_size {
+                    info!(
+                        "Balance-history batch size changed: from={}, to={}, reason={}, elapsed_ms={}, rpc_retries={}, rpc_exhausted={}",
+                        batch_size,
+                        policy.size(),
+                        reason,
+                        begin.elapsed().as_millis(),
+                        retries,
+                        exhausted
+                    );
+                }
+            }
+            // A post-commit maintenance error is returned normally. The next sync iteration
+            // resumes from the DB height, never from the attempted range or the policy state.
+            let last_height = result?;
             current_height = last_height + 1;
             batch_count += 1;
 

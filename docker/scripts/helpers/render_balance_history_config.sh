@@ -9,6 +9,12 @@ if [[ "${SNAPSHOT_MODE:-none}" == "assumeutxo" ]]; then
   exec python3 "${script_dir}/../tools/assumeutxo_bootstrap.py" render --output "${output_path}"
 fi
 
+batch_mode="${BH_SYNC_BATCH_MODE:-adaptive}"
+case "${batch_mode}" in
+  adaptive|fixed) ;;
+  *) echo "BH_SYNC_BATCH_MODE must be adaptive or fixed" >&2; exit 1 ;;
+esac
+
 mkdir -p "${root_dir}" "$(dirname "${output_path}")"
 
 btc_auth_mode="${BTC_AUTH_MODE:-cookie}"
@@ -70,6 +76,7 @@ rpc_url = "${ELECTRS_RPC_URL:-tcp://electrs:50001}"
 [sync]
 local_loader_threshold = ${BH_SYNC_LOCAL_LOADER_THRESHOLD:-500}
 batch_size = ${BH_SYNC_BATCH_SIZE:-128}
+batch_mode = "${batch_mode}"
 poll_interval_ms = ${BH_SYNC_POLL_INTERVAL_MS:-250}
 utxo_max_cache_bytes = ${BH_SYNC_UTXO_MAX_CACHE_BYTES:-2147483648}
 balance_max_cache_bytes = ${BH_SYNC_BALANCE_MAX_CACHE_BYTES:-6442450944}

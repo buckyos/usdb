@@ -1,4 +1,5 @@
 mod address;
+mod batch_policy;
 mod block;
 mod indexer;
 mod snapshot;

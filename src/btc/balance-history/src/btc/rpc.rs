@@ -58,6 +58,15 @@ impl BTCClient for BTCRpcClient {
         self.get_block(block_height)
     }
 
+    fn load_block_range(&self, start: u32, end: u32) -> Result<Vec<Block>, String> {
+        if start > end {
+            return Err("Invalid RPC block range".to_string());
+        }
+        // The shared transport/retry gate already serializes reads. Avoid queueing a task per
+        // block; an exhausted or cancelled read stops the range before requesting its suffix.
+        (start..=end).map(|height| self.get_block(height)).collect()
+    }
+
     async fn get_blocks(&self, start_height: u32, end_height: u32) -> Result<Vec<Block>, String> {
         self.get_blocks(start_height, end_height).await
     }

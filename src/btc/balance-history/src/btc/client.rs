@@ -35,6 +35,19 @@ pub trait BTCClient: Send + Sync {
 
     fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block, String>;
     fn get_block_by_height(&self, block_height: u32) -> Result<Block, String>;
+    /// Load an inclusive range on a blocking sync worker. Implementations may select a
+    /// payload source once per batch; the caller still validates linkage and final canonicality.
+    fn load_block_range(&self, start: u32, end: u32) -> Result<Vec<Block>, String> {
+        use rayon::prelude::*;
+        if start > end {
+            return Err("Invalid block range".to_string());
+        }
+        // Keep legacy/local fixtures bounded by the Rayon pool, and stop scheduling on failure.
+        (start..=end)
+            .into_par_iter()
+            .map(|height| self.get_block_by_height(height))
+            .collect()
+    }
     async fn get_blocks(&self, start_height: u32, end_height: u32) -> Result<Vec<Block>, String>;
     fn get_utxo(&self, outpoint: &OutPoint) -> Result<(ScriptBuf, Amount), String>;
 }

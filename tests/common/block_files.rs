@@ -30,6 +30,8 @@ pub struct GrowingChain {
     pub chain: Fixture,
     pub tip: Arc<AtomicU32>,
     pub payload_calls: Arc<AtomicUsize>,
+    pub tip_calls: Arc<AtomicUsize>,
+    pub hash_calls: Arc<AtomicUsize>,
 }
 
 impl GrowingChain {
@@ -38,6 +40,8 @@ impl GrowingChain {
             chain,
             tip: Arc::new(AtomicU32::new(tip)),
             payload_calls: Arc::new(AtomicUsize::new(0)),
+            tip_calls: Arc::new(AtomicUsize::new(0)),
+            hash_calls: Arc::new(AtomicUsize::new(0)),
         }
     }
     pub fn client(&self) -> BTCClientRef {
@@ -60,10 +64,12 @@ impl crate::btc::BTCClient for GrowingChain {
         Ok(())
     }
     fn get_latest_block_height(&self) -> Result<u32, String> {
+        self.tip_calls.fetch_add(1, Ordering::Relaxed);
         Ok(self.tip.load(Ordering::Relaxed))
     }
     fn get_block_hash(&self, height: u32) -> Result<BlockHash, String> {
-        if height > self.get_latest_block_height()? {
+        self.hash_calls.fetch_add(1, Ordering::Relaxed);
+        if height > self.tip.load(Ordering::Relaxed) {
             return Err("Fixture height has not arrived".into());
         }
         self.chain.get_block_hash(height)
@@ -81,7 +87,7 @@ impl crate::btc::BTCClient for GrowingChain {
         if height <= 101 {
             return Err("Pre-snapshot block bodies are unavailable".into());
         }
-        if height > self.get_latest_block_height()? {
+        if height > self.tip.load(Ordering::Relaxed) {
             return Err("Fixture block has not arrived".into());
         }
         self.payload_calls.fetch_add(1, Ordering::Relaxed);

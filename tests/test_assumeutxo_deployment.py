@@ -96,6 +96,25 @@ class AssumeutxoDeploymentTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(config.read_text(), original)
 
+    def test_batch_mode_in_native_and_legacy_renderers(self):
+        config = self.bh_root / "config.toml"
+        for snapshot_mode in ("assumeutxo", "none"):
+            for mode in (None, "fixed", "adaptive"):
+                changes = {"SNAPSHOT_MODE": snapshot_mode, "BH_SYNC_BATCH_SIZE": "16"}
+                if mode is not None:
+                    changes["BH_SYNC_BATCH_MODE"] = mode
+                result = self.run_script("helpers/render_balance_history_config.sh", config, changes=changes)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                sync = tomllib.loads(config.read_text())["sync"]
+                self.assertEqual(sync["batch_size"], 16)
+                self.assertEqual(sync["batch_mode"], mode or "adaptive")
+            original = config.read_text()
+            result = self.run_script("helpers/render_balance_history_config.sh", config, changes={
+                "SNAPSHOT_MODE": snapshot_mode, "BH_SYNC_BATCH_MODE": 'fixed"\ninvalid=true',
+            })
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(config.read_text(), original)
+
     def test_invalid_native_inputs_preserve_config_and_do_not_launch(self):
         config = self.bh_root / "config.toml"
         self.bh_root.mkdir()

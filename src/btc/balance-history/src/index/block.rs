@@ -300,22 +300,18 @@ impl BatchBlockPreloader {
         let data = Arc::new(data);
 
         let begin = std::time::Instant::now();
-        let mut blocks = Vec::with_capacity(block_height_range.len());
-        let ret: Vec<Result<(u32, Block), String>> = block_height_range
-            .clone()
-            .into_par_iter()
-            .map(|height| {
-                self.btc_client
-                    .get_block_by_height(height)
-                    .map(|block| (height, block))
-            })
-            .collect();
-
-        for res in ret {
-            let (height, block) = res?;
-            blocks.push((height, block));
+        let loaded = self
+            .btc_client
+            .load_block_range(block_height_range.start, block_height_range.end - 1)?;
+        // Check before zip: an overlong response must not be silently truncated.
+        if loaded.len() != block_height_range.len() {
+            return Err(format!(
+                "Block range response length mismatch: range={:?}, received={}",
+                block_height_range,
+                loaded.len()
+            ));
         }
-        blocks.sort_unstable_by_key(|(height, _)| *height);
+        let blocks: Vec<_> = block_height_range.clone().zip(loaded).collect();
         self.validate_loaded_chain(&block_height_range, &blocks)?;
 
         data.bench_mark.load_blocks_duration_micros.store(

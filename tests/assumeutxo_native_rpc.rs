@@ -299,3 +299,170 @@ fn runtime_idle_poll_does_not_nest_data_retries() {
     assert_eq!(calls.load(Ordering::Relaxed), 2);
     assert_eq!(client.read_stats().retries, 0);
 }
+
+#[test]
+fn adaptive_sync_resumes_from_durable_prefix_with_smaller_batches() {
+    let chain = fixture();
+    let work = Workspace::new();
+    let cfg = Arc::new(config(&work.0.join("service"), Network::Regtest));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let observed = requests.clone();
+    let fault = Arc::new(AtomicBool::new(true));
+    let failing = fault.clone();
+    let server = native_rpc::serve(chain.blocks.clone(), &cfg.root_dir, move |request, _| {
+        observed.lock().unwrap().push(request.clone());
+        if request["method"] == "getblockhash"
+            && request["params"][0] == 60
+            && failing.load(Ordering::Relaxed)
+        {
+            return Some((503, json!(null)));
+        }
+        None
+    });
+    let cfg = connect(&cfg, &server);
+    let client = create_btc_rpc_client(&cfg).unwrap();
+    let output = Arc::new(crate::output::IndexOutput::new(Arc::new(
+        crate::status::SyncStatusManager::new(),
+    )));
+    let indexer =
+        crate::index::BalanceHistoryIndexer::new_with_btc_client(cfg, output, client.clone())
+            .unwrap();
+    assert!(indexer.sync_once().is_err());
+    assert_eq!(indexer.db().get_btc_block_height().unwrap(), 32);
+    assert_eq!(client.read_stats().exhausted, 1);
+    assert!(
+        !requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r["method"] == "getblockhash" && r["params"][0].as_u64().unwrap() > 60)
+    );
+    requests.lock().unwrap().clear();
+    fault.store(false, Ordering::Relaxed);
+    // Let the production shared-read cooldown expire, as the outer sync backoff would.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(indexer.sync_once().unwrap(), 103);
+    let requests = requests.lock().unwrap();
+    // A 16-block resumed batch ends at 48, and subsequent successful commits end at 64/80/96.
+    for end in [48, 64, 80, 96] {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "getblockhash" && r["params"][0] == end)
+                .count(),
+            2
+        );
+    }
+    let bodies: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"] == "getblock")
+        .collect();
+    assert_eq!(bodies.len(), 103 - 32);
+    for block in &chain.blocks[1..=32] {
+        assert!(
+            !bodies
+                .iter()
+                .any(|r| r["params"][0] == block.block_hash().to_string())
+        );
+    }
+    let reference_root = work.0.join("fixed");
+    let mut reference_cfg = config(&reference_root, Network::Regtest);
+    reference_cfg.sync.batch_mode = crate::config::BatchMode::Fixed;
+    let reference = crate::index::BalanceHistoryIndexer::new_with_btc_client(
+        Arc::new(reference_cfg),
+        Arc::new(crate::output::IndexOutput::new(Arc::new(
+            crate::status::SyncStatusManager::new(),
+        ))),
+        chain.client_with_stable_tip(),
+    )
+    .unwrap();
+    assert_eq!(reference.sync_once().unwrap(), 103);
+    assert_eq!(
+        indexer.db().get_block_commit(103).unwrap(),
+        reference.db().get_block_commit(103).unwrap()
+    );
+}
+
+#[test]
+fn canonical_range_rejects_reorg_before_commit_in_local_and_rpc_modes() {
+    use crate::btc::{BTCClient, CanonicalBlockLoader};
+    for (local, drift_during_load) in [(false, true), (true, true), (false, false), (true, false)] {
+        let chain = fixture();
+        let work = Workspace::new();
+        let mut cfg = (*chain.native_config(&work.0, 101)).clone();
+        cfg.btc.data_dir = Some(work.0.join("node"));
+        cfg.sync.local_loader_threshold = if local { 0 } else { 500 };
+        // An empty local index exercises canonical local selection with RPC payload fallback.
+        fs::create_dir_all(cfg.btc.data_dir().join("blocks")).unwrap();
+        let cfg = Arc::new(cfg);
+        prepare_native_bootstrap(cfg.clone(), chain.client_with_stable_tip(), &|| false).unwrap();
+        let hashes = Arc::new(AtomicUsize::new(0));
+        let calls = hashes.clone();
+        let server = native_rpc::serve(chain.blocks.clone(), &cfg.root_dir, move |request, _| {
+            if request["method"] == "getblockhash" && request["params"][0] == 103 {
+                let call = calls.fetch_add(1, Ordering::Relaxed);
+                let change_at = if drift_during_load { 1 } else { 2 };
+                if call >= change_at {
+                    return Some((
+                        200,
+                        json!({"id":request["id"], "result":"00".repeat(32),"error":null}),
+                    ));
+                }
+            }
+            None
+        });
+        let cfg = connect(&cfg, &server);
+        let client = CanonicalBlockLoader::new(create_btc_rpc_client(&cfg).unwrap(), &cfg).unwrap();
+        let client = Arc::new(Box::new(client) as Box<dyn BTCClient>);
+        let indexer = crate::index::BalanceHistoryIndexer::new_with_btc_client(
+            cfg,
+            Arc::new(crate::output::IndexOutput::new(Arc::new(
+                crate::status::SyncStatusManager::new(),
+            ))),
+            client,
+        )
+        .unwrap();
+        let error = indexer.process_block_batch(102..104, 103).unwrap_err();
+        assert!(
+            error.contains(if drift_during_load {
+                "changed during retrieval"
+            } else {
+                "canonical batch end changed"
+            }),
+            "{error}"
+        );
+        assert_eq!(indexer.db().get_btc_block_height().unwrap(), 101);
+        assert!(indexer.db().get_block_commit(102).unwrap().is_none());
+    }
+}
+
+#[test]
+fn runtime_range_cancellation_stops_before_requesting_the_suffix() {
+    let chain = fixture();
+    let work = Workspace::new();
+    let cfg = Arc::new(config(&work.0, Network::Regtest));
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let count = requests.clone();
+    let server = native_rpc::serve(chain.blocks.clone(), &cfg.root_dir, move |request, _| {
+        count.fetch_add(1, Ordering::Relaxed);
+        if request["method"] == "getblock" {
+            entered_tx.send(()).unwrap();
+            resume_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+        None
+    });
+    let client = create_btc_rpc_client(&connect(&cfg, &server)).unwrap();
+    let worker = client.clone();
+    let handle = std::thread::spawn(move || worker.load_block_range(102, 103));
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    client.stop().unwrap();
+    resume_tx.send(()).unwrap();
+    assert!(handle.join().unwrap().unwrap_err().contains("cancelled"));
+    assert_eq!(requests.load(Ordering::Relaxed), 2); // Hash and payload for block 102 only.
+}
