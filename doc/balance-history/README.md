@@ -4,6 +4,8 @@
 
 ## 设计与接口
 
+- [同步调度与 RPC 重试](./balance-history-sync-scheduling.md)
+
 - [balance-history-rpc.md](./balance-history-rpc.md)
 - [balance-history-rpc_en.md](./balance-history-rpc_en.md)
 - [balance-history-readiness-design.md](./balance-history-readiness-design.md)

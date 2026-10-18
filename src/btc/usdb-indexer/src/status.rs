@@ -53,6 +53,8 @@ pub struct StatusManager {
     balance_history_client: BalanceHistoryClientRef,
     output: IndexOutputRef,
     poll_interval: std::time::Duration,
+    upstream_changed: tokio::sync::watch::Sender<u64>,
+    shutdown: tokio::sync::watch::Sender<bool>,
 
     usdb_status: Arc<Mutex<USDBInscriptionIndexStatus>>,
     latest_balance_history_snapshot: Arc<Mutex<Option<BalanceHistorySnapshotInfo>>>,
@@ -91,6 +93,8 @@ impl StatusManager {
             poll_interval: std::time::Duration::from_millis(
                 config.config().usdb.upstream_poll_interval_ms.min(1_000),
             ),
+            upstream_changed: tokio::sync::watch::channel(0).0,
+            shutdown: tokio::sync::watch::channel(false).0,
             latest_balance_history_snapshot: Arc::new(Mutex::new(None)),
             latest_balance_history_readiness: Arc::new(Mutex::new(None)),
             runtime_readiness: Arc::new(Mutex::new(RuntimeReadinessStatus::default())),
@@ -111,7 +115,13 @@ impl StatusManager {
     }
 
     pub fn set_balance_history_snapshot(&self, snapshot: Option<BalanceHistorySnapshotInfo>) {
-        *self.latest_balance_history_snapshot.lock().unwrap() = snapshot;
+        let mut current = self.latest_balance_history_snapshot.lock().unwrap();
+        let changed = *current != snapshot;
+        *current = snapshot;
+        drop(current);
+        if changed {
+            self.notify_upstream();
+        }
     }
 
     pub fn balance_history_readiness(&self) -> Option<BalanceHistoryReadinessInfo> {
@@ -122,7 +132,33 @@ impl StatusManager {
     }
 
     pub fn set_balance_history_readiness(&self, readiness: Option<BalanceHistoryReadinessInfo>) {
-        *self.latest_balance_history_readiness.lock().unwrap() = readiness;
+        let mut current = self.latest_balance_history_readiness.lock().unwrap();
+        let key = |value: &BalanceHistoryReadinessInfo| {
+            (
+                value.rpc_alive,
+                value.query_ready,
+                value.consensus_ready,
+                value.stable_height,
+                value.stable_block_hash.clone(),
+                value.latest_block_commit.clone(),
+            )
+        };
+        let changed = current.as_ref().map(key) != readiness.as_ref().map(key);
+        *current = readiness;
+        drop(current);
+        if changed {
+            self.notify_upstream();
+        }
+    }
+
+    /// Subscribe before reading cached state so a concurrent update cannot be missed.
+    pub(crate) fn subscribe_upstream(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.upstream_changed.subscribe()
+    }
+
+    fn notify_upstream(&self) {
+        self.upstream_changed
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
 
     pub fn set_rpc_alive(&self, rpc_alive: bool) {
@@ -161,6 +197,8 @@ impl StatusManager {
             self.output.println(&msg);
         }
         runtime.shutdown_requested = shutdown_requested;
+        drop(runtime);
+        self.shutdown.send_replace(shutdown_requested);
     }
 
     pub fn get_runtime_readiness(&self) -> RuntimeReadinessStatus {
@@ -202,57 +240,91 @@ impl StatusManager {
         }
     }
 
+    /// Observe Core and BH independently: slow Core diagnostics cannot stall BH freshness.
     pub fn run_monitor(&self) {
-        tokio::spawn({
-            let status_manager = self.clone();
-            async move {
-                let mut failures = ConsecutiveFailureTracker::new(60);
-                loop {
-                    match status_manager.update_status().await {
-                        Ok(()) => {
-                            if let Some(recovery) = failures.record_success() {
-                                info!(
-                                    "USDB status monitor recovered: failed_attempts={}, outage_elapsed_ms={}",
-                                    recovery.failed_attempts,
-                                    recovery.elapsed.as_millis()
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            let failure = failures.record_failure();
-                            if failure.should_log {
-                                if failure.attempt == 1 {
-                                    error!(
-                                        "USDB status monitor failed: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
-                                        failure.attempt,
-                                        failure.elapsed.as_millis(),
-                                        status_manager.poll_interval.as_millis(),
-                                        error
-                                    );
-                                } else {
-                                    warn!(
-                                        "USDB status monitor still failing: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
-                                        failure.attempt,
-                                        failure.elapsed.as_millis(),
-                                        status_manager.poll_interval.as_millis(),
-                                        error
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    tokio::time::sleep(status_manager.poll_interval).await;
-                }
-            }
-        });
+        for bitcoin in [false, true] {
+            let manager = self.clone();
+            tokio::spawn(async move { manager.monitor_loop(bitcoin).await });
+        }
     }
 
-    async fn update_status(&self) -> Result<(), String> {
-        let btc_height = self.btc_client.get_latest_block_height().map_err(|e| {
-            let msg = format!("Failed to get BTC block height: {}", e);
-            self.output.btc_bar().set_message(msg.clone());
-            msg
-        })?;
+    async fn monitor_loop(&self, bitcoin: bool) {
+        let mut shutdown = self.shutdown.subscribe();
+        let mut failures = ConsecutiveFailureTracker::new(60);
+        let source = if bitcoin {
+            "bitcoin"
+        } else {
+            "balance-history"
+        };
+        while !*shutdown.borrow_and_update() {
+            let observation = async {
+                if bitcoin {
+                    self.update_bitcoin_status().await
+                } else {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        self.update_balance_history_status(),
+                    )
+                    .await
+                    .map_err(|_| {
+                        "Balance-history observation timed out after 10 seconds".to_string()
+                    })?
+                }
+            };
+            let result = tokio::select! {
+                _ = shutdown.changed() => break,
+                result = observation => result,
+            };
+            let delay = match result {
+                Ok(()) => {
+                    if let Some(recovery) = failures.record_success() {
+                        info!(
+                            "USDB status monitor recovered: source={source}, failed_attempts={}, outage_elapsed_ms={}",
+                            recovery.failed_attempts,
+                            recovery.elapsed.as_millis()
+                        );
+                    }
+                    if bitcoin {
+                        std::time::Duration::from_secs(1)
+                    } else {
+                        self.poll_interval
+                    }
+                }
+                Err(error) => {
+                    // Only a failed BH observation invalidates cached BH readiness. Core's
+                    // optional progress query must neither freeze BH nor erase its fresh result.
+                    if !bitcoin {
+                        self.set_balance_history_snapshot(None);
+                        self.set_balance_history_readiness(None);
+                    }
+                    let failure = failures.record_failure();
+                    let delay = usdb_util::service_retry_delay(failure.attempt);
+                    if failure.should_log {
+                        warn!(
+                            "USDB status monitor failed: source={source}, attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={error}",
+                            failure.attempt,
+                            failure.elapsed.as_millis(),
+                            delay.as_millis()
+                        );
+                    }
+                    delay
+                }
+            };
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = tokio::time::sleep(delay) => {}
+            }
+        }
+    }
+
+    async fn update_bitcoin_status(&self) -> Result<(), String> {
+        // The Core client is synchronous. Keep it off the async executor, with at most
+        // one outstanding diagnostic request, even during long transport timeouts.
+        let client = self.btc_client.clone();
+        let btc_height = tokio::task::spawn_blocking(move || client.poll_block_height())
+            .await
+            .map_err(|error| format!("Bitcoin status worker failed: {error}"))?
+            .inspect_err(|error| self.output.btc_bar().set_message(error.clone()))?;
 
         // Update BTC bar
         let btc_bar = self.output.btc_bar();
@@ -263,6 +335,10 @@ impl StatusManager {
             btc_bar.reset_eta();
         }
 
+        Ok(())
+    }
+
+    async fn update_balance_history_status(&self) -> Result<(), String> {
         let status = self
             .balance_history_client
             .get_sync_status()
@@ -299,7 +375,6 @@ impl StatusManager {
                 self.set_balance_history_readiness(None);
                 msg
             })?;
-        self.set_balance_history_snapshot(Some(balance_history_snapshot));
 
         let balance_history_readiness =
             self.balance_history_client
@@ -311,9 +386,14 @@ impl StatusManager {
                     msg
                 })?;
         self.set_balance_history_readiness(Some(balance_history_readiness));
+        self.set_balance_history_snapshot(Some(balance_history_snapshot));
 
         Ok(())
     }
 }
 
 pub type StatusManagerRef = Arc<StatusManager>;
+
+#[cfg(test)]
+#[path = "../../../../tests/indexer_upstream_observation.rs"]
+mod tests;

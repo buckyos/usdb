@@ -25,7 +25,9 @@ pub fn create_btc_rpc_client(config: &BalanceHistoryConfigRef) -> Result<BTCClie
         msg
     })?;
 
-    Ok(Arc::new(Box::new(btc_client) as Box<dyn BTCClient>))
+    Ok(Arc::new(
+        Box::new(btc_client.with_runtime_read_retries()) as Box<dyn BTCClient>
+    ))
 }
 
 /// Use bounded read retries only before the native baseline is sealed and service RPC opens.

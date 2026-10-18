@@ -678,6 +678,7 @@ impl BTCClient for BlockLocalLoader {
     }
 
     fn stop(&self) -> Result<(), String> {
+        self.btc_client.stop()?;
         self.should_stop
             .store(true, std::sync::atomic::Ordering::SeqCst);
         self.output.println("Stopping BlockLocalLoader...");
@@ -699,6 +700,16 @@ impl BTCClient for BlockLocalLoader {
         );
 
         Ok(())
+    }
+
+    fn poll_block_height(&self) -> Result<u32, String> {
+        self.btc_client.poll_block_height()
+    }
+    fn poll_block_hash(&self, height: u32) -> Result<BlockHash, String> {
+        self.btc_client.poll_block_hash(height)
+    }
+    fn read_stats(&self) -> usdb_util::RpcReadStats {
+        self.btc_client.read_stats()
     }
 
     fn get_latest_block_height(&self) -> Result<u32, String> {

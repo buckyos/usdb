@@ -171,7 +171,7 @@ pub struct AddressFlowBucket {
 }
 
 /// Stable snapshot metadata exposed to downstream consumers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotInfo {
     /// Current stable height that balance-history exposes to downstream services.
     pub stable_height: u32,

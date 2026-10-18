@@ -145,6 +145,10 @@ impl BalanceHistoryCommitApi for BalanceHistoryRpcClient {
 }
 
 pub(crate) trait IndexStatusApi: Send + Sync {
+    /// Production observations notify idle consumers; simple fixtures may use polling only.
+    fn subscribe_upstream(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        None
+    }
     fn balance_history_stable_height(&self) -> Option<u32>;
     fn balance_history_snapshot(&self) -> Option<BalanceHistorySnapshotInfo>;
     fn update_index_status(
@@ -158,6 +162,9 @@ pub(crate) trait IndexStatusApi: Send + Sync {
 }
 
 impl IndexStatusApi for StatusManager {
+    fn subscribe_upstream(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        Some(self.subscribe_upstream())
+    }
     fn set_block_processing_pending_height(&self, height: Option<u32>) {
         self.set_block_processing_pending_height(height);
     }

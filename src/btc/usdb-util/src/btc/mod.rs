@@ -7,6 +7,7 @@ mod source;
 
 pub use electrs::*;
 pub use prevout::{BlockPrevouts, SpentPrevout};
+pub use read_retry::RpcReadStats;
 pub use rpc::*;
 pub use script::*;
 pub use source::*;

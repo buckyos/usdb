@@ -80,6 +80,22 @@ class AssumeutxoDeploymentTests(unittest.TestCase):
                 self.assertEqual(document["sync"]["local_loader_threshold"], 500)
                 self.assertFalse(self.calls.exists())
 
+    def test_polling_configuration_defaults_overrides_and_bounds(self):
+        for helper, filename, parse, section, key, variable in (
+            ("render_balance_history_config.sh", "config.toml", tomllib.loads, "sync", "poll_interval_ms", "BH_SYNC_POLL_INTERVAL_MS"),
+            ("render_usdb_indexer_config.sh", "config.json", json.loads, "usdb", "upstream_poll_interval_ms", "USDB_INDEXER_UPSTREAM_POLL_INTERVAL_MS"),
+        ):
+            config = self.root / filename
+            for value in (None, "500"):
+                result = self.run_script(f"helpers/{helper}", config, changes={} if value is None else {variable: value})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(parse(config.read_text())[section][key], 250 if value is None else 500)
+            original = config.read_text()
+            for invalid in ("0", "99", "60001", "bad"):
+                result = self.run_script(f"helpers/{helper}", config, changes={variable: invalid})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(config.read_text(), original)
+
     def test_invalid_native_inputs_preserve_config_and_do_not_launch(self):
         config = self.bh_root / "config.toml"
         self.bh_root.mkdir()

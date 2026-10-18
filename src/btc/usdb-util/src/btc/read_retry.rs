@@ -1,12 +1,28 @@
-//! Opt-in retries for individual read-only RPCs during native bootstrap.
+//! Bounded retries for individual read-only RPCs, below parsing and canonical checks.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use bitcoincore_rpc::{Error, jsonrpc};
 
-const MAX_ATTEMPTS: u32 = 6;
+/// Cumulative read counters shared by all clones of one RPC client.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RpcReadStats {
+    /// Actual application-level RPC attempts (transport reconnects are not counted).
+    pub attempts: u64,
+    /// Attempts after a transient failure of the same read.
+    pub retries: u64,
+    /// Reads whose transient retry allowance was exhausted.
+    pub exhausted: u64,
+}
+
+#[derive(Default)]
+struct Counters {
+    attempts: AtomicU64,
+    retries: AtomicU64,
+    exhausted: AtomicU64,
+}
 
 /// Retain typed classification before the existing client API converts errors to strings.
 pub(super) struct ReadError {
@@ -58,6 +74,10 @@ fn is_transient(error: &Error) -> bool {
 pub(super) struct ReadRetry {
     cancelled: Arc<AtomicBool>,
     gate: Arc<Mutex<()>>,
+    runtime: bool,
+    budget: Option<Duration>,
+    unavailable_until: Arc<Mutex<Option<Instant>>>,
+    counters: Arc<Counters>,
 }
 
 impl ReadRetry {
@@ -65,13 +85,80 @@ impl ReadRetry {
         Self {
             cancelled,
             gate: Arc::new(Mutex::new(())),
+            runtime: false,
+            budget: None,
+            unavailable_until: Arc::new(Mutex::new(None)),
+            counters: Arc::new(Counters::default()),
+        }
+    }
+
+    pub fn runtime(cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            runtime: true,
+            budget: Some(Duration::from_secs(60)),
+            ..Self::new(cancelled)
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    pub fn stats(&self) -> RpcReadStats {
+        RpcReadStats {
+            attempts: self.counters.attempts.load(Ordering::Relaxed),
+            retries: self.counters.retries.load(Ordering::Relaxed),
+            exhausted: self.counters.exhausted.load(Ordering::Relaxed),
+        }
+    }
+
+    fn budget_expired(&self, started: Instant) -> bool {
+        self.budget
+            .is_some_and(|budget| started.elapsed() >= budget)
+    }
+
+    // Runtime workers share one retry owner. Queued Rayon workers must not each spend
+    // several timeouts on the same outage. The short cooldown hands control to outer backoff.
+    fn lock_runtime(
+        &self,
+        operation: &str,
+        started: Instant,
+    ) -> Result<MutexGuard<'_, ()>, String> {
+        loop {
+            if self.cancelled.load(Ordering::Relaxed) {
+                return Err(format!("Runtime BTC RPC cancelled: operation={operation}"));
+            }
+            if self.budget_expired(started) {
+                return Err(format!(
+                    "Runtime BTC RPC retry budget exhausted while queued: operation={operation}"
+                ));
+            }
+            match self.gate.try_lock() {
+                Ok(guard) => {
+                    if self
+                        .unavailable_until
+                        .lock()
+                        .unwrap()
+                        .is_some_and(|until| Instant::now() < until)
+                    {
+                        return Err(format!(
+                            "Runtime BTC RPC temporarily unavailable after exhausted read: operation={operation}"
+                        ));
+                    }
+                    return Ok(guard);
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(error) => return Err(format!("Runtime BTC RPC gate failed: {error}")),
+            }
         }
     }
 
     // Core's HTTP transport serializes calls on one socket. Check cancellation AFTER
     // acquiring our gate, so queued replay workers exit after the in-flight request
     // finishes rather than each entering the transport for another timeout.
-    // Backoff never holds this gate.
+    // Bootstrap backoff never holds this gate; runtime uses a separate retry owner.
     fn lock(&self, operation: &str) -> Result<MutexGuard<'_, ()>, String> {
         let guard = self
             .gate
@@ -114,44 +201,93 @@ impl ReadRetry {
         mut wait: impl FnMut(Duration),
     ) -> Result<T, String> {
         let started = Instant::now();
-        for attempt in 1..=MAX_ATTEMPTS {
+        let label = if self.runtime {
+            "Runtime BTC"
+        } else {
+            "Native bootstrap"
+        };
+        let max_attempts = if self.runtime { 3 } else { 6 };
+        let _runtime_guard = if self.runtime {
+            Some(self.lock_runtime(operation, started)?)
+        } else {
+            None
+        };
+        for attempt in 1..=max_attempts {
             if self.cancelled.load(Ordering::Relaxed) {
                 return Err(format!(
-                    "Native bootstrap RPC cancelled: operation={operation}, attempts={}",
+                    "{label} RPC cancelled: operation={operation}, attempts={}",
+                    attempt - 1
+                ));
+            }
+            // This bounds admission and backoff, including queue time. An already running
+            // synchronous transport call still completes under its existing socket timeout.
+            if self.budget_expired(started) {
+                self.counters.exhausted.fetch_add(1, Ordering::Relaxed);
+                *self.unavailable_until.lock().unwrap() =
+                    Some(Instant::now() + Duration::from_secs(1));
+                return Err(format!(
+                    "{label} RPC retry budget exhausted: operation={operation}, attempts={}",
                     attempt - 1
                 ));
             }
             let result = {
-                let _guard = self.lock(operation)?;
+                let _bootstrap_guard = if self.runtime {
+                    None
+                } else {
+                    Some(self.lock(operation)?)
+                };
+                self.counters.attempts.fetch_add(1, Ordering::Relaxed);
+                if attempt > 1 {
+                    self.counters.retries.fetch_add(1, Ordering::Relaxed);
+                }
                 call()
             };
             match result {
                 Ok(value) => {
                     if attempt > 1 {
                         let msg = format!(
-                            "Native bootstrap RPC recovered: operation={operation}, attempts={attempt}, elapsed_ms={}",
+                            "{label} RPC recovered: operation={operation}, attempts={attempt}, elapsed_ms={}",
                             started.elapsed().as_millis()
                         );
                         info!("{msg}");
-                        eprintln!("{msg}");
+                        if !self.runtime {
+                            eprintln!("{msg}");
+                        }
                     }
                     return Ok(value);
                 }
-                Err(error) if error.transient && attempt < MAX_ATTEMPTS => {
-                    let delay = Duration::from_secs((1 << attempt).min(20));
+                Err(error) if error.transient && attempt < max_attempts => {
+                    let delay = Duration::from_secs(if self.runtime {
+                        1 << (attempt - 1)
+                    } else {
+                        (1 << attempt).min(20)
+                    });
+                    let delay = self.budget.map_or(delay, |budget| {
+                        delay.min(budget.saturating_sub(started.elapsed()))
+                    });
                     let msg = format!(
-                        "Native bootstrap RPC retry: operation={operation}, attempt={attempt}/{MAX_ATTEMPTS}, retry_in_secs={}, elapsed_ms={}, error={}",
+                        "{label} RPC retry: operation={operation}, attempt={attempt}/{max_attempts}, retry_in_secs={}, retry_in_ms={}, elapsed_ms={}, error={}",
                         delay.as_secs(),
+                        delay.as_millis(),
                         started.elapsed().as_millis(),
                         error.message
                     );
                     warn!("{msg}");
-                    eprintln!("{msg}");
+                    if !self.runtime {
+                        eprintln!("{msg}");
+                    }
                     wait(delay);
                 }
                 Err(error) => {
+                    if error.transient {
+                        self.counters.exhausted.fetch_add(1, Ordering::Relaxed);
+                        if self.runtime {
+                            *self.unavailable_until.lock().unwrap() =
+                                Some(Instant::now() + Duration::from_secs(1));
+                        }
+                    }
                     return Err(format!(
-                        "Native bootstrap RPC {}: operation={operation}, attempts={attempt}, elapsed_ms={}, error={}",
+                        "{label} RPC {}: operation={operation}, attempts={attempt}, elapsed_ms={}, error={}",
                         if error.transient {
                             "retries exhausted"
                         } else {
@@ -184,6 +320,74 @@ mod tests {
             data: None,
         }))
         .into()
+    }
+
+    #[test]
+    fn runtime_retries_only_the_failed_read_and_shares_outage_cooldown() {
+        let retry = ReadRetry::runtime(Arc::new(AtomicBool::new(false)));
+        let mut calls = 0;
+        let mut delays = Vec::new();
+        assert_eq!(
+            retry
+                .run_with_wait(
+                    "getblockhash",
+                    || {
+                        calls += 1;
+                        if calls < 3 { Err(warmup()) } else { Ok(42) }
+                    },
+                    |delay| delays.push(delay.as_secs())
+                )
+                .unwrap(),
+            42
+        );
+        assert_eq!(delays, [1, 2]);
+        assert_eq!(retry.stats().attempts, 3);
+        assert_eq!(retry.stats().retries, 2);
+        assert_eq!(retry.stats().exhausted, 0);
+        assert!(
+            retry
+                .run_with_wait::<()>("getblock", || Err(warmup()), |_| {})
+                .unwrap_err()
+                .contains("attempts=3")
+        );
+        assert_eq!(retry.stats().exhausted, 1);
+        let queued = retry.clone();
+        assert!(
+            queued
+                .run::<()>("getblock", || panic!(
+                    "Queued workers must not each exhaust retries"
+                ))
+                .unwrap_err()
+                .contains("temporarily unavailable")
+        );
+    }
+
+    #[test]
+    fn runtime_budget_and_cancellation_prevent_another_transport_attempt() {
+        let mut retry = ReadRetry::runtime(Arc::new(AtomicBool::new(false)));
+        retry.budget = Some(Duration::ZERO);
+        assert!(
+            retry
+                .run::<()>("getblock", || panic!("Budget is exhausted"))
+                .unwrap_err()
+                .contains("budget exhausted")
+        );
+        let retry = ReadRetry::runtime(Arc::new(AtomicBool::new(false)));
+        let mut calls = 0;
+        assert!(
+            retry
+                .run_with_wait::<()>(
+                    "getblock",
+                    || {
+                        calls += 1;
+                        Err(warmup())
+                    },
+                    |_| retry.cancel()
+                )
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert_eq!(calls, 1);
     }
 
     #[test]

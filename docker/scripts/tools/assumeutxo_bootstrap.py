@@ -106,6 +106,7 @@ def render_config(env: Mapping[str, str]) -> str:
     table("sync", dict(
         local_loader_threshold=unsigned(env, "BH_SYNC_LOCAL_LOADER_THRESHOLD", 500),
         batch_size=unsigned(env, "BH_SYNC_BATCH_SIZE", 128, minimum=1),
+        poll_interval_ms=unsigned(env, "BH_SYNC_POLL_INTERVAL_MS", 250, minimum=100, maximum=60000),
         utxo_max_cache_bytes=unsigned(env, "BH_SYNC_UTXO_MAX_CACHE_BYTES", 2147483648, minimum=1048576, maximum=2**63-1),
         balance_max_cache_bytes=unsigned(env, "BH_SYNC_BALANCE_MAX_CACHE_BYTES", 6442450944, minimum=1048576, maximum=2**63-1),
         max_memory_percent=unsigned(env, "BH_SYNC_MAX_MEMORY_PERCENT", 85, minimum=20, maximum=95),
@@ -174,6 +175,7 @@ def render_indexer_config(env: Mapping[str, str]) -> str:
             balance_query_concurrency=unsigned(env, "BALANCE_QUERY_CONCURRENCY", 4, minimum=1),
             balance_query_timeout_ms=unsigned(env, "BALANCE_QUERY_TIMEOUT_MS", 10000, minimum=1),
             balance_query_max_retries=unsigned(env, "BALANCE_QUERY_MAX_RETRIES", 2),
+            upstream_poll_interval_ms=unsigned(env, "USDB_INDEXER_UPSTREAM_POLL_INTERVAL_MS", 250, minimum=100, maximum=60000),
             inscription_source="bitcoind",
             inscription_fixture_file=None,
             inscription_source_shadow_compare=False,

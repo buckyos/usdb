@@ -199,6 +199,7 @@ impl BTCClient for CanonicalBlockLoader {
         self.rpc.init()
     }
     fn stop(&self) -> Result<(), String> {
+        self.rpc.stop()?;
         self.stopped.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -209,6 +210,16 @@ impl BTCClient for CanonicalBlockLoader {
         );
         Ok(())
     }
+    fn poll_block_height(&self) -> Result<u32, String> {
+        self.rpc.poll_block_height()
+    }
+    fn poll_block_hash(&self, height: u32) -> Result<BlockHash, String> {
+        self.rpc.poll_block_hash(height)
+    }
+    fn read_stats(&self) -> usdb_util::RpcReadStats {
+        self.rpc.read_stats()
+    }
+
     fn get_latest_block_height(&self) -> Result<u32, String> {
         self.rpc.get_latest_block_height()
     }

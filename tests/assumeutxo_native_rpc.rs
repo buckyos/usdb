@@ -208,7 +208,7 @@ fn native_rpc_cancellation_preserves_unsealed_staging_for_next_start() {
 }
 
 #[test]
-fn ordinary_service_rpc_clients_do_not_acquire_bootstrap_retries() {
+fn ordinary_service_rpc_clients_use_shorter_runtime_retries() {
     let chain = fixture();
     let work = Workspace::new();
     let cfg = chain.native_config(&work.0, 103);
@@ -225,5 +225,77 @@ fn ordinary_service_rpc_clients_do_not_acquire_bootstrap_retries() {
             .get_latest_block_height()
             .is_err()
     );
+    assert_eq!(calls.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn runtime_final_hash_retry_preserves_batch_work_and_still_rejects_reorg() {
+    for changed_hash in [false, true] {
+        let chain = fixture();
+        let work = Workspace::new();
+        let cfg = chain.native_config(&work.0, 101);
+        prepare_native_bootstrap(cfg.clone(), chain.client_with_stable_tip(), &|| false).unwrap();
+        let end = chain.blocks.len() as u32 - 1;
+        assert!(end > 101);
+        let hash_calls = Arc::new(AtomicUsize::new(0));
+        let payload_calls = Arc::new(AtomicUsize::new(0));
+        let hashes = hash_calls.clone();
+        let payloads = payload_calls.clone();
+        let server = native_rpc::serve(chain.blocks.clone(), &cfg.root_dir, move |request, _| {
+            if request["method"] == "getblock" {
+                payloads.fetch_add(1, Ordering::Relaxed);
+            }
+            if request["method"] == "getblockhash" && request["params"][0] == end {
+                let call = hashes.fetch_add(1, Ordering::Relaxed);
+                if call == 1 {
+                    return Some((503, json!(null)));
+                }
+                if call >= 2 && changed_hash {
+                    return Some((
+                        200,
+                        json!({"id":request["id"],"result":"00".repeat(32),"error":null}),
+                    ));
+                }
+            }
+            None
+        });
+        let cfg = connect(&cfg, &server);
+        let client = create_btc_rpc_client(&cfg).unwrap();
+        let output = Arc::new(crate::output::IndexOutput::new(Arc::new(
+            crate::status::SyncStatusManager::new(),
+        )));
+        let indexer =
+            crate::index::BalanceHistoryIndexer::new_with_btc_client(cfg, output, client.clone())
+                .unwrap();
+        let result = indexer.process_block_batch(102..end + 1, end);
+        if changed_hash {
+            assert!(result.unwrap_err().contains("canonical batch end changed"));
+            assert_eq!(indexer.db().get_btc_block_height().unwrap(), 101);
+        } else {
+            assert_eq!(result.unwrap(), end);
+            assert_eq!(indexer.db().get_btc_block_height().unwrap(), end);
+        }
+        assert_eq!(hash_calls.load(Ordering::Relaxed), 3);
+        assert_eq!(payload_calls.load(Ordering::Relaxed), (end - 101) as usize);
+        assert_eq!(client.read_stats().retries, 1);
+    }
+}
+
+#[test]
+fn runtime_idle_poll_does_not_nest_data_retries() {
+    let chain = fixture();
+    let work = Workspace::new();
+    let cfg = chain.native_config(&work.0, 103);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let server = native_rpc::serve(chain.blocks.clone(), &cfg.root_dir, move |_, _| {
+        count.fetch_add(1, Ordering::Relaxed);
+        Some((503, json!(null)))
+    });
+    let client = create_btc_rpc_client(&connect(&cfg, &server)).unwrap();
+    assert!(client.poll_block_height().is_err());
     assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert!(client.poll_block_hash(103).is_err());
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    assert_eq!(client.read_stats().retries, 0);
 }

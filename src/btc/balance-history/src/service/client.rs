@@ -48,7 +48,20 @@ struct RpcErrorPayload {
 impl RpcClient {
     // Create a lightweight JSON-RPC client for the local balance-history service.
     pub fn new(url: &str) -> Result<Self, String> {
-        let client = Client::builder().build().map_err(|e| {
+        Self::build(url, None)
+    }
+
+    /// Bound requests made by service observers without changing bulk-query clients.
+    pub fn new_with_timeout(url: &str, timeout: std::time::Duration) -> Result<Self, String> {
+        Self::build(url, Some(timeout))
+    }
+
+    fn build(url: &str, timeout: Option<std::time::Duration>) -> Result<Self, String> {
+        let mut builder = Client::builder();
+        if let Some(timeout) = timeout {
+            builder = builder.timeout(timeout);
+        }
+        let client = builder.build().map_err(|e| {
             let msg = format!("Failed to build HTTP client: {}", e);
             log::error!("{}", msg);
             msg

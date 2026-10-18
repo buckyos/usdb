@@ -252,17 +252,22 @@ impl InscriptionIndexer {
         );
 
         // Init btc client
-        let btc_client = Arc::new(BTCRpcClient::new(
-            config.config().bitcoin.rpc_url(),
-            config.config().bitcoin.auth(),
-        )?);
+        let btc_client = Arc::new(
+            BTCRpcClient::new(
+                config.config().bitcoin.rpc_url(),
+                config.config().bitcoin.auth(),
+            )?
+            .with_runtime_read_retries(),
+        );
         let inscription_source =
             Self::build_inscription_source(config.clone(), btc_client.clone())?;
         let block_hint_provider: Arc<dyn BlockHintProvider> =
             Arc::new(RpcBlockHintProvider::new(btc_client.clone()));
-        let balance_history_client: Arc<dyn BalanceHistoryCommitApi> = Arc::new(
-            BalanceHistoryRpcClient::new(&config.config().balance_history.rpc_url)?,
-        );
+        let balance_history_client: Arc<dyn BalanceHistoryCommitApi> =
+            Arc::new(BalanceHistoryRpcClient::new_with_timeout(
+                &config.config().balance_history.rpc_url,
+                std::time::Duration::from_secs(10),
+            )?);
 
         // Init pass energy manager
         let pass_energy_manager = Arc::new(PassEnergyManager::new(config.clone())?);
@@ -531,6 +536,7 @@ impl InscriptionIndexer {
     }
 
     pub fn stop(&self) {
+        self.btc_client.cancel_pending_reads();
         let prev_value = self.should_stop.swap(true, Ordering::SeqCst);
         if !prev_value {
             info!("Shutdown signal sent to InscriptionIndexer");
@@ -751,6 +757,11 @@ impl InscriptionIndexer {
                 break;
             }
 
+            let committed_before = self
+                .miner_pass_storage
+                .get_synced_btc_block_height()
+                .ok()
+                .flatten();
             match self.sync_once().await {
                 Ok(last_synced_height) => {
                     if let Some(recovery) = sync_failures.record_success() {
@@ -762,7 +773,10 @@ impl InscriptionIndexer {
                         );
                     }
                     // Successfully synced once, and sleep for a while before next sync
-                    match self.wait_for_new_blocks(last_synced_height).await {
+                    match self
+                        .wait_for_new_blocks(last_synced_height, &mut wait_failures)
+                        .await
+                    {
                         Ok(new_height) => {
                             if let Some(recovery) = wait_failures.record_success() {
                                 info!(
@@ -779,49 +793,66 @@ impl InscriptionIndexer {
                         }
                         Err(e) => {
                             let failure = wait_failures.record_failure();
+                            let delay = usdb_util::service_retry_delay(failure.attempt);
                             if failure.should_log {
                                 if failure.attempt == 1 {
                                     error!(
-                                        "USDB indexer upstream polling failed: attempt={}, outage_elapsed_ms={}, retry_delay_secs=5, error={}",
+                                        "USDB indexer upstream polling failed: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
                                         failure.attempt,
                                         failure.elapsed.as_millis(),
+                                        delay.as_millis(),
                                         e
                                     );
                                 } else {
                                     warn!(
-                                        "USDB indexer upstream polling still failing: attempt={}, outage_elapsed_ms={}, retry_delay_secs=5, error={}",
+                                        "USDB indexer upstream polling still failing: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
                                         failure.attempt,
                                         failure.elapsed.as_millis(),
+                                        delay.as_millis(),
                                         e
                                     );
                                 }
                             }
-                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            self.wait_or_stop(delay).await;
                         }
                     }
                 }
                 Err(e) => {
+                    if committed_before
+                        .zip(
+                            self.miner_pass_storage
+                                .get_synced_btc_block_height()
+                                .ok()
+                                .flatten(),
+                        )
+                        .is_some_and(|(before, after)| after > before)
+                    {
+                        sync_failures.record_success();
+                    }
                     let failure = sync_failures.record_failure();
+                    let delay = usdb_util::service_retry_delay(failure.attempt);
                     if failure.should_log {
                         if failure.attempt == 1 {
                             error!(
-                                "USDB indexer sync failed: attempt={}, outage_elapsed_ms={}, retry_delay_secs=5, error={}",
+                                "USDB indexer sync failed: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
                                 failure.attempt,
                                 failure.elapsed.as_millis(),
+                                delay.as_millis(),
                                 e
                             );
                         } else {
                             warn!(
-                                "USDB indexer sync still failing: attempt={}, outage_elapsed_ms={}, retry_delay_secs=5, error={}",
+                                "USDB indexer sync still failing: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
                                 failure.attempt,
                                 failure.elapsed.as_millis(),
+                                delay.as_millis(),
                                 e
                             );
                         }
                     }
 
                     // Sleep and retry
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    self.wait_or_stop(delay).await;
                     continue;
                 }
             }
@@ -1477,8 +1508,25 @@ impl InscriptionIndexer {
             })
     }
 
-    async fn wait_for_new_blocks(&self, last_synced_height: u32) -> Result<u32, String> {
+    async fn wait_or_stop(&self, delay: std::time::Duration) {
+        let started = Instant::now();
+        while !self.check_shutdown() && started.elapsed() < delay {
+            tokio::time::sleep(
+                delay
+                    .saturating_sub(started.elapsed())
+                    .min(std::time::Duration::from_millis(100)),
+            )
+            .await;
+        }
+    }
+
+    async fn wait_for_new_blocks(
+        &self,
+        last_synced_height: u32,
+        failures: &mut ConsecutiveFailureTracker,
+    ) -> Result<u32, String> {
         let genesis_block_height = self.config.config().usdb.genesis_block_height;
+        let mut changes = self.status.subscribe_upstream();
         loop {
             let msg = format!(
                 "Waiting for new blocks... Last synced height: {}",
@@ -1521,14 +1569,33 @@ impl InscriptionIndexer {
                     );
                     return Ok(latest_height);
                 }
+                if let Some(recovery) = failures.record_success() {
+                    info!(
+                        "USDB indexer upstream polling recovered: failed_attempts={}, outage_elapsed_ms={}",
+                        recovery.failed_attempts,
+                        recovery.elapsed.as_millis()
+                    );
+                }
             }
 
-            // Keep the default cadence while allowing regtest to avoid paying
-            // five seconds of idle latency for every simulated block batch.
-            tokio::time::sleep(std::time::Duration::from_millis(
+            // Notifications remove the second polling delay. A periodic check remains
+            // necessary for canonical drift and fixtures without observation notifications.
+            let interval = std::time::Duration::from_millis(
                 self.config.config().usdb.upstream_poll_interval_ms,
-            ))
-            .await;
+            );
+            tokio::select! {
+                _ = async {
+                    match changes.as_mut() {
+                        Some(receiver) => {
+                            if receiver.changed().await.is_err() {
+                                std::future::pending::<()>().await;
+                            }
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {},
+                _ = self.wait_or_stop(interval) => {},
+            }
 
             // Check for shutdown signal while waiting
             if self.check_shutdown() {

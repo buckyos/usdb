@@ -49,11 +49,8 @@ impl BTCRpcClient {
                 return Err("Requested input block is no longer canonical".to_string());
             }
             let response: serde_json::Value = self
-                .client()?
-                .call("getblock", &[serde_json::json!(hash), serde_json::json!(3)])
-                .map_err(|e| {
-                    self.on_error(&e);
-                    format!("getblock verbosity 3 failed: {e}")
+                .read_rpc(&format!("getblock verbosity=3 hash={hash}"), |client| {
+                    client.call("getblock", &[serde_json::json!(hash), serde_json::json!(3)])
                 })?;
             let evidence = parse(height, block, response)?;
             if self.get_block_hash(height)? != hash {
@@ -99,6 +96,45 @@ impl BTCRpcClient {
     ) -> Self {
         self.read_retry = Some(ReadRetry::new(cancelled));
         self
+    }
+
+    /// Retry transient runtime reads at most three times, with 1/2 second backoff.
+    /// Queueing and retry admission share a 60-second budget; in-flight IO retains its
+    /// transport timeout. Clones share cancellation, counters and an outage gate.
+    pub fn with_runtime_read_retries(mut self) -> Self {
+        self.read_retry = Some(ReadRetry::runtime(Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        )));
+        self
+    }
+
+    /// Cancel queued reads and retry waits during service shutdown.
+    pub fn cancel_pending_reads(&self) {
+        if let Some(retry) = &self.read_retry {
+            retry.cancel();
+        }
+    }
+
+    /// Snapshot cumulative application-level read/retry counters.
+    pub fn read_stats(&self) -> super::RpcReadStats {
+        self.read_retry
+            .as_ref()
+            .map(ReadRetry::stats)
+            .unwrap_or_default()
+    }
+
+    /// Poll once; availability scheduling belongs to the service's outer backoff.
+    pub fn poll_block_height(&self) -> Result<u32, String> {
+        let mut client = self.clone();
+        client.read_retry = None;
+        client.get_latest_block_height()
+    }
+
+    /// Check an idle canonical anchor without nesting data-read retry delays.
+    pub fn poll_block_hash(&self, height: u32) -> Result<BlockHash, String> {
+        let mut client = self.clone();
+        client.read_retry = None;
+        client.get_block_hash(height)
     }
 
     // Retry below all parsing/canonical checks and database writes, so a recovered read

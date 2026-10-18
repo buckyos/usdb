@@ -69,6 +69,7 @@ cat >>"${output_path}" <<EOF
     "balance_query_concurrency": ${BALANCE_QUERY_CONCURRENCY:-4},
     "balance_query_timeout_ms": ${BALANCE_QUERY_TIMEOUT_MS:-10000},
     "balance_query_max_retries": ${BALANCE_QUERY_MAX_RETRIES:-2},
+    "upstream_poll_interval_ms": ${USDB_INDEXER_UPSTREAM_POLL_INTERVAL_MS:-250},
     "inscription_source": "${INSCRIPTION_SOURCE:-bitcoind}",
     "inscription_fixture_file": ${fixture_json},
     "inscription_source_shadow_compare": ${INSCRIPTION_SOURCE_SHADOW_COMPARE:-false},

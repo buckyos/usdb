@@ -28,7 +28,7 @@ fn default_balance_query_max_retries() -> u32 {
 }
 
 fn default_upstream_poll_interval_ms() -> u64 {
-    5_000
+    250
 }
 
 fn deserialize_upstream_poll_interval_ms<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -118,7 +118,7 @@ pub struct USDBConfig {
     #[serde(default = "default_balance_query_max_retries")]
     pub balance_query_max_retries: u32,
 
-    /// Idle upstream polling interval; smaller values reduce regtest latency.
+    /// BH observation interval; independent Core diagnostics retain a one-second cadence.
     /// This affects scheduling only, never stable lag or consensus readiness.
     #[serde(
         default = "default_upstream_poll_interval_ms",
@@ -406,9 +406,9 @@ mod tests {
     }
 
     #[test]
-    fn upstream_poll_interval_preserves_legacy_defaults() {
+    fn omitted_upstream_poll_interval_uses_low_latency_default() {
         let legacy: USDBConfig = serde_json::from_str("{}").unwrap();
-        assert_eq!(legacy.upstream_poll_interval_ms, 5_000);
+        assert_eq!(legacy.upstream_poll_interval_ms, 250);
         assert_eq!(legacy, USDBConfig::default());
     }
 

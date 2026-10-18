@@ -164,7 +164,7 @@ fn should_wake_for_chain_update(
             last_height
         )
     })?;
-    Ok(local_tip_commit.btc_block_hash != btc_client.get_block_hash(last_height)?)
+    Ok(local_tip_commit.btc_block_hash != btc_client.poll_block_hash(last_height)?)
 }
 
 #[derive(Clone)]
@@ -634,6 +634,10 @@ impl BalanceHistoryIndexer {
         let mut wait_failures = ConsecutiveFailureTracker::new(30);
         let mut output_mode_warning = false;
         loop {
+            if self.check_shutdown() {
+                break;
+            }
+            let committed_before = self.db.get_btc_block_height().ok();
             match self.sync_once() {
                 Ok(latest_height) => {
                     if let Some(recovery) = sync_failures.record_success() {
@@ -715,7 +719,7 @@ impl BalanceHistoryIndexer {
                     }
 
                     // Wait for new blocks
-                    match self.wait_for_new_blocks(latest_height) {
+                    match self.wait_for_new_blocks_tracked(latest_height, &mut wait_failures) {
                         Ok(Some(new_height)) => {
                             if let Some(recovery) = wait_failures.record_success() {
                                 info!(
@@ -740,30 +744,37 @@ impl BalanceHistoryIndexer {
                         }
                         Err(e) => {
                             let failure = wait_failures.record_failure();
+                            let delay = usdb_util::service_retry_delay(failure.attempt);
                             if failure.should_log {
                                 if failure.attempt == 1 {
                                     error!(
-                                        "Balance-history BTC polling failed: attempt={}, outage_elapsed_ms={}, retry_delay_secs=10, error={}",
+                                        "Balance-history BTC polling failed: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
                                         failure.attempt,
                                         failure.elapsed.as_millis(),
+                                        delay.as_millis(),
                                         e
                                     );
                                 } else {
                                     warn!(
-                                        "Balance-history BTC polling still failing: attempt={}, outage_elapsed_ms={}, retry_delay_secs=10, error={}",
+                                        "Balance-history BTC polling still failing: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
                                         failure.attempt,
                                         failure.elapsed.as_millis(),
+                                        delay.as_millis(),
                                         e
                                     );
                                 }
                             }
                             let msg = format!(
-                                "Error while waiting for new blocks (attempt {}): {}. Retrying in 10 seconds...",
-                                failure.attempt, e
+                                "Error while waiting for new blocks (attempt {}): {}. Retrying in {} ms...",
+                                failure.attempt,
+                                e,
+                                delay.as_millis()
                             );
                             self.output.set_index_message(&msg);
 
-                            std::thread::sleep(std::time::Duration::from_secs(10));
+                            if usdb_util::sleep_until_cancelled(delay, || self.check_shutdown()) {
+                                break;
+                            }
 
                             // Check for shutdown signal after error
                             if self.check_shutdown() {
@@ -774,32 +785,45 @@ impl BalanceHistoryIndexer {
                     }
                 }
                 Err(e) => {
+                    if committed_before
+                        .zip(self.db.get_btc_block_height().ok())
+                        .is_some_and(|(before, after)| after > before)
+                    {
+                        sync_failures.record_success();
+                    }
                     let failure = sync_failures.record_failure();
+                    let delay = usdb_util::service_retry_delay(failure.attempt);
                     if failure.should_log {
                         if failure.attempt == 1 {
                             error!(
-                                "Balance-history sync failed: attempt={}, outage_elapsed_ms={}, retry_delay_secs=10, error={}",
+                                "Balance-history sync failed: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
                                 failure.attempt,
                                 failure.elapsed.as_millis(),
+                                delay.as_millis(),
                                 e
                             );
                         } else {
                             warn!(
-                                "Balance-history sync still failing: attempt={}, outage_elapsed_ms={}, retry_delay_secs=10, error={}",
+                                "Balance-history sync still failing: attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
                                 failure.attempt,
                                 failure.elapsed.as_millis(),
+                                delay.as_millis(),
                                 e
                             );
                         }
                     }
 
                     let msg = format!(
-                        "Error during sync with attempt {}: {}. Retrying in 10 seconds...",
-                        failure.attempt, e
+                        "Error during sync with attempt {}: {}. Retrying in {} ms...",
+                        failure.attempt,
+                        e,
+                        delay.as_millis()
                     );
                     self.output.set_index_message(&msg);
 
-                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    if usdb_util::sleep_until_cancelled(delay, || self.check_shutdown()) {
+                        break;
+                    }
 
                     // Check for shutdown signal after error
                     if self.check_shutdown() {
@@ -833,11 +857,25 @@ impl BalanceHistoryIndexer {
         false
     }
 
+    #[cfg(test)]
     fn wait_for_new_blocks(&self, last_height: u32) -> Result<Option<u32>, String> {
+        self.wait_for_new_blocks_tracked(last_height, &mut ConsecutiveFailureTracker::new(30))
+    }
+
+    fn wait_for_new_blocks_tracked(
+        &self,
+        last_height: u32,
+        failures: &mut ConsecutiveFailureTracker,
+    ) -> Result<Option<u32>, String> {
         loop {
-            let (canonical_height, latest_height) = self.get_sync_heights().inspect_err(|_| {
+            let canonical_height = self.btc_client.poll_block_height().inspect_err(|_| {
                 self.output.status().set_upstream_recovery_pending(true);
             })?;
+            let latest_height = compute_stable_sync_target_height(
+                canonical_height,
+                self.config.sync.max_sync_block_height,
+                resolve_balance_history_stable_lag(&self.config).map_err(|e| e.to_string())?,
+            );
             // Wake once when confirmations recover, even if no new stable block is available.
             let confirmations_recovered = latest_height >= last_height
                 && self
@@ -870,7 +908,19 @@ impl BalanceHistoryIndexer {
                 return Ok(Some(latest_height));
             }
 
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            if let Some(recovery) = failures.record_success() {
+                info!(
+                    "Balance-history BTC polling recovered: failed_attempts={}, outage_elapsed_ms={}",
+                    recovery.failed_attempts,
+                    recovery.elapsed.as_millis()
+                );
+            }
+            if usdb_util::sleep_until_cancelled(
+                std::time::Duration::from_millis(self.config.sync.poll_interval_ms),
+                || self.check_shutdown(),
+            ) {
+                return Ok(None);
+            }
 
             // Check for shutdown signal while waiting
             if self.check_shutdown() {
@@ -1066,6 +1116,7 @@ impl BalanceHistoryIndexer {
     ) -> Result<u32, String> {
         assert!(!height_range.is_empty(), "Height range should not be empty");
         let batch_begin = Instant::now();
+        let rpc_before = self.btc_client.read_stats();
         let batch_start_height = height_range.start;
         let batch_end_height = height_range.end - 1;
         let block_count = height_range.len();
@@ -1086,11 +1137,12 @@ impl BalanceHistoryIndexer {
             )
             .map_err(|error| {
                 let msg = format!(
-                    "Balance-history block batch failed: stage=process, start_height={}, end_height={}, block_count={}, elapsed_ms={}, error={}",
+                    "Balance-history block batch failed: stage=process, start_height={}, end_height={}, block_count={}, elapsed_ms={}, rpc_retries={}, error={}",
                     batch_start_height,
                     batch_end_height,
                     block_count,
                     batch_begin.elapsed().as_millis(),
+                    self.btc_client.read_stats().retries.saturating_sub(rpc_before.retries),
                     error
                 );
                 error!("{}", msg);
@@ -1122,11 +1174,19 @@ impl BalanceHistoryIndexer {
         self.output.update_current_height(last_height as u64);
 
         info!(
-            "Balance-history block batch completed: start_height={}, end_height={}, block_count={}, elapsed_ms={}",
+            "Balance-history block batch completed: start_height={}, end_height={}, block_count={}, elapsed_ms={}, rpc_attempts={}, rpc_retries={}",
             height_range.start,
             last_height,
             block_count,
-            batch_begin.elapsed().as_millis()
+            batch_begin.elapsed().as_millis(),
+            self.btc_client
+                .read_stats()
+                .attempts
+                .saturating_sub(rpc_before.attempts),
+            self.btc_client
+                .read_stats()
+                .retries
+                .saturating_sub(rpc_before.retries)
         );
 
         Ok(last_height)

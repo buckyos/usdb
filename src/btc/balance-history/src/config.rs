@@ -52,6 +52,10 @@ pub fn derive_cache_limits(
     })
 }
 
+fn default_poll_interval_ms() -> u64 {
+    250
+}
+
 fn default_batch_size() -> usize {
     128
 }
@@ -123,6 +127,10 @@ pub struct IndexConfig {
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
 
+    /// Idle canonical-chain observation cadence; does not change stable lag.
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+
     // UTXO cache size in bytes in memory
     #[serde(default = "default_utxo_cache_bytes")]
     pub utxo_max_cache_bytes: usize,
@@ -158,6 +166,7 @@ impl Default for IndexConfig {
         Self {
             local_loader_threshold: default_local_loader_threshold(),
             batch_size: default_batch_size(),
+            poll_interval_ms: default_poll_interval_ms(),
             utxo_max_cache_bytes: default_utxo_cache_bytes(),
             balance_max_cache_bytes: default_balance_cache_bytes(),
             max_memory_percent: default_max_memory_percent(),
@@ -178,6 +187,9 @@ impl IndexConfig {
 
     /// Validates cache limits before cache capacities are constructed.
     pub fn validate(&self) -> Result<(), String> {
+        if !(100..=60_000).contains(&self.poll_interval_ms) {
+            return Err("sync.poll_interval_ms must be between 100 and 60000".to_string());
+        }
         if self.batch_size == 0 || self.batch_size > u32::MAX as usize {
             return Err(format!(
                 "sync.batch_size must be in the range 1..={}, got {}",
@@ -550,12 +562,13 @@ impl BalanceHistoryConfig {
             Some(BTCAuth::CookieFile(_)) => "cookie_file",
         };
         info!(
-            "Loaded balance-history {} config: root_dir={}, btc_network={}, btc_auth_mode={}, batch_size={}, undo_retention_blocks={}, undo_cleanup_interval_blocks={}, rpc_addr={}:{}, snapshot_trust_mode={:?}, script_registry_cache_size_kib={}, script_registry_query_batch_size={}, script_registry_slow_query_ms={}",
+            "Loaded balance-history {} config: root_dir={}, btc_network={}, btc_auth_mode={}, batch_size={}, poll_interval_ms={}, undo_retention_blocks={}, undo_cleanup_interval_blocks={}, rpc_addr={}:{}, snapshot_trust_mode={:?}, script_registry_cache_size_kib={}, script_registry_query_batch_size={}, script_registry_slow_query_ms={}",
             source,
             self.root_dir.display(),
             self.btc.network(),
             auth_mode,
             self.sync.batch_size,
+            self.sync.poll_interval_ms,
             self.sync.undo_retention_blocks,
             self.sync.undo_cleanup_interval_blocks,
             self.rpc_server.host,
@@ -583,6 +596,20 @@ mod tests {
         let root = std::env::temp_dir().join(format!("balance_history_cfg_{}_{}", tag, nanos));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn idle_polling_default_and_validation_do_not_change_batch_size() {
+        let config: IndexConfig = toml::from_str("").unwrap();
+        assert_eq!(config.poll_interval_ms, 250);
+        assert_eq!(config.batch_size, 128);
+        for poll_interval_ms in [0, 99, 60_001] {
+            let config = IndexConfig {
+                poll_interval_ms,
+                ..IndexConfig::default()
+            };
+            assert!(config.validate().unwrap_err().contains("poll_interval_ms"));
+        }
     }
 
     #[test]

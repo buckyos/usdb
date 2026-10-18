@@ -21,7 +21,7 @@ impl BTCClient for BTCRpcClient {
     }
 
     fn stop(&self) -> Result<(), String> {
-        // No specific stop action needed for the RPC client
+        self.cancel_pending_reads();
         info!("BTC RPC client stopped.");
 
         Ok(())
@@ -30,6 +30,16 @@ impl BTCClient for BTCRpcClient {
     fn on_sync_complete(&self, _block_height: u32) -> Result<(), String> {
         // Do nothing for RPC client
         Ok(())
+    }
+
+    fn poll_block_height(&self) -> Result<u32, String> {
+        self.poll_block_height()
+    }
+    fn poll_block_hash(&self, height: u32) -> Result<BlockHash, String> {
+        self.poll_block_hash(height)
+    }
+    fn read_stats(&self) -> usdb_util::RpcReadStats {
+        self.read_stats()
     }
 
     fn get_latest_block_height(&self) -> Result<u32, String> {
