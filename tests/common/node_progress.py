@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 import usdb_node as NODE
+import usdb_minting as MINTING
+from common.enode import V4
 
 
 def ready_miner_progress():
@@ -65,11 +67,18 @@ def native_bootstrap_progress():
 
 
 @contextmanager
-def progress_fixture(services, *, pending=False):
+def progress_fixture(services, *, pending=False, minting_enabled=False):
     """Exercise the real progress aggregation with ready upstream observations."""
     with TemporaryDirectory(prefix="usdb-chain-progress-") as temporary, ExitStack() as stack:
         node_env = Path(temporary) / "node.env"
-        node_env.write_text("USDB_RESOURCE_MODE=auto\nUSDB_RESOURCE_PHASE=steady\n")
+        host_memory = 64 * 1024**3
+        env = dict(USDB_DATA_ROOT=str(node_env.parent),
+                   USDB_BOOTNODES=V4,
+                   **MINTING.environment(node_env.parent, minting_enabled))
+        # Use a complete persisted plan and the real validator. Only host/RPC observations
+        # are mocked, so resource display changes cannot read a fictitiously valid config.
+        env.update(NODE.build_resource_plan(host_memory, "steady", env).environment())
+        node_env.write_text(NODE.upsert_env("", env))
         layout = SimpleNamespace(
             node_env=node_env, release_id="test-release", bundle_id="test-bundle",
             network_identity={"btc_index_origin_height": 1, "chain_id": 123,
@@ -90,13 +99,12 @@ def progress_fixture(services, *, pending=False):
             "_bitcoin_data_start_anchor": SimpleNamespace(
                 minimum_tip_height=11, stable_height=1, stable_lag_blocks=10, block_hash=None),
             "_read_service_readiness": (ready, None),
-            "validate_resource_environment": None,
-            "effective_memory_bytes": 64 * 1024**3,
+            "effective_memory_bytes": host_memory,
             "_read_resource_state": {"phase": "steady", "pending": pending,
                                      "recover_services": ["usdb-chain", "usdb-control-plane"]},
             "_json_rpc_batch": {"eth_chainId": "0x7b", "eth_blockNumber": "0x0",
-                                "eth_getBlockByNumber": {"hash": "0x" + "ab" * 32},
-                                "eth_syncing": False, "net_peerCount": "0x0"},
+                                "eth_getBlockByNumber": {"number": "0x0", "hash": "0x" + "ab" * 32},
+                                "eth_syncing": False, "net_peerCount": "0x1"},
         }
         for name, value in observations.items():
             stack.enter_context(mock.patch.object(NODE, name, return_value=value))

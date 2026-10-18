@@ -16,18 +16,16 @@ sys.path.insert(0, str(TOOLS))
 import assumeutxo_node as native
 import node_image_progress as images
 import usdb_node as node
-import usdb_minting as minting
 from common.node_progress import progress_fixture
 
 
 class ImageProgressTests(unittest.TestCase):
     def test_optional_startup_waits_follow_live_images_and_end_with_preparation(self):
-        with progress_fixture({}) as layout:
-            env = dict(USDB_DATA_ROOT=str(layout.node_env.parent),
-                       **minting.environment(layout.node_env.parent, True))
-            layout.node_env.write_text(node.upsert_env(layout.node_env.read_text(), env))
+        with progress_fixture({}, minting_enabled=True) as layout:
             def observe():
                 report = node.collect_node_progress(layout)
+                self.assertNotIn("error", report["resources"])
+                self.assertIn("ORD_MEMORY_LIMIT", report["resources"]["memory_limits"])
                 self.assertEqual(report["minting"]["state"], "UNAVAILABLE")
                 self.assertFalse(report["minting"]["backend_ready"])
                 self.assertFalse(report["minting"]["transactions_enabled"])

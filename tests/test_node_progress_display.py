@@ -14,10 +14,25 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/tools"))
 import usdb_node as NODE
 from node_progress_render import render_node_progress
-from common.node_progress import native_bootstrap_progress, ready_miner_progress
+from common.node_progress import native_bootstrap_progress, progress_fixture, ready_miner_progress
 
 
 class ProgressDisplayTests(unittest.TestCase):
+    def test_invalid_resource_memory_is_reported_without_crashing_progress(self):
+        for recorded_memory in (None, "not-a-number"):
+            with self.subTest(recorded_memory=recorded_memory), progress_fixture({}) as layout:
+                env = NODE.read_env(layout.node_env)
+                if recorded_memory is None:
+                    del env["USDB_RESOURCE_HOST_MEMORY_BYTES"]
+                else:
+                    env["USDB_RESOURCE_HOST_MEMORY_BYTES"] = recorded_memory
+                layout.node_env.write_text(NODE.upsert_env("", env))
+                report = NODE.collect_node_progress(layout)
+                self.assertEqual(report["overall_state"], "BLOCKED")
+                self.assertIn("USDB_RESOURCE_HOST_MEMORY_BYTES", report["resources"]["error"])
+                self.assertNotIn("memory_limits", report["resources"])
+                self.assertIn("Resources BLOCKED", " ".join(render_node_progress(report).split()))
+
     def test_resource_allocation_shows_budget_and_ceiling_separately_from_usage(self):
         report = native_bootstrap_progress()
         report["resources"] = dict(phase="catchup", runtime_budget="core-catchup",

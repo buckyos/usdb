@@ -23,6 +23,7 @@ class ChainStartupTests(unittest.TestCase):
     def progress(self, services, *, pending=False):
         with progress_fixture(services, pending=pending) as layout:
             report = NODE.collect_node_progress(layout)
+            self.assertNotIn("error", report["resources"])
         chain = next(item for item in report["components"] if item["id"] == "usdb_chain")
         return report, chain
 
@@ -42,16 +43,24 @@ class ChainStartupTests(unittest.TestCase):
                     self.assertIn("permission denied", chain["detail"])
                     self.assertNotIn("planned resource transition", chain["detail"])
 
-    def test_each_failed_gate_and_control_plane_reports_its_name(self):
-        for name in ("usdb-chain-init", "paired-checkpoint-recovery", "usdb-control-plane"):
+    def test_each_failed_chain_gate_reports_its_name(self):
+        for name in ("usdb-chain-init", "paired-checkpoint-recovery"):
             with self.subTest(name=name):
                 services = self.services(**{name: {"state": "exited", "exit_code": 1}})
-                if name == "usdb-control-plane":
-                    services["usdb-chain"] = {"state": "running", "exit_code": 0}
                 report, chain = self.progress(services)
                 self.assertEqual(report["overall_state"], "FAILED")
                 self.assertIn(name, chain["detail"])
                 self.assertIn("exit_code=1", chain["detail"])
+
+    def test_control_plane_failure_does_not_override_healthy_chain(self):
+        services = self.services(**{
+            "usdb-chain": {"state": "running", "exit_code": 0},
+            "usdb-control-plane": {"state": "exited", "exit_code": 1},
+        })
+        _, chain = self.progress(services)
+        self.assertEqual(chain["state"], "READY")
+        self.assertEqual(chain["membership"], "CONNECTED")
+        self.assertNotIn("usdb-control-plane", chain["detail"])
 
     def test_clean_planned_stop_is_starting_but_failed_chain_start_is_failed(self):
         for exit_code, expected in ((0, "STARTING"), (126, "FAILED")):
