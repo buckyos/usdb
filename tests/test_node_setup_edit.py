@@ -425,7 +425,7 @@ class SetupEditTests(unittest.TestCase):
         updated = node.read_env(self.layout.node_env)
         self.assertEqual(updated[policy.POLICY_VERSION_KEY], "2")
         self.assertEqual(updated["USDB_RESOURCE_PHASE"], "catchup")
-        self.assertEqual(updated["USDB_ORD_RESOURCE_POLICY"], "adaptive-v1")
+        self.assertEqual(updated["USDB_ORD_RESOURCE_POLICY"], "adaptive-v2")
         # The legacy policy retains its inferred 16 GiB ceiling when recalculated.
         self.assertEqual(int(updated["ORD_MEMORY_LIMIT"]), 16 * policy.GIB)
         self.assertEqual(int(updated["ORD_INDEX_CACHE_BYTES"]), 4 * policy.GIB)

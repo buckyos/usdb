@@ -220,6 +220,8 @@ BTC 查询还要求 indexer 的查询能力就绪、网络匹配。数据约每 
 新节点在 `usdb-node setup` 中回答 `Enable local minting backend (txindex + private Ord)`，默认 `n`。
 选择 `y` 后直接使用下文的推荐内存、缓存和磁盘保护余量，不再逐项询问 Ord 数字参数；编辑已有配置时保留先前的自定义值。
 新建 Ord 索引前要求额外 **300 GiB 可用空间**；全新节点首次同时启用时，叠加基础部署容量，门槛为 **1.5 TiB + 300 GiB**。
+容量通过不等于磁盘性能足够：开启前建议核对数据盘的持续随机读写能力，优先使用本地 NVMe SSD。
+较差磁盘可能让首次索引持续多天，具体选型和诊断见 [Ord 磁盘性能与同步时间](ord.md#磁盘性能与同步时间)。
 非交互配置使用 `usdb-node configure --minting on`，并提供该节点所需的其他参数。
 
 开启后从首次 Bitcoin 启动起配置 `BTC_TXINDEX=1`。一个轻量监督进程先等待依赖；

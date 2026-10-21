@@ -1,6 +1,9 @@
 """Sixteen-GB resume, truthful completion and interrupted runtime resource handoffs."""
 
 from pathlib import Path
+import contextlib
+import io
+import json
 import sys
 import tempfile
 import unittest
@@ -19,6 +22,63 @@ from common.runtime_resources import RuntimeResources
 
 
 class RuntimeBudgetTests(unittest.TestCase):
+    def test_ord_v2_growth_preserves_runtime_targets_reserves_caps_and_old_plans(self):
+        hosts = ((16_000_000_000, "90", "0"), (20 * policy.GIB, "90", "2g"),
+                 (32 * policy.GIB, "80", "4g"), (64 * policy.GIB, "90", "4g"),
+                 (128 * policy.GIB, "80", "4g"))
+        for memory, percent, external in hosts:
+            for profile in policy.STORAGE_PROFILES:
+                for cap in ("4g", "16g", "32g", "64g"):
+                    env = dict(USDB_RESOURCE_POLICY_VERSION="2", SNAPSHOT_MODE="assumeutxo",
+                               USDB_STORAGE_PROFILE=profile, USDB_RESOURCE_MEMORY_PERCENT=percent,
+                               USDB_EXTERNAL_MEMORY_BUDGET=external, USDB_ORD_MEMORY_CAP=cap,
+                               USDB_MINTING_ENABLED="1", USDB_ORD_RESOURCE_POLICY="adaptive-v2")
+                    steady = policy.build_resource_plan(memory, "steady", env)
+                    for budget in ("core-ready", "runtime-ready"):
+                        with self.subTest(memory=memory, profile=profile, cap=cap, budget=budget):
+                            settings = dict(env, USDB_RESOURCE_RUNTIME_BUDGET=budget)
+                            plan = policy.build_resource_plan(memory, "catchup", settings)
+                            self.assertLessEqual(plan.total_bytes, memory)
+                            self.assertEqual(plan.reserve_bytes, steady.reserve_bytes)
+                            self.assertEqual(plan.external_services_bytes, steady.external_services_bytes)
+                            for key in steady.limits:
+                                if key != "ORD_MEMORY_LIMIT":
+                                    self.assertEqual(plan.limits[key], steady.limits[key])
+                            limit = plan.limits["ORD_MEMORY_LIMIT"]
+                            self.assertGreaterEqual(limit, steady.limits["ORD_MEMORY_LIMIT"])
+                            self.assertLessEqual(limit, policy.memory_bytes(cap, "cap"))
+                            self.assertLessEqual(limit, (memory - plan.external_services_bytes) // 2)
+                            self.assertLessEqual(plan.ord_cache_bytes, min(16 * policy.GIB, limit // 3))
+                            self.assertEqual(plan.environment()["USDB_ORD_RESOURCE_POLICY"], "adaptive-v2")
+                            policy.validate_resource_environment({**settings, **plan.environment()}, memory)
+                            usdb_minting.validate({**usdb_minting.environment(Path("/unused"), True),
+                                **settings, **plan.environment(), "USDB_DATA_ROOT": "/unused"})
+                    old = dict(env, USDB_ORD_RESOURCE_POLICY="adaptive-v1", USDB_RESOURCE_RUNTIME_BUDGET="runtime-ready")
+                    old_plan = policy.build_resource_plan(memory, "catchup", old)
+                    self.assertEqual(old_plan.limits, steady.limits)
+                    policy.validate_resource_environment({**old, **old_plan.environment()}, memory)
+
+    def test_ord_v2_only_boosts_after_core_completion_and_releases_on_steady(self):
+        env = dict(USDB_RESOURCE_POLICY_VERSION="2", SNAPSHOT_MODE="assumeutxo",
+                   USDB_STORAGE_PROFILE="balanced", USDB_MINTING_ENABLED="1", USDB_ORD_RESOURCE_POLICY="adaptive-v2")
+        for phase, budget in (("bitcoin", "bootstrap"), ("overlap", "bootstrap"),
+                              ("catchup", "bootstrap"), ("catchup", "core-catchup")):
+            settings = dict(env, USDB_RESOURCE_RUNTIME_BUDGET=budget)
+            current = policy.build_resource_plan(64 * policy.GIB, phase, settings)
+            old = policy.build_resource_plan(64 * policy.GIB, phase, dict(settings, USDB_ORD_RESOURCE_POLICY="adaptive-v1"))
+            self.assertEqual(current.limits, old.limits)
+            self.assertEqual(current.ord_cache_bytes, old.ord_cache_bytes)
+        ready = dict(env, USDB_RESOURCE_RUNTIME_BUDGET="runtime-ready")
+        catchup = policy.build_resource_plan(64 * policy.GIB, "catchup", ready)
+        self.assertEqual(catchup.limits["ORD_MEMORY_LIMIT"], 32 * policy.GIB)
+        self.assertGreater(catchup.ord_cache_bytes, 10 * policy.GIB)
+        steady = policy.build_resource_plan(64 * policy.GIB, "steady", ready)
+        self.assertEqual(steady.limits["ORD_MEMORY_LIMIT"], 4 * policy.GIB)
+        self.assertEqual(steady.ord_cache_bytes, policy.GIB)
+        for phase in policy.RUNTIME_PHASES:
+            disabled = policy.build_resource_plan(64 * policy.GIB, phase, dict(ready, USDB_MINTING_ENABLED="0"))
+            self.assertNotIn("ORD_MEMORY_LIMIT", disabled.limits)
+
     def test_core_catchup_uses_spare_capacity_without_growing_caches_or_other_services(self):
         for memory in (16_000_000_000, 21999050752, 32 * policy.GIB, 64 * policy.GIB):
             for active in ("0", "1"):
@@ -131,6 +191,44 @@ class RuntimeHandoffTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+
+    def test_ord_v2_handoff_recovers_after_graceful_stop_and_cold_start_keeps_policy(self):
+        f = RuntimeResources(self.root, memory=64 * policy.GIB, ord_enabled=True,
+                             runtime_budget="core-catchup", ord_policy="adaptive-v2")
+        before = f.layout.node_env.read_bytes()
+        with f.patches():
+            f.crash = "quiesce-services"
+            with self.assertRaises(RuntimeError):
+                lifecycle.apply_plan(f.layout, node, "catchup", runtime_budget="runtime-ready")
+            self.assertIn("ord-server", f.events[0][1])
+            self.assertEqual(f.layout.node_env.read_bytes(), before)
+            lifecycle.apply_plan(f.layout, node, "catchup")
+            env = node.read_env(f.layout.node_env)
+            self.assertEqual(env["USDB_RESOURCE_RUNTIME_BUDGET"], "runtime-ready")
+            self.assertEqual(int(env["ORD_MEMORY_LIMIT"]), 32 * policy.GIB)
+            self.assertFalse(node._read_resource_state(f.layout)["pending"])
+            # Complete service recovery before simulating a later cold start.
+            node._resource_state_path(f.layout).unlink()
+            for item in f.containers.values():
+                item["state"] = "exited"
+            self.assertTrue(lifecycle.prepare_for_up(f.layout, node))
+            env = node.read_env(f.layout.node_env)
+            self.assertEqual(env["USDB_ORD_RESOURCE_POLICY"], "adaptive-v2")
+            self.assertEqual(env["USDB_RESOURCE_RUNTIME_BUDGET"], "core-catchup")
+
+    def test_resource_preview_exposes_ord_budget_after_core_without_writes(self):
+        f = RuntimeResources(self.root, memory=64 * policy.GIB, ord_enabled=True,
+                             runtime_budget="core-catchup", ord_policy="adaptive-v2")
+        before = f.layout.node_env.read_bytes()
+        output = io.StringIO()
+        with f.patches(), contextlib.redirect_stdout(output):
+            node.print_resource_plan(f.layout, json_output=True)
+        report = json.loads(output.getvalue())
+        budgets = {row["runtime_budget"]: row for row in report["phases"] if row["phase"] == "catchup"}
+        self.assertEqual(budgets["core-catchup"]["limits"]["ORD_MEMORY_LIMIT"], 4 * policy.GIB)
+        self.assertEqual(budgets["runtime-ready"]["limits"]["ORD_MEMORY_LIMIT"], 32 * policy.GIB)
+        self.assertEqual(f.layout.node_env.read_bytes(), before)
+        self.assertFalse(f.events)
 
     def test_stopped_legacy_node_can_resume_after_shrink_without_trusting_steady(self):
         f = RuntimeResources(self.root)
@@ -368,6 +466,13 @@ class RuntimeHandoffTests(unittest.TestCase):
 
 
 class CompletionWindowTests(unittest.TestCase):
+    def test_core_ready_backlog_reclaims_core_budget_only_after_sustained_lag(self):
+        state = lifecycle.Stability()
+        sample = dict(known=True, complete=False, core_complete=False, lag=1000, identity=1)
+        for now in range(0, 300, 15):
+            self.assertIsNone(state.target("catchup", sample, now, "core-ready"))
+        self.assertEqual(state.target("catchup", sample, 300, "core-ready"), "core-catchup")
+
     def test_core_catchup_release_waits_for_core_completion_and_fresh_window(self):
         state = lifecycle.Stability()
         sample = dict(known=True, complete=False, core_complete=False, identity=1)

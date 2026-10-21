@@ -71,6 +71,7 @@ from validate_network_bundle import (  # noqa: E402
 )
 from resource_policy import (  # noqa: E402
     CAP_DEFAULTS,
+    MIN_HOST_MEMORY_BYTES,
     POLICY_KEYS,
     STORAGE_PROFILES,
     DEFAULT_MEMORY_PERCENT,
@@ -945,7 +946,7 @@ def _resource_policy_updates(mode: str, caps: dict[str, str]) -> dict[str, str]:
     if mode == "auto":
         # Explicit setup/recalculation opts in; merely activating a release
         # continues to validate the old persisted allocation unchanged.
-        settings["USDB_ORD_RESOURCE_POLICY"] = "adaptive-v1"
+        settings["USDB_ORD_RESOURCE_POLICY"] = "adaptive-v2"
         settings[POLICY_VERSION_KEY] = "2"
         if "USDB_ORD_MEMORY_CAP" not in caps:
             settings["USDB_ORD_MEMORY_CAP"] = "32g"
@@ -1119,14 +1120,24 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
     env = read_env(layout.node_env) if layout.node_env.is_file() else {}
     memory = effective_memory_bytes()
     plans = []
+    variants = []
     for phase in resource_phases(env):
-        plan = build_resource_plan(memory, phase, env)
+        variants.append((phase, env))
+        if (phase == "catchup" and env.get("USDB_ORD_RESOURCE_POLICY") == "adaptive-v2"
+                and env.get("USDB_MINTING_ENABLED") == "1"
+                and env.get("USDB_RESOURCE_RUNTIME_BUDGET") not in {"core-ready", "runtime-ready"}):
+            budget = ("runtime-ready" if env.get("USDB_RESOURCE_RUNTIME_BUDGET") in
+                      {"compact", "core-catchup"} or memory < MIN_HOST_MEMORY_BYTES else "core-ready")
+            variants.append((phase, {**env, "USDB_RESOURCE_RUNTIME_BUDGET": budget}))
+    for phase, settings in variants:
+        plan = build_resource_plan(memory, phase, settings)
         ord_cache = None
         if "ORD_MEMORY_LIMIT" in plan.limits:
             ord_cache = plan.ord_cache_bytes
             if ord_cache is None:
                 ord_cache = memory_bytes(env.get("ORD_INDEX_CACHE_BYTES", str(1024**3)), "ORD_INDEX_CACHE_BYTES")
         plans.append({"phase": phase, "limits": plan.limits,
+                      "runtime_budget": plan.environment().get("USDB_RESOURCE_RUNTIME_BUDGET"),
                       "external_services_bytes": plan.external_services_bytes,
                       "system_reserve_bytes": plan.reserve_bytes,
                       "budget_bytes": plan.total_bytes,
@@ -1160,9 +1171,12 @@ def print_resource_plan(layout: ReleaseLayout, *, json_output: bool) -> None:
             print(f"Node memory pool: {_human_bytes(plans[0]['node_pool_bytes'])}; shared by active node services.")
         for item in plans:
             limits = item["limits"]
+            label = item["phase"]
+            if label == "catchup" and item["runtime_budget"]:
+                label += "/" + item["runtime_budget"]
             ord_summary = (f"Ord={_human_bytes(limits['ORD_MEMORY_LIMIT'])} "
                            f"(cache={_human_bytes(item['ord_cache_bytes'])}), " if "ORD_MEMORY_LIMIT" in limits else "")
-            print(f"{item['phase']:<10} Bitcoin={_human_bytes(limits['BTC_MEMORY_LIMIT'])} "
+            print(f"{label:<10} Bitcoin={_human_bytes(limits['BTC_MEMORY_LIMIT'])} "
                   f"(dbcache={_human_bytes(item['dbcache_mib'] * 1024**2)}), "
                   f"balance-history={_human_bytes(limits['BH_MEMORY_LIMIT'])}, "
                   f"{ord_summary}"

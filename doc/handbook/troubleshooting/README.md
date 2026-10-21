@@ -17,6 +17,7 @@
 | `node is already configured` | [已有配置](#提示已有配置) |
 | 磁盘不足、目录容量不符合要求 | [磁盘问题](#磁盘空间不足) |
 | 下载、导入或同步看起来长时间不动 | [同步等待](#同步或导入看起来卡住) |
+| Ord 索引持续多天、提交很慢或高度长时间不变 | [Ord 慢速同步与磁盘排查](../services/ord.md#同步很慢时如何判断和改善) |
 | Bitcoin 反复 RPC timeout / `STALE`，但主机很空闲 | [Bitcoin 内存额度](#bitcoin-反复-rpc-超时但主机很空闲) |
 | `status --watch` 报 `KeyError: 'sync_start_height'` | [进度面板退出](#进度面板报-keyerror-后退出) |
 | `AWAITING_PEERS`、没有实际连接 | [入网问题](#等待-peers-或一直没有连接) |

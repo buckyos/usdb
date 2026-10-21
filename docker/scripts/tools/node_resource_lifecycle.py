@@ -65,7 +65,10 @@ def _prepare_for_up_locked(layout, node):
     settings = {**env, POLICY_VERSION_KEY: "2", "USDB_RESOURCE_PHASE": "catchup"}
     if memory < MIN_HOST_MEMORY_BYTES or env.get("USDB_RESOURCE_RUNTIME_BUDGET") in {"compact", "core-catchup", "runtime-ready"}:
         settings["USDB_RESOURCE_RUNTIME_BUDGET"] = "core-catchup"
-    settings["USDB_ORD_RESOURCE_POLICY"] = "adaptive-v1"
+    # Preserve the explicitly selected Ord policy across hardware changes and
+    # cold starts. Older nodes retain their previously released allocations.
+    if settings.get("USDB_ORD_RESOURCE_POLICY") != "adaptive-v2":
+        settings["USDB_ORD_RESOURCE_POLICY"] = "adaptive-v1"
     desired = {**settings, **build_resource_plan(memory, "catchup", settings).environment()}
     validate_resource_environment(desired, memory)
     original = layout.node_env.read_text(encoding="utf-8")
@@ -230,7 +233,7 @@ class Stability:
                 target = "core-ready"
             elif phase == "catchup" and budget == "core-catchup" and sample.get("core_complete"):
                 target = "runtime-ready"
-            elif (phase == "catchup" and budget == "runtime-ready"
+            elif (phase == "catchup" and budget in {"core-ready", "runtime-ready"}
                   and sample.get("core_complete") is False and sample.get("lag", 0) >= 1000):
                 target = "core-catchup"
             elif phase == "steady" and sample.get("lag", 0) >= 1000:

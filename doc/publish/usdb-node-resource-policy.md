@@ -43,7 +43,8 @@
 `getindexinfo` 查询失败只使索引完成情况未知，不撤销已取得的 Bitcoin 前台就绪状态。
 
 Core 历史和索引先完成、Ord 仍追赶时，也会经 60 秒窗口先释放 Core 预算，保存
-`USDB_RESOURCE_RUNTIME_BUDGET=core-ready`；其余服务和 Ord 额度保持不变。
+`USDB_RESOURCE_RUNTIME_BUDGET=core-ready`。旧 Ord 策略保持其余服务额度；新 `adaptive-v2`
+先分配各服务运行额度，再按整机余量扩大 Ord 追赶预算（见下节）。
 所有任务完成后保存 `compact`。普通新块或短暂 RPC 故障不切回追赶阶段；持续 5 分钟落后
 至少 1,000 个 BTC/BH/indexer/Ord 进度单位才从 `steady` 回到 `catchup`。
 回退采用 `core-catchup`，在现有运行服务预算之外将空余额度分给 Core；仍受整机内存池约束，
@@ -83,8 +84,25 @@ Ord 缓存不超过 1 GiB 且不超过其额度的四分之一。系统百分比
 增加到 Core 容器上限，最高 8 GiB，仍遵守显式 Core steady cap；dbcache、BH/Ord 和其他
 服务预算均保持不变。有效容量 20.49 GiB、90%、Ord 关闭时 Core 为 8 GiB、dbcache 655 MiB。
 Core 持续完成 60 秒后采用 `runtime-ready`，释放额外 Core 额度；等所有服务完成再进入
-`steady / compact`。`runtime-ready` 若持续 5 分钟存在 Core 未完成且进度落后至少 1,000，
+`steady / compact`。`core-ready` 或 `runtime-ready` 若持续 5 分钟存在 Core 未完成且进度落后至少 1,000，
 也可回到 `core-catchup`。观测未知时不降额。
+
+新 setup 或停机后显式重算将 `USDB_ORD_RESOURCE_POLICY` 设为 `adaptive-v2`，保留旧版本公式，
+避免已有 `node.env` 因算法变化而校验失败。初始同步及 Core 尚未完成时的分配不变；
+`catchup/core-ready` 与 `catchup/runtime-ready` 为其他服务保留上述运行目标后，Ord 上限为：
+
+```text
+min(Ord cap, (effective RAM - external reserve) / 2, remaining pool after other services)
+```
+
+Ord 最低额度仍为 2 GiB，整机必须先满足所有服务最低额度。追赶缓存为 Ord 上限的三分之一，
+最高 16 GiB，按 MiB 向下取整；其余空间用于 UTXO 批次、地址表及 cgroup 计费的文件缓存。
+默认 Ord cap 仍为 32 GiB，自定义 cap、系统预留和外部服务预留继续生效。
+在 64 GiB / 90% / 无外部预留时为 32 GiB 容器额度和约 10.7 GiB 缓存；20 GiB 同条件下约为
+5.5 GiB / 1.83 GiB。所有服务持续完成后回到原 compact 预算。
+容器额度/缓存变更使用下述正常停止与恢复流程，冷启动和缩容保留已选 Ord 策略版本。
+`resources --json` 的 `phases` 可能包含多个 `catchup` 条目，需结合 `runtime_budget` 识别；
+预览不会将 Core 已完成当作当前事实，也不会修改配置或容器。
 
 BH 的所有配置仍校验：
 

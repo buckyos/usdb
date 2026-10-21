@@ -64,7 +64,7 @@ def resource_cap_defaults(env: dict[str, str]) -> dict[str, str]:
     if env.get("USDB_STORAGE_PROFILE") == "slow-disk":
         defaults.update(USDB_BTC_IBD_MEMORY_CAP="64g", USDB_BTC_OVERLAP_MEMORY_CAP="32g",
                         USDB_BTC_STEADY_MEMORY_CAP="32g")
-    if env.get("USDB_ORD_RESOURCE_POLICY") == "adaptive-v1":
+    if env.get("USDB_ORD_RESOURCE_POLICY") in {"adaptive-v1", "adaptive-v2"}:
         defaults["USDB_ORD_MEMORY_CAP"] = "32g"
     return defaults
 
@@ -170,6 +170,7 @@ class ResourcePlan:
     compact_runtime: bool = False
     core_released: bool = False
     runtime_budget: str | None = None
+    ord_resource_policy: str = "adaptive-v1"
 
     @property
     def total_bytes(self) -> int:
@@ -204,7 +205,7 @@ class ResourcePlan:
             "BTC_DBCACHE_MB": str(self.dbcache_mib),
             **({"ORD_INDEX_CACHE_BYTES": str(self.ord_cache_bytes),
                 "USDB_ORD_MEMORY_CAP": str(self.ord_memory_cap)} if self.ord_cache_bytes is not None else {}),
-            **({"USDB_ORD_RESOURCE_POLICY": "adaptive-v1",
+            **({"USDB_ORD_RESOURCE_POLICY": self.ord_resource_policy,
                 "ORD_STEADY_INDEX_CACHE_BYTES": str(self.ord_steady_cache_bytes)}
                if self.ord_steady_cache_bytes is not None else {}),
         }
@@ -212,6 +213,8 @@ class ResourcePlan:
 
 def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> ResourcePlan:
     """Reserve a bounded Ord catch-up ceiling without spending other services' minima."""
+    if env.get("USDB_ORD_RESOURCE_POLICY") == "adaptive-v2":
+        return _ord_adaptive_v2_plan(host_memory, phase, env)
     if runtime_policy(env):
         if phase not in RUNTIME_PHASES:
             raise ValueError(f"invalid USDB_RESOURCE_PHASE: {phase}")
@@ -270,6 +273,37 @@ def build_resource_plan(host_memory: int, phase: str, env: dict[str, str]) -> Re
                    ord_memory_cap=cap,
                    ord_steady_cache_bytes=min(GIB, cache),
                    utxo_cache_bytes=bh_cache // 4, balance_cache_bytes=bh_cache - bh_cache // 4)
+
+
+def _ord_adaptive_v2_plan(host_memory: int, phase: str, env: dict[str, str]) -> ResourcePlan:
+    """Grow Ord after Core completion, including resumed small-memory nodes.
+
+    Keep v1 allocations reproducible for saved configurations. Only explicit
+    setup/recalculation opts into this policy; no live free-memory heuristic or
+    database change is involved. Core completion remains a controller gate.
+    """
+    if not runtime_policy(env):
+        raise ValueError("adaptive-v2 Ord resources require USDB_RESOURCE_POLICY_VERSION=2")
+    settings = {**env, "USDB_ORD_RESOURCE_POLICY": "adaptive-v1"}
+    budget = env.get("USDB_RESOURCE_RUNTIME_BUDGET", "bootstrap")
+    if phase == "catchup" and budget in {"core-ready", "runtime-ready"} and env.get("USDB_MINTING_ENABLED") == "1":
+        # Core history and txindex are complete. Reserve the runtime targets of
+        # every other service first, then give Ord only unallocated capacity.
+        plan = _runtime_plan(host_memory, phase, settings)
+        cap = plan.ord_memory_cap
+        current = plan.limits["ORD_MEMORY_LIMIT"]
+        desired = min(cap, (host_memory - plan.external_services_bytes) // 2)
+        extra = max(0, min(desired - current, host_memory - plan.total_bytes)) // MIB * MIB
+        limit = current + extra
+        # redb is only part of the working set. Keep two thirds for the UTXO
+        # batch, address tables and charged file pages; do not fill the cgroup.
+        cache = min(16 * GIB, limit // 3) // MIB * MIB
+        plan = replace(plan, limits={**plan.limits, "ORD_MEMORY_LIMIT": limit},
+                       ord_cache_bytes=cache, ord_steady_cache_bytes=min(GIB, cache),
+                       core_released=True, runtime_budget=budget)
+    else:
+        plan = build_resource_plan(host_memory, phase, settings)
+    return replace(plan, ord_resource_policy="adaptive-v2")
 
 
 def _runtime_plan(host_memory: int, phase: str, env: dict[str, str]) -> ResourcePlan:

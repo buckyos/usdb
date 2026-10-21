@@ -308,8 +308,10 @@ else: raise SystemExit(6)
             self.assertIsNone(tier.target(dict(state="READY", canonical=True), 140))
 
     def test_adaptive_restart_waits_for_clean_exit_and_operator_stop_wins(self):
-        for exit_code, operator_stop in ((0, False), (1, False), (0, True)):
-            with self.subTest(exit_code=exit_code, operator_stop=operator_stop):
+        cases = ((strategy, code, stopped) for strategy in ("adaptive-v1", "adaptive-v2")
+                 for code, stopped in ((0, False), (1, False), (0, True)))
+        for strategy, exit_code, operator_stop in cases:
+            with self.subTest(strategy=strategy, exit_code=exit_code, operator_stop=operator_stop):
                 (self.root / "resource-profile.json").unlink(missing_ok=True)
                 loop, children = Loop(3), []
                 core = runtime.prerequisites(*core_observation(), now=1001)
@@ -325,7 +327,7 @@ else: raise SystemExit(6)
                     children.append(child)
                     return child
                 with mock.patch.dict(runtime.os.environ, dict(ORD_DATA_DIR=str(self.root), BTC_RPC_USER="user",
-                        BTC_RPC_PASSWORD="secret", USDB_ORD_RESOURCE_POLICY="adaptive-v1",
+                        BTC_RPC_PASSWORD="secret", USDB_ORD_RESOURCE_POLICY=strategy,
                         ORD_INDEX_CACHE_BYTES=str(8 * policy.GIB), ORD_STEADY_INDEX_CACHE_BYTES=str(policy.GIB)), clear=True), \
                         mock.patch.object(runtime.threading, "Event", return_value=loop), \
                         mock.patch.object(runtime.signal, "signal"), \
@@ -340,9 +342,16 @@ else: raise SystemExit(6)
                 if len(children) == 2:
                     args = spawned.call_args_list[-1].args[0]
                     self.assertEqual(args[args.index("--index-cache-size") + 1], str(policy.GIB))
-                    self.assertEqual(args[args.index("--commit-interval") + 1], "100")
+                    self.assertEqual(args[args.index("--commit-interval") + 1], "1000")
                 if exit_code:
                     self.assertFalse((self.root / "resource-profile.json").exists())
+
+    def test_commit_interval_defaults_to_1000_and_preserves_explicit_values(self):
+        for configured in (None, "100", "1000", "5000"):
+            with self.subTest(configured=configured), mock.patch.dict(runtime.os.environ,
+                    {} if configured is None else {"ORD_COMMIT_INTERVAL": configured}, clear=True):
+                args = runtime.ord_command(self.root)
+                self.assertEqual(args[args.index("--commit-interval") + 1], configured or "1000")
 
     def test_shutdown_displays_original_wait_and_commit_target(self):
         with mock.patch.object(shutdown.time, "time", return_value=1000):

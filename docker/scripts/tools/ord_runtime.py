@@ -124,7 +124,7 @@ def ord_command(root, cache=None):
     """Only inscriptions and addresses are indexed; no redundant transaction/sat index."""
     return ["/opt/ord/bin/ord", "--chain", "mainnet", "--data-dir", str(root),
             "--index-addresses", "--index-cache-size", str(cache) if cache is not None else os.environ.get("ORD_INDEX_CACHE_BYTES", "1073741824"),
-            "--commit-interval", os.environ.get("ORD_COMMIT_INTERVAL", "100"),
+            "--commit-interval", os.environ.get("ORD_COMMIT_INTERVAL", "1000"),
             "server", "--address", "0.0.0.0", "--http", "--http-port", "28030"]
 
 
@@ -197,13 +197,13 @@ def supervise():
     # Enable index milestones without verbose HTTP/RPC tracing or credentials.
     child_env["RUST_LOG"] = "warn,ord::index=info"
     cache = int(os.environ.get("ORD_INDEX_CACHE_BYTES", "1073741824"))
-    interval = int(os.environ.get("ORD_COMMIT_INTERVAL", "100"))
+    interval = int(os.environ.get("ORD_COMMIT_INTERVAL", "1000"))
     if cache <= 0 or not 1 <= interval <= 100000:
         raise ValueError("Ord cache must be positive and commit interval must be between 1 and 100000")
     strategy = os.environ.get("USDB_ORD_RESOURCE_POLICY", "fixed")
-    if strategy not in {"fixed", "adaptive-v1"}:
-        raise ValueError("USDB_ORD_RESOURCE_POLICY must be fixed or adaptive-v1")
-    adaptive = strategy == "adaptive-v1"
+    if strategy not in {"fixed", "adaptive-v1", "adaptive-v2"}:
+        raise ValueError("USDB_ORD_RESOURCE_POLICY must be fixed, adaptive-v1 or adaptive-v2")
+    adaptive = strategy in {"adaptive-v1", "adaptive-v2"}
     steady_cache = int(os.environ.get("ORD_STEADY_INDEX_CACHE_BYTES", str(min(cache, 1024**3)))) if adaptive else cache
     policy = CachePolicy(root, cache, steady_cache, adaptive)
     observation.event("supervisor_started", index_cache_bytes=cache, commit_interval=interval)
@@ -263,7 +263,7 @@ def supervise():
                 observation.event("resource_transition_started", from_profile=policy.profile,
                                   to_profile=target, committed_height=report.get("ord_height"))
                 # Ord exposes its cache only as a startup option. Restart this
-                # child alone, at a small batch boundary, keeping Core untouched.
+                # child alone, after the current batch, keeping Core untouched.
                 code = stop_child(child, root, dict(report, restart_reason="cache_profile"), observation)
                 child = None
                 if code:

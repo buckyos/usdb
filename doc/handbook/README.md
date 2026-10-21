@@ -26,7 +26,7 @@
 | 卸载程序、清空节点或保留 Bitcoin 重建 USDB | [卸载与清空](node/uninstall.md) |
 | 配置 Webhook、SMTP 并查看通知投递结果 | [通知配置与投递](node/notifications.md) |
 | 私下查看本机同步、资源和服务状态 | [私有节点控制台](services/control-plane.md) |
-| 查看 Ord 索引进度、调整其资源或排查停止等待 | [Ord 索引后端](services/ord.md) |
+| 评估 Ord 磁盘需求、排查慢速索引或停止等待、调整资源 | [Ord 索引后端](services/ord.md) |
 | 使用或部署浏览器、公共 RPC 与专用查询节点 | [USDB Explorer](services/explorer.md) |
 | 停机、续跑、升级或安排备份 | [日常维护](node/maintenance.md) |
 | 判断新版本兼容性、保留数据重建或恢复中断升级 | [升级预检与重建](node/upgrade.md) |

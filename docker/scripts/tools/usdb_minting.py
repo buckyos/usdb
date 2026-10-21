@@ -87,13 +87,13 @@ def validate(env, *, require_current=False):
         raise ValueError("Ord requires at least 2 GiB RAM and cache no larger than half its memory limit")
     memory_bytes(env.get("ORD_MIN_FREE_BYTES", str(50 * GIB)), "ORD_MIN_FREE_BYTES")
     strategy = env.get("USDB_ORD_RESOURCE_POLICY", "fixed")
-    if strategy not in {"fixed", "adaptive-v1"}:
-        raise ValueError("USDB_ORD_RESOURCE_POLICY must be fixed or adaptive-v1")
-    if strategy == "adaptive-v1":
+    if strategy not in {"fixed", "adaptive-v1", "adaptive-v2"}:
+        raise ValueError("USDB_ORD_RESOURCE_POLICY must be fixed, adaptive-v1 or adaptive-v2")
+    if strategy in {"adaptive-v1", "adaptive-v2"}:
         steady = memory_bytes(env.get("ORD_STEADY_INDEX_CACHE_BYTES", str(GIB)), "ORD_STEADY_INDEX_CACHE_BYTES")
         if steady > cache:
             raise ValueError("Ord steady cache must not exceed its catch-up cache")
-    interval = env.get("ORD_COMMIT_INTERVAL", "100")
+    interval = env.get("ORD_COMMIT_INTERVAL", "1000")
     if not interval.isascii() or not interval.isdigit() or not 1 <= int(interval) <= 100000:
         raise ValueError("ORD_COMMIT_INTERVAL must be between 1 and 100000 blocks")
 
