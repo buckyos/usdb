@@ -71,6 +71,10 @@ RPC 和运行参数同样必须显式区分边界：BTC-side 状态服务使用
 - [UIP-0018-miner-btc-anchor-gap-policy.md](./UIP-0018-miner-btc-anchor-gap-policy.md)：Miner BTC anchor gap 推荐策略、历史选高、观测与实施验收；Informational / Draft，建议默认 2、允许本地覆盖，无共识激活；Go 第一批已提交；节点工具第二批本地回归通过并提交，尚未发布；独立多节点 gap/延迟/恢复矩阵本地通过，经济与 activation 组合待补齐。
 - [uip-split-design.md](./uip-split-design.md)：经济模型拆分与标准化顺序。
 
+待标准化方案：[USDB chain BTC 深重组恢复设计与实施计划](../usdb-btc-deep-reorg-recovery-design.md)。
+该方案拟通过独立的 Standards Track UIP 定义安全区块、恢复授权、废弃分支拒绝和历史重放，
+目前仅为非规范设计稿，尚未分配 UIP 编号或激活；CLI、备份和发布编排继续放在设计与运维文档中。
+
 ## 跨 UIP 术语索引
 
 本节只提供导航，不复制规范定义。术语的规范含义以“定义 UIP”中的术语和规则为准；其他 UIP 使用该术语时必须引用定义 UIP，不得赋予不同含义。

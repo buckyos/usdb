@@ -36,6 +36,7 @@
 - [面向运维的手册覆盖复核（2026-09-14）](./usdb-operator-handbook-review-2026-09-14.md)
 - [USDB 独立 DAO Bootstrap 参数、部署与验收核对](./usdb-independent-dao-bootstrap-review-2026-09-06.md)
 - [USDB testnet-v0 深 BTC 重组停链与整网重置](./usdb-testnet-v0-deep-btc-reorg-operations.md)
+- [USDB chain BTC 深重组恢复设计与实施计划](../usdb-btc-deep-reorg-recovery-design.md)：planned，统一恢复文件、客户端与矿工恢复、节点工具和独立 UIP 边界；尚不可用于线上回退。
 - [Balance-History 发布与 Snapshot 分发](./balance-history-release-and-snapshot-distribution.md)
 - [Balance-history Snapshot 与 Indexer Checkpoint 兼容规则](./balance-history-indexer-checkpoint-compatibility.md)
 - [USDB testnet-v1 网络包与首版发布准备](./usdb-testnet-v1-network-bundle.md)

@@ -6,6 +6,9 @@ Status: implemented for deterministic regtest rehearsal; public testnet executio
 `development-resettable` 测试网，不替代未来 deterministic rewind UIP，也不授权 mainnet
 节点自动选择 USDB rewind target。
 
+保留有效历史前缀的后续方案见 [BTC 深重组恢复设计与实施计划](../usdb-btc-deep-reorg-recovery-design.md)。
+该方案仍是未激活的设计稿，不替代本文的 testnet-v0 重置流程，也不提供清除停链记录的操作授权。
+
 ## 1. 冻结结论
 
 testnet-v0 采用：
