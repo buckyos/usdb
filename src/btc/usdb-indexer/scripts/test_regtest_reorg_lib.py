@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import os
 import shlex
 import subprocess
@@ -192,6 +193,60 @@ class RegtestStableLagScriptTests(unittest.TestCase):
             'state_ref["snapshot_info"]["consensus_identity"]["stable_lag"]'
         )
         self.assertEqual(script.count(stable_lag_assignment), 2)
+
+
+class RegtestCanonicalStateTests(unittest.TestCase):
+    def run_hash_wait(self, responses, *, advance_clock=False):
+        """Model delayed branch observation while height/readiness already match."""
+        with tempfile.TemporaryDirectory(prefix="usdb-canonical-wait-") as temp_dir:
+            root = Path(temp_dir)
+            (root / "responses.json").write_text(json.dumps(responses))
+            (root / "calls").write_text("0")
+            script = textwrap.dedent(f"""\
+                set -euo pipefail
+                source {shlex.quote(str(REGTEST_LIB))}
+                SYNC_TIMEOUT_SEC=2
+                sleep() {{ :; }}
+                date() {{ echo $(( $(cat "$WORK_DIR/calls") * {2 if advance_clock else 0} )); }}
+                regtest_rpc_call_usdb_indexer() {{
+                  python3 - "$WORK_DIR" "$1" "$2" <<'PY'
+import json,sys
+from pathlib import Path
+root=Path(sys.argv[1])
+assert sys.argv[2] == 'get_state_ref_at_height'
+assert json.loads(sys.argv[3]) == [{{'block_height': 135}}]
+calls=int((root/'calls').read_text())
+responses=json.loads((root/'responses.json').read_text())
+(root/'calls').write_text(str(calls+1))
+print(json.dumps(responses[calls]))
+PY
+                }}
+                regtest_wait_until_usdb_state_ref_block_hash 135 {'b' * 64}
+                """)
+            result = subprocess.run(["bash", "-c", script], env={**os.environ, "WORK_DIR": str(root)},
+                                    capture_output=True, text=True, timeout=5, check=False)
+            return result, int((root / "calls").read_text())
+
+    @staticmethod
+    def state_ref(block_hash):
+        return {"result": {"block_height": 135, "snapshot_info": {"stable_block_hash": block_hash}}}
+
+    def test_same_height_old_branch_and_pending_state_do_not_satisfy_wait(self):
+        old = self.state_ref('a' * 64)
+        result, calls = self.run_hash_wait([
+            old, old, {"error": {"code": -32041, "message": "SNAPSHOT_NOT_READY"}},
+            self.state_ref('b' * 64),
+        ])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls, 4)
+        self.assertIn('converged to ' + 'b' * 64, result.stdout)
+
+    def test_persistent_old_branch_times_out_instead_of_passing_on_height(self):
+        result, calls = self.run_hash_wait([self.state_ref('a' * 64)] * 2, advance_clock=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls, 2)
+        self.assertIn('Timed out waiting for usdb-indexer state ref block hash', result.stdout)
+        self.assertNotIn('converged', result.stdout)
 
 
 if __name__ == "__main__":

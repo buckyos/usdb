@@ -151,7 +151,7 @@ main() {
 
   local miner_address ord_receive_address mint_content_file pass_id
   local historical_height historical_hash replacement_address continue_address
-  local current_tip_height target_post_reorg_height
+  local current_tip_height advanced_height target_post_reorg_height replacement_tip_hash
   local state_ref_resp snapshot_id stable_block_hash local_state_commit system_state_id context_json
 
   miner_address="$(regtest_get_new_address)"
@@ -203,8 +203,11 @@ EOF
 
   continue_address="$(regtest_get_new_address)"
   regtest_mine_empty_block "$continue_address"
-  regtest_wait_until_balance_history_synced_eq "$((historical_height + 1))"
-  regtest_wait_until_usdb_synced_eq "$((historical_height + 1))"
+  # The initial wait already indexed current_tip_height. Require a genuinely
+  # newer stable head before testing that historical queries survive advancement.
+  advanced_height="$((current_tip_height + 1))"
+  regtest_wait_until_balance_history_synced_eq "$advanced_height"
+  regtest_wait_until_usdb_synced_eq "$advanced_height"
   regtest_wait_balance_history_consensus_ready
   regtest_wait_usdb_consensus_ready
 
@@ -213,13 +216,16 @@ EOF
 
   regtest_log "Triggering same-height reorg at historical validation height=${historical_height}"
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" invalidateblock "$historical_hash"
-  target_post_reorg_height="$((historical_height + 2))"
+  target_post_reorg_height="$advanced_height"
   while [[ "$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)" -lt "$target_post_reorg_height" ]]; do
     replacement_address="$(regtest_get_new_address)"
     regtest_mine_empty_block "$replacement_address"
   done
+  replacement_tip_hash="$(regtest_get_bitcoin_block_hash "$target_post_reorg_height")"
   regtest_wait_until_balance_history_synced_eq "$target_post_reorg_height"
+  regtest_wait_until_balance_history_block_commit_hash "$target_post_reorg_height" "$replacement_tip_hash"
   regtest_wait_until_usdb_synced_eq "$target_post_reorg_height"
+  regtest_wait_until_usdb_state_ref_block_hash "$target_post_reorg_height" "$replacement_tip_hash"
   regtest_wait_balance_history_consensus_ready
   regtest_wait_usdb_consensus_ready
 

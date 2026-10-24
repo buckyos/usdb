@@ -2424,6 +2424,20 @@ regtest_wait_until_balance_history_block_commit_hash() {
     "$expected_hash"
 }
 
+# Height and readiness can still describe the old branch before a reorg poll.
+# Wait for the committed replacement identity, without supplying an old context.
+regtest_wait_until_usdb_state_ref_block_hash() {
+  local block_height="$1"
+  local expected_hash="$2"
+  regtest_wait_until_rpc_expr_eq \
+    "usdb-indexer state ref block hash at height ${block_height}" \
+    regtest_rpc_call_usdb_indexer \
+    "get_state_ref_at_height" \
+    "[{\"block_height\":${block_height}}]" \
+    "((data.get('result') or {}).get('snapshot_info') or {}).get('stable_block_hash', '')" \
+    "$expected_hash"
+}
+
 regtest_wait_until_file_contains() {
   local label="$1"
   local file_path="$2"
