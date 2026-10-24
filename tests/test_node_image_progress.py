@@ -17,6 +17,7 @@ import assumeutxo_node as native
 import node_image_progress as images
 import usdb_node as node
 from common.node_progress import progress_fixture
+from common.node_identity import provision_identity
 
 
 class ImageProgressTests(unittest.TestCase):
@@ -57,11 +58,12 @@ class ImageProgressTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         env = self.root / "node.env"
-        env.write_text("SNAPSHOT_MODE=assumeutxo\n" + "\n".join(
+        env.write_text(f"SNAPSHOT_MODE=assumeutxo\nUSDB_CHAIN_DATA_HOST_DIR={self.root / 'chain'}\n" + "\n".join(
             f"{key}=ghcr.io/buckyos/{name}@sha256:" + digit * 64
             for key, name, digit in (("USDB_SERVICES_IMAGE", "services", "1"),
                                      ("USDB_CHAIN_IMAGE", "chain", "2"), ("USDB_BITCOIN_IMAGE", "bitcoin", "3"))) + "\n")
         self.layout = SimpleNamespace(node_env=env, release_id="r-test", bundle_id="test-bundle")
+        provision_identity(self.layout, node)
 
     def test_slow_pull_is_observable_from_another_process_and_clears_after_success(self):
         # Advance the same simulated clock in both processes; a fresh CI runner

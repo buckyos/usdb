@@ -2586,6 +2586,7 @@ def doctor(
     *,
     output_to_stderr: bool = False,
     allow_pending_snapshot: bool = False,
+    allow_pending_identity: bool = False,
     report: Any = None,
 ) -> None:
     """Check startup strictly; the CLI can collect a report and defer approved downloads."""
@@ -2620,7 +2621,12 @@ def doctor(
             require_snapshot_artifacts=not pending,
         )
         import node_identity
-        node_identity.require_ready(layout, sys.modules[__name__])
+        try:
+            node_identity.require_ready(layout, sys.modules[__name__])
+        except node_identity.InspectionPending as error:
+            if not allow_pending_identity:
+                raise
+            print(f"PENDING P2P identity: {error}", file=sys.stderr if output_to_stderr else sys.stdout)
         return pending
 
     pending_snapshot = check("data", data)
@@ -2697,7 +2703,7 @@ def print_doctor_report(load_layout: Any) -> int:
     try:
         layout = report.check("release", load_layout)
         report.identify(layout)
-        doctor(layout, allow_pending_snapshot=True, report=report)
+        doctor(layout, allow_pending_snapshot=True, allow_pending_identity=True, report=report)
     except CHECK_ERRORS:
         # The failing stage has already retained the error and helper diagnostics.
         report.print(sys.stdout)
@@ -3100,7 +3106,7 @@ def _start_node(
         "validating host, release, configuration, data identity and network policy",
         output_to_stderr=output_to_stderr,
     )
-    doctor(layout, output_to_stderr=output_to_stderr)
+    doctor(layout, output_to_stderr=output_to_stderr, allow_pending_identity=pull)
     import control_plane_monitor
     control_plane_monitor.prepare(layout, sys.modules[__name__])
     if pull:
@@ -3116,6 +3122,9 @@ def _start_node(
                 prepare_image_group(layout, group, preparation, output_to_stderr=output_to_stderr,
                                     quiet_progress=progress_monitor.enabled)
                 if group == "runtime":
+                    # Image absence may defer the preflight probe, never startup.
+                    import node_identity
+                    node_identity.require_ready(layout, sys.modules[__name__])
                     run_helper(layout, "run_testnet_runtime.sh", ["up-console"], output_to_stderr=output_to_stderr)
     else:
         from node_image_progress import clear_failed_preparation
@@ -5487,6 +5496,15 @@ STATUS_RECOVERY: dict[str, dict[str, Any]] = {
             "Configuration and local data contracts passed; services may be started safely.",
         ],
     },
+    "PREPARATION_REQUIRED": {
+        "up_mode": "automatic",
+        "up_summary": "up can pull the identity inspection image and validate the identity before startup",
+        "next_actions": ["usdb-node up"],
+        "guidance": [
+            "The P2P identity is not verified yet; image preparation is expected after an upgrade.",
+            "No services will start if the subsequent identity check fails.",
+        ],
+    },
     "STARTING": {
         "up_mode": "automatic",
         "up_summary": "up can reconcile containers and continue readiness waits",
@@ -5635,14 +5653,18 @@ def _collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
         ),
     }
 
+    import node_identity
+    identity_pending = None
     try:
         _validate_node_config(
             layout,
             require_runtime=False,
             require_bitcoin_runtime=True,
         )
-        import node_identity
-        node_identity.require_ready(layout, sys.modules[__name__])
+        try:
+            node_identity.require_ready(layout, sys.modules[__name__])
+        except node_identity.InspectionPending as error:
+            identity_pending = str(error)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         checks["data"] = {"state": "invalid", "summary": str(error)}
         return _finish_node_status(
@@ -5654,8 +5676,8 @@ def _collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
             ),
         )
     checks["data"] = {
-        "state": "ok",
-        "summary": "local paths, credentials and dataset contracts are valid",
+        "state": "pending" if identity_pending else "ok",
+        "summary": identity_pending or "local paths, credentials and dataset contracts are valid",
     }
 
     snapshot = _snapshot_lifecycle_status(layout, env)
@@ -5714,6 +5736,8 @@ def _collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
         if mining.get("state") in {"BLOCKED", "FAILED"} or mining.get("observation_unavailable"):
             return _finish_node_status(report, "BLOCKED")
     runtime_state = runtime["state"]
+    if identity_pending and runtime_state in {"stopped", "starting", "ready"}:
+        return _finish_node_status(report, "PREPARATION_REQUIRED")
     if resource_pending and not resource_state.get("pending") and runtime_state == "degraded":
         unexpected_failures = [name for name, service in runtime.get("services", {}).items()
                                if name in CORE_RUNTIME_SERVICES
@@ -5829,7 +5853,7 @@ def _up_action(report: dict[str, Any], allow_activation: bool) -> str | None:
         return "activate-release"
     if state == "SNAPSHOT_INCOMPLETE":
         return "snapshot-install"
-    if state in {"READY_TO_START", "STARTING"}:
+    if state in {"READY_TO_START", "STARTING", "PREPARATION_REQUIRED"}:
         return "up"
     return None
 

@@ -166,7 +166,7 @@ class ControllerStatusTests(unittest.TestCase):
     def test_missing_unit_prompts_install_without_probing_or_mutating_systemd(self):
         with ControllerStatusFixture() as fixture:
             fixture.unit.unlink()
-            for overall in ("STARTING", "READY_TO_START", "ACTIVATION_REQUIRED"):
+            for overall in ("STARTING", "READY_TO_START", "PREPARATION_REQUIRED", "ACTIVATION_REQUIRED"):
                 with self.subTest(overall=overall):
                     report = fixture.report(overall)
                     self.assertEqual(report["checks"]["controller"]["display_state"], "missing")

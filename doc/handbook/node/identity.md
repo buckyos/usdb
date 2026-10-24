@@ -17,7 +17,14 @@ usdb-node identity status --json
 
 输出文件位置、公钥和文件 SHA-256，不显示私钥，也不启动服务。活动文件位于配置中的
 `USDB_CHAIN_DATA_HOST_DIR/geth/nodekey`。容器所属文件通过缓存的 chain 镜像只读检查；无法读取时不会猜测为“缺失”。
-升级后若提示目标 chain 镜像尚未缓存，先执行 `usdb-node pull`，再重试检查。
+升级后若当前账号不能直接读取文件，且目标 chain 镜像尚未缓存，`identity status` 显示 `PENDING`，
+表示身份尚未核验，不代表文件丢失。`doctor` 将其作为待完成检查，继续其他预检，不因缺少检查镜像报 `FAIL`。
+正常继续执行 `usdb-node up`：工具会下载镜像，再严格核验身份，通过后才启动服务。
+若只想完成检查、不启动服务，可按提示执行 `docker pull <提示中的完整镜像引用>`，然后重试 `identity status` 和 `doctor`。
+使用 `up --skip-pull` 时不会下载镜像，检查仍无法完成则停止；应先准备镜像或取消该选项。
+
+镜像已缓存时会立即检查。实际 nodekey 缺失、损坏、仍无法读取，或 Docker 不可访问，均继续阻断；
+不会自动生成、替换 nodekey 或修改目录权限。`identity status` 只有确认身份有效才返回成功退出码，`PENDING` 返回非零。
 
 全新节点明确选择新身份：
 

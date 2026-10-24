@@ -167,8 +167,9 @@ class DoctorReport:
             text(self.identity)
         attention = [item for section in self.sections.values() for item in section.findings
                      if item.state in {"FAIL", "WAIT", "WARN"}]
+        pending = any(item.state == "PENDING" for section in self.sections.values() for item in section.findings)
         unchecked = [SECTIONS[key][0] for key, section in self.sections.items() if section.state == "NOT CHECKED"]
-        result = "ACTION REQUIRED" if self.failed else "PASSED WITH NOTES" if attention else "PASSED"
+        result = "ACTION REQUIRED" if self.failed else "PASSED WITH NOTES" if attention or pending else "PASSED"
         text(f"Result: {result}" + (f" | {len(unchecked)} groups not checked" if unchecked else ""))
         heading("Needs attention")
         if attention:

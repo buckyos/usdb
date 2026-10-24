@@ -21,6 +21,7 @@ usdb-node status
 | `UNCONFIGURED` | 当前账号下还没有本网络配置 | 新节点按安装流程配置；已有节点先确认账号和配置路径 |
 | `ACTIVATION_REQUIRED` | 新装工具与现有配置中的版本还未完成切换 | 按[升级步骤](maintenance.md#升级节点)处理 |
 | `READY_TO_START` | 配置具备启动条件，节点尚未运行 | 执行 `usdb-node up` |
+| `PREPARATION_REQUIRED` | 身份检查需要的 chain 镜像尚未缓存，原身份尚未核验 | 执行 `usdb-node up`；下载后严格核验身份，通过才启动服务 |
 | `STARTING` | 正在启动、同步或等待依赖 | 观察进度；有具体失败时查日志 |
 | `AWAITING_PEERS` | 数据服务已运行，入网条件尚未满足 | 查看 `usdb-node peers status` |
 | `READY` | 当前节点核心运行和入网检查通过 | 日常观察；不等于本机已挖到区块或公共 Explorer 已可用 |

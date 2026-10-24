@@ -17,6 +17,7 @@ import node_identity_files as files
 import node_rebuild as core
 import usdb_node as node
 import test_node_uninstall as uninstall_tests
+from common.node_identity import container_identity
 
 KEY = ('0' * 63 + '1').encode()
 PUBLIC = ('79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
@@ -204,6 +205,60 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('--network=none', args)
         self.assertIn('type=bind,src=' + str(self.chain) + ',dst=/identity,readonly', args)
         self.assertNotIn(KEY.decode(), run.call_args.kwargs['input'])
+
+    def test_readable_identity_does_not_require_a_cached_image(self):
+        with mock.patch.object(identity, 'subprocess') as docker:
+            report = identity.observe(self.layout, self.source)
+        self.assertEqual(report['state'], 'READY')
+        docker.run.assert_not_called()
+
+    def test_only_explicit_image_absence_can_defer_helper_failure(self):
+        self.layout.images = {'USDB_CHAIN_IMAGE': 'chain@sha256:' + '1' * 64}
+        image = self.layout.images['USDB_CHAIN_IMAGE']
+        cases = [
+            (125, 1, f'Error response from daemon: No such image: {image}\n', identity.InspectionPending),
+            (125, 1, 'Cannot connect to the Docker daemon', ValueError),
+            (125, 1, 'permission denied while trying to connect to the Docker daemon socket', ValueError),
+            (125, 1, 'No such image: another-image', ValueError),
+            (125, 0, '', ValueError),
+            (1, 1, f'No such image: {image}', ValueError),
+        ]
+        for helper_code, inspect_code, stderr, error_type in cases:
+            results = [SimpleNamespace(returncode=helper_code),
+                       SimpleNamespace(returncode=inspect_code, stdout='[]', stderr=stderr)]
+            with self.subTest(case=(helper_code, stderr)), \
+                    mock.patch.object(files, 'inspect', side_effect=PermissionError), \
+                    mock.patch.object(identity, 'subprocess', SimpleNamespace(run=mock.Mock(side_effect=results))):
+                with self.assertRaises(error_type) as raised:
+                    identity.observe(self.layout, self.path)
+                self.assertIs(type(raised.exception), error_type)
+                self.assertNotIn('usdb-node pull', str(raised.exception))
+
+    def test_pending_status_does_not_authorize_identity_mutation(self):
+        self.path.parent.mkdir()
+        self.path.write_bytes(KEY)
+        self.layout.images = {'USDB_CHAIN_IMAGE': 'chain@sha256:' + '1' * 64}
+        with container_identity(self.layout, self.node):
+            with redirect_stdout(self.output):
+                code = identity.dispatch(SimpleNamespace(identity_action='status', json=True), self.layout, self.node)
+            report = json.loads(self.output.getvalue())
+            self.assertEqual((code, report['state']), (1, 'PENDING'))
+            self.assertNotIn('public_key', report)
+            self.assertIn('P2P identity: PENDING', identity.render(report))
+            for action in ('create', 'restore', 'archive'):
+                with self.subTest(action=action), self.assertRaises(identity.InspectionPending):
+                    self.run_action(action, execute=True)
+        self.assertEqual(self.path.read_bytes(), KEY)
+
+    def test_helper_timeout_is_not_an_image_preparation_pending_result(self):
+        import subprocess
+        self.layout.images = {'USDB_CHAIN_IMAGE': 'chain@sha256:' + '1' * 64}
+        for results in ([subprocess.TimeoutExpired('docker run', 30)],
+                        [SimpleNamespace(returncode=125), subprocess.TimeoutExpired('docker image inspect', 15)]):
+            with self.subTest(results=results), mock.patch.object(files, 'inspect', side_effect=PermissionError), \
+                    mock.patch.object(identity, 'subprocess', SimpleNamespace(run=mock.Mock(side_effect=results))):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    identity.observe(self.layout, self.path)
 
 
 class IdentityRemovalTests(unittest.TestCase):

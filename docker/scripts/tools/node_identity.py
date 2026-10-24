@@ -14,6 +14,16 @@ import node_identity_files as files
 import node_rebuild as core
 
 
+class InspectionPending(ValueError):
+    """The read-only helper image is absent; the identity is still unverified."""
+
+    def __init__(self, image):
+        super().__init__('P2P_IDENTITY_CHECK_PENDING: release chain image is not cached; '
+                         'usdb-node up without --skip-pull will download it and verify the identity '
+                         'before starting services. To inspect without starting services, run '
+                         f'docker pull {image}, then usdb-node identity status.')
+
+
 def key_path(layout, node):
     """Resolve the configured identity without adopting or moving an old key."""
     env = node.read_env(layout.node_env)
@@ -53,8 +63,18 @@ def observe(layout, path):
         result = subprocess.run(command, input=Path(files.__file__).read_text(), capture_output=True,
                                 text=True, timeout=30, check=False)
         if result.returncode:
+            # Only a positive daemon response naming this missing image permits
+            # deferral. Socket permissions, timeouts and helper errors still fail.
+            if result.returncode == 125:
+                image = layout.images['USDB_CHAIN_IMAGE']
+                cached = subprocess.run(['docker', 'image', 'inspect', image], capture_output=True,
+                                        text=True, timeout=15, check=False)
+                if cached.returncode and re.fullmatch(
+                        r'(?:Error(?: response from daemon)?: )?No such image: ' + re.escape(image),
+                        cached.stderr.strip()):
+                    raise InspectionPending(image) from None
             raise ValueError('P2P identity could not be read; check file permissions. '
-                             'If the release chain image is not cached, run usdb-node pull, then identity status')
+                             'Verify Docker daemon access and run usdb-node identity status again.')
         value = json.loads(result.stdout)
         if (not isinstance(value, dict) or value.get('schema_version') != files.SCHEMA or value.get('state') not in {'READY', 'MISSING', 'INVALID'}
                 or (value['state'] == 'INVALID' and not re.fullmatch(r'[0-9a-f]{64}', str(value.get('fingerprint'))))
@@ -117,7 +137,12 @@ def dispatch(args, layout, node):
     """Preview, confirm, lock and recheck before any private-file mutation."""
     path = key_path(layout, node)
     action = args.identity_action
-    report = observe(layout, path)
+    try:
+        report = observe(layout, path)
+    except InspectionPending as error:
+        if action != 'status':
+            raise
+        report = dict(schema_version=files.SCHEMA, state='PENDING', path=str(path), detail=str(error))
     if action == 'status':
         print(json.dumps(report, indent=2) if args.json else render(report))
         return 0 if report['state'] == 'READY' else 1
@@ -201,4 +226,6 @@ def render(report):
         lines.append(f"Public key: {report['public_key']}")
     if 'fingerprint' in report:
         lines.append(f"Fingerprint: {report['fingerprint']}")
+    if 'detail' in report:
+        lines.append(report['detail'])
     return '\n'.join(lines)

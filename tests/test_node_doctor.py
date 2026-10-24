@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise grouped doctor output with real release validation and isolated host probes."""
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import io
 import os
 from pathlib import Path
@@ -17,7 +17,7 @@ import node_doctor as presentation
 import resource_policy as policy
 import usdb_node as node
 from common.native_node import native_kit
-from common.node_identity import provision_identity
+from common.node_identity import container_identity, provision_identity
 
 
 class DoctorTests(unittest.TestCase):
@@ -88,6 +88,146 @@ class DoctorTests(unittest.TestCase):
         self.assertIn('identity restore', report['status']['checks']['data']['summary'])
         helper.assert_not_called()
         self.assertFalse(key.exists())
+
+    def test_uncached_identity_helper_is_pending_and_other_preflight_checks_continue(self):
+        import node_identity
+        key = node_identity.key_path(self.layout, node)
+        original = key.read_bytes(), self.layout.node_env.read_bytes()
+        with container_identity(self.layout, node) as image:
+            result, output = self.command()
+            self.assertFalse(image.cached)
+            self.assertTrue(all(command[1] in {'run', 'image'} for command in image.commands))
+        self.assertEqual(result, 0)
+        compact = ' '.join(output.split())
+        self.assertIn('PENDING P2P identity', compact)
+        self.assertIn('Result: PASSED WITH NOTES', compact)
+        self.assertNotIn('FAIL', output)
+        self.assertNotIn('Not checked', output)
+        self.assertNotIn('P2P identity', output.split('Needs attention\n')[1].split('\nRelease\n')[0])
+        self.assertIn('Runtime configuration', output)
+        self.assertNotIn('usdb-node pull', output)
+        self.assertEqual(original, (key.read_bytes(), self.layout.node_env.read_bytes()))
+
+    def test_cached_identity_helper_validates_and_real_identity_errors_still_fail(self):
+        with container_identity(self.layout, node) as image:
+            image.cached = True
+            for state, code, message in (('READY', 0, 'Preflight passed'),
+                                         ('MISSING', 1, 'P2P_IDENTITY_REQUIRED'),
+                                         ('INVALID', 1, 'P2P_IDENTITY_INVALID')):
+                with self.subTest(state=state):
+                    image.report['state'] = state
+                    result, output = self.command()
+                    self.assertEqual(result, code)
+                    self.assertIn(message, output)
+                    self.assertNotIn('PENDING P2P identity', output)
+
+    @contextmanager
+    def startup(self, image, *, pull_fails=False):
+        """Run real preflight/startup ordering with only external operations modeled."""
+        import assumeutxo_node
+        import node_image_progress
+        original_status = node.collect_node_status
+        started = []
+
+        def status(layout):
+            if started:
+                return dict(overall_state='READY', checks={})
+            return original_status(layout)
+
+        def helper(layout, name, args, **kwargs):
+            image.events.append(' '.join(args))
+            if args == ['pull', 'usdb-chain']:
+                if pull_fails:
+                    raise subprocess.CalledProcessError(1, ['docker', 'pull'], stderr='registry unavailable')
+                image.cached = True
+            else:
+                self.assertIn(args, (['check', '--docker-user', node.default_docker_user()],
+                                     ['validate-node'], ['pull', 'balance-history'], ['pull'], ['up-console']))
+            return subprocess.CompletedProcess([], 0, '', '')
+
+        with mock.patch('node_resource_lifecycle.prepare_for_up'), \
+                mock.patch.object(node, '_runtime_lifecycle_status', return_value={'state': 'stopped'}), \
+                mock.patch.object(node, 'collect_node_status', side_effect=status), \
+                mock.patch.object(node, 'run_helper', side_effect=helper), \
+                mock.patch.object(node, '_start_optional_ord') as optional, \
+                mock.patch.object(node_image_progress, 'image_cached', side_effect=lambda ref:
+                                  image.cached and ref == self.layout.images['USDB_CHAIN_IMAGE']), \
+                mock.patch.object(assumeutxo_node, 'start_native_node', side_effect=lambda *a, **k: started.append(True)) as start, \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            yield start, optional
+
+    def up(self, *, dry_run=False, pull=True):
+        return node.up_node(self.layout, dry_run=dry_run, allow_activation=False,
+                            sync_timeout_secs=1, pull=pull, json_output=True)
+
+    def test_up_resolves_pending_image_then_checks_identity_before_starting(self):
+        import node_identity
+        key = node_identity.key_path(self.layout, node)
+        original = key.read_bytes()
+        with container_identity(self.layout, node) as image, self.startup(image) as (start, optional):
+            preview, code = self.up(dry_run=True)
+            self.assertEqual(code, 0)
+            self.assertEqual(preview['status']['overall_state'], 'PREPARATION_REQUIRED')
+            self.assertEqual(preview['status']['checks']['data']['state'], 'pending')
+            self.assertEqual(preview['planned_actions'], ['up'])
+            self.assertEqual(image.events, [])
+            result, code = self.up()
+            self.assertEqual((code, result['outcome']), (0, 'ready'))
+            self.assertEqual(result['completed_actions'], ['up'])
+            self.assertLess(image.events.index('pull usdb-chain'), image.events.index('identity-READY'))
+            self.assertLess(image.events.index('identity-READY'), image.events.index('up-console'))
+            start.assert_called_once()
+            optional.assert_called_once()
+        self.assertEqual(key.read_bytes(), original)
+
+    def test_up_does_not_start_services_when_post_pull_identity_is_missing_or_invalid(self):
+        for state, message in (('MISSING', 'P2P_IDENTITY_REQUIRED'), ('INVALID', 'P2P_IDENTITY_INVALID')):
+            with self.subTest(state=state), container_identity(self.layout, node) as image, \
+                    self.startup(image) as (start, optional):
+                image.report['state'] = state
+                with self.assertRaisesRegex(ValueError, message):
+                    self.up()
+                self.assertTrue(image.cached)
+                self.assertNotIn('up-console', image.events)
+                start.assert_not_called()
+                optional.assert_not_called()
+
+    def test_background_up_accepts_pending_identity_without_pulling_or_starting_containers(self):
+        with container_identity(self.layout, node) as image, self.startup(image) as (start, optional), \
+                mock.patch.object(node, 'ensure_background_services', return_value={}), \
+                mock.patch.object(node, '_require_controller_unit'), \
+                mock.patch.object(node, 'start_controller_unit', return_value='test-controller.service') as controller:
+            result, code = node.submit_up_to_controller(self.layout, dry_run=False, allow_activation=False)
+            self.assertEqual((code, result['outcome']), (0, 'controller_started'))
+            self.assertEqual(result['status']['overall_state'], 'PREPARATION_REQUIRED')
+            controller.assert_called_once()
+            self.assertFalse(image.cached)
+            self.assertEqual(image.events, [])
+            start.assert_not_called()
+            optional.assert_not_called()
+
+    def test_pending_identity_does_not_hide_unhealthy_runtime(self):
+        for runtime, overall in (('degraded', 'DEGRADED'), ('unavailable', 'BLOCKED')):
+            with self.subTest(runtime=runtime), container_identity(self.layout, node), \
+                    mock.patch.object(node, '_runtime_lifecycle_status', return_value={'state': runtime}):
+                report = node.collect_node_status(self.layout)
+                self.assertEqual(report['overall_state'], overall)
+                self.assertIsNone(node._up_action(report, False))
+
+    def test_skip_pull_and_pull_failure_leave_identity_unverified_and_services_stopped(self):
+        for pull in (False, True):
+            with self.subTest(pull=pull), container_identity(self.layout, node) as image, \
+                    self.startup(image, pull_fails=True) as (start, optional):
+                error = subprocess.CalledProcessError if pull else ValueError
+                with self.assertRaises(error) as raised:
+                    self.up(pull=pull)
+                if not pull:
+                    self.assertIn('without --skip-pull', str(raised.exception))
+                    self.assertFalse(any(event.startswith('pull') for event in image.events))
+                self.assertFalse(image.cached)
+                self.assertNotIn('up-console', image.events)
+                start.assert_not_called()
+                optional.assert_not_called()
 
     def test_host_session_block_preserves_both_streams_and_stops_later_checks(self):
         calls = []

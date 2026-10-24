@@ -309,6 +309,11 @@ usdb-node status
 usdb-node doctor
 ```
 
+安装工具和 `activate-release` 不会拉取服务镜像，镜像由 `up` 准备。升级后若旧版创建的 `geth/nodekey`
+不能由当前账号直接读取，且新版 chain 镜像尚未缓存，`doctor` 会显示 `PENDING P2P identity`；这是待完成检查，
+可以继续 `up`。工具会先下载镜像，再验证原身份，通过后才启动服务。实际身份缺失、损坏或读取失败仍会阻断。
+只检查而不启动的方式见[管理 P2P 节点身份](identity.md)。
+
 5. 检查通过后恢复运行：
 
 ```bash

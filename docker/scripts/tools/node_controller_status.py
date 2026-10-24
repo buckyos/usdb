@@ -15,7 +15,7 @@ PROPERTIES = (
     "LoadState", "ActiveState", "SubState", "UnitFileState", "Result",
     "ExecMainCode", "ExecMainStatus", "NeedDaemonReload", "FragmentPath", "DropInPaths",
 )
-STARTABLE_STATES = {"ACTIVATION_REQUIRED", "SNAPSHOT_INCOMPLETE", "READY_TO_START", "STARTING"}
+STARTABLE_STATES = {"ACTIVATION_REQUIRED", "SNAPSHOT_INCOMPLETE", "PREPARATION_REQUIRED", "READY_TO_START", "STARTING"}
 
 
 def _directives(content: str) -> dict[tuple[str, str], list[str]]:
