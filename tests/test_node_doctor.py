@@ -17,6 +17,7 @@ import node_doctor as presentation
 import resource_policy as policy
 import usdb_node as node
 from common.native_node import native_kit
+from common.controller_status import autostart_observation
 from common.node_identity import container_identity, provision_identity
 
 
@@ -34,6 +35,7 @@ class DoctorTests(unittest.TestCase):
                                 miner_threads=1, bootnodes="", nat="none", bitcoin_rpc_user=None,
                                 bitcoin_p2p="private", resource_management="auto")
         provision_identity(self.layout, node)
+        self.controller = mock.Mock(return_value=autostart_observation())
 
     def helper(self, layout, helper, args, **kwargs):
         self.assertTrue(kwargs.get("capture_output"))
@@ -48,6 +50,7 @@ class DoctorTests(unittest.TestCase):
         output, errors = io.StringIO(), io.StringIO()
         args = ["usdb-node", "--kit-root", str(self.layout.kit_root), "--node-env", str(self.layout.node_env), "doctor"]
         with mock.patch.object(sys, "argv", args), mock.patch.object(node, "run_helper", side_effect=helper or self.helper), \
+                mock.patch("node_controller_status.inspect_controller", self.controller), \
                 redirect_stdout(output), redirect_stderr(errors):
             result = node.main()
         self.assertEqual(errors.getvalue(), "")
@@ -88,6 +91,36 @@ class DoctorTests(unittest.TestCase):
         self.assertIn('identity restore', report['status']['checks']['data']['summary'])
         helper.assert_not_called()
         self.assertFalse(key.exists())
+
+    def test_autostart_is_advisory_and_never_installs_or_changes_services(self):
+        cases = (
+            ({}, "ENABLED", "PASS"),
+            ({"autostart": "disabled", "install_command": "usdb-node controller install --sync-timeout-secs 456 --skip-pull"}, "DISABLED", "WARN"),
+            ({"configuration_state": "missing"}, "MISSING", "WARN"),
+            ({"configuration_state": "custom"}, "REVIEW_REQUIRED", "WARN"),
+            ({"observation_available": False}, "UNAVAILABLE", "WARN"),
+        )
+        original = self.layout.node_env.read_bytes()
+        for updates, state, severity in cases:
+            with self.subTest(state=state), mock.patch.object(node, "install_controller_unit") as install, \
+                    mock.patch.object(node, "_privileged_command") as systemctl:
+                self.controller.return_value = autostart_observation(**updates)
+                code, output = self.command()
+                compact = " ".join(output.split())
+                self.assertEqual(code, 0)
+                self.assertIn(f"{severity} Autostart {state}", compact)
+                if state == "DISABLED":
+                    self.assertIn("--kit-root " + str(self.layout.kit_root), compact)
+                    self.assertIn("--node-env " + str(self.layout.node_env), compact)
+                    self.assertIn("controller install --sync-timeout-secs 456 --skip-pull", compact)
+                    self.assertIn("otherwise leave it disabled", compact)
+                if state == "MISSING":
+                    self.assertIn("up --foreground", compact)
+                if state in {"REVIEW_REQUIRED", "UNAVAILABLE"}:
+                    self.assertIn("controller status", compact)
+                install.assert_not_called()
+                systemctl.assert_not_called()
+                self.assertEqual(original, self.layout.node_env.read_bytes())
 
     def test_uncached_identity_helper_is_pending_and_other_preflight_checks_continue(self):
         import node_identity
@@ -300,11 +333,12 @@ class DoctorTests(unittest.TestCase):
                 result, output = self.command(helper)
                 self.assertEqual(result, 1 if fail else 0)
                 self.assertNotIn("External firewall", output)
-                self.assertNotIn("Not checked", output)
                 if fail:
+                    self.assertIn("- Startup after reboot", output.split("Not checked\n", 1)[1])
                     self.assertIn("ufw is missing", output.split("Needs attention\n", 1)[1].split("\nRelease\n", 1)[0])
                     self.assertNotIn("Preflight passed", output)
                 else:
+                    self.assertNotIn("Not checked", output)
                     self.assertIn("Result: PASSED\n", output)
                     self.assertIn("PASS UFW status active", " ".join(output.split()))
 

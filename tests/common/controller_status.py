@@ -13,6 +13,12 @@ import node_controller_status as CONTROLLER
 import usdb_node as NODE
 
 
+def autostart_observation(**updates):
+    """Stable host boundary for doctor/upgrade presentation tests."""
+    return {"configuration_state": "current", "observation_available": True,
+            "load_state": "loaded", "autostart": "enabled", **updates}
+
+
 class ControllerStatusFixture:
     """Exercise the installed unit contract without touching systemd or node services."""
 

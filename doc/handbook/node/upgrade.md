@@ -55,7 +55,7 @@ node monitor 和旧 console monitor 自启；需要权限时会请求 sudo。`up
 
 从网络运维方取得目标版本与升级通知。需要停机时先用原版本 `usdb-node down` 停止整个节点，
 再按[安装说明](install.md#2-下载并安装节点工具)安装目标工具，暂不执行 `setup` 或启动服务。
-下面的预检本身允许在节点运行时执行，只读取本地 manifest、配置和数据身份标记，不创建目录、停止服务或改写数据：
+下面的预检本身允许在节点运行时执行，读取本地 manifest、配置和数据身份标记；文字输出还会只读检查 controller 的开机自启状态，不创建目录、停止服务或改写数据：
 
 ```bash
 usdb-node upgrade-plan
@@ -73,6 +73,11 @@ usdb-node upgrade-plan --from-kit /absolute/path/to/old-kit
 默认输出先显示兼容结论、各组件的 `REUSE` / `ADOPT` / `REBUILD` 表格及主要变化，再列出本次计划对应的下一步命令。
 相同目录不重复打印，重复的 ID 差异不会占据摘要。`--details` 展示完整路径、runtime ID 和字段变化；
 `--json` 保持完整计划结构，便于自动化采集。`upgrade-release` 的预览同样支持这两个选项。
+
+包含自启提示改进的工具会在可执行计划中显示 `Current startup after reboot`。即使是兼容升级，未安装或已禁用自启时也会给出恢复命令；
+这属于可选的运维提示，不改变升级兼容性结论。`down`、`activate-release`、手动 `up` 不会重新启用自启。
+只有需要重启后自动恢复时才执行提示中的 `controller install`；自定义或被屏蔽的 unit 先按提示检查。
+`--json` 仍是可重复核对的升级元数据计划，不查询 systemd，也不加入即时自启状态。
 输出不包含 RPC 密码或私钥；预检和建议命令都不会自动执行升级。
 
 兼容计划提示 `activate-release`；可执行的协议升级或重建计划提示 `down` 和带 `--backup-dir`、`--execute` 的 `upgrade-release`，

@@ -217,6 +217,11 @@ USDB chain WAITING
 `Bitcoin Core readiness unknown: ... (timeout)` 表示本轮无法确认 Core 是否就绪，并不表示已经确认它停止同步，也不泛指整个 Bitcoin 侧服务。
 全部上游检查通过后，短暂显示 `Upstream ready; waiting for controller to start USDB chain`；链初始化失败等明确错误仍优先显示。
 
+包含 Mining 启动状态改进的工具中，chain 容器尚未创建、尚未启动、正常停止或 geth 进程尚未出现时，Mining 显示 `WAITING`，
+不会仅因没有运行中的链进程就提示角色或镜像配置不匹配。具体上游等待条件仍查看 `USDB chain` 行。
+异常退出、OOM、Docker 启动错误及失败的挖矿操作继续显示 `FAILED`；运行中的角色、镜像或参数不匹配仍显示 `BLOCKED`。
+`WAITING` 不代表已开始挖矿，也不要求重新执行 `mining enable/disable`。
+
 indexer 等待首次 BH 基线时，包含此改进的版本会显示具体目标及可确认的 BH 重放进度，例如：
 
 ```text

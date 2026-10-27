@@ -205,7 +205,7 @@ usdb-node up --dry-run
 
 | 操作 | 命令 | 实际影响 |
 | --- | --- | --- |
-| 停止整个节点 | `usdb-node down` | 停止后台编排、本地监控、USDB 服务和 Bitcoin，保留配置及持久数据 |
+| 停止整个节点 | `usdb-node down` | 停止后台编排、本地监控、USDB 服务和 Bitcoin，保留配置、持久数据及开机自启设置 |
 | 暂停 USDB、保留 Bitcoin | `usdb-node down --keep-bitcoin` | 停止 USDB 服务，Bitcoin 继续运行 |
 | 恢复整个节点 | `usdb-node up` | 使用现有配置和数据继续启动 |
 | 只停止后台编排 | `usdb-node controller stop` | 已经启动的容器继续运行；不是停机命令 |
@@ -244,6 +244,15 @@ control-plane 收到停止信号后关闭 HTTP 监听，等待已接收的请求
 `down` 保留矿工角色，后续 `up` 会按原角色恢复。若希望持久停止挖矿而保持节点服务，使用[矿工停用命令](mining.md#停止挖矿)。
 
 ## 主机维护和开机恢复
+
+首次交互式 `setup` 默认执行 controller 安装并启用开机自启，不必再单独运行 `controller install`。
+`setup --no-controller` 和非交互式 `configure` 会跳过这一步；编辑已有配置也不会重新安装 controller。
+`up`、`controller start`、`activate-release` 以及普通 `down` 都保留当前自启设置：手动启动成功不代表已启用自启，停止服务也不会取消自启。
+`controller disable` 才会显式关闭自启；执行涉及协议迁移或数据重建的 `upgrade-release --execute` 后，自启也保持关闭，应按升级计划中的步骤恢复。
+
+包含自启检查改进的工具会在 `doctor` 中显示 `Startup after reboot`，并在可执行升级计划的文字输出中显示当前自启状态。
+未安装或未启用时提示 `WARN` 和安装命令，不会导致预检失败或自动启用服务；有意使用前台模式、或希望停机后不自动恢复时，可以保留该设置。
+提示会保留已识别的 `--sync-timeout-secs`、`--skip-pull`；自定义或被屏蔽的 unit 则要求先检查 `controller status`。
 
 正常主机维护前先执行 `usdb-node down` 并等待成功，再通过主机管理流程重启。默认配置的后台编排已启用开机启动，开机后会继续检查和启动节点；重新登录后确认 `status` 和 `peers status`。
 

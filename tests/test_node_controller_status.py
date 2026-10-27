@@ -12,10 +12,26 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/tools"))
 import usdb_node as NODE
+import node_controller_status as CONTROLLER
 from common.controller_status import ControllerStatusFixture
 
 
 class ControllerStatusTests(unittest.TestCase):
+    def test_autostart_notice_uses_read_only_evidence_and_keeps_installed_options(self):
+        with ControllerStatusFixture() as fixture:
+            fixture.write_unit(sync_timeout_secs=456, pull=False)
+            before = fixture.unit.read_bytes(), fixture.layout.node_env.read_bytes()
+            for active in ("active", "inactive"):
+                fixture.properties.update(ActiveState=active, UnitFileState="disabled")
+                notice = CONTROLLER.autostart_notice(CONTROLLER.inspect_controller(fixture.layout, node=NODE))
+                self.assertEqual((notice["state"], notice["severity"]), ("DISABLED", "WARN"))
+                self.assertIn("controller install --sync-timeout-secs 456 --skip-pull", notice["summary"])
+            fixture.properties["DropInPaths"] = "/etc/systemd/system/controller.service.d/custom.conf"
+            notice = CONTROLLER.autostart_notice(CONTROLLER.inspect_controller(fixture.layout, node=NODE))
+            self.assertEqual(notice["state"], "REVIEW_REQUIRED")
+            self.assertNotIn("controller install", notice["summary"])
+            self.assertEqual(before, (fixture.unit.read_bytes(), fixture.layout.node_env.read_bytes()))
+
     def test_standard_launcher_is_recognized_without_user_bin_in_path(self):
         with ControllerStatusFixture() as fixture:
             stable = fixture.root / ".local/bin/usdb-node"

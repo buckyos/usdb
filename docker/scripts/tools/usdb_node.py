@@ -2694,9 +2694,10 @@ def doctor(
     check("firewall", firewall)
 
 
-def print_doctor_report(load_layout: Any) -> int:
+def print_doctor_report(load_layout: Any, *, args: Any = None) -> int:
     """Present standalone doctor, including release-loading errors, without raw log interleaving."""
     from node_doctor import CHECK_ERRORS, DoctorReport
+    from node_controller_status import autostart_notice, command_prefix, inspect_controller
     report = DoctorReport()
     if sys.stdout.isatty():
         print("Checking USDB node prerequisites...", file=sys.stderr, flush=True)
@@ -2704,6 +2705,10 @@ def print_doctor_report(load_layout: Any) -> int:
         layout = report.check("release", load_layout)
         report.identify(layout)
         doctor(layout, allow_pending_snapshot=True, allow_pending_identity=True, report=report)
+        controller = report.check("controller", lambda: inspect_controller(layout, node=sys.modules[__name__]))
+        command = command_prefix(args, sys.modules[__name__]) if args is not None else ["usdb-node"]
+        notice = autostart_notice(controller, command=command)
+        report.add("controller", notice["severity"], "Autostart " + notice["state"], notice["summary"])
     except CHECK_ERRORS:
         # The failing stage has already retained the error and helper diagnostics.
         report.print(sys.stdout)
@@ -6823,7 +6828,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         import control_plane_monitor
         control_plane_monitor.dispatch(args, layout, sys.modules[__name__])
     elif args.command == "doctor":
-        return print_doctor_report(lambda: layout)
+        return print_doctor_report(lambda: layout, args=args)
     elif args.command == "snapshot":
         if args.snapshot_action == "install":
             release_dir = install_snapshot_release(
@@ -6952,7 +6957,7 @@ def main() -> int:
     if args.command is None:
         parser.error("the following arguments are required: command")
     if args.command == "doctor":
-        return print_doctor_report(lambda: load_release_layout(args.kit_root, args.node_env))
+        return print_doctor_report(lambda: load_release_layout(args.kit_root, args.node_env), args=args)
     try:
         if args.command == "version":
             return print_node_version(args.kit_root, args.node_env, json_output=getattr(args, "json", False))

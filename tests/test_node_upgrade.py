@@ -21,6 +21,7 @@ import node_upgrade_session as session
 import runtime_compatibility as runtime
 import usdb_node as node
 from common.node_upgrade import UpgradeFixture, write_manifest
+from common.controller_status import autostart_observation
 
 
 class UpgradeTests(unittest.TestCase):
@@ -38,6 +39,8 @@ class UpgradeTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(sys.stdin,'isatty',return_value=True))
         self.stack.enter_context(mock.patch.object(sys.stdout,'isatty',return_value=True))
         self.stack.enter_context(mock.patch.object(node,'effective_memory_bytes',return_value=64*1024**3))
+        self.controller = self.stack.enter_context(mock.patch('node_controller_status.inspect_controller',
+                                                            return_value=autostart_observation()))
 
     def plan(self):
         return upgrade.plan(self.f.target,node,self.f.source_kit)
@@ -455,6 +458,44 @@ class UpgradeTests(unittest.TestCase):
         self.assertNotIn('upgrade-release', output)
         self.assertNotIn('controller install', output)
         self.assertNotIn('mining must be reauthorized', output)
+        self.assertIn('Current startup after reboot: ENABLED', output)
+
+    def test_compatible_preview_reports_disabled_autostart_without_changing_plan(self):
+        target = replace(self.f.target, network_identity=self.f.old['network_bundle'],
+                         runtime_compatibility=self.f.old['runtime_compatibility'])
+        before = self.f.env_path.read_bytes()
+        self.controller.return_value = autostart_observation(autostart='disabled',
+            install_command='usdb-node controller install --sync-timeout-secs 456 --skip-pull')
+        for action in ('upgrade-plan', 'upgrade-release'):
+            code, output = self.preview('--node-env', str(target.node_env), action, layout=target)
+            self.assertEqual(code, 0)
+            self.assertIn('Current startup after reboot: DISABLED', output)
+            command = shlex.join(['usdb-node', '--node-env', str(target.node_env), 'controller', 'install',
+                                  '--sync-timeout-secs', '456', '--skip-pull'])
+            self.assertIn(command, output)
+            self.assertIn('otherwise leave it disabled', output)
+            self.assertIn('activate-release', output)
+            self.controller.reset_mock()
+            code, output = self.preview(action, '--json', layout=target)
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output), upgrade.plan(target, node, self.f.source_kit))
+            self.controller.assert_not_called()
+        self.assertEqual(before, self.f.env_path.read_bytes())
+        self.assertFalse(self.f.backup.exists())
+
+    def test_preview_missing_or_custom_controller_has_targeted_guidance(self):
+        for configuration, state, guidance in (('missing', 'MISSING', 'controller install'),
+                                                ('custom', 'REVIEW_REQUIRED', 'controller status')):
+            with self.subTest(configuration=configuration):
+                self.controller.return_value = autostart_observation(configuration_state=configuration)
+                target = replace(self.f.target, network_identity=self.f.old['network_bundle'],
+                                 runtime_compatibility=self.f.old['runtime_compatibility'])
+                code, output = self.preview('upgrade-plan', layout=target)
+                self.assertEqual(code, 0)
+                self.assertIn('Current startup after reboot: ' + state, output)
+                self.assertIn(guidance, output)
+                if configuration == 'custom':
+                    self.assertNotIn('controller install', output)
 
     def test_resume_guidance_uses_saved_operation_and_terminal_state(self):
         self.stage()

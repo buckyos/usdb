@@ -24,6 +24,7 @@ SECTIONS = {
     "runtime": ("Runtime configuration", "Bundle and node settings validated"),
     "registry": ("Script registry", "Registry state inspected"),
     "firewall": ("Firewall", "Managed firewall policy checked"),
+    "controller": ("Startup after reboot", "Controller autostart inspected"),
 }
 CHECK_ERRORS = (OSError, ValueError, subprocess.SubprocessError)
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")

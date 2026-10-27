@@ -148,6 +148,49 @@ def inspect_controller(layout, *, node) -> dict:
     return report
 
 
+def command_prefix(args, node):
+    """Keep explicitly selected kit/configuration paths in copyable recommendations."""
+    result = ["usdb-node"]
+    if args.kit_root != node.KIT_ROOT:
+        result += ["--kit-root", str(args.kit_root)]
+    if args.node_env is not None:
+        result += ["--node-env", str(args.node_env)]
+    return result
+
+
+def autostart_notice(controller: dict, *, command=("usdb-node",)) -> dict:
+    """Describe reboot behavior without changing intentional foreground/disabled operation."""
+    status = shlex.join([*command, "controller", "status"])
+    install = shlex.join([*command, *shlex.split(controller.get(
+        "install_command", "usdb-node controller install"))[1:]])
+    configuration = controller.get("configuration_state")
+    if configuration == "missing":
+        state = "MISSING"
+        summary = ("Controller is not installed; automatic startup after reboot is unavailable. "
+                   f"For background operation, run {install}. Intentional up --foreground remains supported.")
+    elif configuration in {"custom", "unverified"}:
+        state = "REVIEW_REQUIRED"
+        summary = f"Controller settings need manual review; run {status} before replacing or enabling the unit."
+    elif configuration == "update_required" or controller.get("needs_daemon_reload"):
+        state = "UPDATE_REQUIRED"
+        summary = (f"Controller configuration needs refreshing; run {install} for background operation. "
+                   "This also enables automatic startup after reboot.")
+    elif not controller.get("observation_available") or controller.get("load_state") != "loaded":
+        state = "UNAVAILABLE"
+        summary = f"Automatic startup after reboot could not be verified; inspect {status}."
+    elif controller.get("autostart") == "enabled":
+        state = "ENABLED"
+        summary = "Automatic startup after reboot is enabled; this does not prove current service readiness."
+    elif controller.get("autostart") == "disabled":
+        state = "DISABLED"
+        summary = ("Automatic startup after reboot is disabled. Manual up, down and activate-release preserve this setting. "
+                   f"If reboot recovery is intended, run {install}; otherwise leave it disabled.")
+    else:
+        state = "UNAVAILABLE"
+        summary = f"Persistent automatic startup after reboot is not confirmed; inspect {status}."
+    return dict(state=state, severity="PASS" if state == "ENABLED" else "WARN", summary=summary)
+
+
 def apply_controller_guidance(report: dict) -> None:
     """Add operator actions while keeping runtime readiness and foreground startup intact."""
     controller = report["checks"].get("controller")

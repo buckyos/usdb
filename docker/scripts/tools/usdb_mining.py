@@ -230,6 +230,7 @@ def inspect_chain(layout: node.ReleaseLayout, *, processes=True):
     host = item["HostConfig"]
     report = {"id": ids[0], "state": item["State"]["Status"],
               "exit_code": item["State"]["ExitCode"], "error": item["State"].get("Error", ""),
+              "oom_killed": item["State"].get("OOMKilled", False),
               "image": config["Image"], "memory": host.get("Memory", 0),
               "nano_cpus": host.get("NanoCpus", 0), "cpu_quota": host.get("CpuQuota", 0),
               "cpu_period": host.get("CpuPeriod", 0), "cpuset": host.get("CpusetCpus", ""),
@@ -262,8 +263,9 @@ def flag_values(argv):
     return values
 
 
-def runtime_matches(layout: node.ReleaseLayout, env, runtime):
-    if runtime.get("state") != "running" or runtime.get("image") != layout.images["USDB_CHAIN_IMAGE"]:
+def container_matches(layout: node.ReleaseLayout, env, runtime):
+    """Compare declared container settings independently of geth process availability."""
+    if runtime.get("image") != layout.images["USDB_CHAIN_IMAGE"]:
         return False
     configured = role_config(env)
     if any(runtime["environment"].get(k) != v for k, v in configured.items()):
@@ -272,6 +274,13 @@ def runtime_matches(layout: node.ReleaseLayout, env, runtime):
         return False
     if (runtime["environment"].get("USDB_P2P_IP_FAMILY") or "ipv4") != env.get("USDB_P2P_IP_FAMILY", "ipv4"):
         return False
+    return True
+
+
+def runtime_matches(layout: node.ReleaseLayout, env, runtime):
+    if runtime.get("state") != "running" or not container_matches(layout, env, runtime):
+        return False
+    configured = role_config(env)
     flags = flag_values(runtime.get("argv", []))
     if not flags:
         return False
@@ -1012,7 +1021,7 @@ def observe(layout: node.ReleaseLayout, *, details: bool = False) -> dict[str, A
                                ("operation_id", "phase", "target", "error", "rollback", "rollback_detail", "detail")}
         runtime = inspect_chain(layout)
         report["anchor_policy"] = anchor_policy.policy_view(env, runtime, sys.modules[__name__])
-        report["runtime"] = {key: runtime.get(key) for key in ("id", "state", "image", "environment", "error", "exit_code")}
+        report["runtime"] = {key: runtime.get(key) for key in ("id", "state", "image", "environment", "error", "exit_code", "oom_killed")}
         try:
             guard_check(layout, env)
         except ValueError as error:
@@ -1023,6 +1032,24 @@ def observe(layout: node.ReleaseLayout, *, details: bool = False) -> dict[str, A
             return report
         if operation.get("phase") == "FAILED":
             report.update(state="FAILED", detail=operation.get("error", "Mining operation failed"))
+            return report
+        state = runtime.get("state")
+        if (runtime.get("error") or runtime.get("oom_killed") or state in {"dead", "restarting"}
+                or (state == "exited" and runtime.get("exit_code") != 0)):
+            report.update(state="FAILED", detail=(f"USDB chain container state={state}, exit_code={runtime.get('exit_code')}, "
+                          f"oom_killed={bool(runtime.get('oom_killed'))}; inspect usdb-node logs usdb-chain"))
+            if runtime.get("error"):
+                report["detail"] += "; " + runtime["error"]
+            return report
+        if state in {"absent", "created", "exited", "removing"}:
+            report.update(state="WAITING", detail=(f"USDB chain container state={state}; mining waits for chain startup "
+                          "and upstream readiness. See usdb-node status --watch for startup dependencies."))
+            return report
+        if state == "running" and not runtime.get("argv") and container_matches(layout, env, runtime):
+            report.update(state="WAITING", detail="USDB chain container is running; geth process is not yet observed. See usdb-node logs usdb-chain.")
+            return report
+        if state != "running":
+            report.update(state="BLOCKED", detail=f"USDB chain container state={state}; inspect usdb-node top before resuming mining.")
             return report
         if not runtime_matches(layout, env, runtime):
             report.update(state="BLOCKED", drift=True, detail="Configured role/image/parameters are not applied; use mining enable/disable or up")

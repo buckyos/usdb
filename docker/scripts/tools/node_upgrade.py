@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 import node_rebuild as core
+from node_controller_status import command_prefix as _command_prefix
 from runtime_compatibility import (
     DATA_LAYOUT_VERSION, DATASET_IDENTITY_FILE, PERSISTENT_DATA_SERVICES,
     build_dataset_identity, build_persistent_data_paths, build_runtime_compatibility,
@@ -322,14 +323,12 @@ def show_next_steps(value, *, command=("usdb-node",), from_kit=None, backup=None
     emit("status")
 
 
-def _command_prefix(args, node):
-    """Keep explicitly selected kit/configuration paths in copyable recommendations."""
-    result = ["usdb-node"]
-    if args.kit_root != node.KIT_ROOT:
-        result += ["--kit-root", str(args.kit_root)]
-    if args.node_env is not None:
-        result += ["--node-env", str(args.node_env)]
-    return result
+def show_autostart(layout, node, command):
+    """Keep live, read-only observations outside the immutable upgrade plan and JSON."""
+    from node_controller_status import autostart_notice, inspect_controller
+    notice = autostart_notice(inspect_controller(layout, node=node), command=command)
+    print(f"\nCurrent startup after reboot: {notice['state']}")
+    print("  " + notice["summary"])
 
 
 def add_parser(subparsers):
@@ -374,6 +373,8 @@ def dispatch(args, layout, node):
             print(json.dumps(value, indent=2, sort_keys=True))
         else:
             show(value, details=args.details)
+            if value["executable"]:
+                show_autostart(source_layout, node, _command_prefix(args, node))
             show_next_steps(value, command=_command_prefix(args, node), from_kit=args.from_kit)
         return 0 if value["executable"] else 2
     core.require(not (args.execute and args.json), "--json is preview-only")
@@ -401,6 +402,8 @@ def dispatch(args, layout, node):
             if args.resume:
                 print(f"Saved operation: {phase}")
             show(value, details=args.details)
+            if value["executable"] and phase in {None, "applied"} and not args.rollback:
+                show_autostart(layout, node, _command_prefix(args, node))
             show_next_steps(value, command=_command_prefix(args, node), from_kit=args.from_kit,
                             backup=backup, resume=bool(args.resume), rollback=args.rollback, phase=phase)
         return 0 if value["executable"] else 2

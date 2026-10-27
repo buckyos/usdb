@@ -407,6 +407,42 @@ class MiningTests(unittest.TestCase):
             f.fail_rpc = None
             self.assertEqual(f.run(), 0)
 
+    def test_observation_waits_for_chain_startup_without_claiming_configuration_drift(self):
+        for state in ("absent", "created", "exited", "removing", "running"):
+            with self.subTest(state=state), MiningFixture() as f:
+                f.runtime.update(state=state, exit_code=0, argv=[])
+                before = f.layout.node_env.read_bytes()
+                report = MINING.observe(f.layout)
+                self.assertEqual(report["state"], "WAITING")
+                self.assertFalse(report.get("drift"))
+                self.assertFalse(report["applied"])
+                self.assertNotIn("mining enable/disable", report["detail"])
+                rendered = NODE.render_node_progress({"components": [], "mining": report})
+                self.assertIn("Mining WAITING", rendered)
+                self.assertNotIn("Attention", rendered)
+                self.assertEqual(f.calls, [])
+                self.assertEqual(f.rpc_calls, [])
+                self.assertEqual(before, f.layout.node_env.read_bytes())
+
+    def test_observation_preserves_container_faults_and_running_configuration_drift(self):
+        for changes, expected in (
+            ({"state": "exited", "exit_code": 1}, "FAILED"),
+            ({"state": "exited", "exit_code": 0, "oom_killed": True}, "FAILED"),
+            ({"state": "created", "error": "OCI failure"}, "FAILED"),
+            ({"state": "dead"}, "FAILED"),
+            ({"state": "restarting"}, "FAILED"),
+            ({"state": "paused"}, "BLOCKED"),
+            ({"image": "old-image", "argv": []}, "BLOCKED"),
+            ({"image": "old-image"}, "BLOCKED"),
+        ):
+            with self.subTest(changes=changes), MiningFixture() as f:
+                f.runtime.update(changes)
+                report = MINING.observe(f.layout)
+                self.assertEqual(report["state"], expected)
+                if "image" in changes:
+                    self.assertTrue(report["drift"])
+                self.assertEqual(f.calls, [])
+
     def test_role_drift_and_old_set_role_do_not_bypass_gate(self):
         with MiningFixture() as f:
             f.update_env(USDB_NODE_ROLE="miner", USDB_MINER_ADDRESS=ADDRESS)
