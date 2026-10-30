@@ -10,14 +10,17 @@ python3 tools/export_explorer_contract.py \
   --revision <40-character-USDB-commit> --output-dir /tmp/explorer-network-export
 ```
 
-工具只读取指定 commit 的 `docker/networks/testnet-v0`，按 canonical bundle 校验，生成：
+工具只读取指定 commit 的 `docker/networks/testnet-v1`，按 canonical bundle 校验，生成：
 
-- `usdb-testnet-v0.json`：chain ID、network ID、genesis、BTC registry 等原有网络身份。
-- `usdb-testnet-v0.contract.json`：schema、来源仓库/commit、catalog SHA-256、RPC profile。
+- `usdb-testnet-v1.json`：chain ID、network ID、genesis、BTC registry 和 rules scope 等网络身份。
+- `usdb-testnet-v1.contract.json`：schema、来源仓库/commit、catalog SHA-256、RPC profile。
 
 审阅导出内容后将两个文件一同更新到 Explorer 的 `explorer/networks/` 并提交该工程。
 普通打包使用已提交的资料；不在 CI 自动跟随 USDB master，也不根据未知 RPC 自动替换网络身份。
-初始迁移固定 USDB `0b946e03c71f70e6dfe0bb1bc44d9e6b3ce803ec`。
+本次 v1 同步固定 node1 的 r25 源码 `8d45b31f1bf43565579787069238d17c51e19aa1`：
+chain ID `202610030`，genesis `0xb0b6ebc9a6c2e051855c2d61dff9a51635ea1db09c898a3c0126e27b9e779314`。
+v0 到 v1 是网络重置；Explorer 从空数据库重新索引，不迁移或备份废弃的 v0 数据。
+RPC profile 的 `v1` 是接口版本，与网络 bundle 的 `v1` 分别管理。
 
 `usdb-explorer-rpc:v1` 要求历史状态查询、区块/交易/回执/日志、`callTracer` tracing 和
 `eth_sendRawTransaction` 广播能力。读取、tracing、广播可以使用不同上游，但必须核对相同

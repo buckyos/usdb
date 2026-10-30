@@ -33,7 +33,7 @@ def export_contract(repo, revision, output):
         raise ValueError("--revision must be an exact 40-character source commit")
     if subprocess.check_output(["git", "-C", str(repo), "cat-file", "-t", revision]).strip() != b"commit":
         raise ValueError("--revision must identify a commit, not a tag object")
-    prefix = "docker/networks/testnet-v0"
+    prefix = "docker/networks/testnet-v1"
     payload = subprocess.check_output(["git", "-C", str(repo), "archive", revision, prefix])
     with tempfile.TemporaryDirectory(prefix="usdb-explorer-contract-") as temporary:
         root = Path(temporary)
@@ -51,11 +51,11 @@ def export_contract(repo, revision, output):
     catalog = (json.dumps(identity, indent=2) + "\n").encode()
     contract = {"schema_version": "usdb-explorer-network-contract:v1",
                 "source": {"repository": "buckyos/usdb", "revision": revision, "path": prefix},
-                "catalog": {"file": "usdb-testnet-v0.json", "sha256": hashlib.sha256(catalog).hexdigest()},
+                "catalog": {"file": "usdb-testnet-v1.json", "sha256": hashlib.sha256(catalog).hexdigest()},
                 "rpc": RPC_PROFILE}
     output.mkdir(parents=True, exist_ok=True)
-    for name, body in (("usdb-testnet-v0.json", catalog),
-                       ("usdb-testnet-v0.contract.json", (json.dumps(contract, indent=2) + "\n").encode())):
+    for name, body in (("usdb-testnet-v1.json", catalog),
+                       ("usdb-testnet-v1.contract.json", (json.dumps(contract, indent=2) + "\n").encode())):
         with (output / name).open("xb") as destination:
             destination.write(body)
     return contract

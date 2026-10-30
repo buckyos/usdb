@@ -21,12 +21,16 @@ class ExplorerContractExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
             value = EXPORT.export_contract(ROOT, REVISION, output)
-            catalog = (output / "usdb-testnet-v0.json").read_bytes()
+            catalog = (output / "usdb-testnet-v1.json").read_bytes()
             identity = json.loads(catalog)
             self.assertEqual(value["source"]["revision"], REVISION)
             self.assertEqual(value["catalog"]["sha256"], hashlib.sha256(catalog).hexdigest())
-            self.assertEqual(identity["chain_id"], 202608250)
-            self.assertEqual(identity["genesis_block_hash"], "0x12a1baed070d1521d791b73956a8b5cf1613fc9504636f215390c1f839992a23")
+            self.assertEqual(value["source"]["path"], "docker/networks/testnet-v1")
+            self.assertEqual(identity["bundle_id"], "usdb-testnet-v1")
+            self.assertEqual(identity["chain_id"], 202610030)
+            self.assertEqual(identity["genesis_block_hash"], "0xb0b6ebc9a6c2e051855c2d61dff9a51635ea1db09c898a3c0126e27b9e779314")
+            self.assertEqual(identity["btc_activation_registry_id"], "53b4bfed53b55a4accbd947d04d113a684f1af896d39d2d9bd984e07ad543f32")
+            self.assertEqual(identity["btc_rules_scope"], "usdb-testnet-v1")
             with self.assertRaises(FileExistsError):
                 EXPORT.export_contract(ROOT, REVISION, output)
 
