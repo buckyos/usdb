@@ -159,6 +159,19 @@ def number(path):
     return result
 
 
+def default_io_weight(path):
+    """Read the default cgroup weight; per-device overrides are not a default."""
+    fields = path.read_text().splitlines()
+    for line in fields:
+        key, value = line.split()
+        if key == "default":
+            weight = int(value)
+            if weight <= 0:
+                raise ValueError("invalid I/O weight")
+            return weight
+    raise ValueError("missing default I/O weight")
+
+
 def attempt(item, label, read):
     """One unsupported kernel field must not discard other valid observations."""
     try:
@@ -221,8 +234,11 @@ class Collector:
         for file, key in (("memory.current", "memory_current_bytes"), ("memory.max", "memory_limit_bytes"),
                           ("memory.swap.current", "swap_used_bytes"), ("memory.swap.max", "swap_limit_bytes")):
             attempt(result, file, lambda f=file, k=key: {k: number(directory / f)})
+        attempt(result, "cpu.weight", lambda: {"cpu_weight": number(directory / "cpu.weight")})
+        for file, key in (("io.weight", "io_weight"), ("io.bfq.weight", "io_bfq_weight")):
+            attempt(result, file, lambda f=file, k=key: {k: default_io_weight(directory / f)})
         attempt(result, "memory.stat", lambda: {key + "_bytes": value for key, value in pairs(directory / "memory.stat").items()
-                                                  if key in {"anon", "file", "inactive_file", "slab"}})
+                                                  if key in {"anon", "file", "inactive_file", "active_file", "file_dirty", "file_writeback", "slab"}})
         attempt(result, "memory.events", lambda: {"events_" + key: value for key, value in pairs(directory / "memory.events").items()
                                                     if key in {"high", "max", "oom", "oom_kill"}})
         for kind in ("memory", "io"):

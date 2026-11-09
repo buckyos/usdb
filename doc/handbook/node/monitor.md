@@ -211,3 +211,28 @@ BH 日志中的 `Native bootstrap RPC retry` 会列出请求、尝试次数、�
 不刷屏；未知/过期证据不解除告警；计划停机无误报；禁用选择升级后保留；旧 observer
 安全迁移且不会双运行；采集超时不阻塞事件查询和退出；数据库错误不报告记录正常；
 CLI/控制台快照不泄露敏感信息；node-kit 打包和完整升级入口可用。
+
+## 磁盘内核错误告警
+
+monitor 每分钟最多读取一次当前启动、最近 24 小时内的磁盘相关 kernel journal，单次最多保留 128 条匹配记录，
+3 秒超时。只保存错误分类、计数和时间，不导出原始内核日志或其中的文件路径。
+发现块设备 I/O 错误、ATA 链路复位/CRC 错误、已识别的文件系统错误或只读切换时，立即产生
+`DISK_KERNEL_ERRORS` critical 告警。该证据属于整个宿主机，不能据此断言一定是 Ord 所在盘或 SSD 本体损坏。
+
+```bash
+usdb-node monitor status
+usdb-node monitor alerts --json
+usdb-node monitor events --service host --json
+# 由具备日志读取权限的运维账号核对完整证据：
+sudo journalctl -k -b --since '24 hours ago'
+```
+
+采样不自动提权。monitor 账号无权读系统日志、journal 不可用、输出异常或超时时，显示
+`unavailable` / `DISK_HEALTH_UNAVAILABLE`；采样过期显示 `stale`，这些情况不会清除已发现的磁盘错误。
+运维可按主机权限策略授予 monitor 账号系统日志读取权限（常见为 `systemd-journal` 组），然后重启对应
+monitor 服务使新组生效；此权限覆盖系统日志，部署脚本不会自动授予。
+
+告警恢复只表示连续成功采样中，当前启动的最近 24 小时窗口已无匹配错误，**不代表硬件已修复**。
+日志轮转、主机重启或日志未持久化会限制可见历史，已有事件记录继续保留；计数达上限时标记 `truncated`。
+监控关闭或未运行时不采样。它不运行 SMART 自检或磁盘压测，也不因错误告警自动停机、重启或修改节点就绪状态。
+吞吐慢、Ord 长时间提交和高 I/O 等待本身不会触发硬件错误告警。

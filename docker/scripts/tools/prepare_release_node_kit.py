@@ -69,6 +69,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/node_resource_metrics.py",
     "docker/scripts/tools/node_resource_history.py",
     "docker/scripts/tools/node_resource_monitor.py",
+    "docker/scripts/tools/node_disk_health.py",
     "docker/scripts/tools/node_notification_config.py",
     "docker/scripts/tools/node_notification_queue.py",
     "docker/scripts/tools/node_notification_transport.py",

@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker/scripts/tools"))
 import node_monitor
+import node_disk_health
 import node_resource_history as history
 import node_resource_metrics as metrics
 import node_resource_monitor as monitor
@@ -28,12 +29,20 @@ class MetricTests(unittest.TestCase):
     def test_cgroup_cache_swap_pressure_deltas_and_restart(self):
         with tempfile.TemporaryDirectory() as root:
             proc, cg, resources, inspect = kernel_tree(root)
+            (cg / "docker/a/cpu.weight").write_text("10\n")
+            (cg / "docker/a/io.weight").write_text("default 100\n8:0 200\n")
+            (cg / "docker/a/memory.stat").write_text("anon 128\nfile 896\ninactive_file 400\nactive_file 300\nfile_dirty 64\nfile_writeback 32\n")
             collector = metrics.Collector(proc, cg)
             with mock.patch.object(metrics, "command", return_value=inspect), mock.patch.object(metrics, "now_ms", return_value=BASE):
                 first = collector.sample(resources)["items"][1]
             self.assertEqual(first["metrics"]["memory_current_bytes"], 1024)
             self.assertEqual(first["metrics"]["working_set_bytes"], 624)
             self.assertEqual(first["metrics"]["file_bytes"], 896)
+            self.assertEqual(first["metrics"]["file_dirty_bytes"], 64)
+            self.assertEqual(first["metrics"]["file_writeback_bytes"], 32)
+            self.assertEqual(first["metrics"]["cpu_weight"], 10)
+            self.assertEqual(first["metrics"]["io_weight"], 100)
+            self.assertIn("io.bfq.weight", first["missing"])
             self.assertIsNone(first["metrics"]["swap_limit_bytes"])
             self.assertNotIn("events_max_delta", first["metrics"])
             (cg / "docker/a/memory.events").write_text("high 0\nmax 9\noom 0\noom_kill 0\n")
@@ -312,7 +321,8 @@ class WorkerTests(unittest.TestCase):
                     raise sqlite3.OperationalError("PRIVATE_SECRET")
                 original(db, value, **kwargs)
                 stopped.set()
-            with mock.patch.object(control_plane_resources, "ResourceCollector") as collector, \
+            with mock.patch.object(node_disk_health.Collector, "sample", return_value={"status": "unavailable"}), \
+                    mock.patch.object(control_plane_resources, "ResourceCollector") as collector, \
                     mock.patch.object(monitor, "Collector") as metric_collector, mock.patch.object(history.History, "append", write), \
                     contextlib.redirect_stderr(io.StringIO()) as output:
                 collector.return_value.sample.side_effect = lambda *_: {"host": {"status": "available"}}
@@ -342,7 +352,8 @@ class WorkerTests(unittest.TestCase):
             probe = threading.Thread(target=stalled_probe)
             probe.start()
             entered.wait(1)
-            with mock.patch.object(control_plane_resources, "ResourceCollector") as collector, mock.patch.object(monitor, "Collector") as metrics_collector:
+            with mock.patch.object(node_disk_health.Collector, "sample", return_value={"status": "unavailable"}), \
+                    mock.patch.object(control_plane_resources, "ResourceCollector") as collector, mock.patch.object(monitor, "Collector") as metrics_collector:
                 collector.return_value.sample.return_value = {"host": {"status": "available"}}
                 metrics_collector.return_value.sample.side_effect = lambda _: evidence(metrics.now_ms())
                 observer = monitor.ResourceObserver(f.layout, node, stopped, .02, f.settings, {"id": "session-a"})

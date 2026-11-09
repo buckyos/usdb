@@ -138,16 +138,20 @@ def summary(store, state, *, at=None):
     alerts = sorted(store.alerts(), key=lambda v: (v["state"] != "firing", v["severity"] != "critical", -v["last_seen_ms"]))
     notifications = store.get("notifications", {"state": "not_started"})
     history = store.get("resource_history", {"state": "not_started"})
+    disk = store.get("disk_health", {"status": "not_started"})
+    if disk.get("at_ms") and not 0 <= (at or now_ms()) - disk["at_ms"] <= 180000:
+        disk = {**disk, "status": "stale"}
     if state in {"stopped", "disabled", "failed", "interrupted"}:
         notifications = {**notifications, "state": "unavailable" if state == "failed" else state}
         history = {**history, "state": state}
+        disk = {**disk, "status": state}
     elif history.get("state") == "available":
         age_limit = (store.get("policy", {}).get("resource_interval_secs", 10) * 3 + 15) * 1000
         if not -5000 <= (at or now_ms()) - history.get("last_sample_ms", 0) <= age_limit:
             history = {**history, "state": "stale"}
     return dict(schema_version=SCHEMA, state=state, storage="available", node_id=store.get("node_id"),
                 session=store.get("session"), updated_at_ms=at or now_ms(),
-                notifications=notifications, resource_history=history,
+                notifications=notifications, resource_history=history, disk_health=disk,
                 console_export_available=store.get("console_export_available"),
                 alert_count=len(alerts), alerts=alerts[:32], events=store.events(limit=20))
 
@@ -510,6 +514,9 @@ def dispatch(args, layout, node):
         sampled = datetime.fromtimestamp(sampled / 1000, timezone.utc).isoformat() if type(sampled) is int else "unknown"
         print(f"Resource history: {history.get('state', 'not_started')}; last sample={sampled}; "
               f"capacity evictions={history.get('capacity_evictions', 0)}; failed samples={history.get('failed_samples', 0)}")
+        disk = result.get("disk_health", {})
+        print(f"Disk kernel observation: {disk.get('status', 'not_started')}; "
+              f"recent error categories={len(disk.get('errors', []))} (current boot, last 24h)")
         delivery = result["notifications"]
         counts = delivery.get("counts", {})
         print(f"Active/pending alerts: {len(result['alerts'])}; notifications: {delivery['state']}; "

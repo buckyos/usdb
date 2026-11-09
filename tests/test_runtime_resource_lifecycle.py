@@ -200,9 +200,14 @@ class RuntimeHandoffTests(unittest.TestCase):
             f.crash = "quiesce-services"
             with self.assertRaises(RuntimeError):
                 lifecycle.apply_plan(f.layout, node, "catchup", runtime_budget="runtime-ready")
-            self.assertIn("ord-server", f.events[0][1])
+            self.assertEqual(f.events[0], ("quiesce-services", ("ord-server",)))
+            # An interrupted Ord flush must leave all foreground services running.
+            for service in ("btc-node", "balance-history", "usdb-indexer", "usdb-chain"):
+                self.assertEqual(f.containers[service]["state"], "running")
+            self.assertTrue(node._read_resource_state(f.layout)["pending"])
             self.assertEqual(f.layout.node_env.read_bytes(), before)
             lifecycle.apply_plan(f.layout, node, "catchup")
+            self.assertEqual(f.events[1], ("quiesce-services", ("usdb-chain", "usdb-indexer", "balance-history")))
             env = node.read_env(f.layout.node_env)
             self.assertEqual(env["USDB_RESOURCE_RUNTIME_BUDGET"], "runtime-ready")
             self.assertEqual(int(env["ORD_MEMORY_LIMIT"]), 32 * policy.GIB)

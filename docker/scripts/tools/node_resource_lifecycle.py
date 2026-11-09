@@ -13,7 +13,9 @@ from resource_policy import (MIN_HOST_MEMORY_BYTES, POLICY_VERSION_KEY, build_re
                              runtime_policy, validate_resource_environment)
 
 ACTIVE = {"running", "restarting", "paused"}
-ORDER = ("usdb-chain", "usdb-indexer", "balance-history", "ord-server", "usdb-control-plane")
+# Ord is independent of foreground consumers and may take a long time to flush.
+# Keep the core pipeline available until it has released its old allocation.
+ORDER = ("ord-server", "usdb-chain", "usdb-indexer", "balance-history", "usdb-control-plane")
 JOBS = {"snapshot-loader", "script-registry-installer", "paired-checkpoint-recovery", "btc-snapshot-bootstrap", "usdb-chain-init"}
 
 
@@ -135,7 +137,11 @@ def apply_plan(layout, node, target, *, runtime_budget=None, output_to_stderr=Fa
             error=error, observed=observed, desired=plan.environment(), plan_id=plan_id)
     record("RESOURCE_TRANSITION_RESUMED" if resuming else "RESOURCE_TRANSITION_STARTED")
     try:
-        services = [name for name in ORDER if name in affected]
+        # A separate wait keeps the whole foreground pipeline running if Ord is
+        # still committing, or if the controller is interrupted during that wait.
+        if "ord-server" in affected:
+            node.run_helper(layout, "run_testnet_runtime.sh", ["quiesce-services", "ord-server"], output_to_stderr=output_to_stderr)
+        services = [name for name in ORDER if name in affected and name != "ord-server"]
         if services:
             node.run_helper(layout, "run_testnet_runtime.sh", ["quiesce-services", *services], output_to_stderr=output_to_stderr)
         bitcoin_matches = node._resource_container_matches(observed.get("btc-node"), desired, "btc-node")

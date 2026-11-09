@@ -35,9 +35,26 @@ pub struct MemoryUsageSnapshot {
     pub limit_bytes: u64,
     /// Current usage in bytes within the same accounting scope as the limit.
     pub used_bytes: u64,
+    /// Conservative estimate of clean inactive file pages reclaimable without writeback.
+    /// Missing or unsupported accounting contributes zero, never guessed free memory.
+    pub reclaimable_file_bytes: u64,
 }
 
 impl MemoryUsageSnapshot {
+    /// Returns usage excluding only conservatively reclaimable file pages.
+    /// Active file pages, dirty/writeback pages, anonymous and kernel memory remain charged.
+    pub fn pressure_bytes(&self) -> u64 {
+        self.used_bytes.saturating_sub(self.reclaimable_file_bytes)
+    }
+
+    /// Returns the non-reclaimable estimate as a percentage for application cache control.
+    pub fn pressure_percent(&self) -> u64 {
+        if self.limit_bytes == 0 {
+            return 0;
+        }
+        ((self.pressure_bytes() as u128 * 100) / self.limit_bytes as u128) as u64
+    }
+
     /// Returns usage as an integer percentage of the effective memory limit.
     pub fn used_percent(&self) -> u64 {
         if self.limit_bytes == 0 {
@@ -68,6 +85,8 @@ fn physical_memory_snapshot() -> MemoryUsageSnapshot {
         source: MemoryAccountingSource::Physical,
         limit_bytes: system.total_memory(),
         used_bytes: system.used_memory(),
+        // sysinfo already accounts for host available memory; do not subtract cache twice.
+        reclaimable_file_bytes: 0,
     }
 }
 
@@ -141,9 +160,40 @@ fn read_cgroup_hierarchy(
                 source,
                 limit_bytes: limit,
                 used_bytes: used,
+                reclaimable_file_bytes: reclaimable_file_bytes(&dir, source, used),
             })
         })
         .min_by_key(|snapshot| snapshot.limit_bytes)
+}
+
+/// All counters must come from the same hierarchy as the selected limit and usage.
+fn reclaimable_file_bytes(dir: &Path, source: MemoryAccountingSource, used: u64) -> u64 {
+    let Ok(stat) = std::fs::read_to_string(dir.join("memory.stat")) else {
+        return 0;
+    };
+    let names = match source {
+        MemoryAccountingSource::CgroupV2 => ["inactive_file", "file_dirty", "file_writeback"],
+        MemoryAccountingSource::CgroupV1 => {
+            ["total_inactive_file", "total_dirty", "total_writeback"]
+        }
+        MemoryAccountingSource::Physical => return 0,
+    };
+    let counter = |name: &str| -> Option<u64> {
+        stat.lines().find_map(|line| {
+            let mut fields = line.split_whitespace();
+            (fields.next()? == name)
+                .then(|| fields.next()?.parse().ok())
+                .flatten()
+        })
+    };
+    match (counter(names[0]), counter(names[1]), counter(names[2])) {
+        (Some(inactive), Some(dirty), Some(writeback)) if inactive <= used => {
+            // Dirty/writeback pages may overlap or be active. Subtracting both is
+            // deliberately conservative: never promise memory that needs disk I/O.
+            inactive.saturating_sub(dirty).saturating_sub(writeback)
+        }
+        _ => 0,
+    }
 }
 
 fn cgroup_candidate_dirs(root: &Path, cgroup_path: &str) -> Vec<PathBuf> {
@@ -263,6 +313,110 @@ mod tests {
         assert_eq!(snapshot.limit_bytes, 2048);
         assert_eq!(snapshot.used_percent(), 50);
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cache_pressure_keeps_dirty_active_and_anonymous_memory_charged() {
+        let root = temp_root("cache_pressure");
+        write_memory_pair(&root, "memory.max", "memory.current", "1000", 990);
+        std::fs::write(root.join("memory.stat"),
+            "anon 90\nfile 900\nactive_file 100\ninactive_file 800\nfile_dirty 200\nfile_writeback 50\n").unwrap();
+        let snapshot = detect_cgroup_memory(&root, "0::/\n", 4096).unwrap();
+        assert_eq!(snapshot.used_percent(), 99);
+        assert_eq!(snapshot.reclaimable_file_bytes, 550);
+        assert_eq!(snapshot.pressure_bytes(), 440);
+        assert_eq!(snapshot.pressure_percent(), 44);
+        std::fs::write(
+            root.join("memory.stat"),
+            "inactive_file 800\nfile_dirty 900\nfile_writeback 50\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_cgroup_memory(&root, "0::/\n", 4096)
+                .unwrap()
+                .pressure_percent(),
+            99
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cache_stats_use_selected_ancestor_and_v1_hierarchical_counters() {
+        let root = temp_root("cache_ancestor");
+        let child = root.join("child");
+        write_memory_pair(&root, "memory.max", "memory.current", "1000", 990);
+        write_memory_pair(&child, "memory.max", "memory.current", "max", 100);
+        std::fs::write(
+            child.join("memory.stat"),
+            "inactive_file 90\nfile_dirty 0\nfile_writeback 0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_cgroup_memory(&root, "0::/child\n", 4096)
+                .unwrap()
+                .reclaimable_file_bytes,
+            0
+        );
+        std::fs::write(
+            root.join("memory.stat"),
+            "inactive_file 800\nfile_dirty 0\nfile_writeback 0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_cgroup_memory(&root, "0::/child\n", 4096)
+                .unwrap()
+                .pressure_percent(),
+            19
+        );
+        std::fs::remove_file(root.join("memory.max")).unwrap();
+        let v1 = root.join("memory");
+        write_memory_pair(
+            &v1,
+            "memory.limit_in_bytes",
+            "memory.usage_in_bytes",
+            "1000",
+            990,
+        );
+        std::fs::write(
+            v1.join("memory.stat"),
+            "inactive_file 999\ntotal_inactive_file 700\ntotal_dirty 100\ntotal_writeback 50\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_cgroup_memory(&root, "1:memory:/\n", 4096)
+                .unwrap()
+                .reclaimable_file_bytes,
+            550
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn absent_invalid_or_inconsistent_cache_stats_never_invent_free_memory() {
+        let root = temp_root("cache_missing");
+        write_memory_pair(&root, "memory.max", "memory.current", "1000", 900);
+        for stat in [
+            "",
+            "inactive_file 800\n",
+            "inactive_file -1\nfile_dirty 0\nfile_writeback 0\n",
+        ] {
+            std::fs::write(root.join("memory.stat"), stat).unwrap();
+            assert_eq!(
+                detect_cgroup_memory(&root, "0::/\n", 4096)
+                    .unwrap()
+                    .pressure_percent(),
+                90
+            );
+        }
+        std::fs::write(
+            root.join("memory.stat"),
+            "inactive_file 9999\nfile_dirty 0\nfile_writeback 0\n",
+        )
+        .unwrap();
+        let snapshot = detect_cgroup_memory(&root, "0::/\n", 4096).unwrap();
+        assert_eq!(snapshot.pressure_bytes(), snapshot.used_bytes);
+        assert_eq!(snapshot.reclaimable_file_bytes, 0);
         std::fs::remove_dir_all(root).unwrap();
     }
 

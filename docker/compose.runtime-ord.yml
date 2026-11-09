@@ -23,6 +23,10 @@ services:
     volumes:
       - ${ORD_DATA_HOST_DIR:?ORD_DATA_HOST_DIR is required}:/data/ord
     mem_limit: ${ORD_MEMORY_LIMIT:-4g}
+    # Relative weights yield to foreground work under contention, without an I/O rate cap.
+    cpu_shares: 256
+    blkio_config:
+      weight: 100
     cpus: 2
     memswap_limit: ${ORD_MEMORY_LIMIT:-4g}
     stop_grace_period: 10m

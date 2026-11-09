@@ -3,9 +3,11 @@ use super::utxo::UTXOCacheRef;
 use crate::config::BalanceHistoryConfigRef;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 const MONITOR_INTERVAL_SECS: u64 = 10;
 const SHRINK_PERCENT: usize = 10;
+const SHRINK_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct MemoryCacheMonitor {
@@ -53,12 +55,13 @@ impl MemoryCacheMonitor {
         self.shutdown_tx.lock().unwrap().replace(shutdown_tx);
         let monitor = self.clone();
         thread.replace(std::thread::spawn(move || {
+            let mut pressure = CachePressure::default();
             loop {
                 match shutdown_rx
                     .recv_timeout(std::time::Duration::from_secs(MONITOR_INTERVAL_SECS))
                 {
                     Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    Err(mpsc::RecvTimeoutError::Timeout) => monitor.check(),
+                    Err(mpsc::RecvTimeoutError::Timeout) => monitor.check(&mut pressure),
                 }
             }
             info!("Cache memory monitor stopped");
@@ -86,37 +89,76 @@ impl MemoryCacheMonitor {
             .update_strategy(super::CacheStrategy::Normal);
     }
 
-    fn check(&self) {
-        let max_memory_percent = self.config.sync.max_memory_percent;
-        let memory = usdb_util::get_memory_usage_snapshot();
-        let used_percent = memory.used_percent();
+    fn check(&self, pressure: &mut CachePressure) {
+        self.check_memory(
+            usdb_util::get_memory_usage_snapshot(),
+            pressure,
+            Instant::now(),
+        );
+    }
 
-        if memory.limit_bytes == 0 {
-            error!("Unable to determine effective memory limit");
-            return;
-        }
-        if used_percent <= max_memory_percent as u64 {
+    // Separate sampling from decisions so pressure behavior can be tested without
+    // allocating gigabytes or depending on the test host's current memory load.
+    fn check_memory(
+        &self,
+        memory: usdb_util::MemoryUsageSnapshot,
+        pressure: &mut CachePressure,
+        now: Instant,
+    ) {
+        let max_memory_percent = self.config.sync.max_memory_percent;
+        let utxos = self.utxo_cache.get_count() as usize;
+        let balances = self.address_balance_cache.get_count() as usize;
+        if !pressure.should_shrink(
+            memory.limit_bytes > 0 && memory.pressure_percent() > max_memory_percent as u64,
+            utxos > 1 || balances > 1,
+            now,
+        ) {
             return;
         }
 
         warn!(
-            "High memory usage detected: source={}, used_bytes={}, limit_bytes={}, used_percent={}, max_percent={}; shrinking caches by {}%",
+            "High memory usage detected: source={}, used_bytes={}, reclaimable_file_bytes={}, pressure_bytes={}, limit_bytes={}, pressure_percent={}, max_percent={}; shrinking caches by {}%",
             memory.source,
             memory.used_bytes,
+            memory.reclaimable_file_bytes,
+            memory.pressure_bytes(),
             memory.limit_bytes,
-            used_percent,
+            memory.pressure_percent(),
             max_memory_percent,
             SHRINK_PERCENT
         );
-        self.shrink_caches();
+        // Empty/minimum caches cannot release useful memory. Do not resize them
+        // to one entry merely because another allocation is under pressure.
+        if utxos > 1 {
+            self.utxo_cache.shrink(shrink_target(utxos));
+        }
+        if balances > 1 {
+            self.address_balance_cache.shrink(shrink_target(balances));
+        }
     }
+}
 
-    fn shrink_caches(&self) {
-        let target_utxo_count = shrink_target(self.utxo_cache.get_count() as usize);
-        self.utxo_cache.shrink(target_utxo_count);
+/// Require sustained pressure and allow reclaim to settle between evictions.
+#[derive(Default)]
+struct CachePressure {
+    previous_high: bool,
+    last_shrink: Option<Instant>,
+}
 
-        let target_balance_count = shrink_target(self.address_balance_cache.get_count() as usize);
-        self.address_balance_cache.shrink(target_balance_count);
+impl CachePressure {
+    fn should_shrink(&mut self, high: bool, useful: bool, now: Instant) -> bool {
+        let sustained = self.previous_high && high;
+        self.previous_high = high;
+        if !sustained
+            || !useful
+            || self
+                .last_shrink
+                .is_some_and(|last| now.duration_since(last) < SHRINK_COOLDOWN)
+        {
+            return false;
+        }
+        self.last_shrink = Some(now);
+        true
     }
 }
 
@@ -144,6 +186,69 @@ mod tests {
         assert_eq!(shrink_target(0), 1);
         assert_eq!(shrink_target(1), 1);
         assert_eq!(shrink_target(9), 8);
+    }
+
+    #[test]
+    fn pressure_requires_two_samples_cooldown_and_useful_cache_entries() {
+        let mut pressure = CachePressure::default();
+        let now = Instant::now();
+        assert!(!pressure.should_shrink(true, true, now));
+        assert!(!pressure.should_shrink(false, true, now + Duration::from_secs(10)));
+        assert!(!pressure.should_shrink(true, true, now + Duration::from_secs(20)));
+        assert!(pressure.should_shrink(true, true, now + Duration::from_secs(30)));
+        assert!(!pressure.should_shrink(true, true, now + Duration::from_secs(40)));
+        assert!(!pressure.should_shrink(true, false, now + Duration::from_secs(90)));
+        assert!(pressure.should_shrink(true, true, now + Duration::from_secs(100)));
+    }
+
+    #[test]
+    fn full_page_cache_does_not_evict_business_cache_but_real_pressure_does() {
+        use bitcoincore_rpc::bitcoin::{OutPoint, Txid, hashes::Hash};
+        use usdb_util::{BtcScriptHash, MemoryAccountingSource, MemoryUsageSnapshot, UTXOValue};
+
+        let mut config = BalanceHistoryConfig::default();
+        config.sync.utxo_max_cache_bytes = 1024 * 1024;
+        config.sync.balance_max_cache_bytes = 1024 * 1024;
+        config.sync.max_memory_percent = 80;
+        let config = Arc::new(config);
+        let utxos = Arc::new(UTXOCache::new(config.clone(), CacheStrategy::Normal));
+        let balances = Arc::new(AddressBalanceCache::new(
+            config.clone(),
+            CacheStrategy::Normal,
+        ));
+        let value = Arc::new(UTXOValue {
+            script_hash: BtcScriptHash::from_slice(&[0u8; 32]).unwrap(),
+            value: 1000,
+        });
+        for vout in 0..100 {
+            utxos.put(
+                Arc::new(OutPoint {
+                    txid: Txid::all_zeros(),
+                    vout,
+                }),
+                value.clone(),
+            );
+        }
+        let monitor = MemoryCacheMonitor::new(config, utxos.clone(), balances);
+        let mut pressure = CachePressure::default();
+        let now = Instant::now();
+        let mut memory = MemoryUsageSnapshot {
+            source: MemoryAccountingSource::CgroupV2,
+            limit_bytes: 1000,
+            used_bytes: 990,
+            reclaimable_file_bytes: 800,
+        };
+        for second in [0, 10, 20, 30] {
+            monitor.check_memory(memory, &mut pressure, now + Duration::from_secs(second));
+        }
+        assert_eq!(utxos.get_count(), 100);
+        memory.reclaimable_file_bytes = 0;
+        monitor.check_memory(memory, &mut pressure, now + Duration::from_secs(40));
+        assert_eq!(utxos.get_count(), 100);
+        monitor.check_memory(memory, &mut pressure, now + Duration::from_secs(50));
+        assert_eq!(utxos.get_count(), 90);
+        monitor.check_memory(memory, &mut pressure, now + Duration::from_secs(60));
+        assert_eq!(utxos.get_count(), 90);
     }
 
     #[test]

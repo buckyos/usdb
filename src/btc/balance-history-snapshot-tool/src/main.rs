@@ -607,6 +607,7 @@ mod tests {
             source: MemoryAccountingSource::Physical,
             limit_bytes: limit_gib * 1024 * 1024 * 1024,
             used_bytes: 4 * 1024 * 1024 * 1024,
+            reclaimable_file_bytes: 0,
         }
     }
 

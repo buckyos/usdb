@@ -44,15 +44,17 @@ class ResourceObserver:
         import node_monitor
         # Resolve here so test and compatibility callers can substitute the collector.
         from control_plane_resources import ResourceCollector
-        collector, metrics = ResourceCollector(), Collector()
+        from node_disk_health import Collector as DiskHealthCollector
+        collector, metrics, disks = ResourceCollector(), Collector(), DiskHealthCollector()
         last_prune, failure, lost, last_observation = 0, None, 0, None
         pressure_windows = {}
         while not stopped.is_set():
             started = time.monotonic()
-            value = {"schema_version": "usdb-console-resources:v1", "status": "unavailable"}
+            disk = disks.sample()
+            value = {"schema_version": "usdb-console-resources:v1", "status": "unavailable", "disk_health": disk}
             try:
                 env = node.read_env(layout.node_env)
-                value = collector.sample(env, layout.bundle_id)
+                value = {**collector.sample(env, layout.bundle_id), "disk_health": disk}
                 evidence = metrics.sample(value)
                 for item in evidence["items"]:
                     key = (evidence["boot_id"], item["identity"], pressure_state(item))
@@ -126,6 +128,8 @@ def pressure_state(item):
 
 def evaluate(store, resources, at, settings):
     """Use distinct fresh resource samples, even when service probes are unavailable."""
+    import node_disk_health
+    node_disk_health.evaluate(store, resources.get("disk_health", {}), at, settings)
     resource_at = resources.get("diagnostics", {}).get("at_ms")
     fresh = type(resource_at) is int and 0 <= at - resource_at <= (settings["resource_interval_secs"] * 3 + 15) * 1000
     previous = store.get("last_resource_sample_ms")

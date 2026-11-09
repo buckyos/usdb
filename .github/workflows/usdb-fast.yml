@@ -72,6 +72,7 @@ jobs:
           python3 tests/test_node_process_recovery.py
           python3 tests/test_node_monitor_core_startup.py
           python3 tests/test_node_resource_history.py
+          python3 tests/test_node_disk_health.py
           python3 tests/test_node_notifications.py
           python3 tests/test_node_minting.py
           python3 tests/test_ord_operations.py
