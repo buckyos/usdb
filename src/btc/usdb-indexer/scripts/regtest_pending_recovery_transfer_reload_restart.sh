@@ -20,7 +20,6 @@ SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-180}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 USDB_INDEXER_LOG_FILE="${USDB_INDEXER_LOG_FILE:-$WORK_DIR/usdb-indexer.log}"
 REGTEST_LOG_PREFIX="[usdb-pending-recovery-transfer-restart]"
-USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES="${USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES:-1}"
 
 source "${SCRIPT_DIR}/regtest_reorg_lib.sh"
 
@@ -39,6 +38,7 @@ main() {
   regtest_require_cmd python3
 
   regtest_ensure_workspace_dirs
+  regtest_arm_recovery_fault transfer-reload
   regtest_start_bitcoind
   regtest_ensure_wallet
 
@@ -79,24 +79,17 @@ main() {
     "((data.get('result') or {}).get('stable_block_hash', ''))" \
     "$ancestor_hash"
 
-  regtest_wait_until_file_contains \
-    "usdb-indexer runtime log" \
-    "$usdb_runtime_log_file" \
+  regtest_observe_pending_recovery "$rollback_height" \
     "Injected reorg recovery transfer reload failure"
-  regtest_wait_until_usdb_db_scalar_eq \
-    "SELECT value FROM state WHERE name = 'upstream_reorg_recovery_pending_height';" \
-    "$rollback_height" \
-    "pending recovery marker present after injected transfer reload failure"
-  regtest_wait_until_usdb_synced_eq "$rollback_height"
 
-  regtest_log "Stopping usdb-indexer before automatic retry to preserve pending marker across restart"
+  regtest_log "Stopping usdb-indexer while recovery is held to verify durable pending state"
   regtest_stop_usdb_indexer
   regtest_assert_usdb_db_scalar \
     "SELECT value FROM state WHERE name = 'upstream_reorg_recovery_pending_height';" \
     "$rollback_height" \
     "pending recovery marker still present after process stop"
 
-  USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES=""
+  regtest_release_recovery_fault
   regtest_restart_usdb_indexer
   regtest_wait_until_usdb_synced_eq "$rollback_height"
   regtest_wait_until_rpc_expr_eq \

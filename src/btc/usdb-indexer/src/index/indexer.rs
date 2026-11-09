@@ -18,6 +18,7 @@ use balance_history::{
 };
 use bitcoincore_rpc::bitcoin::{Block, Txid};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
@@ -53,6 +54,11 @@ const REORG_RECOVERY_ENERGY_FAILURE_ENV: &str =
 const REORG_RECOVERY_TRANSFER_RELOAD_FAILURE_ENV: &str =
     "USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES";
 
+const REORG_RECOVERY_ENERGY_RELEASE_ENV: &str =
+    "USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_RELEASE_FILE";
+const REORG_RECOVERY_TRANSFER_RELEASE_ENV: &str =
+    "USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_RELEASE_FILE";
+
 #[derive(Default)]
 struct ReorgRecoveryFaultInjector {
     // Runtime-only failure budget for the first phase of resumable recovery.
@@ -61,6 +67,10 @@ struct ReorgRecoveryFaultInjector {
     // Runtime-only failure budget for the second phase of resumable recovery.
     // When non-zero, the next N recovery attempts fail before transfer reload runs.
     transfer_reload_failure_budget: AtomicU32,
+    // Regtest handshakes hold recovery across arbitrary observer delays. No file
+    // access occurs unless the corresponding fault-injection variable is set.
+    energy_release_file: Option<PathBuf>,
+    transfer_reload_release_file: Option<PathBuf>,
 }
 
 impl ReorgRecoveryFaultInjector {
@@ -69,17 +79,58 @@ impl ReorgRecoveryFaultInjector {
         let transfer_reload_failure_budget =
             Self::parse_env_budget(REORG_RECOVERY_TRANSFER_RELOAD_FAILURE_ENV)?;
 
-        if energy_failure_budget > 0 || transfer_reload_failure_budget > 0 {
+        let energy_release_file = Self::release_file_from_env(REORG_RECOVERY_ENERGY_RELEASE_ENV);
+        let transfer_reload_release_file =
+            Self::release_file_from_env(REORG_RECOVERY_TRANSFER_RELEASE_ENV);
+
+        if energy_failure_budget > 0
+            || transfer_reload_failure_budget > 0
+            || energy_release_file.is_some()
+            || transfer_reload_release_file.is_some()
+        {
             warn!(
-                "Reorg recovery fault injection enabled: module=indexer, energy_failures={}, transfer_reload_failures={}",
-                energy_failure_budget, transfer_reload_failure_budget
+                "Reorg recovery fault injection enabled: module=indexer, energy_failures={}, transfer_reload_failures={}, energy_release_file={:?}, transfer_reload_release_file={:?}",
+                energy_failure_budget,
+                transfer_reload_failure_budget,
+                energy_release_file,
+                transfer_reload_release_file
             );
         }
 
         Ok(Self {
             energy_failure_budget: AtomicU32::new(energy_failure_budget),
             transfer_reload_failure_budget: AtomicU32::new(transfer_reload_failure_budget),
+            energy_release_file,
+            transfer_reload_release_file,
         })
+    }
+
+    fn release_file_from_env(name: &str) -> Option<PathBuf> {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+
+    // A positive release signal avoids treating a missing/unreadable gate as
+    // permission to recover before the test has observed the durable marker.
+    fn require_release(file: Option<&Path>, phase: &str, height: u32) -> Result<(), String> {
+        let Some(file) = file else {
+            return Ok(());
+        };
+        let reason = match std::fs::metadata(file) {
+            Ok(metadata) if metadata.is_file() => return Ok(()),
+            Ok(_) => "release path is not a regular file".to_string(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                "waiting for explicit test release".to_string()
+            }
+            Err(error) => format!("cannot inspect release file: {error}"),
+        };
+        let message = format!(
+            "Injected reorg recovery {phase} failure: target_height={height}, release_file={}, reason={reason}",
+            file.display()
+        );
+        warn!("{}", message);
+        Err(message)
     }
 
     fn parse_env_budget(name: &str) -> Result<u32, String> {
@@ -122,6 +173,7 @@ impl ReorgRecoveryFaultInjector {
     }
 
     fn maybe_fail_energy_recovery(&self, target_height: u32) -> Result<(), String> {
+        Self::require_release(self.energy_release_file.as_deref(), "energy", target_height)?;
         let Some(remaining_after) = Self::consume_budget(&self.energy_failure_budget) else {
             return Ok(());
         };
@@ -135,6 +187,11 @@ impl ReorgRecoveryFaultInjector {
     }
 
     fn maybe_fail_transfer_reload(&self, target_height: u32) -> Result<(), String> {
+        Self::require_release(
+            self.transfer_reload_release_file.as_deref(),
+            "transfer reload",
+            target_height,
+        )?;
         let Some(remaining_after) = Self::consume_budget(&self.transfer_reload_failure_budget)
         else {
             return Ok(());
@@ -146,6 +203,102 @@ impl ReorgRecoveryFaultInjector {
         );
         warn!("{}", msg);
         Err(msg)
+    }
+}
+
+#[cfg(test)]
+mod recovery_fault_tests {
+    use super::ReorgRecoveryFaultInjector;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicU32;
+
+    fn release_path() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "usdb-recovery-gate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        root.join("release")
+    }
+
+    #[test]
+    fn recovery_gates_hold_repeated_attempts_until_explicit_release() {
+        for energy in [true, false] {
+            let path = release_path();
+            let injector = ReorgRecoveryFaultInjector {
+                energy_release_file: energy.then(|| path.clone()),
+                transfer_reload_release_file: (!energy).then(|| path.clone()),
+                ..Default::default()
+            };
+            let attempt = || {
+                if energy {
+                    injector.maybe_fail_energy_recovery(39)
+                } else {
+                    injector.maybe_fail_transfer_reload(39)
+                }
+            };
+            for _ in 0..5 {
+                let error = attempt().unwrap_err();
+                assert!(error.contains("target_height=39"), "{error}");
+                assert!(
+                    error.contains("waiting for explicit test release"),
+                    "{error}"
+                );
+            }
+            if energy {
+                injector.maybe_fail_transfer_reload(39).unwrap();
+            } else {
+                injector.maybe_fail_energy_recovery(39).unwrap();
+            }
+            std::fs::create_dir(&path).unwrap();
+            assert!(attempt().unwrap_err().contains("not a regular file"));
+            std::fs::remove_dir(&path).unwrap();
+            std::fs::write(&path, b"").unwrap();
+            attempt().unwrap();
+            attempt().unwrap();
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn recovery_gate_survives_new_injector_and_does_not_release_on_io_error() {
+        let path = release_path();
+        let injector = || ReorgRecoveryFaultInjector {
+            transfer_reload_release_file: Some(path.clone()),
+            ..Default::default()
+        };
+        assert!(injector().maybe_fail_transfer_reload(39).is_err());
+        assert!(injector().maybe_fail_transfer_reload(39).is_err());
+        std::fs::write(&path, b"").unwrap();
+        injector().maybe_fail_transfer_reload(39).unwrap();
+        let invalid = ReorgRecoveryFaultInjector {
+            transfer_reload_release_file: Some(path.join("not-a-directory")),
+            ..Default::default()
+        };
+        assert!(invalid.maybe_fail_transfer_reload(39).is_err());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn finite_failure_budgets_and_disabled_injection_keep_existing_behavior() {
+        let injector = ReorgRecoveryFaultInjector {
+            energy_failure_budget: AtomicU32::new(2),
+            transfer_reload_failure_budget: AtomicU32::new(1),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            assert!(injector.maybe_fail_energy_recovery(39).is_err());
+        }
+        injector.maybe_fail_energy_recovery(39).unwrap();
+        assert!(injector.maybe_fail_transfer_reload(39).is_err());
+        injector.maybe_fail_transfer_reload(39).unwrap();
+        let disabled = ReorgRecoveryFaultInjector::default();
+        disabled.maybe_fail_energy_recovery(39).unwrap();
+        disabled.maybe_fail_transfer_reload(39).unwrap();
     }
 }
 

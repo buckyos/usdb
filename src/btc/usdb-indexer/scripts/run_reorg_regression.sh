@@ -55,6 +55,14 @@ validate_port_plan() {
 run_case() {
   local slot="$1"
   local script_name="$2"
+  local -a work_env=()
+  if [[ -n "${REGTEST_WORK_ROOT:-}" ]]; then
+    mkdir -p "$REGTEST_WORK_ROOT"
+    # Isolate cases and retries under the directory collected by the CI runner.
+    local case_dir
+    case_dir="$(mktemp -d "${REGTEST_WORK_ROOT}/${script_name%.sh}-XXXXXX")"
+    work_env+=("WORK_DIR=${case_dir}")
+  fi
 
   local btc_rpc_port="$((BASE_BTC_RPC_PORT + slot * PORT_STRIDE))"
   local btc_p2p_port="$((BASE_BTC_P2P_PORT + slot * PORT_STRIDE))"
@@ -62,7 +70,7 @@ run_case() {
   local usdb_indexer_rpc_port="$((BASE_USDB_INDEXER_RPC_PORT + slot * PORT_STRIDE))"
   local ord_rpc_port="$((BASE_ORD_RPC_PORT + slot * PORT_STRIDE))"
 
-  run_cmd env \
+  run_cmd env "${work_env[@]}" \
     BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR}" \
     ORD_BIN="${ORD_BIN}" \
     BTC_RPC_PORT="${btc_rpc_port}" \
@@ -213,4 +221,6 @@ main() {
   log "USDB reorg regression suite succeeded."
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

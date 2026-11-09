@@ -23,6 +23,8 @@ ORD_WALLET_NAME="${ORD_WALLET_NAME:-ord-reorg-a}"
 ORD_WALLET_NAME_B="${ORD_WALLET_NAME_B:-ord-reorg-b}"
 USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES="${USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES:-}"
 USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES="${USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES:-}"
+USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_RELEASE_FILE="${USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_RELEASE_FILE:-}"
+USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_RELEASE_FILE="${USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_RELEASE_FILE:-}"
 PREMINE_BLOCKS="${PREMINE_BLOCKS:-130}"
 ORD_FEE_RATE="${ORD_FEE_RATE:-1}"
 # Regtest scenarios may replace a stable block, which is deeper than the BTC
@@ -2169,6 +2171,14 @@ regtest_start_balance_history() {
 regtest_start_usdb_indexer() {
   regtest_log "Starting usdb-indexer service (root=${USDB_INDEXER_ROOT}, rpc=${USDB_INDEXER_RPC_PORT})"
   local -a env_args=()
+  local variable
+  for variable in \
+    USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_RELEASE_FILE \
+    USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_RELEASE_FILE; do
+    if [[ -n "${!variable}" ]]; then
+      env_args+=("${variable}=${!variable}")
+    fi
+  done
   if [[ -n "$USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES" ]]; then
     env_args+=(
       "USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES=${USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES}"
@@ -2438,6 +2448,44 @@ regtest_wait_until_usdb_state_ref_block_hash() {
     "$expected_hash"
 }
 
+# Each run gets a fresh, initially absent release file, including when WORK_DIR
+# is reused. Hold the injected fault until the observer explicitly releases it.
+regtest_arm_recovery_fault() {
+  local phase="$1" gate_dir
+  case "$phase" in
+    energy|transfer-reload) ;;
+    *) regtest_log "Unknown recovery fault phase: ${phase}"; return 1 ;;
+  esac
+  gate_dir="$(mktemp -d "${WORK_DIR}/recovery-${phase}-XXXXXX")"
+  REGTEST_RECOVERY_RELEASE_FILE="${gate_dir}/release"
+  if [[ "$phase" == energy ]]; then
+    USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES=0
+    USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_RELEASE_FILE="$REGTEST_RECOVERY_RELEASE_FILE"
+  else
+    USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES=0
+    USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_RELEASE_FILE="$REGTEST_RECOVERY_RELEASE_FILE"
+  fi
+  regtest_log "Armed recovery fault: phase=${phase}, release_file=${REGTEST_RECOVERY_RELEASE_FILE}"
+}
+
+regtest_observe_pending_recovery() {
+  local height="$1" failure_message="$2"
+  regtest_wait_until_file_contains "usdb-indexer runtime log" \
+    "${USDB_INDEXER_ROOT}/logs/usdb-indexer_rCURRENT.log" "$failure_message"
+  # Exercise an observer slower than the first retry on every nightly run.
+  regtest_log "Observing held recovery after ${REGTEST_RECOVERY_OBSERVER_DELAY_SEC:-2}s delay"
+  sleep "${REGTEST_RECOVERY_OBSERVER_DELAY_SEC:-2}"
+  regtest_wait_until_usdb_db_scalar_eq \
+    "SELECT value FROM state WHERE name = 'upstream_reorg_recovery_pending_height';" \
+    "$height" "pending recovery marker held before release"
+  regtest_wait_until_usdb_synced_eq "$height"
+}
+
+regtest_release_recovery_fault() {
+  regtest_log "Releasing recovery fault: release_file=${REGTEST_RECOVERY_RELEASE_FILE:?fault is not armed}"
+  touch "$REGTEST_RECOVERY_RELEASE_FILE"
+}
+
 regtest_wait_until_file_contains() {
   local label="$1"
   local file_path="$2"
@@ -2705,6 +2753,7 @@ regtest_print_failure_diagnostics() {
   regtest_print_tail_if_exists "balance-history log" "$BALANCE_HISTORY_LOG_FILE"
   regtest_print_tail_if_exists "usdb-indexer log" "$USDB_INDEXER_LOG_FILE"
   regtest_print_tail_if_exists "balance-history service log" "${BALANCE_HISTORY_ROOT}/logs/balance-history_rCURRENT.log"
+  regtest_print_tail_if_exists "usdb-indexer service log" "${USDB_INDEXER_ROOT}/logs/usdb-indexer_rCURRENT.log"
   regtest_print_tail_if_exists "bitcoind debug log" "${BITCOIN_DIR}/regtest/debug.log"
 }
 

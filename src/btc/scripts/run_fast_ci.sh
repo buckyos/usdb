@@ -51,6 +51,7 @@ env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/tests/test_miner_pass_matrix_to
 
 log "running regtest harness lifecycle tests"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$INDEXER_SCRIPTS/test_regtest_reorg_lib.py"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/tests/test_regtest_pending_recovery.py"
 
 log "checking balance-history shell scripts"
 (
