@@ -13,6 +13,8 @@ GIB = 1024**3
 MIN_HOST_MEMORY_BYTES = 32_000_000_000
 MIN_RUNTIME_MEMORY_BYTES = 16_000_000_000
 POLICY_VERSION_KEY = "USDB_RESOURCE_POLICY_VERSION"
+# Bound boot-time accounting drift; real capacity and phase minima still apply.
+HOST_MEMORY_DRIFT_MAX_BYTES = 16 * MIB
 # Retain the conservative 16 GiB deployment cap across the Core 31.1 upgrade.
 MAX_BITCOIN_DBCACHE_MIB = 16384
 PHASES = ("bitcoin", "overlap", "steady")
@@ -563,6 +565,16 @@ def validate_cache_budget(env: dict[str, str]) -> None:
         raise ValueError(f"balance-history cache budget {cache} exceeds {maximum} bytes; leave 10 percentage points below the memory-pressure threshold")
 
 
+def host_memory_drift_tolerance(recorded: int) -> int:
+    """Allow at most 0.1% or 16 MiB of accounting drift, whichever is smaller."""
+    return min(HOST_MEMORY_DRIFT_MAX_BYTES, max(0, recorded) // 1000)
+
+
+def same_host_memory_capacity(recorded: int, observed: int) -> bool:
+    """Compare capacity, not byte-exact MemTotal; this never validates budget safety."""
+    return recorded > 0 and observed > 0 and abs(recorded - observed) <= host_memory_drift_tolerance(recorded)
+
+
 def validate_resource_environment(env: dict[str, str], host_memory: int | None = None) -> None:
     """Validate persisted budgets without guessing host RAM inside a service container."""
     minimum = (MIN_RUNTIME_MEMORY_BYTES if resource_mode(env) == "auto" and runtime_policy(env)
@@ -579,12 +591,18 @@ def validate_resource_environment(env: dict[str, str], host_memory: int | None =
         if not recorded.isdigit():
             raise ValueError("automatic resources require USDB_RESOURCE_HOST_MEMORY_BYTES; run setup or set-resource-policy")
         memory = int(recorded)
-        if host_memory is not None and memory > host_memory:
-            raise ValueError("effective host memory decreased; stop the node and recalculate its resource policy")
+        if host_memory is not None and memory > host_memory and not same_host_memory_capacity(memory, host_memory):
+            raise ValueError(f"effective host memory decreased: recorded={memory}, current={host_memory}, "
+                             f"decrease={memory - host_memory}, tolerance={host_memory_drift_tolerance(memory)} bytes; "
+                             "stop the node and recalculate its resource policy")
         phase = env.get("USDB_RESOURCE_PHASE", "")
         # Validate every reachable phase, not only today's allocation.
         for candidate in resource_phases(env):
-            build_resource_plan(memory, candidate, env)
+            plan = build_resource_plan(memory, candidate, env)
+            if host_memory is not None and plan.total_bytes > host_memory:
+                raise ValueError(f"automatic resource plan for {candidate} including system/external reserves "
+                                 f"exceeds effective host memory: {plan.total_bytes} > {host_memory}; "
+                                 "stop the node and recalculate its resource policy")
         expected = build_resource_plan(memory, phase, env).environment()
         for key, value in expected.items():
             if env.get(key) != value:

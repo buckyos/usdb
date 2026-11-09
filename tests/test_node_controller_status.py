@@ -32,6 +32,79 @@ class ControllerStatusTests(unittest.TestCase):
             self.assertNotIn("controller install", notice["summary"])
             self.assertEqual(before, (fixture.unit.read_bytes(), fixture.layout.node_env.read_bytes()))
 
+    def test_monitor_boot_policy_is_independent_and_disabled_is_visible_without_details(self):
+        with ControllerStatusFixture() as f:
+            f.write_unit(sync_timeout_secs=456, pull=False)
+            f.monitor_properties["UnitFileState"] = "disabled"
+            before = f.unit.read_bytes(), f.monitor_unit.read_bytes(), f.layout.node_env.read_bytes()
+            item = CONTROLLER.inspect_controller(f.layout, node=NODE)
+            notice = CONTROLLER.autostart_notice(item, command=("usdb-node", "--node-env", str(f.layout.node_env)))
+            self.assertEqual((notice["state"], notice["severity"]), ("INCOMPLETE", "WARN"))
+            self.assertIn("Monitor automatic startup after reboot is disabled", notice["summary"])
+            self.assertIn("--node-env " + str(f.layout.node_env), notice["summary"])
+            self.assertIn("controller install --sync-timeout-secs 456 --skip-pull", notice["summary"])
+            base = dict(release_id="test", observed_at="now", overall_state="READY", components=[])
+            with mock.patch.object(NODE, "_collect_node_progress", return_value=base):
+                progress = NODE.collect_node_progress(f.layout)
+            rendered = NODE.render_node_progress(progress)
+            self.assertIn("Attention", rendered)
+            self.assertIn("Monitor automatic startup after reboot is disabled", " ".join(rendered.split()))
+            self.assertEqual(progress["overall_state"], "READY")
+            self.assertEqual(before, (f.unit.read_bytes(), f.monitor_unit.read_bytes(), f.layout.node_env.read_bytes()))
+
+    def test_monitor_missing_stale_custom_masked_and_opted_out_have_distinct_guidance(self):
+        with ControllerStatusFixture() as f:
+            f.monitor_unit.unlink()
+            self.assertEqual(CONTROLLER.autostart_notice(CONTROLLER.inspect_controller(f.layout, node=NODE))["state"], "INCOMPLETE")
+            f.write_unit()
+            f.monitor_unit.write_text(f.monitor_unit.read_text().replace("r26", "r25"))
+            self.assertEqual(CONTROLLER.autostart_notice(CONTROLLER.inspect_controller(f.layout, node=NODE))["state"], "UPDATE_REQUIRED")
+            f.monitor_unit.write_text(f.monitor_unit.read_text() + "\n[Service]\nMemoryMax=1G\n")
+            f.properties["UnitFileState"] = "disabled"
+            report = f.report()
+            self.assertEqual(report["checks"]["controller"]["startup"]["state"], "REVIEW_REQUIRED")
+            self.assertNotIn("controller install", " ".join(report["next_actions"] + report["operator_guidance"]))
+            f.properties.update(ActiveState="failed", Result="exit-code", ExecMainCode="1", ExecMainStatus="1")
+            failed = f.report()
+            self.assertEqual(failed["checks"]["controller"]["display_state"], "failed")
+            self.assertIn("usdb-node controller logs --follow", failed["next_actions"])
+            f.properties["UnitFileState"] = "enabled"
+            f.write_unit()
+            f.monitor_properties["UnitFileState"] = "masked"
+            self.assertEqual(CONTROLLER.autostart_notice(CONTROLLER.inspect_controller(f.layout, node=NODE))["state"], "REVIEW_REQUIRED")
+            f.layout.node_env.write_text(f.layout.node_env.read_text() + "USDB_MONITOR_ENABLED=0\n")
+            f.run.reset_mock()
+            notice = CONTROLLER.autostart_notice(CONTROLLER.inspect_controller(f.layout, node=NODE))
+            self.assertEqual(notice["state"], "ENABLED")
+            self.assertIn("intentionally disabled", notice["summary"])
+            f.run.assert_called_once()
+
+    def test_custom_controller_never_recommends_install_over_a_missing_monitor(self):
+        with ControllerStatusFixture() as f:
+            f.properties["DropInPaths"] = "/etc/systemd/system/custom.conf"
+            f.monitor_unit.unlink()
+            notice = CONTROLLER.autostart_notice(CONTROLLER.inspect_controller(f.layout, node=NODE))
+            self.assertEqual(notice["state"], "REVIEW_REQUIRED")
+            self.assertNotIn("controller install", notice["summary"])
+
+    def test_monitor_probe_failure_and_stopped_runtime_do_not_change_node_readiness(self):
+        with ControllerStatusFixture() as f:
+            def timeout(command, **kwargs):
+                if command[-1] == f.monitor_unit.name:
+                    raise subprocess.TimeoutExpired("systemctl", 5)
+                return f.probe(command, **kwargs)
+            f.run.side_effect = timeout
+            report = f.report()
+            self.assertEqual(report["overall_state"], "READY")
+            self.assertEqual(report["checks"]["controller"]["startup"]["state"], "UNAVAILABLE")
+            f.run.side_effect = f.probe
+            f.monitor_properties.update(ActiveState="inactive", SubState="dead")
+            report = f.report()
+            self.assertEqual(report["overall_state"], "READY")
+            self.assertTrue(report["checks"]["controller"]["startup_warning"])
+            self.assertIn("monitor is stopped", " ".join(report["operator_guidance"]))
+            self.assertIn("usdb-node up", " ".join(report["operator_guidance"]))
+
     def test_standard_launcher_is_recognized_without_user_bin_in_path(self):
         with ControllerStatusFixture() as fixture:
             stable = fixture.root / ".local/bin/usdb-node"
@@ -118,7 +191,7 @@ class ControllerStatusTests(unittest.TestCase):
             with mock.patch.object(NODE, "_collect_node_progress", return_value=base) as collect:
                 progress = NODE.collect_node_progress(fixture.layout)
             collect.assert_called_once_with(fixture.layout, controller_state="unavailable")
-            self.assertEqual(fixture.run.call_count, 1)
+            self.assertEqual(fixture.run.call_count, 2)
             rendered = NODE.render_node_progress(progress)
             self.assertIn("controller=unavailable", rendered)
             self.assertIn("Action: usdb-node controller status", rendered)
@@ -179,7 +252,7 @@ class ControllerStatusTests(unittest.TestCase):
             self.assertEqual(report["checks"]["controller"]["configuration_state"], "current")
             self.assertEqual(report["next_actions"], [])
 
-    def test_missing_unit_prompts_install_without_probing_or_mutating_systemd(self):
+    def test_missing_controller_keeps_remaining_monitor_probe_read_only(self):
         with ControllerStatusFixture() as fixture:
             fixture.unit.unlink()
             for overall in ("STARTING", "READY_TO_START", "PREPARATION_REQUIRED", "ACTIVATION_REQUIRED"):
@@ -191,7 +264,7 @@ class ControllerStatusTests(unittest.TestCase):
             ready = fixture.report()
             self.assertEqual(ready["next_actions"], [])
             self.assertIn("foreground", " ".join(ready["operator_guidance"]))
-            fixture.run.assert_not_called()
+            self.assertTrue(all(call.args[0][-1] == fixture.monitor_unit.name for call in fixture.run.call_args_list))
 
     def test_disabled_autostart_is_explicit_and_restoration_is_optional(self):
         with ControllerStatusFixture() as fixture:
@@ -203,7 +276,8 @@ class ControllerStatusTests(unittest.TestCase):
                 self.assertEqual(report["checks"]["controller"]["autostart"], "disabled")
                 self.assertIn("is disabled", report["checks"]["controller"]["summary"])
                 self.assertEqual(report["next_actions"], [])
-                self.assertIn("If automatic startup", " ".join(report["operator_guidance"]))
+                self.assertIn("If reboot recovery is intended", " ".join(report["operator_guidance"]))
+                self.assertIn("otherwise leave it disabled", " ".join(report["operator_guidance"]))
                 self.assertIn("--sync-timeout-secs 456 --skip-pull", " ".join(report["operator_guidance"]))
 
     def test_exit_two_for_peers_is_manual_action_not_reinstall_or_crash(self):

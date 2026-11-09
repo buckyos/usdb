@@ -10,7 +10,7 @@ import uuid
 
 from resource_policy import (MIN_HOST_MEMORY_BYTES, POLICY_VERSION_KEY, build_resource_plan,
                              chain_resources_ready, resource_mode,
-                             runtime_policy, validate_resource_environment)
+                             runtime_policy, same_host_memory_capacity, validate_resource_environment)
 
 ACTIVE = {"running", "restarting", "paused"}
 # Ord is independent of foreground consumers and may take a long time to flush.
@@ -42,9 +42,10 @@ def _prepare_for_up_locked(layout, node):
     if resource_mode(env) != "auto" or not chain_resources_ready(env):
         return False
     memory = node.effective_memory_bytes()
+    same_capacity = same_host_memory_capacity(int(env.get("USDB_RESOURCE_HOST_MEMORY_BYTES", "0")), memory)
     migrate_compact = (runtime_policy(env) and env.get("USDB_RESOURCE_PHASE") == "catchup"
                        and env.get("USDB_RESOURCE_RUNTIME_BUDGET") == "compact")
-    needs = (not runtime_policy(env) or env.get("USDB_RESOURCE_HOST_MEMORY_BYTES") != str(memory)
+    needs = (not runtime_policy(env) or not same_capacity
              or env.get("USDB_RESOURCE_PHASE") == "steady" or migrate_compact
              or env.get("USDB_RESOURCE_RUNTIME_BUDGET") == "runtime-ready")
     if not needs:
@@ -53,13 +54,15 @@ def _prepare_for_up_locked(layout, node):
     observed = node._resource_containers(layout)
     state = node._read_resource_state(layout)
     if state.get("pending") or state.get("recover_services"):
-        if env.get("USDB_RESOURCE_HOST_MEMORY_BYTES") == str(memory):
+        if same_capacity:
+            validate_resource_environment(env, memory)
             return False  # Resume the journal's original plan before considering migration.
         raise ValueError("finish the pending resource transition before changing the host memory budget")
     if any(item["state"] not in {"exited", "dead", "created"} for item in observed.values()):
-        if int(env.get("USDB_RESOURCE_HOST_MEMORY_BYTES", "0")) > memory:
+        if not same_capacity and int(env.get("USDB_RESOURCE_HOST_MEMORY_BYTES", "0")) > memory:
             raise ValueError("effective host memory decreased while containers are active; run usdb-node down before rebudgeting")
-        if migrate_compact and env.get("USDB_RESOURCE_HOST_MEMORY_BYTES") == str(memory):
+        validate_resource_environment(env, memory)
+        if migrate_compact and same_capacity:
             apply_plan(layout, node, "catchup", runtime_budget="core-catchup", output_to_stderr=True)
             print("RESOURCE_REBUDGETED: Core catch-up receives unused runtime capacity", file=sys.stderr)
             return True
@@ -113,6 +116,7 @@ def apply_plan(layout, node, target, *, runtime_budget=None, output_to_stderr=Fa
         settings["USDB_RESOURCE_RUNTIME_BUDGET"] = runtime_budget
     plan = build_resource_plan(int(env["USDB_RESOURCE_HOST_MEMORY_BYTES"]), target, settings)
     desired = {**env, **plan.environment()}
+    validate_resource_environment(desired, node.effective_memory_bytes())
     observed = node._resource_containers(layout)
     if any(observed.get(name, {}).get("state") in ACTIVE for name in JOBS):
         raise ValueError("RESOURCE_JOB_ACTIVE: resource transition waits for the active preparation/recovery job")

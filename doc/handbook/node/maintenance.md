@@ -251,6 +251,11 @@ control-plane 收到停止信号后关闭 HTTP 监听，等待已接收的请求
 `controller disable` 才会显式关闭自启；执行涉及协议迁移或数据重建的 `upgrade-release --execute` 后，自启也保持关闭，应按升级计划中的步骤恢复。
 
 包含自启检查改进的工具会在 `doctor` 中显示 `Startup after reboot`，并在可执行升级计划的文字输出中显示当前自启状态。
+检查同时覆盖 controller 和已启用的 monitor；controller 已 enabled、monitor 仍 disabled 或缺失时会显示非阻断警告。
+其他主机、资源或数据检查失败后，只要 release 和配置文件仍可定位，doctor 也会继续独立检查自启，避免遗漏恢复配置。
+`USDB_MONITOR_ENABLED=0` 视为用户主动关闭监控；自定义、masked 或带 drop-in 的 unit 先提示人工核对，不直接建议覆盖。
+这些查询不会启用服务。需要恢复整套开机启动时再执行建议的 `controller install`，随后用 `up` 启动并验证。
+
 未安装或未启用时提示 `WARN` 和安装命令，不会导致预检失败或自动启用服务；有意使用前台模式、或希望停机后不自动恢复时，可以保留该设置。
 提示会保留已识别的 `--sync-timeout-secs`、`--skip-pull`；自定义或被屏蔽的 unit 则要求先检查 `controller status`。
 

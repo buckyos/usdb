@@ -74,7 +74,7 @@ usdb-node upgrade-plan --from-kit /absolute/path/to/old-kit
 相同目录不重复打印，重复的 ID 差异不会占据摘要。`--details` 展示完整路径、runtime ID 和字段变化；
 `--json` 保持完整计划结构，便于自动化采集。`upgrade-release` 的预览同样支持这两个选项。
 
-包含自启提示改进的工具会在可执行计划中显示 `Current startup after reboot`。即使是兼容升级，未安装或已禁用自启时也会给出恢复命令；
+包含自启提示改进的工具会在可执行计划中显示 `Current startup after reboot`。检查涵盖 controller 和配置中启用的 monitor；两者的开机策略不一致也会提示。即使是兼容升级，未安装或已禁用自启时也会给出恢复命令；
 这属于可选的运维提示，不改变升级兼容性结论。`down`、`activate-release`、手动 `up` 不会重新启用自启。
 只有需要重启后自动恢复时才执行提示中的 `controller install`；自定义或被屏蔽的 unit 先按提示检查。
 `--json` 仍是可重复核对的升级元数据计划，不查询 systemd，也不加入即时自启状态。

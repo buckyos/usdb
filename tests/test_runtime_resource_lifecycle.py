@@ -22,6 +22,31 @@ from common.runtime_resources import RuntimeResources
 
 
 class RuntimeBudgetTests(unittest.TestCase):
+    def test_accounting_drift_never_relaxes_minimum_capacity_or_total_budget(self):
+        settings = dict(USDB_RESOURCE_POLICY_VERSION="2", SNAPSHOT_MODE="assumeutxo", USDB_STORAGE_PROFILE="slow-disk",
+                        USDB_RESOURCE_MEMORY_PERCENT="90", USDB_MINTING_ENABLED="1", USDB_ORD_RESOURCE_POLICY="adaptive-v2",
+                        USDB_RESOURCE_RUNTIME_BUDGET="runtime-ready")
+        recorded = 67297947648
+        env = {**settings, **policy.build_resource_plan(recorded, "catchup", settings).environment()}
+        policy.validate_resource_environment(env, recorded - 12288)
+        self.assertTrue(policy.same_host_memory_capacity(recorded, recorded - policy.HOST_MEMORY_DRIFT_MAX_BYTES))
+        self.assertFalse(policy.same_host_memory_capacity(recorded, recorded - policy.HOST_MEMORY_DRIFT_MAX_BYTES - 1))
+        with self.assertRaisesRegex(ValueError, "effective host memory decreased"):
+            policy.validate_resource_environment(env, recorded - 64 * policy.MIB)
+        # A tiny change is still unsafe if it breaches any required reserve.
+        memory = 20 * policy.GIB
+        full = policy.build_resource_plan(memory, "catchup", settings)
+        self.assertEqual(full.total_bytes, memory)
+        with self.assertRaisesRegex(ValueError, "including system/external reserves"):
+            policy.validate_resource_environment({**settings, **full.environment()}, memory - 1)
+        minimum = policy.build_resource_plan(policy.MIN_RUNTIME_MEMORY_BYTES, "steady", settings)
+        with self.assertRaisesRegex(ValueError, "at least 16 GB"):
+            policy.validate_resource_environment({**settings, **minimum.environment()}, policy.MIN_RUNTIME_MEMORY_BYTES - 1)
+        # A matching capacity is not permission to alter a managed allocation.
+        altered = {**env, "BH_MEMORY_LIMIT": str(int(env["BH_MEMORY_LIMIT"]) + policy.MIB)}
+        with self.assertRaisesRegex(ValueError, "automatic resource plan"):
+            policy.validate_resource_environment(altered, recorded - 12288)
+
     def test_ord_v2_growth_preserves_runtime_targets_reserves_caps_and_old_plans(self):
         hosts = ((16_000_000_000, "90", "0"), (20 * policy.GIB, "90", "2g"),
                  (32 * policy.GIB, "80", "4g"), (64 * policy.GIB, "90", "4g"),
@@ -220,6 +245,37 @@ class RuntimeHandoffTests(unittest.TestCase):
             env = node.read_env(f.layout.node_env)
             self.assertEqual(env["USDB_ORD_RESOURCE_POLICY"], "adaptive-v2")
             self.assertEqual(env["USDB_RESOURCE_RUNTIME_BUDGET"], "core-catchup")
+
+    def test_running_node_ignores_small_capacity_drift_without_config_or_container_changes(self):
+        f = RuntimeResources(self.root, memory=67297947648, ord_enabled=True,
+                             runtime_budget="runtime-ready", ord_policy="adaptive-v2")
+        before = f.layout.node_env.read_bytes()
+        for difference in (-12288, 12288):
+            f.memory = 67297947648 + difference
+            with f.patches():
+                self.assertFalse(lifecycle.prepare_for_up(f.layout, node))
+                policy.validate_resource_environment(node.read_env(f.layout.node_env), f.memory)
+            self.assertEqual(f.layout.node_env.read_bytes(), before)
+            self.assertFalse(f.events)
+
+    def test_pending_handoff_resumes_original_plan_across_small_accounting_drift(self):
+        f = RuntimeResources(self.root, memory=67297947648, ord_enabled=True,
+                             runtime_budget="core-catchup", ord_policy="adaptive-v2")
+        with f.patches():
+            f.crash = "quiesce-services"
+            with self.assertRaises(RuntimeError):
+                lifecycle.apply_plan(f.layout, node, "catchup", runtime_budget="runtime-ready")
+            pending = node._read_resource_state(f.layout)
+            f.memory -= 12288
+            before = f.layout.node_env.read_bytes()
+            self.assertFalse(lifecycle.prepare_for_up(f.layout, node))
+            self.assertEqual(f.layout.node_env.read_bytes(), before)
+            self.assertEqual(node._read_resource_state(f.layout), pending)
+            lifecycle.apply_plan(f.layout, node, "catchup")
+            finished = node._read_resource_state(f.layout)
+            self.assertEqual(finished["plan_id"], pending["plan_id"])
+            self.assertFalse(finished["pending"])
+            self.assertEqual(node.read_env(f.layout.node_env)["USDB_RESOURCE_HOST_MEMORY_BYTES"], "67297947648")
 
     def test_resource_preview_exposes_ord_budget_after_core_without_writes(self):
         f = RuntimeResources(self.root, memory=64 * policy.GIB, ord_enabled=True,

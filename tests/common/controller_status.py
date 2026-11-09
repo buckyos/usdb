@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import node_controller_status as CONTROLLER
+import node_monitor as MONITOR
 import usdb_node as NODE
 
 
@@ -43,6 +44,8 @@ class ControllerStatusFixture:
         self.properties = dict(LoadState="loaded", ActiveState="inactive", SubState="dead", UnitFileState="enabled",
                                Result="success", ExecMainCode="0", ExecMainStatus="0", NeedDaemonReload="no",
                                FragmentPath=str(self.unit), DropInPaths="")
+        self.monitor_properties = {**self.properties, "ActiveState": "active", "SubState": "running",
+                                   "FragmentPath": str(self.monitor_unit)}
         self.run = self.stack.enter_context(mock.patch.object(CONTROLLER.subprocess, "run", side_effect=self.probe))
         self.stack.enter_context(mock.patch.object(CONTROLLER.shutil, "which", return_value=str(self.docker)))
         return self
@@ -53,11 +56,15 @@ class ControllerStatusFixture:
             self.layout, launcher=self.launcher, service_user=account.pw_name,
             home=Path(account.pw_dir), docker_launcher=self.docker, **options,
         ))
+        self.monitor_unit = MONITOR.unit_path(self.layout, NODE)
+        context = SimpleNamespace(launcher=self.launcher, service_user=account.pw_name, home=Path(account.pw_dir))
+        self.monitor_unit.write_text(MONITOR.render_unit(self.layout, NODE, context))
 
     def probe(self, command, **kwargs):
         if command[:2] != ["systemctl", "show"]:
             raise AssertionError(f"Unexpected mutation or probe: {command}")
-        return subprocess.CompletedProcess(command, 0, "\n".join(f"{key}={value}" for key, value in self.properties.items()), "")
+        properties = self.monitor_properties if command[-1] == self.monitor_unit.name else self.properties
+        return subprocess.CompletedProcess(command, 0, "\n".join(f"{key}={value}" for key, value in properties.items()), "")
 
     def report(self, overall="READY", *, checks=None):
         controller = CONTROLLER.inspect_controller(self.layout, node=NODE)

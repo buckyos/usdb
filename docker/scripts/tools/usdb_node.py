@@ -2701,20 +2701,24 @@ def print_doctor_report(load_layout: Any, *, args: Any = None) -> int:
     report = DoctorReport()
     if sys.stdout.isatty():
         print("Checking USDB node prerequisites...", file=sys.stderr, flush=True)
+    layout = None
     try:
         layout = report.check("release", load_layout)
         report.identify(layout)
         doctor(layout, allow_pending_snapshot=True, allow_pending_identity=True, report=report)
-        controller = report.check("controller", lambda: inspect_controller(layout, node=sys.modules[__name__]))
-        command = command_prefix(args, sys.modules[__name__]) if args is not None else ["usdb-node"]
-        notice = autostart_notice(controller, command=command)
-        report.add("controller", notice["severity"], "Autostart " + notice["state"], notice["summary"])
     except CHECK_ERRORS:
-        # The failing stage has already retained the error and helper diagnostics.
-        report.print(sys.stdout)
-        return 1
+        # Continue independent boot-policy observations after a failed host/data check.
+        pass
+    if layout is not None and layout.node_env.is_file():
+        try:
+            controller = report.check("controller", lambda: inspect_controller(layout, node=sys.modules[__name__]))
+            command = command_prefix(args, sys.modules[__name__]) if args is not None else ["usdb-node"]
+            notice = autostart_notice(controller, command=command)
+            report.add("controller", notice["severity"], "Autostart " + notice["state"], notice["summary"])
+        except CHECK_ERRORS:
+            pass  # The section retains the failure and its diagnostics.
     report.print(sys.stdout)
-    return 0
+    return 1 if report.failed else 0
 
 
 def _resource_containers(layout: ReleaseLayout) -> dict[str, dict[str, Any]]:

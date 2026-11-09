@@ -442,10 +442,10 @@ def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
                        and controller.get("result") == "exit-code" and controller.get("exit_code") == 1
                        and controller.get("exit_status") == 2
                        and controller.get("display_state") in {"idle", "waiting_for_seed"})
-    if controller and (details or controller.get("action_required")
+    if controller and (details or controller.get("action_required") or controller.get("startup_warning")
                        or (controller.get("runtime_state") == "failed" and not historical_exit)):
         row = _Row("Controller", controller.get("display_state", "unknown").upper(),
-                   attention=bool(controller.get("action_required")), info=[controller.get("summary", "")])
+                   attention=bool(controller.get("action_required") or controller.get("startup_warning")), info=[controller.get("summary", "")])
         if controller.get("observation_available"):
             runtime = f"systemd={controller['runtime_state']} | last exit={controller.get('exit_status', 'unknown')}"
             if historical_exit:
@@ -454,6 +454,8 @@ def _rows(report: dict[str, Any], *, details: bool) -> list[_Row]:
             elif details or controller.get("display_state") != "waiting_for_seed":
                 row.summary = runtime
         row.info += [f"Action: {action}" for action in controller.get("actions", [])]
+        if controller.get("startup_warning"):
+            row.info += controller.get("guidance", [])
         rows.append(row)
     resources = report.get("resources", {})
     if resources.get("error"):

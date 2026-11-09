@@ -122,6 +122,21 @@ class DoctorTests(unittest.TestCase):
                 systemctl.assert_not_called()
                 self.assertEqual(original, self.layout.node_env.read_bytes())
 
+    def test_memory_failure_keeps_independent_monitor_autostart_warning_visible(self):
+        self.controller.return_value = autostart_observation(monitor=dict(unit="usdb-node-monitor-test.service",
+            enabled=True, configuration_state="current", observation_available=True, load_state="loaded",
+            autostart="disabled", runtime_state="inactive"))
+        original = self.layout.node_env.read_bytes()
+        with mock.patch.object(node, "validate_resource_environment", side_effect=ValueError("effective host memory decreased")), \
+             mock.patch.object(node, "_privileged_command") as mutate:
+            result, output = self.command()
+        self.assertEqual(result, 1)
+        self.assertIn("effective host memory decreased", output)
+        self.assertIn("Autostart INCOMPLETE", " ".join(output.split()))
+        self.assertIn("Monitor automatic startup after reboot is disabled", " ".join(output.split()))
+        mutate.assert_not_called()
+        self.assertEqual(original, self.layout.node_env.read_bytes())
+
     def test_uncached_identity_helper_is_pending_and_other_preflight_checks_continue(self):
         import node_identity
         key = node_identity.key_path(self.layout, node)
@@ -334,7 +349,8 @@ class DoctorTests(unittest.TestCase):
                 self.assertEqual(result, 1 if fail else 0)
                 self.assertNotIn("External firewall", output)
                 if fail:
-                    self.assertIn("- Startup after reboot", output.split("Not checked\n", 1)[1])
+                    self.assertIn("Autostart ENABLED", " ".join(output.split()))
+                    self.assertNotIn("Not checked", output)
                     self.assertIn("ufw is missing", output.split("Needs attention\n", 1)[1].split("\nRelease\n", 1)[0])
                     self.assertNotIn("Preflight passed", output)
                 else:

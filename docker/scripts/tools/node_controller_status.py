@@ -57,7 +57,7 @@ def _command_options(command: str) -> tuple[list[str], int, bool]:
     return tokens, timeout, pull
 
 
-def inspect_controller(layout, *, node) -> dict:
+def _inspect_controller(layout, *, node) -> dict:
     """Collect bounded observations without sudo, mutation, or node readiness decisions."""
     unit = node.controller_unit_path(layout)
     report = dict(state="installed", configuration_state="unknown", display_state="unknown",
@@ -115,6 +115,11 @@ def inspect_controller(layout, *, node) -> dict:
         report.update(configuration_state="unverified", display_state="review_required",
                       summary="Controller configuration could not be matched; inspect it before reinstalling")
 
+    return _observe_unit(report, unit, "Controller")
+
+
+def _observe_unit(report, unit, label):
+    """Read bounded systemd properties for either generated background service."""
     try:
         result = subprocess.run(
             ["systemctl", "show", "--no-pager", "--property=" + ",".join(PROPERTIES), unit.name],
@@ -134,17 +139,62 @@ def inspect_controller(layout, *, node) -> dict:
                                "disabled" if properties["UnitFileState"] == "disabled" else properties["UnitFileState"])
         if properties["DropInPaths"] or (properties["FragmentPath"] and Path(properties["FragmentPath"]) != unit):
             report.update(configuration_state="custom", display_state="review_required",
-                          summary="Controller has systemd overrides; review effective settings before reinstalling")
+                          summary=f"{label} has systemd overrides; review effective settings before reinstalling")
         if properties["LoadState"] == "masked" or properties["UnitFileState"].startswith("masked"):
             report.update(configuration_state="custom", display_state="review_required",
-                          summary="Controller is masked; review this deliberate systemd restriction before startup")
+                          summary=f"{label} is masked; review this deliberate systemd restriction before startup")
         elif properties["LoadState"] != "loaded":
-            report.update(display_state="unavailable", summary="systemd could not load the controller; inspect controller status")
+            report.update(display_state="unavailable", summary=f"systemd could not load {label.lower()}; inspect its systemd status")
         report["observation_available"] = True
     except (OSError, ValueError, subprocess.SubprocessError):
         report.update(observation_available=False, runtime_state="unknown", autostart="unknown")
         if report["configuration_state"] == "current":
-            report.update(display_state="unavailable", summary="Controller unit is current; systemd status is unavailable")
+            report.update(display_state="unavailable", summary=f"{label} unit is current; systemd status is unavailable")
+    return report
+
+
+def inspect_monitor(layout, *, node):
+    """Verify the paired monitor without enabling it or overriding an opt-out."""
+    from types import SimpleNamespace
+    import node_monitor
+    from node_background_services import _normalized
+    unit = node_monitor.unit_path(layout, node)
+    report = dict(unit=unit.name, enabled=True, configuration_state="unverified",
+                  observation_available=False, autostart="unknown", runtime_state="unknown")
+    try:
+        report["enabled"] = node_monitor.enabled(layout, node)
+        if not report["enabled"]:
+            return {**report, "configuration_state": "disabled", "summary": "Monitoring is disabled in node configuration"}
+        if unit.is_symlink():
+            report["configuration_state"] = "custom"
+        elif not unit.is_file():
+            return {**report, "configuration_state": "missing", "summary": "Monitor unit is not installed"}
+        else:
+            with unit.open("rb") as source:
+                content = source.read(UNIT_MAX_BYTES + 1)
+            if len(content) > UNIT_MAX_BYTES:
+                raise ValueError("Monitor unit exceeds the inspection limit")
+            account = pwd.getpwuid(layout.node_env.stat().st_uid)
+            context = SimpleNamespace(launcher=node._controller_launcher_path(), service_user=account.pw_name,
+                                      home=Path(account.pw_dir))
+            installed = _normalized(content.decode("utf-8"))
+            expected = _normalized(node_monitor.render_unit(layout, node, context))
+            current = installed == expected
+            # Only a legacy/mismatched release stamp may be refreshed automatically.
+            for values in (installed, expected):
+                key = ("Service", "Environment")
+                values[key] = [v for v in values.get(key, []) if not
+                               (len(v) == 1 and v[0].startswith(node_monitor.RELEASE_ENV + "="))]
+            report["configuration_state"] = "current" if current else "update_required" if installed == expected else "custom"
+    except (OSError, ValueError, KeyError, UnicodeError):
+        report["configuration_state"] = "unverified"
+    return _observe_unit(report, unit, "Monitor")
+
+
+def inspect_controller(layout, *, node) -> dict:
+    """Keep controller runtime and paired monitor boot policy independently visible."""
+    report = _inspect_controller(layout, node=node)
+    report["monitor"] = inspect_monitor(layout, node=node)
     return report
 
 
@@ -158,7 +208,7 @@ def command_prefix(args, node):
     return result
 
 
-def autostart_notice(controller: dict, *, command=("usdb-node",)) -> dict:
+def _controller_autostart_notice(controller: dict, *, command=("usdb-node",)) -> dict:
     """Describe reboot behavior without changing intentional foreground/disabled operation."""
     status = shlex.join([*command, "controller", "status"])
     install = shlex.join([*command, *shlex.split(controller.get(
@@ -191,6 +241,41 @@ def autostart_notice(controller: dict, *, command=("usdb-node",)) -> dict:
     return dict(state=state, severity="PASS" if state == "ENABLED" else "WARN", summary=summary)
 
 
+def autostart_notice(controller: dict, *, command=("usdb-node",)) -> dict:
+    """Reboot recovery includes the monitor unless monitoring was explicitly disabled."""
+    notice = _controller_autostart_notice(controller, command=command)
+    monitor = controller.get("monitor")
+    if monitor is None:  # Older observations retain their controller-only semantics.
+        return notice
+    configuration = monitor.get("configuration_state")
+    if notice["state"] == "REVIEW_REQUIRED":
+        return {**notice, "summary": notice["summary"] + " Review the paired monitor configuration as well."}
+    install = shlex.join([*command, *shlex.split(controller.get("install_command", "usdb-node controller install"))[1:]])
+    unit = shlex.quote(monitor["unit"])
+    if monitor.get("enabled") is False:
+        detail, state = "Monitor is intentionally disabled in node configuration.", None
+    elif configuration in {"custom", "unverified"}:
+        # Do not recommend reinstalling even a normal controller over a custom monitor.
+        return dict(state="REVIEW_REQUIRED", severity="WARN", summary=
+                    f"Monitor configuration needs manual review: systemctl cat {unit}; systemctl status {unit}. "
+                    "Review paired background services before replacing or enabling units.")
+    elif configuration == "missing":
+        detail, state = f"Monitor unit is missing; background monitoring cannot resume after reboot. Run {install} for reboot recovery.", "INCOMPLETE"
+    elif configuration == "update_required" or monitor.get("needs_daemon_reload"):
+        detail, state = (f"Monitor configuration needs refreshing. Manual up refreshes supported units while preserving boot policy; "
+                         f"run {install} if automatic startup after reboot is intended."), "UPDATE_REQUIRED"
+    elif not monitor.get("observation_available") or monitor.get("load_state") != "loaded":
+        detail, state = f"Monitor startup after reboot could not be verified; inspect systemctl status {unit}.", "UNAVAILABLE"
+    elif monitor.get("autostart") == "enabled":
+        detail, state = "Monitor automatic startup after reboot is enabled.", None
+    elif monitor.get("autostart") == "disabled":
+        detail, state = f"Monitor automatic startup after reboot is disabled. Run {install} if reboot recovery is intended.", "INCOMPLETE"
+    else:
+        detail, state = f"Persistent monitor startup after reboot is not confirmed; inspect systemctl status {unit}.", "UNAVAILABLE"
+    return dict(state=state if state and notice["severity"] == "PASS" else notice["state"],
+                severity="WARN" if state else notice["severity"], summary=notice["summary"] + " " + detail)
+
+
 def apply_controller_guidance(report: dict) -> None:
     """Add operator actions while keeping runtime readiness and foreground startup intact."""
     controller = report["checks"].get("controller")
@@ -200,6 +285,7 @@ def apply_controller_guidance(report: dict) -> None:
     configuration = controller.get("configuration_state", controller["state"])
     actions, guidance = [], []
     install = controller.get("install_command", "usdb-node controller install")
+    monitor_configuration = controller.get("monitor", {}).get("configuration_state")
     if configuration == "missing":
         if overall in STARTABLE_STATES:
             actions.append(install)
@@ -246,16 +332,33 @@ def apply_controller_guidance(report: dict) -> None:
         else:
             controller.update(display_state="unavailable", summary="Controller runtime state is unknown; inspect controller status")
             actions.append("usdb-node controller status")
+    if monitor_configuration in {"custom", "unverified"}:
+        actions = [action for action in actions if action != install]
+        guidance = [line for line in guidance if "controller install" not in line and not line.startswith("Refresh the controller")]
+        actions.append("usdb-node controller status")
+        guidance.append(autostart_notice(controller)["summary"])
     if controller.get("observation_available"):
         if controller.get("autostart") == "disabled":
             controller["summary"] += "; automatic startup after reboot is disabled"
-            if configuration == "current" and not controller.get("needs_daemon_reload"):
-                guidance.append(f"If automatic startup after reboot is intended, run {install}. Manual up does not enable autostart.")
         elif controller.get("autostart") == "enabled":
             controller["summary"] += "; automatic startup after reboot is enabled"
         else:
             controller["summary"] += "; persistent automatic startup is not confirmed"
             guidance.append("Inspect controller status if persistent automatic startup after reboot is required.")
+    startup = autostart_notice(controller)
+    controller["startup"] = startup
+    controller["startup_warning"] = startup["severity"] == "WARN"
+    if controller["startup_warning"]:
+        guidance.append(startup["summary"])
+    monitor = controller.get("monitor", {})
+    if monitor.get("enabled") and monitor.get("configuration_state") == "current":
+        controller["summary"] += f"; monitor autostart={monitor.get('autostart', 'unknown')}"
+        if monitor.get("observation_available") and monitor.get("runtime_state") in {"inactive", "failed"} and overall in {"READY", "SYNCING"}:
+            controller["startup_warning"] = True
+            guidance.append("Node services are running but the monitor is stopped; run usdb-node up to restore background observation. "
+                            "This preserves existing autostart settings.")
+            controller["summary"] += "; monitor is stopped while node services are running"
+    actions, guidance = list(dict.fromkeys(actions)), list(dict.fromkeys(guidance))
     controller.update(action_required=bool(actions), actions=actions, guidance=guidance)
     report["next_actions"] = list(dict.fromkeys([*actions, *report["next_actions"]]))
     report["operator_guidance"] = list(dict.fromkeys([*report["operator_guidance"], *guidance]))

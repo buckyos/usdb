@@ -392,6 +392,10 @@ r25 中可能出现缺少详细进度、RPC 暂不可用时状态变化、等待
 | `FAILED` | 编排异常退出；按提示先查日志，再决定是否重试 `up` |
 | `UNAVAILABLE` | 未取得可靠的 systemd 状态；检查 `controller status`，不能据此断定节点服务失败 |
 
+默认 `status --watch` 会将 controller/monitor 的自启缺失、禁用或不可观测提示放入 Attention，无须加 `--details`。
+节点已 READY 或 SYNCING、monitor 却已停止时，也会提示使用 `up` 恢复后台观察。
+这些提示不会把健康的节点改判为 BLOCKED；有意前台运行或关闭监控的选择继续保留。
+
 状态说明还会显示开机启动是否启用。若显示 `automatic startup after reboot is disabled`，手动 `up` 仍可启动，但不会恢复开机启动；仅在希望恢复开机启动时执行提示中的 `controller install`。该操作不会由状态查询自动执行。
 
 包含 Seed 等待提示改进的工具，会让进度面板和普通 `status` 根据当前入网检查给出具体操作。r35 及更早的工具可能在核心服务已启动、但缺少 Seed 时以退出码 2 结束编排，systemd 因而记录为 `failed`。新版将这种情况解释为 `controller=waiting_for_seed`，直接提示添加 Seed；若节点已就绪则显示 `controller=idle`。默认面板不再将这条历史记录展示成当前故障，原始 `systemd=failed | last exit=2` 及说明可在 `status --details` 或 `status --watch --details` 查看，JSON 原始字段也保留。状态查询不会清除 systemd 记录。真实异常退出仍显示失败并提供日志检查入口。
